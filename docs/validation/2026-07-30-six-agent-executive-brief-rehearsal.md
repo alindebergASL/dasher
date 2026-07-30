@@ -23,14 +23,14 @@ proved only target visibility and dialog mechanics, not usability.
 
 ## Independent sessions
 
-| ID  | Persona                                   | Model                       | Target      | Predicted interactions | Strict displayed types | Usefulness | Need                       |
-| --- | ----------------------------------------- | --------------------------- | ----------- | ---------------------: | ---------------------- | ---------: | -------------------------- |
-| A01 | County emergency-management director      | `claude-fable-5`            | changed     |                      2 | MISS                   |        4/5 | More historical comparison |
-| A02 | Regional water-utility operations manager | `claude-opus-5`             | next-action |                      2 | MISS                   |        4/5 | Clearer alert thresholds   |
-| A03 | City manager and executive generalist     | `claude-sonnet-5`           | changed     |                      2 | PASS                   |        4/5 | Named owner or handoff     |
-| A04 | Watershed nonprofit executive director    | `claude-haiku-4-5-20251001` | next-action |                      2 | PASS                   |        4/5 | Named owner or handoff     |
-| A05 | Private-company COO                       | `gpt-5.6-sol`               | changed     |                      1 | PASS                   |        4/5 | Named owner or handoff     |
-| A06 | Elected county supervisor                 | `gpt-5.6-luna`              | next-action |                      1 | PASS                   |        4/5 | Named owner or handoff     |
+| ID  | Persona                                   | Model                       | Target      | Four-part content | Predicted interactions | Strict displayed types | Usefulness | Need                       |
+| --- | ----------------------------------------- | --------------------------- | ----------- | ----------------- | ---------------------: | ---------------------- | ---------: | -------------------------- |
+| A01 | County emergency-management director      | `claude-fable-5`            | changed     | PASS              |                      2 | MISS                   |        4/5 | More historical comparison |
+| A02 | Regional water-utility operations manager | `claude-opus-5`             | next-action | PASS              |                      2 | MISS                   |        4/5 | Clearer alert thresholds   |
+| A03 | City manager and executive generalist     | `claude-sonnet-5`           | changed     | PASS              |                      2 | PASS                   |        4/5 | Named owner or handoff     |
+| A04 | Watershed nonprofit executive director    | `claude-haiku-4-5-20251001` | next-action | PASS              |                      2 | PASS                   |        4/5 | Named owner or handoff     |
+| A05 | Private-company COO                       | `gpt-5.6-sol`               | changed     | PASS              |                      1 | PASS                   |        4/5 | Named owner or handoff     |
+| A06 | Elected county supervisor                 | `gpt-5.6-luna`              | next-action | PASS              |                      1 | PASS                   |        4/5 | Named owner or handoff     |
 
 The six model IDs are distinct. Provider diversity is not six-way: four are
 Claude-family models and two are OpenAI Codex models.
@@ -51,7 +51,7 @@ evidence dialog in one automated activation. Every model rated the dashboard
 
 ## Product hypotheses
 
-1. Four of six selected `Named owner or handoff`; action ownership is the most
+1. **4 of 6** selected `Named owner or handoff`; action ownership is the most
    repeated missing context.
 2. The emergency-management persona wanted historical or flood-stage context
    for `+0.3 ft`; the operations persona wanted clearer alert thresholds.

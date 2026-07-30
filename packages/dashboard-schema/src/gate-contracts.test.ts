@@ -59,6 +59,227 @@ const readmeClauses: Clause[] = [
   },
 ];
 
+const expectedValidationAgentRows = [
+  [
+    "A01",
+    "County emergency-management director",
+    "`claude-fable-5`",
+    "changed",
+    "PASS",
+    "2",
+    "1",
+    "MISS",
+    "4",
+    "missing-context",
+    "More historical comparison",
+  ],
+  [
+    "A02",
+    "Regional water-utility operations manager",
+    "`claude-opus-5`",
+    "next-action",
+    "PASS",
+    "2",
+    "1",
+    "MISS",
+    "4",
+    "unclear, missing-context",
+    "Clearer alert thresholds",
+  ],
+  [
+    "A03",
+    "City manager and executive generalist",
+    "`claude-sonnet-5`",
+    "changed",
+    "PASS",
+    "2",
+    "1",
+    "PASS",
+    "4",
+    "missing-context",
+    "Named owner or handoff",
+  ],
+  [
+    "A04",
+    "Watershed nonprofit executive director",
+    "`claude-haiku-4-5-20251001`",
+    "next-action",
+    "PASS",
+    "2",
+    "1",
+    "PASS",
+    "4",
+    "missing-context",
+    "Named owner or handoff",
+  ],
+  [
+    "A05",
+    "Private-company COO",
+    "`gpt-5.6-sol`",
+    "changed",
+    "PASS",
+    "1",
+    "1",
+    "PASS",
+    "4",
+    "missing-context",
+    "Named owner or handoff",
+  ],
+  [
+    "A06",
+    "Elected county supervisor",
+    "`gpt-5.6-luna`",
+    "next-action",
+    "PASS",
+    "1",
+    "1",
+    "PASS",
+    "4",
+    "missing-context",
+    "Named owner or handoff",
+  ],
+] as const;
+
+const expectedRehearsalAgentRows = [
+  [
+    "A01",
+    "County emergency-management director",
+    "`claude-fable-5`",
+    "changed",
+    "PASS",
+    "2",
+    "MISS",
+    "4/5",
+    "More historical comparison",
+  ],
+  [
+    "A02",
+    "Regional water-utility operations manager",
+    "`claude-opus-5`",
+    "next-action",
+    "PASS",
+    "2",
+    "MISS",
+    "4/5",
+    "Clearer alert thresholds",
+  ],
+  [
+    "A03",
+    "City manager and executive generalist",
+    "`claude-sonnet-5`",
+    "changed",
+    "PASS",
+    "2",
+    "PASS",
+    "4/5",
+    "Named owner or handoff",
+  ],
+  [
+    "A04",
+    "Watershed nonprofit executive director",
+    "`claude-haiku-4-5-20251001`",
+    "next-action",
+    "PASS",
+    "2",
+    "PASS",
+    "4/5",
+    "Named owner or handoff",
+  ],
+  [
+    "A05",
+    "Private-company COO",
+    "`gpt-5.6-sol`",
+    "changed",
+    "PASS",
+    "1",
+    "PASS",
+    "4/5",
+    "Named owner or handoff",
+  ],
+  [
+    "A06",
+    "Elected county supervisor",
+    "`gpt-5.6-luna`",
+    "next-action",
+    "PASS",
+    "1",
+    "PASS",
+    "4/5",
+    "Named owner or handoff",
+  ],
+] as const;
+
+function parseAgentRows(document: string): string[][] {
+  return document
+    .split("\n")
+    .filter((line) => /^\|\s*A0[1-6]\s*\|/.test(line))
+    .map((line) =>
+      line
+        .split("|")
+        .slice(1, -1)
+        .map((cell) => cell.trim()),
+    );
+}
+
+function mutateAgentCell(
+  document: string,
+  id: string,
+  columnIndex: number,
+  replacement: string,
+): string {
+  let changed = false;
+  const result = document
+    .split("\n")
+    .map((line) => {
+      if (!new RegExp(`^\\|\\s*${id}\\s*\\|`).test(line)) return line;
+      const cells = line
+        .split("|")
+        .slice(1, -1)
+        .map((cell) => cell.trim());
+      cells[columnIndex] = replacement;
+      changed = true;
+      return `| ${cells.join(" | ")} |`;
+    })
+    .join("\n");
+  if (!changed) throw new Error(`missing agent row ${id}`);
+  return result;
+}
+
+function parseBoldAggregate(document: string, label: string): [number, number] {
+  const line = document
+    .split("\n")
+    .find((candidate) => candidate.startsWith(`- ${label}: **`));
+  const match = line?.match(/\*\*(\d+) of (\d+)\*\*/);
+  if (!match?.[1] || !match[2]) throw new Error(`missing aggregate ${label}`);
+  return [Number(match[1]), Number(match[2])];
+}
+
+function parseTableAggregate(
+  document: string,
+  label: string,
+): [number, number] {
+  const line = document
+    .split("\n")
+    .find((candidate) => candidate.startsWith(`| ${label}`));
+  const result = line
+    ?.split("|")
+    .slice(1, -1)
+    .map((cell) => cell.trim())[1];
+  const match = result?.match(/^(\d+)\/(\d+)$/);
+  if (!match?.[1] || !match[2]) throw new Error(`missing aggregate ${label}`);
+  return [Number(match[1]), Number(match[2])];
+}
+
+function parseRatio(
+  document: string,
+  pattern: RegExp,
+  label: string,
+): [number, number] {
+  const match = document.match(pattern);
+  if (!match?.[1] || !match[2]) throw new Error(`missing ratio ${label}`);
+  return [Number(match[1]), Number(match[2])];
+}
+
 const roadmapClauses: Clause[] = [
   {
     label: "roadmap accepted synthetic status",
@@ -109,6 +330,76 @@ const roadmapClauses: Clause[] = [
     pattern:
       /- The Gate 4 real-user 30-second comprehension and two-interaction evidence\s+goals continue to pass on pilot dashboards\./,
   },
+  {
+    label: "roadmap Gate 2 forced tenant isolation",
+    pattern:
+      /Implement ADR-003 before accepting any real customer data: invitations,\s+sessions, organizations, roles, PostgreSQL `FORCE ROW LEVEL SECURITY`,\s+composite tenant-safe foreign keys, immutable sources\/evidence\/dashboard\s+versions\/job events\/audit, tenant-scoped object storage, revocation, limits,\s+backup\/restore, kill switches, and incident controls\./,
+  },
+  {
+    label: "roadmap Gate 2 cross-tenant denial and fail-closed context",
+    pattern:
+      /- Cross-tenant read, count, update, delete, reference, enqueue, storage, signed\s+URL, job, evidence, and cache tests deny access under restricted runtime\s+roles with forced RLS\.\s+- Forged or missing tenant context, pooled-connection reuse, composite-FK\s+violations, and membership revocation races fail closed\./,
+  },
+  {
+    label: "roadmap Gate 3 pre-parse raw-byte and network controls",
+    pattern:
+      /proof\. It must use exact approved hosts and parameters, early raw-response byte\s+limits before parsing, SSRF\/redirect\/time\/decompression controls, snapshot\s+ceilings as defense in depth, bounded retries, reauthorization, and prior-good\s+version preservation\./,
+  },
+  {
+    label: "roadmap Gate 3 raw bytes before object construction",
+    pattern:
+      /- Raw connector bytes are limited before object construction or parsing; the\s+existing object snapshot and schema budgets still apply afterward\./,
+  },
+  {
+    label: "roadmap Gate 4 upload and parser controls",
+    pattern:
+      /Uploads enforce raw body and object bytes before parsing, quarantine,\s+tenant-scoped storage, parser isolation, decompression\/workbook complexity\s+limits, and macro, external-link, embedded-object, formula-execution, and\s+formula-injection controls\./,
+  },
+  {
+    label: "roadmap Gate 4 deterministic evidence",
+    pattern:
+      /All displayed cash-flow metrics are computed by\s+deterministic services and retain workbook, sheet, range, transformation, and\s+time-window evidence\./,
+  },
+  {
+    label: "roadmap Gate 5 zero-call fake provider",
+    pattern:
+      /- Fake-provider mode exercises the full request and validation path with zero\s+network and zero credential access\./,
+  },
+  {
+    label: "roadmap Gate 5 reject unsafe provider requests before transport",
+    pattern:
+      /- Provider tools, arbitrary compatible base URLs, unsupported plan\s+credentials, cross-tenant fallback, and requests beyond budget are rejected\s+before transport\./,
+  },
+  {
+    label: "roadmap Gate 5 invalid candidates fail closed",
+    pattern:
+      /- Invalid `DashboardSpec`, invented or cross-tenant evidence, unsupported\s+calculations, unsafe URLs, non-finite values, and unknown components cannot\s+create a candidate\./,
+  },
+  {
+    label: "roadmap Gate 6 read-only authority boundary",
+    pattern:
+      /administrator-approved, exact-manifest-pinned, read-only, per-user authorized,\s+resource\/audience-bound, no token passthrough, no sampling or server-initiated\s+model calls, and no transitive action\/Gmail\/Calendar\/Drive-sharing authority\./,
+  },
+  {
+    label: "roadmap Gate 6 no side-effect tools",
+    pattern:
+      /- A side-effect tool cannot be enabled by configuration or model output\./,
+  },
+  {
+    label: "roadmap Gate 7 exact-deployment entry requirements",
+    pattern:
+      /- Gates 0 through 5 pass on the exact deployment\. Gate 6 also passes before any\s+Google Sheets or MCP capability is offered\./,
+  },
+  {
+    label: "roadmap Gate 7 owner go-no-go and drills",
+    pattern:
+      /- The owner records the permitted real-data classes and data-processing terms,\s+named pilot cohort and accepted use cases, liability boundary, and explicit\s+private-pilot go\/no-go decision\.\s+- Restore, credential rotation, revocation, provider\/schedule kill switches,\s+audit sealing, monitoring, rollback, and incident-response drills pass\./,
+  },
+  {
+    label: "roadmap Gate 7 no unresolved isolation blockers",
+    pattern:
+      /- No unresolved tenant-isolation, secret-handling, ingestion, or authority-race\s+blocker remains\./,
+  },
 ];
 
 const planClauses: Clause[] = [
@@ -155,9 +446,14 @@ const validationClauses: Clause[] = [
       /No real-human usability sessions were conducted\. The agents are not represented\s+as humans or human-equivalent research participants\./,
   },
   {
-    label: "validation accepted exact candidate",
+    label: "validation exact rehearsal stimulus",
     pattern:
-      /- Dashboard HEAD: `9a8ef6d2dd53156c46118d8d71154d780b0b9c04`\s+- Dashboard tree: `76c3e0fe825217479b8876dbb63fc61e0e34329b`/,
+      /- Rehearsal stimulus HEAD: `9a8ef6d2dd53156c46118d8d71154d780b0b9c04`\s+- Rehearsal stimulus tree: `76c3e0fe825217479b8876dbb63fc61e0e34329b`/,
+  },
+  {
+    label: "validation stimulus is not containing commit",
+    pattern:
+      /The hashes above identify the exact dashboard shown during the rehearsal; they\s+do not claim to identify the later commit that contains this governance record\.\s+The containing commit is identified externally by Git, CI, and exact-head review\s+because a commit cannot include its own final hash\./,
   },
   {
     label: "validation distinct isolated models",
@@ -266,6 +562,208 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
     expect(missingClauses(rehearsal, rehearsalClauses)).toEqual([]);
   });
 
+  it("locks every per-agent result and derives the accepted aggregates", () => {
+    const validationRows = parseAgentRows(validation);
+    const rehearsalRows = parseAgentRows(rehearsal);
+    const total = validationRows.length;
+    const contentRecovered = validationRows.filter(
+      (row) => row[4] === "PASS",
+    ).length;
+    const evidenceWithinTwo = validationRows.filter(
+      (row) => Number(row[5]) <= 2,
+    ).length;
+    const mechanicalInOne = validationRows.filter(
+      (row) => row[6] === "1",
+    ).length;
+    const strictTypes = validationRows.filter(
+      (row) => row[7] === "PASS",
+    ).length;
+    const boundedFeedback = validationRows.filter(
+      (row) =>
+        Number(row[8]) >= 1 &&
+        Number(row[8]) <= 5 &&
+        row[10] !== undefined &&
+        row[10].length > 0,
+    ).length;
+    const namedOwnerNeed = validationRows.filter(
+      (row) => row[10] === "Named owner or handoff",
+    ).length;
+    const usefulnessScore = Number(validationRows[0]?.[8]);
+    const allowedFeedback = new Set([
+      "wrong",
+      "unclear",
+      "missing-context",
+      "none",
+    ]);
+    const targets = validationRows.map((row) => row[3]);
+
+    expect(validationRows).toEqual(expectedValidationAgentRows);
+    expect(rehearsalRows).toEqual(expectedRehearsalAgentRows);
+    expect(new Set(validationRows.map((row) => row[2])).size).toBe(6);
+    expect(targets.filter((target) => target === "changed")).toHaveLength(3);
+    expect(targets.filter((target) => target === "next-action")).toHaveLength(
+      3,
+    );
+    expect(
+      validationRows.every((row) => Number(row[8]) === usefulnessScore),
+    ).toBe(true);
+    expect(
+      validationRows.every((row) =>
+        (row[9] ?? "")
+          .split(",")
+          .map((flag) => flag.trim())
+          .every((flag) => allowedFeedback.has(flag)),
+      ),
+    ).toBe(true);
+
+    expect(
+      rehearsalRows.map((row) => [
+        row[0],
+        row[1],
+        row[2],
+        row[3],
+        row[4],
+        row[5],
+        row[6],
+        row[7]?.replace("/5", ""),
+        row[8],
+      ]),
+    ).toEqual(
+      validationRows.map((row) => [
+        row[0],
+        row[1],
+        row[2],
+        row[3],
+        row[4],
+        row[5],
+        row[7],
+        row[8],
+        row[10],
+      ]),
+    );
+
+    const derived = {
+      content: [contentRecovered, total] as [number, number],
+      evidence: [evidenceWithinTwo, total] as [number, number],
+      mechanical: [mechanicalInOne, total] as [number, number],
+      strictTypes: [strictTypes, total] as [number, number],
+      boundedFeedback: [boundedFeedback, total] as [number, number],
+      namedOwnerNeed: [namedOwnerNeed, total] as [number, number],
+      usefulnessScore: [usefulnessScore, 5] as [number, number],
+    };
+
+    expect(
+      parseBoldAggregate(validation, "Synthetic four-part content recovery"),
+    ).toEqual(derived.content);
+    expect(
+      parseBoldAggregate(
+        validation,
+        "Predicted requested-evidence path within two interactions",
+      ),
+    ).toEqual(derived.evidence);
+    expect(
+      parseBoldAggregate(
+        validation,
+        "Mechanically valid requested-evidence path in one activation",
+      ),
+    ).toEqual(derived.mechanical);
+    expect(
+      parseBoldAggregate(validation, "Strict displayed statement-type mapping"),
+    ).toEqual(derived.strictTypes);
+    expect(
+      parseBoldAggregate(validation, "Bounded usefulness and need collected"),
+    ).toEqual(derived.boundedFeedback);
+    expect(parseBoldAggregate(validation, "Repeated need")).toEqual(
+      derived.namedOwnerNeed,
+    );
+    expect(
+      parseRatio(
+        validation,
+        /usefulness was \*\*(\d+) of\s+(\d+)\*\* for every agent/,
+        "validation usefulness score",
+      ),
+    ).toEqual(derived.usefulnessScore);
+
+    expect(
+      parseTableAggregate(rehearsal, "Four-part content recovered"),
+    ).toEqual(derived.content);
+    expect(
+      parseTableAggregate(
+        rehearsal,
+        "Predicted evidence path within two interactions",
+      ),
+    ).toEqual(derived.evidence);
+    expect(
+      parseTableAggregate(
+        rehearsal,
+        "Chosen evidence path mechanically opened",
+      ),
+    ).toEqual(derived.mechanical);
+    expect(
+      parseTableAggregate(rehearsal, "Strict displayed statement-type mapping"),
+    ).toEqual(derived.strictTypes);
+    expect(
+      parseTableAggregate(rehearsal, "Bounded usefulness and need supplied"),
+    ).toEqual(derived.boundedFeedback);
+    expect(
+      parseRatio(
+        rehearsal,
+        /Every model rated the dashboard\s+(\d+)\/(\d+) useful\./,
+        "rehearsal usefulness score",
+      ),
+    ).toEqual(derived.usefulnessScore);
+    expect(
+      parseRatio(
+        rehearsal,
+        /\*\*(\d+) of (\d+)\*\* selected `Named owner or handoff`/,
+        "rehearsal repeated need",
+      ),
+    ).toEqual(derived.namedOwnerNeed);
+  });
+
+  it("rejects per-agent and displayed-aggregate mutations", () => {
+    const validationCellMutations: Array<[number, string]> = [
+      [3, "next-action"],
+      [4, "MISS"],
+      [5, "99"],
+      [6, "99"],
+      [7, "PASS"],
+      [8, "1"],
+      [9, "wrong"],
+      [10, "Other bounded need"],
+    ];
+    for (const [column, replacement] of validationCellMutations) {
+      expect(
+        parseAgentRows(mutateAgentCell(validation, "A01", column, replacement)),
+      ).not.toEqual(expectedValidationAgentRows);
+    }
+    expect(
+      parseAgentRows(mutateAgentCell(rehearsal, "A02", 5, "99")),
+    ).not.toEqual(expectedRehearsalAgentRows);
+
+    const misstatedValidationAggregate = validation.replace(
+      "Synthetic four-part content recovery: **6 of 6**",
+      "Synthetic four-part content recovery: **5 of 6**",
+    );
+    expect(
+      parseBoldAggregate(
+        misstatedValidationAggregate,
+        "Synthetic four-part content recovery",
+      ),
+    ).not.toEqual([6, 6]);
+
+    const misstatedRehearsalAggregate = rehearsal.replace(
+      "| Four-part content recovered                     |    6/6 |",
+      "| Four-part content recovered                     |    5/6 |",
+    );
+    expect(
+      parseTableAggregate(
+        misstatedRehearsalAggregate,
+        "Four-part content recovered",
+      ),
+    ).not.toEqual([6, 6]);
+  });
+
   it("rejects fabricated-human and weakened synthetic-evidence mutations", () => {
     const fabricatedReadmeHumans = readme.replace(
       "No human sessions occurred, the agents are not",
@@ -302,6 +800,138 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
         "roadmap bounded feedback 6/6",
       ]),
     );
+
+    const weakenedDownstreamBoundaries: Array<[string, string]> = [
+      [
+        roadmap.replace(
+          "at least 5 of 6 manager-shaped users identify\n  Known, Changed, Important, and Next safe action within 30 seconds",
+          "at least 3 of 6 manager-shaped users identify\n  Known, Changed, Important, and Next safe action within 30 seconds",
+        ),
+        "roadmap Gate 4 retains real-user benchmark",
+      ],
+      [
+        roadmap.replace(
+          "The Gate 4 real-user 30-second comprehension and two-interaction evidence",
+          "The synthetic Gate 1 comprehension and evidence",
+        ),
+        "roadmap Gate 7 continues Gate 4 real-user goals",
+      ],
+      [
+        roadmap.replace(
+          "PostgreSQL `FORCE ROW LEVEL SECURITY`",
+          "PostgreSQL `ROW LEVEL SECURITY`",
+        ),
+        "roadmap Gate 2 forced tenant isolation",
+      ],
+      [
+        roadmap.replace(
+          "Cross-tenant read, count, update, delete, reference, enqueue, storage, signed",
+          "Cross-tenant read and update may be allowed",
+        ),
+        "roadmap Gate 2 cross-tenant denial and fail-closed context",
+      ],
+      [
+        roadmap.replace(
+          "exact approved hosts and parameters, early raw-response byte",
+          "arbitrary hosts and parameters, late response byte",
+        ),
+        "roadmap Gate 3 pre-parse raw-byte and network controls",
+      ],
+      [
+        roadmap.replace(
+          "Raw connector bytes are limited before object construction or parsing",
+          "Raw connector bytes are limited after parsing",
+        ),
+        "roadmap Gate 3 raw bytes before object construction",
+      ],
+      [
+        roadmap.replace(
+          "tenant-scoped storage, parser isolation",
+          "shared storage, in-process parsing",
+        ),
+        "roadmap Gate 4 upload and parser controls",
+      ],
+      [
+        roadmap.replace(
+          "All displayed cash-flow metrics are computed by\ndeterministic services",
+          "Displayed cash-flow metrics may be generated by\nmodel services",
+        ),
+        "roadmap Gate 4 deterministic evidence",
+      ],
+      [
+        roadmap.replace(
+          "with zero\n  network and zero credential access",
+          "with live\n  network and credential access",
+        ),
+        "roadmap Gate 5 zero-call fake provider",
+      ],
+      [
+        roadmap.replace(
+          "requests beyond budget are rejected\n  before transport",
+          "requests beyond budget may proceed\n  before review",
+        ),
+        "roadmap Gate 5 reject unsafe provider requests before transport",
+      ],
+      [
+        roadmap.replace(
+          "unknown components cannot\n  create a candidate",
+          "unknown components may\n  create a candidate",
+        ),
+        "roadmap Gate 5 invalid candidates fail closed",
+      ],
+      [
+        roadmap.replace(
+          "exact-manifest-pinned, read-only, per-user authorized",
+          "unpinned, read-write, shared-account authorized",
+        ),
+        "roadmap Gate 6 read-only authority boundary",
+      ],
+      [
+        roadmap.replace(
+          "A side-effect tool cannot be enabled by configuration or model output",
+          "A side-effect tool can be enabled by model output",
+        ),
+        "roadmap Gate 6 no side-effect tools",
+      ],
+      [
+        roadmap.replace(
+          "Gates 0 through 5 pass on the exact deployment",
+          "Gates 0 through 5 are planned after deployment",
+        ),
+        "roadmap Gate 7 exact-deployment entry requirements",
+      ],
+      [
+        roadmap.replace(
+          "private-pilot go/no-go decision",
+          "automatic private-pilot go decision",
+        ),
+        "roadmap Gate 7 owner go-no-go and drills",
+      ],
+      [
+        roadmap.replace(
+          "No unresolved tenant-isolation, secret-handling, ingestion, or authority-race\n  blocker remains",
+          "Known tenant-isolation and authority-race blockers may remain",
+        ),
+        "roadmap Gate 7 no unresolved isolation blockers",
+      ],
+    ];
+    expect(
+      weakenedDownstreamBoundaries.map(([, label]) => label).sort(),
+    ).toEqual(
+      roadmapClauses
+        .filter(({ label }) => /^roadmap Gate [2-7]/.test(label))
+        .map(({ label }) => label)
+        .sort(),
+    );
+    for (const [
+      mutatedRoadmap,
+      expectedMissingClause,
+    ] of weakenedDownstreamBoundaries) {
+      expect(mutatedRoadmap).not.toBe(roadmap);
+      expect(missingClauses(mutatedRoadmap, roadmapClauses)).toContain(
+        expectedMissingClause,
+      );
+    }
 
     const missingEvidenceIntegrity = roadmap.replace(
       /- Every visible factual or calculated claim resolves to valid evidence; stale\s+  or missing data is not presented as fresh\.\n/,

@@ -20,10 +20,10 @@ The replacement advances internal engineering sequencing to Gate 2. It does not
 waive later security gates, real-data authorization, the separate manager-shaped
 user criteria in Gate 4, or protected-pilot release verification.
 
-## Accepted candidate and rehearsal method
+## Rehearsal stimulus and method
 
-- Dashboard HEAD: `9a8ef6d2dd53156c46118d8d71154d780b0b9c04`
-- Dashboard tree: `76c3e0fe825217479b8876dbb63fc61e0e34329b`
+- Rehearsal stimulus HEAD: `9a8ef6d2dd53156c46118d8d71154d780b0b9c04`
+- Rehearsal stimulus tree: `76c3e0fe825217479b8876dbb63fc61e0e34329b`
 - Input: one cold-load `1440×900` screenshot of the deterministic Sacramento
   fixture.
 - Isolation: six one-shot multimodal sessions with distinct model IDs, system
@@ -35,6 +35,11 @@ user criteria in Gate 4, or protected-pilot release verification.
 - Mechanical replay: each selected evidence target was replayed in an isolated
   Playwright context. Every chosen control was unique, visible, and opened the
   requested evidence dialog in one activation.
+
+The hashes above identify the exact dashboard shown during the rehearsal; they
+do not claim to identify the later commit that contains this governance record.
+The containing commit is identified externally by Git, CI, and exact-head review
+because a commit cannot include its own final hash.
 
 The detailed rehearsal summary is
 [Six-agent executive-brief rehearsal](2026-07-30-six-agent-executive-brief-rehearsal.md).
@@ -61,14 +66,14 @@ and `30-second human comprehension` must not be used to describe these results.
 
 ## Six-agent record
 
-| ID  | Persona                                   | Model                       | Target      | Predicted interactions | Mechanical activations | Strict types | Usefulness | Feedback flags           | Need category              |
-| --- | ----------------------------------------- | --------------------------- | ----------- | ---------------------: | ---------------------: | ------------ | ---------: | ------------------------ | -------------------------- |
-| A01 | County emergency-management director      | `claude-fable-5`            | changed     |                      2 |                      1 | MISS         |          4 | missing-context          | More historical comparison |
-| A02 | Regional water-utility operations manager | `claude-opus-5`             | next-action |                      2 |                      1 | MISS         |          4 | unclear, missing-context | Clearer alert thresholds   |
-| A03 | City manager and executive generalist     | `claude-sonnet-5`           | changed     |                      2 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
-| A04 | Watershed nonprofit executive director    | `claude-haiku-4-5-20251001` | next-action |                      2 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
-| A05 | Private-company COO                       | `gpt-5.6-sol`               | changed     |                      1 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
-| A06 | Elected county supervisor                 | `gpt-5.6-luna`              | next-action |                      1 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| ID  | Persona                                   | Model                       | Target      | Four-part content | Predicted interactions | Mechanical activations | Strict types | Usefulness | Feedback flags           | Need category              |
+| --- | ----------------------------------------- | --------------------------- | ----------- | ----------------- | ---------------------: | ---------------------: | ------------ | ---------: | ------------------------ | -------------------------- |
+| A01 | County emergency-management director      | `claude-fable-5`            | changed     | PASS              |                      2 |                      1 | MISS         |          4 | missing-context          | More historical comparison |
+| A02 | Regional water-utility operations manager | `claude-opus-5`             | next-action | PASS              |                      2 |                      1 | MISS         |          4 | unclear, missing-context | Clearer alert thresholds   |
+| A03 | City manager and executive generalist     | `claude-sonnet-5`           | changed     | PASS              |                      2 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| A04 | Watershed nonprofit executive director    | `claude-haiku-4-5-20251001` | next-action | PASS              |                      2 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| A05 | Private-company COO                       | `gpt-5.6-sol`               | changed     | PASS              |                      1 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| A06 | Elected county supervisor                 | `gpt-5.6-luna`              | next-action | PASS              |                      1 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
 
 ## Aggregate result and retained risks
 
