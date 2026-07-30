@@ -1,0 +1,27 @@
+{
+  "name": "dasher",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @dasher/web dev",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "pnpm --filter @dasher/web test:e2e",
+    "build": "pnpm -r --if-present build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "10.8.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "8.65.0",
+    "vitest": "^4.1.10"
+  }
+}
