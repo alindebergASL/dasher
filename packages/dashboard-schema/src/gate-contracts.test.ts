@@ -41,6 +41,11 @@ const roadmapClauses: Clause[] = [
       /- At least 5 of 6 reach evidence for a selected material claim within two\s+interactions\./,
   },
   {
+    label: "roadmap evidence integrity and freshness",
+    pattern:
+      /- Every visible factual or calculated claim resolves to valid evidence; stale\s+or missing data is not presented as fresh\./,
+  },
+  {
     label: "roadmap statement types 4/6",
     pattern:
       /- At least 4 of 6 distinguish source facts, deterministic calculations, model\s+interpretation, and recommendations\./,
@@ -120,6 +125,11 @@ const validationClauses: Clause[] = [
       /No model, agent, or automated result decides the roadmap consequence\./,
   },
   {
+    label: "validation automation cannot count toward six",
+    pattern:
+      /Automated tests, browser\s+checks, agents, and model reviews are engineering evidence only and do not count\s+toward the six target-role sessions\./,
+  },
+  {
     label: "validation separate stored outcomes",
     pattern: /- separate comprehension-pass and evidence-pass booleans; and/,
   },
@@ -192,5 +202,21 @@ describe("Gate 1 documentation contract", () => {
         "validation all-six feedback",
       ]),
     );
+
+    const missingRoadmapEvidenceIntegrity = roadmap.replace(
+      /- Every visible factual or calculated claim resolves to valid evidence; stale\s+  or missing data is not presented as fresh\.\n/,
+      "",
+    );
+    expect(
+      missingClauses(missingRoadmapEvidenceIntegrity, roadmapClauses),
+    ).toContain("roadmap evidence integrity and freshness");
+
+    const automationCountedAsHuman = validation.replace(
+      "engineering evidence only and do not count",
+      "engineering evidence and may count",
+    );
+    expect(
+      missingClauses(automationCountedAsHuman, validationClauses),
+    ).toContain("validation automation cannot count toward six");
   });
 });
