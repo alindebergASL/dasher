@@ -20,6 +20,12 @@ export interface RiverDashboardOptions {
   thresholds?: ThresholdRule[];
 }
 
+type RiverDashboardSpec = Extract<DashboardSpec, { schemaVersion: "1.1" }>;
+
+function uniqueEvidenceIds(...groups: string[][]): string[] {
+  return [...new Set(groups.flat())];
+}
+
 function formatNumber(value: number | null, maximumFractionDigits = 2): string {
   if (value === null) return "Missing";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits }).format(
@@ -53,7 +59,7 @@ function gaugeView(item: GaugeMetrics) {
 export function createRiverDashboard(
   gauges: RiverGauge[],
   options: RiverDashboardOptions,
-): DashboardSpec {
+): RiverDashboardSpec {
   const metrics = gauges.map((gauge) => buildGaugeMetrics(gauge, options.asOf));
   const rising = metrics.filter(
     (item) => item.stageFreshness === "fresh" && item.direction === "rising",
@@ -167,9 +173,15 @@ export function createRiverDashboard(
   const allEvidenceIds = evidence.map((item) => item.id);
   const gaugeEvidenceIds = metrics.map((item) => `usgs-${item.gauge.siteId}`);
   const firstAttention = metrics.find((item) => item.dataIssues.length > 0);
+  const attentionAlerts = alerts.filter((alert) => alert.severity !== "info");
+  const highestPriorityAlert = [...attentionAlerts].sort(
+    (a, b) =>
+      (({ warning: 2, attention: 1, info: 0 })[b.severity] ?? 0) -
+      ({ warning: 2, attention: 1, info: 0 }[a.severity] ?? 0),
+  )[0];
 
-  return parseDashboardSpec({
-    schemaVersion: "1.0",
+  const dashboard = parseDashboardSpec({
+    schemaVersion: "1.1",
     id: "sacramento-river-conditions",
     title: "Sacramento River Conditions",
     audience: options.audience ?? "Managers and community leaders",
@@ -182,6 +194,49 @@ export function createRiverDashboard(
           ? `${staleOrMissing.length} gauge${staleOrMissing.length === 1 ? "" : "s"} need${staleOrMissing.length === 1 ? "s" : ""} attention`
           : "All gauges fresh",
       latestObservationAt,
+    },
+    executiveBrief: {
+      known: {
+        statementTypes: ["observed", "calculated"],
+        headline: `${metrics.length} gauge${metrics.length === 1 ? "" : "s"} monitored`,
+        detail: `${rising.length} gauge${rising.length === 1 ? " is" : "s are"} rising and ${falling.length} gauge${falling.length === 1 ? " is" : "s are"} falling based on fresh water-level readings.`,
+        evidenceIds: uniqueEvidenceIds(gaugeEvidenceIds, ["calculated-trends"]),
+      },
+      changed: fastest
+        ? {
+            statementTypes: ["calculated"],
+            headline: `${fastest.gauge.river} rose fastest`,
+            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.stageChange1h, "ft")} at ${fastest.gauge.name}.`,
+            evidenceIds: [`usgs-${fastest.gauge.siteId}`, "calculated-trends"],
+          }
+        : {
+            statementTypes: ["calculated"],
+            headline: "No material one-hour rise available",
+            detail:
+              "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
+            evidenceIds: uniqueEvidenceIds(gaugeEvidenceIds, [
+              "calculated-trends",
+            ]),
+          },
+      important: highestPriorityAlert
+        ? {
+            statementTypes: ["interpreted"],
+            headline: `${attentionAlerts.length} item${attentionAlerts.length === 1 ? "" : "s"} need attention`,
+            detail: `Highest priority: ${highestPriorityAlert.title} — ${highestPriorityAlert.detail}`,
+            evidenceIds: uniqueEvidenceIds(
+              ...attentionAlerts.map((alert) => alert.evidenceIds),
+            ),
+          }
+        : {
+            statementTypes: ["interpreted"],
+            headline: "Configured checks are clear",
+            detail:
+              "No data-quality or user-defined threshold checks need attention.",
+            evidenceIds: uniqueEvidenceIds(
+              ...alerts.map((alert) => alert.evidenceIds),
+              ["calculated-trends"],
+            ),
+          },
     },
     nextAction: firstAttention
       ? {
@@ -398,4 +453,9 @@ export function createRiverDashboard(
       ],
     },
   });
+
+  if (dashboard.schemaVersion !== "1.1") {
+    throw new Error("River dashboard must use DashboardSpec 1.1");
+  }
+  return dashboard;
 }

@@ -56,30 +56,44 @@ production or pilot readiness claim.
 - Live USGS, uploads, providers, authentication, durable tenant storage, MCP,
   and publication remain disabled until their later gates.
 
-## Gate 1 — Executive comprehension and instrumentation
+## Gate 1 — Owner-accepted synthetic decision-surface validation
+
+Status: ACCEPTED — OWNER-ACCEPTED SYNTHETIC VALIDATION
 
 Prove the decision surface with deterministic fixture data before adding
-infrastructure.
+infrastructure. The Executive Brief presents known/current, changed, important,
+and one safe next action above secondary detail. It labels observed, calculated,
+interpreted, and recommended statements; places freshness and evidence near the
+claim; and keeps bounded feedback in non-durable tab memory.
 
-Build an Executive Brief that presents known/current, changed, important, and
-one safe next action above secondary detail. Label observed, calculated,
-interpreted, and recommended statements; place freshness and evidence near the
-claim. Instrument evidence opens, next-action use, usefulness, and
-wrong/unclear/missing-context feedback without treating pre-control-plane
-telemetry as durable customer data.
+The owner inspected the dashboard and replaced the previously planned
+six-real-person Gate 1 with a six-agent, distinct-model rehearsal. No human
+sessions were conducted, no agent is represented as a human equivalent, and the
+accepted result does not establish 30-second human comprehension or physical
+interaction usability. It is an explicit internal product-governance decision,
+not human research or pilot-readiness evidence.
 
-### Exit criteria
+### Accepted evidence
 
-- At least 5 of 6 manager-shaped participants identify all four brief elements
-  within 30 seconds, uncoached.
-- At least 5 of 6 reach evidence for a selected material claim within two
-  interactions.
+- All 6 of 6 synthetic structured answers recovered the intended Known,
+  Changed, Important, and Next safe action content.
+- All 6 of 6 selected the requested evidence control and predicted no more than
+  two interactions; isolated Playwright replay opened every selected target in
+  one automated activation.
 - Every visible factual or calculated claim resolves to valid evidence; stale
   or missing data is not presented as fresh.
-- At least 4 of 6 distinguish source facts, deterministic calculations, model
-  interpretation, and recommendations.
-- Every participant supplies a usefulness rating and one concrete missing
-  information or workflow need.
+- Exactly 4 of 6 reproduced the displayed source-fact, deterministic-
+  calculation, interpretation, and recommendation mapping without adding a
+  secondary type.
+- All 6 of 6 supplied a bounded usefulness rating and one bounded missing-
+  information or workflow-need category.
+- The owner reviewed the dashboard and explicitly accepted the synthetic result
+  as the Gate 1 product decision.
+
+The accepted record is
+[Executive Brief owner-accepted synthetic validation](../validation/2026-07-30-executive-brief-gate.md).
+Later gates retain their own security, real-data, manager-user, and protected-
+release requirements.
 
 ## Gate 2 — Private tenant and control-plane spine
 
@@ -160,8 +174,9 @@ time-window evidence.
   every calculation exposes its inputs, time window, and method.
 - Parser isolation is verified from inside the runtime; oversized, deceptive,
   compressed, macro/link/object, formula, and cross-tenant cases fail closed.
-- The Gate 1 30-second and two-interaction evidence benchmarks pass on the
-  file-generated dashboard.
+- On the file-generated dashboard, at least 5 of 6 manager-shaped users identify
+  Known, Changed, Important, and Next safe action within 30 seconds, and
+  independently at least 5 of 6 reach requested evidence within two interactions.
 
 ## Gate 5 — Provider-neutral planning gateway
 
@@ -237,8 +252,8 @@ visible only to explicitly authorized organization members.
 - At least three approved pilot organizations independently create a dashboard
   from their own authorized or sanitized workbook, with a champion returning
   on at least two separate days.
-- The 30-second comprehension and two-interaction evidence goals continue to
-  pass on pilot dashboards.
+- The Gate 4 real-user 30-second comprehension and two-interaction evidence
+  goals continue to pass on pilot dashboards.
 - At least three of five interviewed managers identify a decision Dasher
   changed or accelerated; the top three repeated problems are fixed or
   explicitly declined with a reason.

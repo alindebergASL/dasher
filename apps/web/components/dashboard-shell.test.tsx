@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
@@ -23,6 +23,171 @@ const dashboard = createRiverDashboard(parseUsgsInstantaneousValues(fixture), {
 });
 
 describe("DashboardShell", () => {
+  it("renders the ordered executive brief before dashboard detail", () => {
+    const { container } = render(<DashboardShell dashboard={dashboard} />);
+    const brief = screen.getByRole("region", { name: "Executive brief" });
+    const list = within(brief).getByRole("list");
+    const items = within(list).getAllByRole("listitem");
+    const labels = items.map(
+      (item) => item.querySelector(".executive-brief-label")?.textContent,
+    );
+
+    expect(items).toHaveLength(4);
+    expect(labels).toEqual([
+      "Known",
+      "Changed",
+      "Important",
+      "Next safe action",
+    ]);
+    expect(
+      items.map(
+        (item) => item.querySelector(".executive-statement-types")?.textContent,
+      ),
+    ).toEqual([
+      "Observed · Calculated",
+      "Calculated",
+      "Interpreted",
+      "Recommended",
+    ]);
+    expect(within(brief).getByText("3 gauges monitored")).toBeInTheDocument();
+    expect(
+      within(brief).getByText("Sacramento River rose fastest"),
+    ).toBeInTheDocument();
+    expect(
+      within(brief).getByText("3 items need attention"),
+    ).toBeInTheDocument();
+    expect(
+      within(brief).getByText("Review American River gauge"),
+    ).toBeInTheDocument();
+    for (const detail of [
+      "1 gauge is rising and 1 gauge is falling based on fresh water-level readings.",
+      "The fastest fresh, complete material one-hour rise is +0.3 ft at SACRAMENTO R A FREEPORT CA.",
+      "Highest priority: American River — Water-level reading is more than two hours old",
+      "AMERICAN R AT H STREET BRIDGE: Water-level reading is more than two hours old",
+    ]) {
+      expect(within(brief).getByText(detail)).toBeInTheDocument();
+    }
+
+    const dashboardGrid = container.querySelector(".dashboard-grid");
+    expect(
+      brief.compareDocumentPosition(dashboardGrid!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("opens each brief item's evidence on its first activation and restores focus", () => {
+    render(<DashboardShell dashboard={dashboard} />);
+
+    for (const label of ["Known", "Changed", "Important", "Next safe action"]) {
+      const trigger = screen.getByRole("button", {
+        name: `Evidence for ${label}`,
+      });
+      trigger.focus();
+      fireEvent.click(trigger);
+
+      expect(
+        screen.getByRole("dialog", { name: "Sources and evidence" }),
+      ).toBeInTheDocument();
+      const closeButton = screen.getByRole("button", {
+        name: "Close evidence",
+      });
+      expect(closeButton).toHaveFocus();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(
+        screen.queryByRole("dialog", { name: "Sources and evidence" }),
+      ).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    }
+  });
+
+  it("shows the brief only on Overview without a separate mobile next card", () => {
+    const { container } = render(<DashboardShell dashboard={dashboard} />);
+
+    expect(
+      screen.getByRole("region", { name: "Executive brief" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".mobile-next")).not.toBeInTheDocument();
+    expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /02Gauge details/i }));
+    expect(
+      screen.queryByRole("region", { name: "Executive brief" }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+  });
+
+  it("counts every evidence-task activation, requires the requested target, and preserves feedback focus", () => {
+    render(<DashboardShell dashboard={dashboard} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Session feedback · not saved" }),
+    );
+    let dialog = screen.getByRole("dialog", { name: "Session feedback" });
+    const target = within(dialog).getByLabelText("Requested evidence");
+    target.focus();
+    fireEvent.change(target, { target: { value: "next-action" } });
+    expect(target).toHaveFocus();
+    const startTask = within(dialog).getByRole("button", {
+      name: "Start evidence task",
+    });
+    startTask.focus();
+    fireEvent.click(startTask);
+    expect(startTask).toHaveFocus();
+    expect(startTask).toBeEnabled();
+    expect(startTask).toHaveTextContent("Task armed");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Close session feedback" }),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Evidence for Changed" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+    fireEvent.click(screen.getByRole("button", { name: "Why this action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Session feedback · not saved" }),
+    );
+    dialog = screen.getByRole("dialog", { name: "Session feedback" });
+    expect(
+      within(dialog).getByLabelText("Evidence opens this session"),
+    ).toHaveTextContent("2");
+    expect(
+      within(dialog).getByLabelText("Next action reviewed this session"),
+    ).toHaveTextContent("Yes");
+    expect(
+      within(dialog).getByLabelText("Evidence task interactions"),
+    ).toHaveTextContent("3");
+    expect(
+      within(dialog).getByLabelText("Evidence task status"),
+    ).toHaveTextContent("Complete");
+    expect(
+      within(dialog).getByText(/erased when the page reloads/i),
+    ).toBeInTheDocument();
+
+    const usefulness = within(dialog).getByRole("radio", { name: "5" });
+    usefulness.focus();
+    fireEvent.click(usefulness);
+    expect(usefulness).toHaveFocus();
+
+    const unclear = within(dialog).getByRole("checkbox", { name: "Unclear" });
+    unclear.focus();
+    fireEvent.click(unclear);
+    expect(unclear).toHaveFocus();
+
+    const need = within(dialog).getByLabelText(
+      "Missing information or workflow need",
+    );
+    need.focus();
+    fireEvent.change(need, { target: { value: "Named owner or handoff" } });
+    expect(need).toHaveFocus();
+
+    expect(usefulness).toBeChecked();
+    expect(unclear).toBeChecked();
+    expect(need).toHaveValue("Named owner or handoff");
+  });
+
   it("renders the overview, freshness state, and safe next action", () => {
     render(<DashboardShell dashboard={dashboard} />);
     expect(screen.getByText("Sacramento River Conditions")).toBeInTheDocument();

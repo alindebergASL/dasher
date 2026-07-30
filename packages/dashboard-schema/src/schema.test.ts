@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DASHBOARD_MAX_EVIDENCE_IDS,
+  DASHBOARD_MAX_TOTAL_EVIDENCE_REFERENCES,
   DASHBOARD_SPEC_MAX_BYTES,
   DASHBOARD_STRING_LIMITS,
   parseDashboardSpec,
@@ -86,9 +87,134 @@ const validSpec = {
   },
 } as const;
 
+function asVersion11(input: typeof validSpec = validSpec) {
+  return {
+    ...structuredClone(input),
+    schemaVersion: "1.1",
+    executiveBrief: {
+      known: {
+        statementTypes: ["observed", "calculated"],
+        headline: "One condition is known",
+        detail: "The current source reading is available.",
+        evidenceIds: ["e1"],
+      },
+      changed: {
+        statementTypes: ["calculated"],
+        headline: "Conditions remain stable",
+        detail: "The calculated change is within the stable range.",
+        evidenceIds: ["e1"],
+      },
+      important: {
+        statementTypes: ["interpreted"],
+        headline: "Review before publishing",
+        detail: "The source should be confirmed before this view is shared.",
+        evidenceIds: ["e1"],
+      },
+    },
+  };
+}
+
 describe("parseDashboardSpec", () => {
-  it("accepts a multi-page dashboard", () => {
+  it("accepts a historical 1.0 multi-page dashboard without a brief", () => {
     expect(parseDashboardSpec(validSpec).pages).toHaveLength(2);
+  });
+
+  it("rejects a 1.0 dashboard with an executive brief", () => {
+    const input = {
+      ...structuredClone(validSpec),
+      executiveBrief: asVersion11().executiveBrief,
+    };
+
+    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+  });
+
+  it("requires an executive brief on a 1.1 dashboard", () => {
+    const input = {
+      ...structuredClone(validSpec),
+      schemaVersion: "1.1",
+    };
+
+    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+  });
+
+  it("accepts a strict evidence-linked executive brief on a 1.1 dashboard", () => {
+    const parsed = parseDashboardSpec(asVersion11());
+    expect(parsed.schemaVersion).toBe("1.1");
+    if (parsed.schemaVersion !== "1.1") {
+      expect.unreachable("The parsed dashboard should remain version 1.1");
+    }
+    expect(parsed.executiveBrief).toEqual(asVersion11().executiveBrief);
+  });
+
+  it("requires bounded unique statement-type labels on every 1.1 claim", () => {
+    for (const statementTypes of [
+      [],
+      ["observed", "observed"],
+      ["observed", "calculated", "interpreted"],
+      ["recommended"],
+    ]) {
+      const input = asVersion11();
+      input.executiveBrief.known.statementTypes = statementTypes;
+      expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+    }
+  });
+
+  it("rejects unknown executive brief keys", () => {
+    const input = asVersion11() as ReturnType<typeof asVersion11> & {
+      executiveBrief: ReturnType<typeof asVersion11>["executiveBrief"] & {
+        urgent: unknown;
+      };
+    };
+    input.executiveBrief.urgent = {
+      headline: "Unreviewed claim",
+      detail: "Unknown claims must not enter the brief.",
+      evidenceIds: ["e1"],
+    };
+
+    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+  });
+
+  it("fails closed with a fixed error when brief evidence is missing", () => {
+    const input = asVersion11();
+    input.executiveBrief.changed.evidenceIds = ["attacker-secret-evidence"];
+
+    expect(() => parseDashboardSpec(input)).toThrow(
+      new Error("Executive brief Changed references missing evidence"),
+    );
+    try {
+      parseDashboardSpec(input);
+      expect.unreachable("Missing brief evidence should be rejected");
+    } catch (error) {
+      expect((error as Error).message).not.toContain(
+        "attacker-secret-evidence",
+      );
+    }
+  });
+
+  it("counts executive brief references toward the global budget", () => {
+    const input = asVersion11() as Record<string, unknown>;
+    const pages = input.pages as Array<{ components: unknown[] }>;
+    pages[0]!.components.push(
+      ...Array.from({ length: 13 }, (_, componentIndex) => ({
+        id: `metrics-${componentIndex}`,
+        kind: "metric-grid",
+        title: `Metrics ${componentIndex}`,
+        evidenceIds: ["e1"],
+        metrics: Array.from({ length: 24 }, (_, metricIndex) => ({
+          label: `Metric ${metricIndex}`,
+          value: "1",
+          evidenceIds: Array.from(
+            { length: DASHBOARD_MAX_EVIDENCE_IDS },
+            () => "e1",
+          ),
+        })),
+      })),
+    );
+
+    expect(DASHBOARD_MAX_TOTAL_EVIDENCE_REFERENCES).toBe(10_000);
+    expect(() => parseDashboardSpec(input)).toThrow(
+      /total evidence reference count/,
+    );
   });
 
   it("reads an accessor exactly once and validates its JSON snapshot", () => {
