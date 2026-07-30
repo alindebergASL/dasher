@@ -14,7 +14,7 @@
 
 - Preserve the Sacramento USGS fixture bytes and all existing calculations, pages, evidence, Architecture UI, and generated-code `Status: CLOSED` gate.
 - Do not add authentication, persistence, cookies, telemetry backends, uploads, live USGS, model/provider calls, OAuth, MCP, public publication, or deployment.
-- Do not claim Gate 1 passes until at least five of six real target-role participants satisfy the accepted roadmap criterion. Models and agents may provide QA feedback but cannot count as participants.
+- Do not claim Gate 1 passes until at least five of six real target-role participants satisfy the comprehension criterion and, independently, at least five of six satisfy the evidence criterion. Models and agents may provide QA feedback but cannot count as participants.
 - Do not retain participant names, sensitive notes, screen recordings, or raw interaction telemetry. The validation record may contain only anonymous session IDs, rounded timings, bounded outcome fields, and non-sensitive aggregate observations.
 - Keep all brief strings and evidence-reference arrays within existing DashboardSpec budgets, include brief references in global complexity accounting, and fail closed on missing evidence.
 - Maintain a single bounded accessor-free parser snapshot; never reread the caller's original object.
@@ -123,9 +123,9 @@
 3. Define the cold-load script: 30 seconds without coaching; ask the participant to identify known, changed, important, and next safe action; then ask them to open evidence for the named change or action.
 4. Ask each participant to distinguish observed source facts, deterministic calculations, interpretations, and recommendations; at least four of six must succeed.
 5. Use only non-durable tab-memory instrumentation for cumulative evidence opens and next-action review. For the timed evidence task, the facilitator selects the bounded requested target (`changed` or `next-action`), arms the counter, and closes the feedback dialog; count every click, tap, Enter/Space activation, and Escape from that point until the requested evidence—not unrelated evidence—opens. Then collect a bounded 1–5 usefulness rating, wrong/unclear/missing-context flags, and one concrete missing-information/workflow-need category.
-6. Define pass per session: all four decision outcomes correct without coaching and requested evidence opened within two counted interactions.
-7. Define aggregate pass: at least five of six sessions pass, at least four distinguish statement types, and every participant supplies usefulness and need fields. A narrow miss remains fail/pending; no model decides the roadmap consequence.
-8. Store only anonymous session IDs, rounded seconds, four outcome booleans, the bounded requested-evidence target, evidence interaction count, next-action-reviewed boolean, statement-type outcome, usefulness rating, bounded feedback flags, bounded need category, pass/fail, and sanitized non-sensitive aggregate observations. Do not store names, organizations, recordings, source data, raw event logs, or free-form personal notes.
+6. Define two independent outcomes per session: comprehension passes when all four decision outcomes are correct without coaching within 30 seconds; evidence passes when the requested evidence opens within two counted interactions.
+7. Define aggregate pass: at least five of six comprehension outcomes pass, independently at least five of six evidence outcomes pass, at least four distinguish statement types, and every participant supplies usefulness and need fields. A narrow miss on any threshold remains fail/pending; no model decides the roadmap consequence.
+8. Store only anonymous session IDs, rounded seconds, four outcome booleans, the bounded requested-evidence target, evidence interaction count, next-action-reviewed boolean, statement-type outcome, usefulness rating, bounded feedback flags, bounded need category, separate comprehension/evidence pass booleans, and sanitized non-sensitive aggregate observations. Do not store names, organizations, recordings, source data, raw event logs, or free-form personal notes.
 9. State explicitly that automated/browser/model reviews are engineering evidence only and do not count toward the six.
 10. Add a README link and preserve the current not-pilot-ready warning.
 

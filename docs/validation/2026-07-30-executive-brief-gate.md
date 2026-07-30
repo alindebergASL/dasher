@@ -55,14 +55,16 @@ missing outcomes `false`.
 
 ## Pass criteria
 
-A comprehension session passes only when all four decision outcomes are correct
-without coaching within 30 seconds and the requested target's evidence opens
-within no more than two counted interactions.
+The comprehension outcome passes when all four decision outcomes are correct
+without coaching within 30 seconds.
+
+Independently, the evidence outcome passes when the requested target's evidence
+opens within no more than two counted interactions.
 
 The complete Gate 1 aggregate passes only when all of the following are true:
 
-- at least five of six real target-role sessions pass the comprehension and
-  evidence task;
+- at least five of six comprehension outcomes pass;
+- independently, at least five of six evidence outcomes pass;
 - at least four of six distinguish observed source facts, deterministic
   calculations, interpretations, and recommendations; and
 - all six supply a bounded usefulness rating and one bounded missing-information
@@ -85,7 +87,7 @@ Store only:
 - usefulness rating from 1 through 5;
 - bounded feedback flags: `wrong`, `unclear`, `missing-context`, or `none`;
 - one bounded missing-information/workflow-need category;
-- comprehension-session pass/fail; and
+- separate comprehension-pass and evidence-pass booleans; and
 - sanitized, non-sensitive aggregate observations.
 
 Do not store participant names, organizations, contact details, recordings,
@@ -98,14 +100,14 @@ a participant.
 
 No session has been performed or counted.
 
-| ID  | Seconds | Known | Changed | Important | Next | Evidence target | Evidence interactions | Next reviewed | Types distinguished | Usefulness 1–5 | Feedback flags | Need category | Session pass |
-| --- | ------: | ----- | ------- | --------- | ---- | --------------- | --------------------: | ------------- | ------------------- | -------------: | -------------- | ------------- | ------------ |
-| S01 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING      |
-| S02 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING      |
-| S03 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING      |
-| S04 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING      |
-| S05 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING      |
-| S06 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING      |
+| ID  | Seconds | Known | Changed | Important | Next | Evidence target | Evidence interactions | Next reviewed | Types distinguished | Usefulness 1–5 | Feedback flags | Need category | Comprehension pass | Evidence pass |
+| --- | ------: | ----- | ------- | --------- | ---- | --------------- | --------------------: | ------------- | ------------------- | -------------: | -------------- | ------------- | ------------------ | ------------- |
+| S01 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING            | PENDING       |
+| S02 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING            | PENDING       |
+| S03 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING            | PENDING       |
+| S04 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING            | PENDING       |
+| S05 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING            | PENDING       |
+| S06 | PENDING | —     | —       | —         | —    | —               |                     — | —             | —                   |              — | —              | —             | PENDING            | PENDING       |
 
 Sanitized aggregate interface observation: PENDING
 
