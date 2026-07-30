@@ -13,8 +13,13 @@ Date: 2026-07-30
   are display provenance only; they never authorize fetching and must not be
   reused as a fetch-target security policy.
 - All declared DashboardSpec and USGS strings and nested arrays are bounded.
-  Pre-Zod serialized-size ceilings and cumulative item, point, evidence
-  reference, and USGS observation budgets limit multiplicative schema shapes.
+  Serialized JSON snapshot ceilings before Zod and cumulative item, point,
+  evidence reference, and USGS observation budgets limit multiplicative schema
+  shapes.
+- Each parser serializes once and validates only the plain JSON snapshot parsed
+  from that same text. Validation never rereads the original accessor-bearing
+  object; hostile access failures return fixed sanitized errors with no
+  attacker exception or cause.
 - Dashboard evidence and freshness timestamps must be internally ordered, and
   `fresh` requires a latest observation timestamp. The schema cannot derive a
   universal freshness-age threshold: status derivation remains trusted
@@ -24,12 +29,28 @@ Date: 2026-07-30
 
 ## Input-boundary controls
 
-`DashboardSpec` is capped at 1 MiB of serialized UTF-8 before Zod validation.
-Its global budgets cap 2,000 total items, 10,000 trend points, and 10,000
-evidence references, while each `evidenceIds` array is capped at 32. The USGS
-payload is capped at 5 MiB before Zod and at 20,000 observations across all
-series and value groups. These limits are exported constants, and the checked-in
-fixture and current deterministic planner output remain unchanged.
+The DashboardSpec object boundary serializes exactly once, rejects
+`undefined`, circular or otherwise non-serializable values with a fixed
+sanitized error and no cause, measures the resulting UTF-8 text against the
+1 MiB ceiling, and parses that same text. Zod and every semantic check consume
+only the resulting accessor-free plain snapshot. Its global budgets cap 2,000
+total items, 10,000 trend points, and 10,000 evidence references, while each
+`evidenceIds` array is capped at 32.
+
+The USGS object boundary applies the same single-read snapshot process with a
+5 MiB serialized UTF-8 ceiling. Zod, observation-time ordering, and
+normalization consume only that snapshot. The cumulative budget is 20,000
+observations across all series and value groups, and every observation must be
+at or before `queryInfo.creationTime`. These limits are exported constants, and
+the checked-in fixture and current deterministic planner output remain
+unchanged.
+
+These are object-snapshot ceilings, not early raw-ingress byte limits.
+`JSON.stringify` must still traverse the input object and allocate its
+representation before the ceiling can be measured. Any future HTTP, upload,
+model, or connector ingress must enforce raw request or response byte limits
+before object construction or `JSON.parse`, then apply these snapshot and
+schema controls as defense in depth.
 
 Strict unknown-field rejection remains in place throughout DashboardSpec.
 The USGS schema intentionally retains Zod's object-stripping behavior for
@@ -53,7 +74,7 @@ v4. CI retains least-privilege `contents: read`, blocking high-severity audits,
 the exact CLOSED-line check, clean-tree verification, and failure-only artifact
 upload.
 
-Both dependency audits passed in the controller's complete post-remediation Task 7 run:
+The controller reran both dependency audits as part of the complete post-remediation gate sequence:
 
 | Audit                   | Exact command                          | Result                    |
 | ----------------------- | -------------------------------------- | ------------------------- |
@@ -68,14 +89,16 @@ Audit exceptions: none.
 
 ## Qwen 3.8 review findings — reconciled dispositions
 
-Source: `/tmp/dasher-qwen38-agent-review.txt`. The report has no blocker or
-important finding and exactly three minor findings.
+The three-row table below is the durable reconciled record. The raw review
+transcript was controller input used to create this record, not a repository
+dependency; reproducing or interpreting the table requires no external
+transcript file.
 
-| ID     | Finding                                                                                                                | Severity    | Disposition            | Evidence                                                                                                                                                                                                                                      |
-| ------ | ---------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q38-01 | The report claimed `z.number()` accepts `Infinity` and `-Infinity`, allowing non-finite gauge and trend values.        | Minor (Low) | `not-applicable`       | Installed Zod 4.4.3 rejects `Infinity`, `-Infinity`, and `NaN` through `z.number()`; `.finite()` is redundant for this installed version.                                                                                                     |
-| Q38-02 | Summary claims and metric cards used content-derived React keys, allowing collisions when text or labels repeat.       | Minor (Low) | `fixed-in-this-branch` | DashboardSpec validation requires claim-text and metric-label uniqueness within each component, and the renderer uses component-scoped positional keys. Tests cover schema rejection and clean rendering.                                     |
-| Q38-03 | DashboardSpec and USGS collections lacked upper bounds, creating future resource-consumption and renderer spread risk. | Minor (Low) | `fixed-in-this-branch` | All declared strings and arrays are bounded; pre-Zod byte ceilings and cumulative DashboardSpec item/point/evidence-reference and USGS observation budgets prevent multiplicative maxima. Renderer spread inputs remain individually bounded. |
+| ID     | Finding                                                                                                                | Severity    | Disposition            | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------ | ---------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Q38-01 | The report claimed `z.number()` accepts `Infinity` and `-Infinity`, allowing non-finite gauge and trend values.        | Minor (Low) | `not-applicable`       | Installed Zod 4.4.3 rejects `Infinity`, `-Infinity`, and `NaN` through `z.number()`; `.finite()` is redundant for this installed version.                                                                                                                                                                                                                                                                                      |
+| Q38-02 | Summary claims and metric cards used content-derived React keys, allowing collisions when text or labels repeat.       | Minor (Low) | `fixed-in-this-branch` | DashboardSpec validation requires claim-text and metric-label uniqueness within each component, and the renderer uses component-scoped positional keys. Tests cover schema rejection and clean rendering.                                                                                                                                                                                                                      |
+| Q38-03 | DashboardSpec and USGS collections lacked upper bounds, creating future resource-consumption and renderer spread risk. | Minor (Low) | `fixed-in-this-branch` | Fixed for the precise fixture-foundation object-processing scope: declared strings and arrays are bounded; single-read serialized JSON snapshot ceilings precede Zod; cumulative DashboardSpec item/point/evidence-reference and USGS observation budgets constrain validated shapes. This does not claim an early raw-ingress limit; future network, upload, model, or connector paths must enforce raw bytes before parsing. |
 
 ## Qwen production and pilot gaps (G-1 through G-8)
 
@@ -85,15 +108,17 @@ that the fixture-only foundation is production-ready.
 - **G-1 — Content Security Policy:** No deployment CSP is configured. A reviewed
   CSP remains required before deployment.
 - **G-2 — Resource bounds:** The reported unbounded-array gap is remediated:
-  every declared nested array and string has a limit, with serialized and global
-  complexity budgets. Limits must still be reviewed against any future live
-  product workload.
+  every declared nested array and string has a limit, with serialized object
+  snapshot and global complexity budgets. Future live ingress still requires
+  raw-byte enforcement before object construction or JSON parsing, and all
+  limits must be reviewed against the live workload.
 - **G-3 — Authentication and tenant isolation:** Authentication, authorization,
   organization scoping, and tenant isolation do not exist and remain production
   gates.
 - **G-4 — Rate and edge request controls:** Schema byte limits are defense in
-  depth, not rate limiting. Edge request-size enforcement, parsing timeouts,
-  cancellation, and rate limits remain required before network input.
+  depth, not early raw-ingress enforcement or rate limiting. Raw request and
+  response size enforcement before parsing, parsing timeouts, cancellation, and
+  rate limits remain required before network input.
 - **G-5 — Audit logging:** Tamper-evident logs for generation, validation,
   evidence retrieval, publication, and user actions remain required.
 - **G-6 — SSRF and connector controls:** Display provenance URL validation is

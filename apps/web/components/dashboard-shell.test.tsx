@@ -6,6 +6,7 @@ import {
   createRiverDashboard,
   parseUsgsInstantaneousValues,
 } from "@dasher/river-domain";
+import { parseDashboardSpec } from "@dasher/dashboard-schema";
 
 import { DashboardShell } from "./dashboard-shell";
 
@@ -62,6 +63,43 @@ describe("DashboardShell", () => {
     expect(
       screen.queryByRole("dialog", { name: "How this dashboard works" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("renders tuple-distinct architecture edges without duplicate React keys", () => {
+    const input = structuredClone(dashboard);
+    input.architecture.nodes = [
+      { id: "a-b", label: "A-B", detail: "First source", kind: "input" },
+      { id: "c", label: "C", detail: "First target", kind: "page" },
+      { id: "a", label: "A", detail: "Second source", kind: "input" },
+      { id: "b-c", label: "B-C", detail: "Second target", kind: "page" },
+    ];
+    input.architecture.edges = [
+      { from: "a-b", to: "c", label: "d" },
+      { from: "a", to: "b-c", label: "d" },
+    ];
+    const collisionSafeDashboard = parseDashboardSpec(input);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const { container } = render(
+        <DashboardShell dashboard={collisionSafeDashboard} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /architecture/i }));
+
+      const consoleOutput = errorSpy.mock.calls
+        .flat()
+        .map((argument) => String(argument))
+        .join(" ");
+      expect(consoleOutput).not.toMatch(
+        /Encountered two children with the same key/,
+      );
+      expect(
+        container.querySelectorAll(".architecture-connection"),
+      ).toHaveLength(2);
+      expect(screen.getAllByText("d")).toHaveLength(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("opens evidence with a direct USGS citation", () => {

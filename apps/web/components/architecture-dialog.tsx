@@ -52,7 +52,7 @@ export function ArchitectureDialog({
             return (
               <div
                 className="architecture-connection"
-                key={`${edge.from}-${edge.to}-${edge.label}`}
+                key={JSON.stringify([edge.from, edge.to, edge.label])}
               >
                 <article className={`architecture-step node-${from.kind}`}>
                   <strong>{from.label}</strong>

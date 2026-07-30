@@ -30,7 +30,19 @@
 - Merging the PR — the controller (Hermes) owns merge/review/deploy decisions.
 - New runtime dependencies. CI uses only `actions/checkout`, `pnpm/action-setup`, `actions/setup-node`, `actions/upload-artifact`.
 
-**Reconciliation note on Qwen 3.8 findings:** the repository contains **no** file, commit message, or doc mentioning Qwen (verified by case-insensitive grep across all tracked files). The raw Qwen 3.8 review is `/tmp/dasher-qwen38-agent-review.txt`; Task 5 transcribes its actual findings without expanding them. Qwen reported no blocker or important finding and three minor findings: (a) a claim that `z.number()` may accept non-finite values, which the controller disproved against installed Zod 4.4.3 (`Infinity`, `-Infinity`, and `NaN` all rejected); (b) content-derived React keys `key={claim.text}` and `key={metric.label}`; and (c) unbounded DashboardSpec/USGS collection cardinality, including future `Math.min(...values)`/`Math.max(...values)` spread risk. Missing CI, dependency-audit policy, undocumented supply-chain pins, and absent durable readiness evidence are independently identified foundation-hardening gaps, not Qwen findings. None may be mislabeled as model output.
+**Reconciliation note on Qwen 3.8 findings:** the three-row table in `docs/security/2026-07-30-security-status.md` is the durable reconciled record. The raw transcript was controller input, not a repository dependency. Qwen reported no blocker or important finding and three minor findings: (a) a claim that `z.number()` may accept non-finite values, which the controller disproved against installed Zod 4.4.3 (`Infinity`, `-Infinity`, and `NaN` all rejected); (b) content-derived React keys `key={claim.text}` and `key={metric.label}`; and (c) unbounded DashboardSpec/USGS collection cardinality, including future `Math.min(...values)`/`Math.max(...values)` spread risk. Missing CI, dependency-audit policy, undocumented supply-chain pins, and absent durable readiness evidence are independently identified foundation-hardening gaps, not Qwen findings. None may be mislabeled as model output.
+
+**Final-review remediation note:** after committed HEAD `52b7fce`, both object
+parsers were changed to serialize once, enforce their UTF-8 ceiling on that
+serialized JSON representation, parse the same text, and let Zod and downstream
+semantics consume only the accessor-free snapshot. Hostile accessor errors are
+sanitized, USGS observations cannot postdate query creation, and architecture
+edge keys use the same collision-safe JSON tuple as schema uniqueness. These
+snapshot ceilings do not bound raw HTTP, upload, model, or connector bytes
+before `JSON.stringify`; every future live ingress must enforce raw bytes before
+object construction or JSON parsing. The remediation is incorporated by the
+post-Task-7 security commit and passed the controller's complete ordered gate
+sequence.
 
 ---
 
@@ -80,7 +92,7 @@
 2. Run `pnpm --filter @dasher/dashboard-schema test` — expect the 5 new tests to fail.
 3. Implement in `packages/dashboard-schema/src/schema.ts`:
    - Uniqueness: extend the existing semantic-validation section of `parseDashboardSpec` to assert uniqueness of `claims[].text` per summary component, `metrics[].label` per metric-grid component, and the collision-safe `JSON.stringify([from, to, label])` tuple across `architecture.edges`.
-   - Bounds (add `.max()`, keep existing `.min()`; current planner output remains far inside): `pages` ≤ 16; `components` per page ≤ 24; `claims` and `metrics` ≤ 24; map/table `gauges` ≤ 200; `ranking.items` and `trend-list.series` ≤ 100; `alert-list.alerts` ≤ 200; trend `points` ≤ 5,000; `evidence` ≤ 500; `architecture.nodes` ≤ 64; `architecture.edges` ≤ 256. Final-review remediation additionally caps every `evidenceIds` list and every string category, imposes a 1 MiB serialized-spec ceiling, and enforces global item, trend-point, and evidence-reference budgets.
+   - Bounds (add `.max()`, keep existing `.min()`; current planner output remains far inside): `pages` ≤ 16; `components` per page ≤ 24; `claims` and `metrics` ≤ 24; map/table `gauges` ≤ 200; `ranking.items` and `trend-list.series` ≤ 100; `alert-list.alerts` ≤ 200; trend `points` ≤ 5,000; `evidence` ≤ 500; `architecture.nodes` ≤ 64; `architecture.edges` ≤ 256. Final-review remediation additionally caps every `evidenceIds` list and every string category, imposes a 1 MiB serialized JSON object-snapshot ceiling, and enforces global item, trend-point, and evidence-reference budgets. It is not an early raw-ingress byte limit.
 4. Run `pnpm --filter @dasher/dashboard-schema test` (9 existing + 5 new pass), then `pnpm --filter @dasher/river-domain test` — the 6 planner tests in `packages/river-domain/src/dashboard.test.ts` prove the deterministic planner output still validates. Run `pnpm typecheck`.
 5. Commit: `feat: bound dashboard spec arrays and enforce key uniqueness`
 
@@ -101,7 +113,7 @@
 2. In `apps/web/components/component-renderer.tsx`:
    - Line 189: change `<p key={claim.text}>` to a component-scoped positional key, ``key={`${component.id}:claim:${index}`}`` (add `index` to the `.map` callback at line 188). Positional keys are correct here: the spec is an immutable value replaced wholesale per ADR-001's immutable-dashboard-version contract, and claims carry no identity field.
    - Line 210: change `key={metric.label}` to ``key={`${component.id}:metric:${index}`}`` likewise (map at line 209).
-   - Leave the nine id-keyed lists (`dashboard-shell.tsx:47,142,216`; `component-renderer.tsx:133,237,262,298,343`; `architecture-dialog.tsx:55`) untouched — Task 2's edge-uniqueness check now backs the composite key at `architecture-dialog.tsx:55`.
+   - Leave the id-keyed lists untouched. Task 2's edge-uniqueness check backs the architecture key; final-review remediation later replaces its hyphen-joined composite with the same collision-safe `JSON.stringify([from, to, label])` tuple used by schema uniqueness.
 3. Run `pnpm --filter @dasher/web test` (7 existing + 1 new pass), `pnpm typecheck`, `pnpm lint`, `pnpm format:check`.
 4. Commit: `fix: use stable component-scoped keys for claims and metrics`
 
@@ -146,7 +158,7 @@
 2. Create `docs/security/2026-07-30-security-status.md` with sections:
    - **Posture summary** (mirrors and extends README "Safety status"): fixture mode only; no live USGS, model, or generated-code paths; generated-code gate `Status: CLOSED` and now test-guarded (Task 4); `SafeSourceUrlSchema` rejects non-HTTP(S) and credential-bearing URLs; USGS parser and DashboardSpec arrays now bounded (Tasks 1–2).
    - **Supply chain**: `pnpm-lock.yaml` (lockfileVersion 9.0) is frozen in CI; document the previously-undocumented `pnpm-workspace.yaml` decisions — `overrides: postcss 8.5.25, sharp 0.35.3` (version pinning) and `onlyBuiltDependencies: [sharp]` (lifecycle scripts denied to every other package — a real hardening choice aligned with gate invariant 5); record the `pnpm audit` and `pnpm audit --prod` results from Task 7, and state the policy: severity ≥ high fails CI, any ignore requires a CVE-specific entry under `pnpm-workspace.yaml` `auditConfig` plus a rationale row in this document.
-   - **Qwen 3.8 review findings — reconciled dispositions**: exactly three rows matching the raw report, with columns: ID (`Q38-01`…), finding (verbatim or faithful summary), severity, disposition (`fixed-in-this-branch` | `accepted-with-rationale` | `not-applicable` | `deferred-with-owner`), and evidence. Reconcile: (a) alleged non-finite-number acceptance → `not-applicable`, with the installed-Zod probe showing `Infinity`, `-Infinity`, and `NaN` rejected; (b) content-derived React keys → fixed by Tasks 2–3; (c) unbounded collection cardinality / spread risk → fixed by Tasks 1–2 and the established bounds. Record missing CI, audit policy/pin rationale, and durable status as separate controller-identified hardening gaps, never as Qwen findings. If the raw report is unavailable, mark the table `PENDING TRANSCRIPT` and treat completion as a blocker — do not invent findings.
+   - **Qwen 3.8 review findings — reconciled dispositions**: exactly three rows matching the raw report, with columns: ID (`Q38-01`…), finding (verbatim or faithful summary), severity, disposition (`fixed-in-this-branch` | `accepted-with-rationale` | `not-applicable` | `deferred-with-owner`), and evidence. Reconcile: (a) alleged non-finite-number acceptance → `not-applicable`, with the installed-Zod probe showing `Infinity`, `-Infinity`, and `NaN` rejected; (b) content-derived React keys → fixed by Tasks 2–3; (c) unbounded collection cardinality / spread risk → fixed by Tasks 1–2 and the established bounds. Record missing CI, audit policy/pin rationale, and durable status as separate controller-identified hardening gaps, never as Qwen findings. During initial reconciliation, an unavailable raw report would have required `PENDING TRANSCRIPT`; after reconciliation, the committed three-row table is the durable record and the controller input is not a repository dependency.
 3. In `README.md`, under the existing **Verification** block, add the two audit commands and one sentence pointing to `.github/workflows/ci.yml` (Task 6) and to the two status documents; do not alter the existing command list or Safety status bullets.
 4. Run `pnpm format:check` (Prettier formats Markdown; fix with `pnpm format` if needed).
 5. Commit: `docs: add readiness and security status with reconciled review findings`

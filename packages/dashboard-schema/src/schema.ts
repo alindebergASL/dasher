@@ -304,14 +304,12 @@ function assertAtMost(value: number, maximum: number, label: string): void {
   }
 }
 
-function assertSerializedDashboardSpecSize(input: unknown): void {
+function createDashboardSpecSnapshot(input: unknown): unknown {
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(input);
-  } catch (error) {
-    throw new Error("DashboardSpec input must be JSON-serializable", {
-      cause: error,
-    });
+  } catch {
+    throw new Error("DashboardSpec input must be JSON-serializable");
   }
 
   if (serialized === undefined) {
@@ -324,6 +322,8 @@ function assertSerializedDashboardSpecSize(input: unknown): void {
       `DashboardSpec input exceeds the ${DASHBOARD_SPEC_MAX_BYTES}-byte serialized limit`,
     );
   }
+
+  return JSON.parse(serialized) as unknown;
 }
 
 function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
@@ -386,8 +386,8 @@ function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
 }
 
 export function parseDashboardSpec(input: unknown): DashboardSpec {
-  assertSerializedDashboardSpecSize(input);
-  const spec = DashboardSpecSchema.parse(input);
+  const snapshot = createDashboardSpecSnapshot(input);
+  const spec = DashboardSpecSchema.parse(snapshot);
   assertDashboardComplexityBudgets(spec);
 
   assertUnique(

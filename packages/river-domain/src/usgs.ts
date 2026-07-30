@@ -67,17 +67,48 @@ const TimeSeriesSchema = z.object({
     .max(4, "Too many value groups in USGS time series"),
 });
 
-const ResponseSchema = z.object({
-  value: z.object({
-    queryInfo: z.object({
-      creationTime: UsgsTimestampSchema,
+const ResponseSchema = z
+  .object({
+    value: z.object({
+      queryInfo: z.object({
+        creationTime: UsgsTimestampSchema,
+      }),
+      timeSeries: z
+        .array(TimeSeriesSchema)
+        .min(1)
+        .max(60, "Too many time series in USGS response"),
     }),
-    timeSeries: z
-      .array(TimeSeriesSchema)
-      .min(1)
-      .max(60, "Too many time series in USGS response"),
-  }),
-});
+  })
+  .superRefine((response, context) => {
+    const creationTime = Date.parse(response.value.queryInfo.creationTime);
+
+    for (const [
+      seriesIndex,
+      timeSeries,
+    ] of response.value.timeSeries.entries()) {
+      for (const [groupIndex, group] of timeSeries.values.entries()) {
+        for (const [observationIndex, observation] of group.value.entries()) {
+          if (Date.parse(observation.dateTime) > creationTime) {
+            context.addIssue({
+              code: "custom",
+              message:
+                "USGS observation dateTime must not be after queryInfo.creationTime",
+              path: [
+                "value",
+                "timeSeries",
+                seriesIndex,
+                "values",
+                groupIndex,
+                "value",
+                observationIndex,
+                "dateTime",
+              ],
+            });
+          }
+        }
+      }
+    }
+  });
 
 export interface Observation {
   at: string;
@@ -103,12 +134,12 @@ export interface RiverGauge {
   retrievedAt: string;
 }
 
-function assertSerializedUsgsPayloadSize(input: unknown): void {
+function createUsgsPayloadSnapshot(input: unknown): unknown {
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(input);
-  } catch (error) {
-    throw new Error("USGS payload must be JSON-serializable", { cause: error });
+  } catch {
+    throw new Error("USGS payload must be JSON-serializable");
   }
 
   if (serialized === undefined) {
@@ -121,6 +152,8 @@ function assertSerializedUsgsPayloadSize(input: unknown): void {
       `USGS payload exceeds the ${USGS_PAYLOAD_MAX_BYTES}-byte serialized limit`,
     );
   }
+
+  return JSON.parse(serialized) as unknown;
 }
 
 function assertTotalObservationBudget(
@@ -151,8 +184,8 @@ function friendlyRiverName(siteName: string): string {
 }
 
 export function parseUsgsInstantaneousValues(input: unknown): RiverGauge[] {
-  assertSerializedUsgsPayloadSize(input);
-  const response = ResponseSchema.parse(input);
+  const snapshot = createUsgsPayloadSnapshot(input);
+  const response = ResponseSchema.parse(snapshot);
   assertTotalObservationBudget(response);
   const gauges = new Map<string, RiverGauge>();
 

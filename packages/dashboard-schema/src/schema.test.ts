@@ -91,6 +91,62 @@ describe("parseDashboardSpec", () => {
     expect(parseDashboardSpec(validSpec).pages).toHaveLength(2);
   });
 
+  it("reads an accessor exactly once and validates its JSON snapshot", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const title = input.title;
+    let reads = 0;
+    Object.defineProperty(input, "title", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) {
+          throw new Error("title was read more than once");
+        }
+        return title;
+      },
+    });
+
+    expect(parseDashboardSpec(input).title).toBe(title);
+    expect(reads).toBe(1);
+  });
+
+  it("sanitizes hostile access errors without retaining their cause", () => {
+    const secret = "attacker-secret-dashboard-value";
+    const input = new Proxy(structuredClone(validSpec), {
+      get() {
+        throw new Error(secret);
+      },
+    });
+
+    try {
+      parseDashboardSpec(input);
+      expect.unreachable("Hostile input should be rejected");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "DashboardSpec input must be JSON-serializable",
+      );
+      expect((error as Error).message).not.toContain(secret);
+      expect(error).not.toHaveProperty("cause");
+    }
+  });
+
+  it("validates the same representation returned by toJSON", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    input.title = "x".repeat(DASHBOARD_SPEC_MAX_BYTES);
+    let calls = 0;
+    input.toJSON = () => {
+      calls += 1;
+      return structuredClone(validSpec);
+    };
+
+    const parsed = parseDashboardSpec(input);
+
+    expect(parsed.title).toBe(validSpec.title);
+    expect(parsed).not.toHaveProperty("toJSON");
+    expect(calls).toBe(1);
+  });
+
   it("rejects an unknown component kind", () => {
     const input = structuredClone(validSpec) as Record<string, unknown>;
     const pages = input.pages as Array<{
@@ -365,16 +421,25 @@ describe("parseDashboardSpec", () => {
     }
   });
 
-  it("rejects non-serializable and oversized DashboardSpec input before Zod", () => {
-    const nonSerializable = structuredClone(validSpec) as Record<
-      string,
-      unknown
-    >;
-    nonSerializable.circular = nonSerializable;
-    expect(() => parseDashboardSpec(nonSerializable)).toThrow(
-      /must be JSON-serializable/,
-    );
+  it("rejects undefined, non-serializable, and circular input with a fixed error", () => {
+    const circular = structuredClone(validSpec) as Record<string, unknown>;
+    circular.circular = circular;
 
+    for (const input of [undefined, 1n, circular]) {
+      try {
+        parseDashboardSpec(input);
+        expect.unreachable("Non-serializable input should be rejected");
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(
+          "DashboardSpec input must be JSON-serializable",
+        );
+        expect(error).not.toHaveProperty("cause");
+      }
+    }
+  });
+
+  it("rejects an oversized DashboardSpec JSON snapshot before Zod", () => {
     const oversized = structuredClone(validSpec) as Record<string, unknown>;
     oversized.padding = "x".repeat(DASHBOARD_SPEC_MAX_BYTES);
     expect(() => parseDashboardSpec(oversized)).toThrow(
