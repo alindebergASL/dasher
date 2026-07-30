@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
 const briefLabels = ["Known", "Changed", "Important", "Next safe action"];
+const statementTypeLabels = [
+  "Observed · Calculated",
+  "Calculated",
+  "Interpreted",
+  "Recommended",
+];
 const briefHeadlines = [
   "3 gauges monitored",
   "Sacramento River rose fastest",
@@ -21,6 +27,9 @@ test("river dashboard interactions, evidence, and architecture", async ({
   const brief = page.getByRole("region", { name: "Executive brief" });
   await expect(brief).toBeVisible();
   for (const label of briefLabels) {
+    await expect(brief.getByText(label, { exact: true })).toBeVisible();
+  }
+  for (const label of statementTypeLabels) {
     await expect(brief.getByText(label, { exact: true })).toBeVisible();
   }
   for (const headline of briefHeadlines) {
@@ -90,6 +99,47 @@ test("river dashboard interactions, evidence, and architecture", async ({
   ).toBeVisible();
   await page.getByRole("button", { name: "Close evidence" }).click();
 
+  await page
+    .getByRole("button", { name: "Session feedback · not saved" })
+    .click();
+  let feedback = page.getByRole("dialog", { name: "Session feedback" });
+  await expect(feedback.getByLabel("Evidence opens this session")).toHaveText(
+    "2",
+  );
+  await expect(
+    feedback.getByLabel("Next action reviewed this session"),
+  ).toHaveText("Yes");
+  await feedback.getByRole("radio", { name: "5" }).check();
+  await feedback.getByRole("checkbox", { name: "Missing context" }).check();
+  await feedback
+    .getByLabel("Missing information or workflow need")
+    .selectOption("More historical comparison");
+  await page.getByRole("button", { name: "Close session feedback" }).click();
+
+  await page
+    .getByRole("button", { name: "Session feedback · not saved" })
+    .click();
+  feedback = page.getByRole("dialog", { name: "Session feedback" });
+  await expect(feedback.getByRole("radio", { name: "5" })).toBeChecked();
+  await expect(
+    feedback.getByRole("checkbox", { name: "Missing context" }),
+  ).toBeChecked();
+  await page.getByRole("button", { name: "Close session feedback" }).click();
+
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Session feedback · not saved" })
+    .click();
+  feedback = page.getByRole("dialog", { name: "Session feedback" });
+  await expect(feedback.getByLabel("Evidence opens this session")).toHaveText(
+    "0",
+  );
+  await expect(
+    feedback.getByLabel("Next action reviewed this session"),
+  ).toHaveText("No");
+  await expect(feedback.getByRole("radio", { name: "5" })).not.toBeChecked();
+  await page.getByRole("button", { name: "Close session feedback" }).click();
+
   await page.getByRole("button", { name: /02\s+Gauge details/i }).click();
   await expect(
     page.getByRole("heading", { name: "Current readings", exact: true }),
@@ -158,6 +208,9 @@ test("mobile keeps the two-column brief, freshness, and contained scrolling reac
   for (const label of briefLabels) {
     await expect(brief.getByText(label, { exact: true })).toBeVisible();
   }
+  for (const label of statementTypeLabels) {
+    await expect(brief.getByText(label, { exact: true })).toBeVisible();
+  }
   for (const headline of briefHeadlines) {
     await expect(brief.getByText(headline, { exact: true })).toBeVisible();
   }
@@ -167,6 +220,17 @@ test("mobile keeps the two-column brief, freshness, and contained scrolling reac
     }),
   ).toBe(2);
   await expect(page.locator(".mobile-next")).toHaveCount(0);
+  await expect(page.locator(".sidebar-next")).toBeHidden();
+  expect(
+    await page
+      .getByText("Review American River gauge", { exact: true })
+      .evaluateAll(
+        (elements) =>
+          elements.filter((element) =>
+            Boolean((element as HTMLElement).offsetParent),
+          ).length,
+      ),
+  ).toBe(1);
   await expect(page.locator(".mobile-status .freshness")).toContainText(
     "1 gauge needs attention",
   );
@@ -187,6 +251,50 @@ test("mobile keeps the two-column brief, freshness, and contained scrolling reac
     body: document.body.scrollWidth > document.body.clientWidth,
   }));
   expect(overflow).toEqual({ document: false, body: false });
+
+  const briefBounds = await brief.boundingBox();
+  expect(briefBounds).not.toBeNull();
+  expect(briefBounds!.y + briefBounds!.height).toBeLessThanOrEqual(844);
+  const evidenceTargetMetrics = await brief
+    .getByRole("button")
+    .evaluateAll((elements) =>
+      elements.map((element) => ({
+        fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
+        height: element.getBoundingClientRect().height,
+      })),
+    );
+  for (const metric of evidenceTargetMetrics) {
+    expect(metric.fontSize).toBeGreaterThanOrEqual(11);
+    expect(metric.height).toBeGreaterThanOrEqual(28);
+  }
+
+  const architectureButton = page.getByRole("button", {
+    name: /Architecture/i,
+  });
+  await architectureButton.click();
+  const architecture = page.getByRole("dialog", {
+    name: "How this dashboard works",
+  });
+  await expect(architecture).toBeVisible();
+  await expect(
+    architecture.getByText("optional planning context"),
+  ).toBeVisible();
+  const architectureBounds = await architecture.boundingBox();
+  expect(architectureBounds).not.toBeNull();
+  expect(architectureBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(architectureBounds!.x + architectureBounds!.width).toBeLessThanOrEqual(
+    390,
+  );
+  expect(architectureBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(
+    architectureBounds!.y + architectureBounds!.height,
+  ).toBeLessThanOrEqual(844);
+  expect(
+    await architecture.evaluate(
+      (element) => element.scrollHeight > element.clientHeight,
+    ),
+  ).toBe(true);
+  await page.getByRole("button", { name: "Close architecture" }).click();
 
   await page.getByRole("button", { name: /02\s+Gauge details/i }).click();
   const table = page.locator(".table-wrap");

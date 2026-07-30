@@ -97,13 +97,15 @@
 
 **Steps:**
 
-1. Assert the executive brief appears before `.dashboard-grid` in document order.
-2. Assert all four labels and exact fixture headlines are visible on desktop and 390×844 mobile.
+1. Assert the executive brief appears before `.dashboard-grid` in document order and uses an accessible ordered list.
+2. Assert all four decision labels, honest observed/calculated/interpreted/recommended statement-type labels, and exact fixture headlines are visible on desktop and 390×844 mobile.
 3. Assert one activation of Changed evidence opens the evidence dialog with the direct USGS source and calculated explanation.
-4. Assert one activation of Next-safe-action evidence opens the evidence dialog.
-5. Assert the brief and page have no document-level horizontal overflow at desktop and mobile sizes.
-6. Keep Architecture, page navigation, map selection, modal focus, and contained table-scrolling tests passing.
-7. Run Playwright against a production build and inspect desktop/mobile screenshots and console output.
+4. Assert one activation of Next-safe-action evidence opens the evidence dialog and records next-action review only in in-memory session telemetry.
+5. Assert bounded usefulness, wrong/unclear/missing-context, and missing-information/workflow-need controls remain non-durable and reset on reload.
+6. Assert the brief and page have no document-level horizontal overflow at desktop and mobile sizes, that exactly one visible next-action surface remains on mobile, and that readable text and evidence targets still fit the first view.
+7. Open Architecture on mobile and prove its dialog content, viewport bounds, and contained scrolling are reachable.
+8. Keep page navigation, map selection, modal focus, and contained table-scrolling tests passing.
+9. Run Playwright against a production build and inspect desktop/mobile screenshots and console output.
 
 ### Task 5: Create the honest target-role validation record
 
@@ -119,11 +121,13 @@
 1. Mark the record `Status: PENDING TARGET-ROLE VALIDATION`.
 2. Define the participant profile: manager/community leader who did not build the dashboard.
 3. Define the cold-load script: 30 seconds without coaching; ask the participant to identify known, changed, important, and next safe action; then ask them to open evidence for the named change or action.
-4. Define pass per session: all four correct without coaching and evidence opened within two interactions.
-5. Define aggregate pass: at least five of six sessions pass. A narrow miss remains fail/pending; no model decides the roadmap consequence.
-6. Store only anonymous session IDs, rounded seconds, four outcome booleans, evidence interaction count, pass/fail, and sanitized non-sensitive observation. Do not store names, organizations, recordings, source data, or free-form personal notes.
-7. State explicitly that automated/browser/model reviews are engineering evidence only and do not count toward the six.
-8. Add a README link and preserve the current not-pilot-ready warning.
+4. Ask each participant to distinguish observed source facts, deterministic calculations, interpretations, and recommendations; at least four of six must succeed.
+5. Use only non-durable tab-memory instrumentation for evidence opens and next-action review, then collect a bounded 1–5 usefulness rating, wrong/unclear/missing-context flags, and one concrete missing-information/workflow-need category.
+6. Define pass per session: all four decision outcomes correct without coaching and evidence opened within two interactions.
+7. Define aggregate pass: at least five of six sessions pass, at least four distinguish statement types, and every participant supplies usefulness and need fields. A narrow miss remains fail/pending; no model decides the roadmap consequence.
+8. Store only anonymous session IDs, rounded seconds, four outcome booleans, evidence interaction count, next-action-reviewed boolean, statement-type outcome, usefulness rating, bounded feedback flags, bounded need category, pass/fail, and sanitized non-sensitive aggregate observations. Do not store names, organizations, recordings, source data, raw event logs, or free-form personal notes.
+9. State explicitly that automated/browser/model reviews are engineering evidence only and do not count toward the six.
+10. Add a README link and preserve the current not-pilot-ready warning.
 
 ### Task 6: Exact-head verification and PR checkpoint
 

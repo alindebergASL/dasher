@@ -93,16 +93,19 @@ function asVersion11(input: typeof validSpec = validSpec) {
     schemaVersion: "1.1",
     executiveBrief: {
       known: {
+        statementTypes: ["observed", "calculated"],
         headline: "One condition is known",
         detail: "The current source reading is available.",
         evidenceIds: ["e1"],
       },
       changed: {
+        statementTypes: ["calculated"],
         headline: "Conditions remain stable",
         detail: "The calculated change is within the stable range.",
         evidenceIds: ["e1"],
       },
       important: {
+        statementTypes: ["interpreted"],
         headline: "Review before publishing",
         detail: "The source should be confirmed before this view is shared.",
         evidenceIds: ["e1"],
@@ -141,6 +144,19 @@ describe("parseDashboardSpec", () => {
       expect.unreachable("The parsed dashboard should remain version 1.1");
     }
     expect(parsed.executiveBrief).toEqual(asVersion11().executiveBrief);
+  });
+
+  it("requires bounded unique statement-type labels on every 1.1 claim", () => {
+    for (const statementTypes of [
+      [],
+      ["observed", "observed"],
+      ["observed", "calculated", "interpreted"],
+      ["recommended"],
+    ]) {
+      const input = asVersion11();
+      input.executiveBrief.known.statementTypes = statementTypes;
+      expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+    }
   });
 
   it("rejects unknown executive brief keys", () => {

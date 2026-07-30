@@ -32,6 +32,7 @@ describe("createRiverDashboard", () => {
   it("creates exact deterministic executive brief claims and evidence", () => {
     expect(dashboard.executiveBrief).toEqual({
       known: {
+        statementTypes: ["observed", "calculated"],
         headline: "3 gauges monitored",
         detail:
           "1 gauge is rising and 1 gauge is falling based on fresh water-level readings.",
@@ -43,12 +44,14 @@ describe("createRiverDashboard", () => {
         ],
       },
       changed: {
+        statementTypes: ["calculated"],
         headline: "Sacramento River rose fastest",
         detail:
           "The fastest fresh, complete material one-hour rise is +0.3 ft at SACRAMENTO R A FREEPORT CA.",
         evidenceIds: ["usgs-11447650", "calculated-trends"],
       },
       important: {
+        statementTypes: ["interpreted"],
         headline: "3 items need attention",
         detail:
           "Highest priority: American River — Water-level reading is more than two hours old",
@@ -128,6 +131,7 @@ describe("createRiverDashboard", () => {
     expect(ranking?.kind).toBe("ranking");
     if (ranking?.kind === "ranking") expect(ranking.items).toHaveLength(0);
     expect(fallingDashboard.executiveBrief.changed).toEqual({
+      statementTypes: ["calculated"],
       headline: "No material one-hour rise available",
       detail:
         "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
@@ -144,6 +148,7 @@ describe("createRiverDashboard", () => {
     );
 
     expect(clearDashboard.executiveBrief.important).toEqual({
+      statementTypes: ["interpreted"],
       headline: "Configured checks are clear",
       detail:
         "No data-quality or user-defined threshold checks need attention.",
@@ -177,6 +182,7 @@ describe("createRiverDashboard", () => {
       "0 gauges are rising and 0 gauges are falling based on fresh water-level readings.",
     );
     expect(staleDashboard.executiveBrief.changed).toEqual({
+      statementTypes: ["calculated"],
       headline: "No material one-hour rise available",
       detail:
         "No fresh, complete gauge rose more than 0.05 ft over the last hour.",

@@ -219,7 +219,20 @@ export const ArchitectureEdgeSchema = z.strictObject({
   label: ShortTextSchema,
 });
 
+const ExecutiveStatementTypeSchema = z.enum([
+  "observed",
+  "calculated",
+  "interpreted",
+]);
+
 const ExecutiveBriefClaimSchema = z.strictObject({
+  statementTypes: z
+    .array(ExecutiveStatementTypeSchema)
+    .min(1)
+    .max(2)
+    .refine((values) => new Set(values).size === values.length, {
+      message: "Executive statement types must be unique",
+    }),
   headline: ShortTextSchema,
   detail: LongTextSchema,
   evidenceIds: RequiredEvidenceIdsSchema,

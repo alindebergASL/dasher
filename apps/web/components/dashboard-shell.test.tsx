@@ -26,15 +26,28 @@ describe("DashboardShell", () => {
   it("renders the ordered executive brief before dashboard detail", () => {
     const { container } = render(<DashboardShell dashboard={dashboard} />);
     const brief = screen.getByRole("region", { name: "Executive brief" });
-    const labels = within(brief)
-      .getAllByTestId("executive-brief-label")
-      .map((element) => element.textContent);
+    const list = within(brief).getByRole("list");
+    const items = within(list).getAllByRole("listitem");
+    const labels = items.map(
+      (item) => item.querySelector(".executive-brief-label")?.textContent,
+    );
 
+    expect(items).toHaveLength(4);
     expect(labels).toEqual([
       "Known",
       "Changed",
       "Important",
       "Next safe action",
+    ]);
+    expect(
+      items.map(
+        (item) => item.querySelector(".executive-statement-types")?.textContent,
+      ),
+    ).toEqual([
+      "Observed · Calculated",
+      "Calculated",
+      "Interpreted",
+      "Recommended",
     ]);
     expect(within(brief).getByText("3 gauges monitored")).toBeInTheDocument();
     expect(
@@ -101,6 +114,46 @@ describe("DashboardShell", () => {
       screen.queryByRole("region", { name: "Executive brief" }),
     ).not.toBeInTheDocument();
     expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+  });
+
+  it("keeps bounded instrumentation in tab memory and records next-action review", () => {
+    render(<DashboardShell dashboard={dashboard} />);
+
+    for (const label of ["Changed", "Next safe action"]) {
+      fireEvent.click(
+        screen.getByRole("button", { name: `Evidence for ${label}` }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+    }
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Session feedback · not saved" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Session feedback" });
+    expect(
+      within(dialog).getByLabelText("Evidence opens this session"),
+    ).toHaveTextContent("2");
+    expect(
+      within(dialog).getByLabelText("Next action reviewed this session"),
+    ).toHaveTextContent("Yes");
+    expect(
+      within(dialog).getByText(/erased when the page reloads/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: "5" }));
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Unclear" }));
+    fireEvent.change(
+      within(dialog).getByLabelText("Missing information or workflow need"),
+      { target: { value: "Named owner or handoff" } },
+    );
+
+    expect(within(dialog).getByRole("radio", { name: "5" })).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "Unclear" }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByLabelText("Missing information or workflow need"),
+    ).toHaveValue("Named owner or handoff");
   });
 
   it("renders the overview, freshness state, and safe next action", () => {

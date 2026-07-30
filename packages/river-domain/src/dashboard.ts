@@ -197,17 +197,20 @@ export function createRiverDashboard(
     },
     executiveBrief: {
       known: {
+        statementTypes: ["observed", "calculated"],
         headline: `${metrics.length} gauge${metrics.length === 1 ? "" : "s"} monitored`,
         detail: `${rising.length} gauge${rising.length === 1 ? " is" : "s are"} rising and ${falling.length} gauge${falling.length === 1 ? " is" : "s are"} falling based on fresh water-level readings.`,
         evidenceIds: uniqueEvidenceIds(gaugeEvidenceIds, ["calculated-trends"]),
       },
       changed: fastest
         ? {
+            statementTypes: ["calculated"],
             headline: `${fastest.gauge.river} rose fastest`,
             detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.stageChange1h, "ft")} at ${fastest.gauge.name}.`,
             evidenceIds: [`usgs-${fastest.gauge.siteId}`, "calculated-trends"],
           }
         : {
+            statementTypes: ["calculated"],
             headline: "No material one-hour rise available",
             detail:
               "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
@@ -217,6 +220,7 @@ export function createRiverDashboard(
           },
       important: highestPriorityAlert
         ? {
+            statementTypes: ["interpreted"],
             headline: `${attentionAlerts.length} item${attentionAlerts.length === 1 ? "" : "s"} need attention`,
             detail: `Highest priority: ${highestPriorityAlert.title} — ${highestPriorityAlert.detail}`,
             evidenceIds: uniqueEvidenceIds(
@@ -224,6 +228,7 @@ export function createRiverDashboard(
             ),
           }
         : {
+            statementTypes: ["interpreted"],
             headline: "Configured checks are clear",
             detail:
               "No data-quality or user-defined threshold checks need attention.",
