@@ -55,10 +55,10 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - [ADR-004: Provider, OAuth, and MCP boundaries](docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
 
-ADR-001 records the implemented, reviewed fixture foundation. ADR-002 remains
-proposed; accepted ADR-003 and ADR-004 and the roadmap define gated future
-work. An accepted decision does not mean those systems are implemented or that
-Dasher is production- or pilot-ready.
+ADR-001 records the implemented, reviewed fixture foundation. Accepted ADR-002,
+ADR-003, and ADR-004 and the roadmap define gated future work. An accepted
+decision does not mean those systems are implemented or that Dasher is
+production- or pilot-ready.
 
 See also the [product requirements](docs/product/PRODUCT_REQUIREMENTS.md) and
 [foundation implementation plan](docs/plans/2026-07-29-river-dashboard-foundation.md).

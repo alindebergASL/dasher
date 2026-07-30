@@ -1,6 +1,6 @@
 # ADR-002: USGS Live Adapter Boundary
 
-Status: Proposed
+Status: Accepted
 Date: 2026-07-29
 
 ## Decision
@@ -28,3 +28,12 @@ Fixtures are updated only by an explicit maintainer command. The command writes 
 ## Validation gate
 
 Before enabling live calls, add tests for allowed requests, blocked private/metadata destinations, redirect rejection, oversized responses, timeouts, malformed JSON, no-data sentinels, unit drift, duplicate station series, and partial station failure. Run one approved live no-write probe and compare its normalized output to the contract.
+
+## Acceptance record
+
+Accepted as the required boundary for the controlled live-source and job proof
+in the private-pilot roadmap. Acceptance approves this target design; it does
+not mean the adapter, source broker, raw-ingress controls, durable snapshots,
+jobs, or live calls are implemented or enabled. Gate 3 remains blocked until
+ADR-003's tenant/control-plane prerequisites and this ADR's validation gate pass
+on the exact implementation and environment.

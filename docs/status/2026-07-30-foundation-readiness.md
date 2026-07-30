@@ -29,9 +29,11 @@ controller then reran the complete ordered gate sequence on the modified tree.
 
 ## Final verification gates
 
-The controller ran the complete sequence against the remediated working tree.
-Every gate passed; GitHub Actions will provide clean-checkout confirmation after
-push.
+The controller ran the complete sequence against the remediated working tree
+before push. Every local gate passed. Foundation PR #1 then passed clean-checkout
+GitHub Actions on exact head `8bf8ee1b5ca3a03ec7d53be55f07100afa09a651`
+(run `30518723472`). After merge, GitHub Actions passed again on exact `main`
+merge commit `4949591dbb032b9c8d5fbfbc48ba2cd3557cca59` (run `30518830337`).
 
 | Gate                        | Exact command                                                    | Status | Result                                                    |
 | --------------------------- | ---------------------------------------------------------------- | ------ | --------------------------------------------------------- |
@@ -60,9 +62,11 @@ The 63 tests comprise dashboard-schema 28 (25 schema + 3 gate), river-domain
   conventional commits listed above after its pre-task plan commits `4454a5d`
   and `3c06725`.
 - The post-`52b7fce` security-review remediation is incorporated in the eighth commit listed above and has passed controller verification.
-- `docs/architecture/ADR-001-foundation.md` and
-  `docs/architecture/ADR-002-usgs-live-adapter.md` remain `Status: Proposed`.
-  ADR-001 changes to Accepted only after merge, which is a controller action.
+- At the pre-merge verification recorded above, ADR-001 and ADR-002 were both
+  `Status: Proposed`. ADR-001 transitioned to `Accepted` after foundation PR #1
+  merged and its clean-checkout and post-merge GitHub Actions passed. The
+  subsequent architecture synthesis accepts ADR-002 as a gated target boundary;
+  live USGS remains unimplemented and disabled until its acceptance gates pass.
 - ADR-001's repository layout is aspirational. `apps/worker`, `packages/ui`,
   `packages/provenance`, `packages/model-gateway`,
   `packages/sandbox-contract`, and `infra/*` do not exist yet.

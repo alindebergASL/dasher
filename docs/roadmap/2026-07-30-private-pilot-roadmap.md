@@ -215,13 +215,24 @@ Manifest drift disables the connection. Generic MCP remains deferred.
   pass in the authoritative environment.
 - A side-effect tool cannot be enabled by configuration or model output.
 
-## Gate 7 — Private pilot release
+## Gate 7 — Private pilot release and learning
 
-Release only to the owner-approved cohort after the previous applicable gates
-pass on the exact deployment. Dashboards remain visible only to explicitly
-authorized organization members.
+### Entry requirements before the first pilot participant
 
-### Exit criteria
+- Gates 0 through 5 pass on the exact deployment. Gate 6 also passes before any
+  Google Sheets or MCP capability is offered.
+- The owner records the permitted real-data classes and data-processing terms,
+  named pilot cohort and accepted use cases, liability boundary, and explicit
+  private-pilot go/no-go decision.
+- Restore, credential rotation, revocation, provider/schedule kill switches,
+  audit sealing, monitoring, rollback, and incident-response drills pass.
+- No unresolved tenant-isolation, secret-handling, ingestion, or authority-race
+  blocker remains.
+
+Only then may Dasher release to the owner-approved cohort. Dashboards remain
+visible only to explicitly authorized organization members.
+
+### Post-launch success and continuation criteria
 
 - At least three approved pilot organizations independently create a dashboard
   from their own authorized or sanitized workbook, with a champion returning
@@ -231,14 +242,11 @@ authorized organization members.
 - At least three of five interviewed managers identify a decision Dasher
   changed or accelerated; the top three repeated problems are fixed or
   explicitly declined with a reason.
-- Restore, credential rotation, revocation, provider/schedule kill switches,
-  audit sealing, monitoring, rollback, and incident-response drills pass.
-- No unresolved tenant-isolation, secret-handling, ingestion, or authority-race
-  blocker remains.
-- The owner records the pilot cohort, liability boundary, and explicit
-  pilot go/no-go decision.
+- Continued access is paused if a prerequisite gate regresses or the owner
+  withdraws authorization.
 
-Passing this gate is a bounded private-pilot authorization, not production
+The owner's entry go/no-go authorizes only a bounded private launch. Meeting the
+post-launch criteria supports continued learning. Neither is production
 readiness.
 
 ## Explicit deferrals
