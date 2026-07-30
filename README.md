@@ -39,8 +39,26 @@ and [security status](docs/security/2026-07-30-security-status.md).
 
 - Fixture mode: enabled.
 - Live USGS requests: not implemented in this foundation slice.
+- Identity, multi-tenant persistence, uploads, jobs, provider access, and MCP:
+  not implemented.
 - Model calls: disabled.
 - Generated-code execution: disabled until the sandbox gate in `docs/security/GENERATED_CODE_GATE.md` is satisfied.
+- Pilot publication: private-only by accepted design; no publication system is
+  implemented.
 - Production deployment: not performed.
 
-See `docs/product/PRODUCT_REQUIREMENTS.md`, `docs/architecture/ADR-001-foundation.md`, and `docs/plans/2026-07-29-river-dashboard-foundation.md`.
+## Architecture and roadmap
+
+- [ADR-001: Foundation architecture](docs/architecture/ADR-001-foundation.md)
+- [ADR-002: USGS live adapter boundary](docs/architecture/ADR-002-usgs-live-adapter.md)
+- [ADR-003: Multi-tenant control plane](docs/architecture/ADR-003-multi-tenant-control-plane.md)
+- [ADR-004: Provider, OAuth, and MCP boundaries](docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md)
+- [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
+
+ADR-001 records the implemented, reviewed fixture foundation. Accepted ADR-002,
+ADR-003, and ADR-004 and the roadmap define gated future work. An accepted
+decision does not mean those systems are implemented or that Dasher is
+production- or pilot-ready.
+
+See also the [product requirements](docs/product/PRODUCT_REQUIREMENTS.md) and
+[foundation implementation plan](docs/plans/2026-07-29-river-dashboard-foundation.md).
