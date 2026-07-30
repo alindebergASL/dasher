@@ -1,13 +1,19 @@
+import { ZodError } from "zod";
 import { describe, expect, it } from "vitest";
 
-import { parseDashboardSpec } from "./schema";
+import {
+  DASHBOARD_MAX_EVIDENCE_IDS,
+  DASHBOARD_SPEC_MAX_BYTES,
+  DASHBOARD_STRING_LIMITS,
+  parseDashboardSpec,
+} from "./schema";
 
 const validSpec = {
   schemaVersion: "1.0",
   id: "river-demo",
   title: "River conditions",
   audience: "Leaders",
-  generatedAt: "2026-07-29T12:00:00.000Z",
+  generatedAt: "2026-07-29T12:01:00.000Z",
   dataMode: "demo",
   freshness: {
     status: "fresh",
@@ -156,6 +162,20 @@ describe("parseDashboardSpec", () => {
     }
   });
 
+  it("reports a normal Zod failure for a malformed source URL", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const evidence = input.evidence as Array<{ sourceUrl: string }>;
+    evidence[0]!.sourceUrl = "not a URL";
+
+    try {
+      parseDashboardSpec(input);
+      expect.unreachable("Malformed source URL should be rejected");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ZodError);
+      expect(error).not.toBeInstanceOf(TypeError);
+    }
+  });
+
   it("rejects unknown properties and duplicate identifiers", () => {
     const withUnknown = structuredClone(validSpec) as Record<string, unknown>;
     withUnknown.executableCode = "alert(1)";
@@ -173,5 +193,320 @@ describe("parseDashboardSpec", () => {
     const input = structuredClone(validSpec) as Record<string, unknown>;
     delete input.architecture;
     expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("rejects duplicate claim texts within a summary component", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const pages = input.pages as Array<{
+      components: Array<{
+        claims?: Array<{ text: string; evidenceIds: string[] }>;
+      }>;
+    }>;
+    pages[0]!.components[0]!.claims!.push({
+      text: "Conditions are stable.",
+      evidenceIds: ["e1"],
+    });
+
+    expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("rejects duplicate metric labels within a metric grid", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const pages = input.pages as Array<{ components: unknown[] }>;
+    pages[0]!.components.push({
+      id: "metrics",
+      kind: "metric-grid",
+      title: "Metrics",
+      metrics: [
+        {
+          label: "Stage",
+          value: "14.8 ft",
+          evidenceIds: ["e1"],
+        },
+        {
+          label: "Stage",
+          value: "14.9 ft",
+          evidenceIds: ["e1"],
+        },
+      ],
+      evidenceIds: ["e1"],
+    });
+
+    expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("rejects duplicate architecture edges", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const architecture = input.architecture as { edges: unknown[] };
+    architecture.edges.push(structuredClone(architecture.edges[0]!));
+
+    expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("keeps distinct architecture edge tuples containing arrow characters", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const architecture = input.architecture as {
+      nodes: Array<{
+        id: string;
+        label: string;
+        detail: string;
+        kind: "input";
+      }>;
+      edges: Array<{ from: string; to: string; label: string }>;
+    };
+    architecture.nodes = ["a→b", "c", "a", "b→c"].map((id) => ({
+      id,
+      label: id,
+      detail: `Node ${id}`,
+      kind: "input",
+    }));
+    architecture.edges = [
+      { from: "a→b", to: "c", label: "d" },
+      { from: "a", to: "b→c", label: "d" },
+    ];
+
+    expect(parseDashboardSpec(input).architecture.edges).toHaveLength(2);
+  });
+
+  it("rejects a dashboard with an excessive number of pages", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const pages = input.pages as Array<{
+      id: string;
+      components: Array<{ id: string }>;
+    }>;
+    input.pages = Array.from({ length: 17 }, (_, index) => {
+      const page = structuredClone(pages[0]!);
+      page.id = `page-${index}`;
+      page.components[0]!.id = `summary-${index}`;
+      return page;
+    });
+
+    expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("rejects a trend series with an excessive number of points", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const pages = input.pages as Array<{ components: unknown[] }>;
+    pages[0]!.components.push({
+      id: "trends",
+      kind: "trend-list",
+      title: "Trends",
+      series: [
+        {
+          id: "stage-trend",
+          label: "Stage",
+          unit: "ft",
+          evidenceIds: ["e1"],
+          points: Array.from({ length: 5_001 }, (_, index) => ({
+            at: "2026-07-29T12:00:00.000Z",
+            value: index,
+          })),
+        },
+      ],
+      evidenceIds: ["e1"],
+    });
+
+    expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("caps evidenceIds arrays at every nesting level", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    const pages = input.pages as Array<{
+      components: Array<{
+        claims?: Array<{ evidenceIds: string[] }>;
+      }>;
+    }>;
+    pages[0]!.components[0]!.claims![0]!.evidenceIds = Array.from(
+      { length: DASHBOARD_MAX_EVIDENCE_IDS + 1 },
+      () => "e1",
+    );
+
+    expect(() => parseDashboardSpec(input)).toThrow();
+  });
+
+  it("rejects oversized strings across reusable string categories", () => {
+    const oversizedId = structuredClone(validSpec) as Record<string, unknown>;
+    oversizedId.id = "i".repeat(DASHBOARD_STRING_LIMITS.id + 1);
+
+    const oversizedTitle = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    oversizedTitle.title = "t".repeat(DASHBOARD_STRING_LIMITS.shortText + 1);
+
+    const oversizedNotice = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    oversizedNotice.notice = "n".repeat(DASHBOARD_STRING_LIMITS.longText + 1);
+
+    const oversizedUrl = structuredClone(validSpec) as Record<string, unknown>;
+    const evidence = oversizedUrl.evidence as Array<{ sourceUrl: string }>;
+    evidence[0]!.sourceUrl = `https://example.com/${"u".repeat(
+      DASHBOARD_STRING_LIMITS.url,
+    )}`;
+
+    const oversizedTimestamp = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    oversizedTimestamp.generatedAt = "2".repeat(
+      DASHBOARD_STRING_LIMITS.isoTimestamp + 1,
+    );
+
+    for (const input of [
+      oversizedId,
+      oversizedTitle,
+      oversizedNotice,
+      oversizedUrl,
+      oversizedTimestamp,
+    ]) {
+      expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+    }
+  });
+
+  it("rejects non-serializable and oversized DashboardSpec input before Zod", () => {
+    const nonSerializable = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    nonSerializable.circular = nonSerializable;
+    expect(() => parseDashboardSpec(nonSerializable)).toThrow(
+      /must be JSON-serializable/,
+    );
+
+    const oversized = structuredClone(validSpec) as Record<string, unknown>;
+    oversized.padding = "x".repeat(DASHBOARD_SPEC_MAX_BYTES);
+    expect(() => parseDashboardSpec(oversized)).toThrow(
+      /exceeds the 1048576-byte serialized limit/,
+    );
+  });
+
+  it("enforces cumulative item, trend-point, and evidence-reference budgets", () => {
+    const tooManyItems = structuredClone(validSpec) as Record<string, unknown>;
+    const itemPages = tooManyItems.pages as Array<{ components: unknown[] }>;
+    itemPages[0]!.components.push(
+      ...Array.from({ length: 10 }, (_, componentIndex) => ({
+        id: `gauge-map-${componentIndex}`,
+        kind: "gauge-map",
+        title: `Gauge map ${componentIndex}`,
+        evidenceIds: ["e1"],
+        gauges: Array.from({ length: 200 }, (_, gaugeIndex) => ({
+          id: `gauge-${componentIndex}-${gaugeIndex}`,
+          name: `Gauge ${gaugeIndex}`,
+          river: "River",
+          latitude: 0,
+          longitude: 0,
+          stage: 1,
+          stageUnit: "ft",
+          streamflow: 1,
+          streamflowUnit: "ft3/s",
+          direction: "steady",
+          freshness: "fresh",
+          evidenceIds: ["e1"],
+        })),
+      })),
+    );
+    expect(() => parseDashboardSpec(tooManyItems)).toThrow(/total item count/);
+
+    const tooManyPoints = structuredClone(validSpec) as Record<string, unknown>;
+    const pointPages = tooManyPoints.pages as Array<{ components: unknown[] }>;
+    pointPages[0]!.components.push({
+      id: "many-trends",
+      kind: "trend-list",
+      title: "Many trends",
+      evidenceIds: ["e1"],
+      series: Array.from({ length: 3 }, (_, seriesIndex) => ({
+        id: `series-${seriesIndex}`,
+        label: `Series ${seriesIndex}`,
+        unit: "ft",
+        evidenceIds: ["e1"],
+        points: Array.from({ length: 4_000 }, (_, pointIndex) => ({
+          at: "2026-07-29T12:00:00.000Z",
+          value: pointIndex,
+        })),
+      })),
+    });
+    expect(() => parseDashboardSpec(tooManyPoints)).toThrow(
+      /total trend point count/,
+    );
+
+    const tooManyReferences = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    const referencePages = tooManyReferences.pages as Array<{
+      components: unknown[];
+    }>;
+    referencePages[0]!.components.push(
+      ...Array.from({ length: 14 }, (_, componentIndex) => ({
+        id: `metrics-${componentIndex}`,
+        kind: "metric-grid",
+        title: `Metrics ${componentIndex}`,
+        evidenceIds: ["e1"],
+        metrics: Array.from({ length: 24 }, (_, metricIndex) => ({
+          label: `Metric ${metricIndex}`,
+          value: "1",
+          evidenceIds: Array.from(
+            { length: DASHBOARD_MAX_EVIDENCE_IDS },
+            () => "e1",
+          ),
+        })),
+      })),
+    );
+    expect(() => parseDashboardSpec(tooManyReferences)).toThrow(
+      /total evidence reference count/,
+    );
+  });
+
+  it("enforces evidence and freshness timestamp ordering", () => {
+    const observedAfterRetrieved = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    const observedEvidence = observedAfterRetrieved.evidence as Array<{
+      observedAt: string;
+    }>;
+    observedEvidence[0]!.observedAt = "2026-07-29T12:01:01.000Z";
+    expect(() => parseDashboardSpec(observedAfterRetrieved)).toThrow(
+      /observedAt must not be after retrievedAt/,
+    );
+
+    const retrievedAfterGenerated = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    const retrievedEvidence = retrievedAfterGenerated.evidence as Array<{
+      retrievedAt: string;
+    }>;
+    retrievedEvidence[0]!.retrievedAt = "2026-07-29T12:01:01.000Z";
+    expect(() => parseDashboardSpec(retrievedAfterGenerated)).toThrow(
+      /retrievedAt must not be after generatedAt/,
+    );
+
+    const observationAfterGenerated = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    const freshness = observationAfterGenerated.freshness as {
+      status: string;
+      latestObservationAt?: string;
+    };
+    freshness.latestObservationAt = "2026-07-29T12:01:01.000Z";
+    expect(() => parseDashboardSpec(observationAfterGenerated)).toThrow(
+      /latestObservationAt must not be after generatedAt/,
+    );
+
+    const freshWithoutObservation = structuredClone(validSpec) as Record<
+      string,
+      unknown
+    >;
+    const missingFreshness = freshWithoutObservation.freshness as {
+      latestObservationAt?: string;
+    };
+    delete missingFreshness.latestObservationAt;
+    expect(() => parseDashboardSpec(freshWithoutObservation)).toThrow(
+      /Fresh status requires latestObservationAt/,
+    );
   });
 });

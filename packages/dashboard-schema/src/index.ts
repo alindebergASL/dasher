@@ -1,6 +1,12 @@
 export {
   ArchitectureEdgeSchema,
   ArchitectureNodeSchema,
+  DASHBOARD_MAX_EVIDENCE_IDS,
+  DASHBOARD_MAX_TOTAL_EVIDENCE_REFERENCES,
+  DASHBOARD_MAX_TOTAL_ITEMS,
+  DASHBOARD_MAX_TOTAL_TREND_POINTS,
+  DASHBOARD_SPEC_MAX_BYTES,
+  DASHBOARD_STRING_LIMITS,
   DashboardSpecSchema,
   EvidenceSchema,
   PageSchema,

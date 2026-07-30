@@ -1,39 +1,92 @@
 import { z } from "zod";
 
-const IsoDateSchema = z.string().datetime({ offset: true });
+export const DASHBOARD_SPEC_MAX_BYTES = 1_048_576;
+export const DASHBOARD_MAX_TOTAL_ITEMS = 2_000;
+export const DASHBOARD_MAX_TOTAL_TREND_POINTS = 10_000;
+export const DASHBOARD_MAX_TOTAL_EVIDENCE_REFERENCES = 10_000;
+export const DASHBOARD_MAX_EVIDENCE_IDS = 32;
+
+export const DASHBOARD_STRING_LIMITS = {
+  id: 128,
+  shortText: 256,
+  longText: 4_096,
+  url: 2_048,
+  isoTimestamp: 64,
+} as const;
+
+const IdentifierSchema = z.string().min(1).max(DASHBOARD_STRING_LIMITS.id);
+const ShortTextSchema = z
+  .string()
+  .min(1)
+  .max(DASHBOARD_STRING_LIMITS.shortText);
+const OptionalShortTextSchema = z
+  .string()
+  .max(DASHBOARD_STRING_LIMITS.shortText)
+  .optional();
+const LongTextSchema = z.string().min(1).max(DASHBOARD_STRING_LIMITS.longText);
+const OptionalLongTextSchema = z
+  .string()
+  .max(DASHBOARD_STRING_LIMITS.longText)
+  .optional();
+const IsoDateSchema = z
+  .string()
+  .max(DASHBOARD_STRING_LIMITS.isoTimestamp)
+  .datetime({ offset: true });
+const EvidenceIdsSchema = z
+  .array(IdentifierSchema)
+  .max(DASHBOARD_MAX_EVIDENCE_IDS);
+const RequiredEvidenceIdsSchema = EvidenceIdsSchema.min(1);
 
 const SafeSourceUrlSchema = z
   .string()
+  .max(DASHBOARD_STRING_LIMITS.url)
   .url()
   .refine(
     (value) => {
-      const url = new URL(value);
-      return (
-        (url.protocol === "https:" || url.protocol === "http:") &&
-        url.username === "" &&
-        url.password === ""
-      );
+      try {
+        const url = new URL(value);
+        return (
+          (url.protocol === "https:" || url.protocol === "http:") &&
+          url.username === "" &&
+          url.password === ""
+        );
+      } catch {
+        return false;
+      }
     },
     { message: "Source URL must be credential-free HTTP(S)" },
   );
 
-export const EvidenceSchema = z.strictObject({
-  id: z.string().min(1),
-  kind: z.enum(["observed", "calculated", "interpreted", "recommended"]),
-  label: z.string().min(1),
-  sourceName: z.string().min(1),
-  sourceUrl: SafeSourceUrlSchema.optional(),
-  observedAt: IsoDateSchema.optional(),
-  retrievedAt: IsoDateSchema,
-  detail: z.string().min(1),
-  confidence: z.enum(["high", "medium", "low"]),
-});
+export const EvidenceSchema = z
+  .strictObject({
+    id: IdentifierSchema,
+    kind: z.enum(["observed", "calculated", "interpreted", "recommended"]),
+    label: ShortTextSchema,
+    sourceName: ShortTextSchema,
+    sourceUrl: SafeSourceUrlSchema.optional(),
+    observedAt: IsoDateSchema.optional(),
+    retrievedAt: IsoDateSchema,
+    detail: LongTextSchema,
+    confidence: z.enum(["high", "medium", "low"]),
+  })
+  .superRefine((evidence, context) => {
+    if (
+      evidence.observedAt !== undefined &&
+      Date.parse(evidence.observedAt) > Date.parse(evidence.retrievedAt)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Evidence observedAt must not be after retrievedAt",
+        path: ["observedAt"],
+      });
+    }
+  });
 
 const ComponentBaseSchema = z.strictObject({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  subtitle: z.string().optional(),
-  evidenceIds: z.array(z.string().min(1)).default([]),
+  id: IdentifierSchema,
+  title: ShortTextSchema,
+  subtitle: OptionalLongTextSchema,
+  evidenceIds: EvidenceIdsSchema.default([]),
 });
 
 const SummaryComponentSchema = ComponentBaseSchema.extend({
@@ -41,91 +94,99 @@ const SummaryComponentSchema = ComponentBaseSchema.extend({
   claims: z
     .array(
       z.strictObject({
-        text: z.string().min(1),
-        evidenceIds: z.array(z.string().min(1)).min(1),
+        text: LongTextSchema,
+        evidenceIds: RequiredEvidenceIdsSchema,
       }),
     )
-    .min(1),
+    .min(1)
+    .max(24),
   tone: z.enum(["normal", "attention", "warning"]),
 });
 
 const MetricSchema = z.strictObject({
-  label: z.string().min(1),
-  value: z.string().min(1),
-  change: z.string().optional(),
+  label: ShortTextSchema,
+  value: ShortTextSchema,
+  change: OptionalShortTextSchema,
   direction: z.enum(["up", "down", "steady", "unknown"]).optional(),
-  evidenceIds: z.array(z.string().min(1)).min(1),
+  evidenceIds: RequiredEvidenceIdsSchema,
 });
 
 const MetricGridComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("metric-grid"),
-  metrics: z.array(MetricSchema).min(1),
+  metrics: z.array(MetricSchema).min(1).max(24),
 });
 
 const GaugeSchema = z.strictObject({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  river: z.string().min(1),
+  id: IdentifierSchema,
+  name: ShortTextSchema,
+  river: ShortTextSchema,
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   stage: z.number().nullable(),
-  stageUnit: z.string().min(1),
+  stageUnit: ShortTextSchema,
   streamflow: z.number().nullable(),
-  streamflowUnit: z.string().min(1),
+  streamflowUnit: ShortTextSchema,
   direction: z.enum(["rising", "falling", "steady", "unknown"]),
   freshness: z.enum(["fresh", "stale", "missing"]),
-  evidenceIds: z.array(z.string().min(1)).min(1),
+  evidenceIds: RequiredEvidenceIdsSchema,
 });
 
 const GaugeMapComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("gauge-map"),
-  gauges: z.array(GaugeSchema).min(1),
+  gauges: z.array(GaugeSchema).min(1).max(200),
 });
 
 const GaugeTableComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("gauge-table"),
-  gauges: z.array(GaugeSchema).min(1),
+  gauges: z.array(GaugeSchema).min(1).max(200),
 });
 
 const RankingComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("ranking"),
-  items: z.array(
-    z.strictObject({
-      id: z.string().min(1),
-      label: z.string().min(1),
-      value: z.string().min(1),
-      note: z.string().optional(),
-      evidenceIds: z.array(z.string().min(1)).min(1),
-    }),
-  ),
+  items: z
+    .array(
+      z.strictObject({
+        id: IdentifierSchema,
+        label: ShortTextSchema,
+        value: ShortTextSchema,
+        note: OptionalLongTextSchema,
+        evidenceIds: RequiredEvidenceIdsSchema,
+      }),
+    )
+    .max(100),
 });
 
 const TrendComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("trend-list"),
-  series: z.array(
-    z.strictObject({
-      id: z.string().min(1),
-      label: z.string().min(1),
-      unit: z.string().min(1),
-      evidenceIds: z.array(z.string().min(1)).min(1),
-      points: z
-        .array(z.strictObject({ at: IsoDateSchema, value: z.number() }))
-        .min(2),
-    }),
-  ),
+  series: z
+    .array(
+      z.strictObject({
+        id: IdentifierSchema,
+        label: ShortTextSchema,
+        unit: ShortTextSchema,
+        evidenceIds: RequiredEvidenceIdsSchema,
+        points: z
+          .array(z.strictObject({ at: IsoDateSchema, value: z.number() }))
+          .min(2)
+          .max(5_000),
+      }),
+    )
+    .max(100),
 });
 
 const AlertComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("alert-list"),
-  alerts: z.array(
-    z.strictObject({
-      id: z.string().min(1),
-      severity: z.enum(["info", "attention", "warning"]),
-      title: z.string().min(1),
-      detail: z.string().min(1),
-      evidenceIds: z.array(z.string().min(1)).min(1),
-    }),
-  ),
+  alerts: z
+    .array(
+      z.strictObject({
+        id: IdentifierSchema,
+        severity: z.enum(["info", "attention", "warning"]),
+        title: ShortTextSchema,
+        detail: LongTextSchema,
+        evidenceIds: RequiredEvidenceIdsSchema,
+      }),
+    )
+    .max(200),
 });
 
 const DashboardComponentSchema = z.discriminatedUnion("kind", [
@@ -139,52 +200,88 @@ const DashboardComponentSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const PageSchema = z.strictObject({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  description: z.string().min(1),
-  components: z.array(DashboardComponentSchema).min(1),
+  id: IdentifierSchema,
+  title: ShortTextSchema,
+  description: LongTextSchema,
+  components: z.array(DashboardComponentSchema).min(1).max(24),
 });
 
 export const ArchitectureNodeSchema = z.strictObject({
-  id: z.string().min(1),
-  label: z.string().min(1),
-  detail: z.string().min(1),
+  id: IdentifierSchema,
+  label: ShortTextSchema,
+  detail: LongTextSchema,
   kind: z.enum(["input", "process", "ai", "page", "output"]),
 });
 
 export const ArchitectureEdgeSchema = z.strictObject({
-  from: z.string().min(1),
-  to: z.string().min(1),
-  label: z.string().min(1),
+  from: IdentifierSchema,
+  to: IdentifierSchema,
+  label: ShortTextSchema,
 });
 
-export const DashboardSpecSchema = z.strictObject({
-  schemaVersion: z.literal("1.0"),
-  id: z.string().min(1),
-  title: z.string().min(1),
-  audience: z.string().min(1),
-  generatedAt: IsoDateSchema,
-  dataMode: z.enum(["demo", "live"]),
-  freshness: z.strictObject({
-    status: z.enum(["fresh", "stale", "partial"]),
-    label: z.string().min(1),
-    latestObservationAt: IsoDateSchema.optional(),
-  }),
-  nextAction: z.strictObject({
-    title: z.string().min(1),
-    detail: z.string().min(1),
-    evidenceIds: z.array(z.string().min(1)).min(1),
-  }),
-  notice: z.string().min(1),
-  pages: z.array(PageSchema).min(1),
-  evidence: z.array(EvidenceSchema),
-  architecture: z.strictObject({
-    title: z.string().min(1),
-    summary: z.string().min(1),
-    nodes: z.array(ArchitectureNodeSchema).min(2),
-    edges: z.array(ArchitectureEdgeSchema).min(1),
-  }),
-});
+export const DashboardSpecSchema = z
+  .strictObject({
+    schemaVersion: z.literal("1.0"),
+    id: IdentifierSchema,
+    title: ShortTextSchema,
+    audience: ShortTextSchema,
+    generatedAt: IsoDateSchema,
+    dataMode: z.enum(["demo", "live"]),
+    freshness: z.strictObject({
+      status: z.enum(["fresh", "stale", "partial"]),
+      label: ShortTextSchema,
+      latestObservationAt: IsoDateSchema.optional(),
+    }),
+    nextAction: z.strictObject({
+      title: ShortTextSchema,
+      detail: LongTextSchema,
+      evidenceIds: RequiredEvidenceIdsSchema,
+    }),
+    notice: LongTextSchema,
+    pages: z.array(PageSchema).min(1).max(16),
+    evidence: z.array(EvidenceSchema).max(500),
+    architecture: z.strictObject({
+      title: ShortTextSchema,
+      summary: LongTextSchema,
+      nodes: z.array(ArchitectureNodeSchema).min(2).max(64),
+      edges: z.array(ArchitectureEdgeSchema).min(1).max(256),
+    }),
+  })
+  .superRefine((spec, context) => {
+    const generatedAt = Date.parse(spec.generatedAt);
+
+    if (
+      spec.freshness.status === "fresh" &&
+      spec.freshness.latestObservationAt === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Fresh status requires latestObservationAt",
+        path: ["freshness", "latestObservationAt"],
+      });
+    }
+
+    if (
+      spec.freshness.latestObservationAt !== undefined &&
+      Date.parse(spec.freshness.latestObservationAt) > generatedAt
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Freshness latestObservationAt must not be after generatedAt",
+        path: ["freshness", "latestObservationAt"],
+      });
+    }
+
+    for (const [index, evidence] of spec.evidence.entries()) {
+      if (Date.parse(evidence.retrievedAt) > generatedAt) {
+        context.addIssue({
+          code: "custom",
+          message: "Evidence retrievedAt must not be after generatedAt",
+          path: ["evidence", index, "retrievedAt"],
+        });
+      }
+    }
+  });
 
 export type Evidence = z.infer<typeof EvidenceSchema>;
 export type DashboardComponent = z.infer<typeof DashboardComponentSchema>;
@@ -201,8 +298,98 @@ function assertUnique(ids: string[], label: string): Set<string> {
   return unique;
 }
 
+function assertAtMost(value: number, maximum: number, label: string): void {
+  if (value > maximum) {
+    throw new Error(`${label} exceeds the maximum of ${maximum}`);
+  }
+}
+
+function assertSerializedDashboardSpecSize(input: unknown): void {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(input);
+  } catch (error) {
+    throw new Error("DashboardSpec input must be JSON-serializable", {
+      cause: error,
+    });
+  }
+
+  if (serialized === undefined) {
+    throw new Error("DashboardSpec input must be JSON-serializable");
+  }
+
+  const byteLength = new TextEncoder().encode(serialized).byteLength;
+  if (byteLength > DASHBOARD_SPEC_MAX_BYTES) {
+    throw new Error(
+      `DashboardSpec input exceeds the ${DASHBOARD_SPEC_MAX_BYTES}-byte serialized limit`,
+    );
+  }
+}
+
+function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
+  let totalItems =
+    spec.pages.length +
+    spec.evidence.length +
+    spec.architecture.nodes.length +
+    spec.architecture.edges.length;
+  let totalTrendPoints = 0;
+  let totalEvidenceReferences = spec.nextAction.evidenceIds.length;
+
+  for (const page of spec.pages) {
+    totalItems += page.components.length;
+    for (const component of page.components) {
+      totalEvidenceReferences += component.evidenceIds.length;
+
+      const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
+        component.kind === "summary"
+          ? component.claims
+          : component.kind === "metric-grid"
+            ? component.metrics
+            : component.kind === "gauge-map" || component.kind === "gauge-table"
+              ? component.gauges
+              : component.kind === "ranking"
+                ? component.items
+                : component.kind === "trend-list"
+                  ? component.series
+                  : component.alerts;
+
+      totalItems += evidenceLinkedItems.length;
+      totalEvidenceReferences += evidenceLinkedItems.reduce(
+        (total, item) => total + item.evidenceIds.length,
+        0,
+      );
+
+      if (component.kind === "trend-list") {
+        totalTrendPoints += component.series.reduce(
+          (total, series) => total + series.points.length,
+          0,
+        );
+      }
+    }
+  }
+
+  assertAtMost(
+    totalItems,
+    DASHBOARD_MAX_TOTAL_ITEMS,
+    "DashboardSpec total item count",
+  );
+  assertAtMost(
+    totalTrendPoints,
+    DASHBOARD_MAX_TOTAL_TREND_POINTS,
+    "DashboardSpec total trend point count",
+  );
+  assertAtMost(
+    totalEvidenceReferences,
+    DASHBOARD_MAX_TOTAL_EVIDENCE_REFERENCES,
+    "DashboardSpec total evidence reference count",
+  );
+}
+
 export function parseDashboardSpec(input: unknown): DashboardSpec {
+  assertSerializedDashboardSpecSize(input);
   const spec = DashboardSpecSchema.parse(input);
+  assertDashboardComplexityBudgets(spec);
+
   assertUnique(
     spec.pages.map((page) => page.id),
     "Page IDs",
@@ -242,6 +429,10 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
         );
       }
       if (component.kind === "summary") {
+        assertUnique(
+          component.claims.map((claim) => claim.text),
+          `Claim texts in component ${component.id}`,
+        );
         for (const claim of component.claims) {
           for (const evidenceId of claim.evidenceIds) {
             if (!evidenceIds.has(evidenceId)) {
@@ -251,6 +442,12 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
             }
           }
         }
+      }
+      if (component.kind === "metric-grid") {
+        assertUnique(
+          component.metrics.map((metric) => metric.label),
+          `Metric labels in component ${component.id}`,
+        );
       }
       const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
         component.kind === "metric-grid"
@@ -290,6 +487,12 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
     }
   }
 
+  assertUnique(
+    spec.architecture.edges.map((edge) =>
+      JSON.stringify([edge.from, edge.to, edge.label]),
+    ),
+    "Architecture edges",
+  );
   for (const edge of spec.architecture.edges) {
     if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) {
       throw new Error(
