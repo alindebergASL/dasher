@@ -223,7 +223,6 @@ function SessionFeedbackDialog({
           <button
             disabled={
               telemetry.evidenceTaskTarget === "" ||
-              telemetry.evidenceTaskStatus === "armed" ||
               telemetry.evidenceTaskStatus === "active"
             }
             onClick={onStartEvidenceTask}
@@ -231,7 +230,11 @@ function SessionFeedbackDialog({
           >
             {telemetry.evidenceTaskStatus === "complete"
               ? "Restart evidence task"
-              : "Start evidence task"}
+              : telemetry.evidenceTaskStatus === "armed"
+                ? "Task armed"
+                : telemetry.evidenceTaskStatus === "active"
+                  ? "Counting in progress"
+                  : "Start evidence task"}
           </button>
           <small>
             Counting begins after this dialog closes and stops only when the

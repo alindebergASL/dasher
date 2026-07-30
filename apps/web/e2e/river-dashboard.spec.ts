@@ -110,7 +110,13 @@ test("river dashboard interactions, evidence, and architecture", async ({
     feedback.getByLabel("Next action reviewed this session"),
   ).toHaveText("Yes");
   await feedback.getByLabel("Requested evidence").selectOption("next-action");
-  await feedback.getByRole("button", { name: "Start evidence task" }).click();
+  const startEvidenceTask = feedback.locator(".evidence-task-controls button");
+  await expect(startEvidenceTask).toHaveAccessibleName("Start evidence task");
+  await startEvidenceTask.focus();
+  await startEvidenceTask.click();
+  await expect(startEvidenceTask).toBeFocused();
+  await expect(startEvidenceTask).toBeEnabled();
+  await expect(startEvidenceTask).toHaveText("Task armed");
   await expect(feedback.getByLabel("Evidence task status")).toHaveText(
     "Starts when this dialog closes",
   );

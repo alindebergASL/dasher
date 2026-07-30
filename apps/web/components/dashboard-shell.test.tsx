@@ -133,6 +133,8 @@ describe("DashboardShell", () => {
     startTask.focus();
     fireEvent.click(startTask);
     expect(startTask).toHaveFocus();
+    expect(startTask).toBeEnabled();
+    expect(startTask).toHaveTextContent("Task armed");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Close session feedback" }),
     );
