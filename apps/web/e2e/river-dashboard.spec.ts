@@ -109,11 +109,50 @@ test("river dashboard interactions, evidence, and architecture", async ({
   await expect(
     feedback.getByLabel("Next action reviewed this session"),
   ).toHaveText("Yes");
-  await feedback.getByRole("radio", { name: "5" }).check();
-  await feedback.getByRole("checkbox", { name: "Missing context" }).check();
-  await feedback
-    .getByLabel("Missing information or workflow need")
-    .selectOption("More historical comparison");
+  await feedback.getByLabel("Requested evidence").selectOption("next-action");
+  await feedback.getByRole("button", { name: "Start evidence task" }).click();
+  await expect(feedback.getByLabel("Evidence task status")).toHaveText(
+    "Starts when this dialog closes",
+  );
+  await page.getByRole("button", { name: "Close session feedback" }).click();
+
+  await brief.getByRole("button", { name: "Evidence for Changed" }).click();
+  await page.getByRole("button", { name: "Close evidence" }).click();
+  await brief
+    .getByRole("button", { name: "Evidence for Next safe action" })
+    .click();
+  await page.getByRole("button", { name: "Close evidence" }).click();
+
+  await page
+    .getByRole("button", { name: "Session feedback · not saved" })
+    .click();
+  feedback = page.getByRole("dialog", { name: "Session feedback" });
+  await expect(feedback.getByLabel("Evidence opens this session")).toHaveText(
+    "4",
+  );
+  await expect(feedback.getByLabel("Evidence task interactions")).toHaveText(
+    "3",
+  );
+  await expect(feedback.getByLabel("Evidence task status")).toHaveText(
+    "Complete",
+  );
+
+  const rating = feedback.getByRole("radio", { name: "5" });
+  await rating.focus();
+  await rating.check();
+  await expect(rating).toBeFocused();
+  const missingContext = feedback.getByRole("checkbox", {
+    name: "Missing context",
+  });
+  await missingContext.focus();
+  await missingContext.check();
+  await expect(missingContext).toBeFocused();
+  const missingNeed = feedback.getByLabel(
+    "Missing information or workflow need",
+  );
+  await missingNeed.focus();
+  await missingNeed.selectOption("More historical comparison");
+  await expect(missingNeed).toBeFocused();
   await page.getByRole("button", { name: "Close session feedback" }).click();
 
   await page
@@ -137,6 +176,12 @@ test("river dashboard interactions, evidence, and architecture", async ({
   await expect(
     feedback.getByLabel("Next action reviewed this session"),
   ).toHaveText("No");
+  await expect(feedback.getByLabel("Evidence task interactions")).toHaveText(
+    "0",
+  );
+  await expect(feedback.getByLabel("Evidence task status")).toHaveText(
+    "Not started",
+  );
   await expect(feedback.getByRole("radio", { name: "5" })).not.toBeChecked();
   await page.getByRole("button", { name: "Close session feedback" }).click();
 
@@ -295,6 +340,29 @@ test("mobile keeps the two-column brief, freshness, and contained scrolling reac
     ),
   ).toBe(true);
   await page.getByRole("button", { name: "Close architecture" }).click();
+
+  await page
+    .getByRole("button", { name: "Session feedback · not saved" })
+    .click();
+  const feedback = page.getByRole("dialog", { name: "Session feedback" });
+  await expect(feedback).toBeVisible();
+  const feedbackBounds = await feedback.boundingBox();
+  expect(feedbackBounds).not.toBeNull();
+  expect(feedbackBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(feedbackBounds!.x + feedbackBounds!.width).toBeLessThanOrEqual(390);
+  expect(feedbackBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(feedbackBounds!.y + feedbackBounds!.height).toBeLessThanOrEqual(844);
+  expect(
+    await feedback.evaluate(
+      (element) => element.scrollHeight > element.clientHeight,
+    ),
+  ).toBe(true);
+  const needSelector = feedback.getByLabel(
+    "Missing information or workflow need",
+  );
+  await needSelector.scrollIntoViewIfNeeded();
+  await expect(needSelector).toBeVisible();
+  await page.getByRole("button", { name: "Close session feedback" }).click();
 
   await page.getByRole("button", { name: /02\s+Gauge details/i }).click();
   const table = page.locator(".table-wrap");

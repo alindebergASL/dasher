@@ -116,20 +116,38 @@ describe("DashboardShell", () => {
     expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
   });
 
-  it("keeps bounded instrumentation in tab memory and records next-action review", () => {
+  it("counts every evidence-task activation, requires the requested target, and preserves feedback focus", () => {
     render(<DashboardShell dashboard={dashboard} />);
-
-    for (const label of ["Changed", "Next safe action"]) {
-      fireEvent.click(
-        screen.getByRole("button", { name: `Evidence for ${label}` }),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
-    }
 
     fireEvent.click(
       screen.getByRole("button", { name: "Session feedback · not saved" }),
     );
-    const dialog = screen.getByRole("dialog", { name: "Session feedback" });
+    let dialog = screen.getByRole("dialog", { name: "Session feedback" });
+    const target = within(dialog).getByLabelText("Requested evidence");
+    target.focus();
+    fireEvent.change(target, { target: { value: "next-action" } });
+    expect(target).toHaveFocus();
+    const startTask = within(dialog).getByRole("button", {
+      name: "Start evidence task",
+    });
+    startTask.focus();
+    fireEvent.click(startTask);
+    expect(startTask).toHaveFocus();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Close session feedback" }),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Evidence for Changed" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+    fireEvent.click(screen.getByRole("button", { name: "Why this action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Session feedback · not saved" }),
+    );
+    dialog = screen.getByRole("dialog", { name: "Session feedback" });
     expect(
       within(dialog).getByLabelText("Evidence opens this session"),
     ).toHaveTextContent("2");
@@ -137,23 +155,35 @@ describe("DashboardShell", () => {
       within(dialog).getByLabelText("Next action reviewed this session"),
     ).toHaveTextContent("Yes");
     expect(
+      within(dialog).getByLabelText("Evidence task interactions"),
+    ).toHaveTextContent("3");
+    expect(
+      within(dialog).getByLabelText("Evidence task status"),
+    ).toHaveTextContent("Complete");
+    expect(
       within(dialog).getByText(/erased when the page reloads/i),
     ).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("radio", { name: "5" }));
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Unclear" }));
-    fireEvent.change(
-      within(dialog).getByLabelText("Missing information or workflow need"),
-      { target: { value: "Named owner or handoff" } },
-    );
+    const usefulness = within(dialog).getByRole("radio", { name: "5" });
+    usefulness.focus();
+    fireEvent.click(usefulness);
+    expect(usefulness).toHaveFocus();
 
-    expect(within(dialog).getByRole("radio", { name: "5" })).toBeChecked();
-    expect(
-      within(dialog).getByRole("checkbox", { name: "Unclear" }),
-    ).toBeChecked();
-    expect(
-      within(dialog).getByLabelText("Missing information or workflow need"),
-    ).toHaveValue("Named owner or handoff");
+    const unclear = within(dialog).getByRole("checkbox", { name: "Unclear" });
+    unclear.focus();
+    fireEvent.click(unclear);
+    expect(unclear).toHaveFocus();
+
+    const need = within(dialog).getByLabelText(
+      "Missing information or workflow need",
+    );
+    need.focus();
+    fireEvent.change(need, { target: { value: "Named owner or handoff" } });
+    expect(need).toHaveFocus();
+
+    expect(usefulness).toBeChecked();
+    expect(unclear).toBeChecked();
+    expect(need).toHaveValue("Named owner or handoff");
   });
 
   it("renders the overview, freshness state, and safe next action", () => {

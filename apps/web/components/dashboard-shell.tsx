@@ -95,10 +95,15 @@ const needOptions = [
 type Usefulness = (typeof usefulnessOptions)[number] | "";
 type NeedCategory = (typeof needOptions)[number] | "";
 type FeedbackIssue = "wrong" | "unclear" | "missing-context";
+type EvidenceTaskTarget = "changed" | "next-action";
+type EvidenceTaskStatus = "idle" | "armed" | "active" | "complete";
 
 interface SessionTelemetry {
   evidenceOpens: number;
   nextActionReviewed: boolean;
+  evidenceTaskTarget: EvidenceTaskTarget | "";
+  evidenceTaskStatus: EvidenceTaskStatus;
+  evidenceTaskInteractions: number;
   usefulness: Usefulness;
   issues: FeedbackIssue[];
   needCategory: NeedCategory;
@@ -110,12 +115,16 @@ function SessionFeedbackDialog({
   onUsefulness,
   onIssue,
   onNeedCategory,
+  onEvidenceTaskTarget,
+  onStartEvidenceTask,
 }: {
   telemetry: SessionTelemetry;
   onClose: () => void;
   onUsefulness: (value: Usefulness) => void;
   onIssue: (value: FeedbackIssue, checked: boolean) => void;
   onNeedCategory: (value: NeedCategory) => void;
+  onEvidenceTaskTarget: (value: EvidenceTaskTarget | "") => void;
+  onStartEvidenceTask: () => void;
 }) {
   const { closeButtonRef, containerRef } = useModalFocus<HTMLElement>(onClose);
 
@@ -167,7 +176,68 @@ function SessionFeedbackDialog({
               </output>
             </dd>
           </div>
+          <div>
+            <dt>Evidence task interactions</dt>
+            <dd>
+              <output aria-label="Evidence task interactions">
+                {telemetry.evidenceTaskInteractions}
+              </output>
+            </dd>
+          </div>
+          <div>
+            <dt>Evidence task status</dt>
+            <dd>
+              <output aria-label="Evidence task status">
+                {telemetry.evidenceTaskStatus === "idle"
+                  ? "Not started"
+                  : telemetry.evidenceTaskStatus === "armed"
+                    ? "Starts when this dialog closes"
+                    : telemetry.evidenceTaskStatus === "active"
+                      ? "Counting"
+                      : "Complete"}
+              </output>
+            </dd>
+          </div>
         </dl>
+        <div className="evidence-task-controls">
+          <label>
+            Requested evidence
+            <select
+              aria-label="Requested evidence"
+              disabled={
+                telemetry.evidenceTaskStatus === "armed" ||
+                telemetry.evidenceTaskStatus === "active"
+              }
+              onChange={(event) =>
+                onEvidenceTaskTarget(
+                  event.target.value as EvidenceTaskTarget | "",
+                )
+              }
+              value={telemetry.evidenceTaskTarget}
+            >
+              <option value="">Select one</option>
+              <option value="changed">Changed</option>
+              <option value="next-action">Next safe action</option>
+            </select>
+          </label>
+          <button
+            disabled={
+              telemetry.evidenceTaskTarget === "" ||
+              telemetry.evidenceTaskStatus === "armed" ||
+              telemetry.evidenceTaskStatus === "active"
+            }
+            onClick={onStartEvidenceTask}
+            type="button"
+          >
+            {telemetry.evidenceTaskStatus === "complete"
+              ? "Restart evidence task"
+              : "Start evidence task"}
+          </button>
+          <small>
+            Counting begins after this dialog closes and stops only when the
+            requested evidence opens. Wrong activations remain in the count.
+          </small>
+        </div>
         <fieldset>
           <legend>Usefulness rating</legend>
           <div className="bounded-options usefulness-options">
@@ -233,7 +303,11 @@ function ExecutiveBrief({
   onEvidence,
 }: {
   dashboard: Extract<DashboardSpec, { schemaVersion: "1.1" }>;
-  onEvidence: (ids: string[], recordsNextAction?: boolean) => void;
+  onEvidence: (
+    ids: string[],
+    recordsNextAction?: boolean,
+    evidenceTaskTarget?: EvidenceTaskTarget,
+  ) => void;
 }) {
   const items = [
     {
@@ -284,7 +358,15 @@ function ExecutiveBrief({
               aria-label={`Evidence for ${item.label}`}
               className="executive-brief-evidence"
               onClick={() =>
-                onEvidence(item.evidenceIds, item.label === "Next safe action")
+                onEvidence(
+                  item.evidenceIds,
+                  item.label === "Next safe action",
+                  item.label === "Changed"
+                    ? "changed"
+                    : item.label === "Next safe action"
+                      ? "next-action"
+                      : undefined,
+                )
               }
               type="button"
             >
@@ -305,6 +387,9 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
   const [telemetry, setTelemetry] = useState<SessionTelemetry>({
     evidenceOpens: 0,
     nextActionReviewed: false,
+    evidenceTaskTarget: "",
+    evidenceTaskStatus: "idle",
+    evidenceTaskInteractions: 0,
     usefulness: "",
     issues: [],
     needCategory: "",
@@ -316,18 +401,54 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
     () => dashboard.evidence.filter((item) => evidenceIds?.includes(item.id)),
     [dashboard.evidence, evidenceIds],
   );
-  const openEvidence = (ids: string[], recordsNextAction = false) => {
+  const recordEvidenceTaskActivation = () => {
+    setTelemetry((current) =>
+      current.evidenceTaskStatus === "active"
+        ? {
+            ...current,
+            evidenceTaskInteractions: current.evidenceTaskInteractions + 1,
+          }
+        : current,
+    );
+  };
+  const openEvidence = (
+    ids: string[],
+    recordsNextAction = false,
+    evidenceTaskTarget?: EvidenceTaskTarget,
+  ) => {
     setEvidenceIds(ids);
     setTelemetry((current) => ({
       ...current,
       evidenceOpens: current.evidenceOpens + 1,
       nextActionReviewed: current.nextActionReviewed || recordsNextAction,
+      evidenceTaskStatus:
+        current.evidenceTaskStatus === "active" &&
+        evidenceTaskTarget === current.evidenceTaskTarget
+          ? "complete"
+          : current.evidenceTaskStatus,
     }));
+  };
+  const closeFeedback = () => {
+    setFeedbackOpen(false);
+    setTelemetry((current) =>
+      current.evidenceTaskStatus === "armed"
+        ? { ...current, evidenceTaskStatus: "active" }
+        : current,
+    );
   };
   const modalOpen = architectureOpen || feedbackOpen || evidenceIds !== null;
 
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      onClickCapture={(event) =>
+        event.detail === 0 && recordEvidenceTaskActivation()
+      }
+      onKeyDownCapture={(event) =>
+        event.key === "Escape" && recordEvidenceTaskActivation()
+      }
+      onPointerDownCapture={recordEvidenceTaskActivation}
+    >
       <div
         aria-hidden={modalOpen || undefined}
         className="app-content"
@@ -386,7 +507,11 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
               <button
                 className="next-evidence"
                 onClick={() =>
-                  openEvidence(dashboard.nextAction.evidenceIds, true)
+                  openEvidence(
+                    dashboard.nextAction.evidenceIds,
+                    true,
+                    "next-action",
+                  )
                 }
                 type="button"
               >
@@ -465,7 +590,15 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
       ) : null}
       {feedbackOpen ? (
         <SessionFeedbackDialog
-          onClose={() => setFeedbackOpen(false)}
+          onClose={closeFeedback}
+          onEvidenceTaskTarget={(value) =>
+            setTelemetry((current) => ({
+              ...current,
+              evidenceTaskTarget: value,
+              evidenceTaskStatus: "idle",
+              evidenceTaskInteractions: 0,
+            }))
+          }
           onIssue={(value, checked) =>
             setTelemetry((current) => ({
               ...current,
@@ -476,6 +609,13 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
           }
           onNeedCategory={(value) =>
             setTelemetry((current) => ({ ...current, needCategory: value }))
+          }
+          onStartEvidenceTask={() =>
+            setTelemetry((current) => ({
+              ...current,
+              evidenceTaskStatus: "armed",
+              evidenceTaskInteractions: 0,
+            }))
           }
           onUsefulness={(value) =>
             setTelemetry((current) => ({ ...current, usefulness: value }))

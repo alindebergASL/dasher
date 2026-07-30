@@ -851,6 +851,51 @@ footer {
   font-size: 20px;
   font-weight: 750;
 }
+.evidence-task-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px 12px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.evidence-task-controls label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+.evidence-task-controls select,
+.evidence-task-controls button {
+  min-height: 38px;
+}
+.evidence-task-controls select {
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+}
+.evidence-task-controls button {
+  align-self: end;
+  padding: 0 14px;
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  background: var(--green);
+  color: white;
+  font-weight: 750;
+}
+.evidence-task-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.evidence-task-controls small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  line-height: 1.4;
+}
 .feedback-modal fieldset {
   margin: 0 0 16px;
   border: 1px solid var(--line);

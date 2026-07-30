@@ -14,6 +14,8 @@ const FOCUSABLE_SELECTOR = [
 export function useModalFocus<T extends HTMLElement>(onClose: () => void) {
   const containerRef = useRef<T>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     const previouslyFocused =
@@ -25,7 +27,7 @@ export function useModalFocus<T extends HTMLElement>(onClose: () => void) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -56,7 +58,7 @@ export function useModalFocus<T extends HTMLElement>(onClose: () => void) {
       window.removeEventListener("keydown", onKeyDown);
       previouslyFocused?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return { closeButtonRef, containerRef };
 }
