@@ -38,6 +38,23 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function replaceOccurrence(
+  source: string,
+  search: string,
+  occurrence: number,
+  replacement: string,
+): string {
+  let from = 0;
+  let found = -1;
+  for (let index = 0; index < occurrence; index += 1) {
+    found = source.indexOf(search, from);
+    if (found < 0)
+      throw new Error(`missing occurrence ${occurrence}: ${search}`);
+    from = found + search.length;
+  }
+  return `${source.slice(0, found)}${replacement}${source.slice(found + search.length)}`;
+}
+
 function parseRoadmapGateBoundaries(document: string): RoadmapGateBoundary[] {
   const boundaries: RoadmapGateBoundary[] = [];
   const counts = new Map<string, number>();
@@ -74,7 +91,13 @@ function parseRoadmapGateBoundaries(document: string): RoadmapGateBoundary[] {
       continue;
     }
     if (!gate) continue;
-    if (line.startsWith("### ") || line.trim().length === 0) {
+    if (line.startsWith("### ")) {
+      flush();
+      current = [line];
+      flush();
+      continue;
+    }
+    if (line.trim().length === 0) {
       flush();
       continue;
     }
@@ -114,12 +137,17 @@ const readmeClauses: Clause[] = [
   {
     label: "README no human-equivalent claim",
     pattern:
-      /No human sessions occurred, the agents are not\s+represented as human equivalents, and no 30-second human-usability claim is\s+made\./,
+      /No human sessions occurred, the agents are not represented as\s+human equivalents, and no 30-second human-usability claim is made\./,
+  },
+  {
+    label: "README honest provider diversity",
+    pattern:
+      /The six model IDs are distinct, but provider\s+diversity is not six-way: four are Claude-family models and two are OpenAI models\s+run through Codex\./,
   },
   {
     label: "README later gates independent",
     pattern:
-      /Later security, real-data, manager-user, and protected-release gates remain\s+independent\./,
+      /Later\s+security, real-data, manager-user, and protected-release gates remain independent\./,
   },
 ];
 
@@ -250,6 +278,10 @@ function deriveAgentResults(rows: string[][]) {
         (row) =>
           Number(row[8]) >= 1 &&
           Number(row[8]) <= 5 &&
+          (row[9] ?? "")
+            .split(",")
+            .map((flag) => flag.trim())
+            .every((flag) => allowedFeedbackFlags.has(flag)) &&
           row[10] !== undefined &&
           row[10].length > 0,
       ).length,
@@ -344,7 +376,7 @@ function parseRehearsalThresholdNarrative(
   document: string,
 ): Map<string, [number, number] | null> {
   const match = document.match(
-    /owner-approved synthetic thresholds are (\d+)\/(\d+) for four-part content, (\d+)\/(\d+) for\s+predicted evidence reachability, no pass threshold for mechanical replay, (\d+)\/(\d+)\s+for strict displayed types, and (\d+)\/(\d+) for bounded usefulness and need/,
+    /owner-approved synthetic thresholds are (\d+)\/(\d+) for four-part content, (\d+)\/(\d+) for\s+predicted evidence reachability, (\d+)\/(\d+) for mechanical replay, (\d+)\/(\d+) for strict\s+displayed types, and (\d+)\/(\d+) for bounded usefulness and need/,
   );
   if (!match || match.slice(1).some((value) => value === undefined)) {
     throw new Error("missing rehearsal threshold narrative");
@@ -355,14 +387,17 @@ function parseRehearsalThresholdNarrative(
       "Predicted evidence path within two interactions",
       [Number(match[3]), Number(match[4])],
     ],
-    ["Chosen evidence path mechanically opened", null],
     [
-      "Strict displayed statement-type mapping",
+      "Chosen evidence path mechanically opened",
       [Number(match[5]), Number(match[6])],
     ],
     [
-      "Bounded usefulness and need supplied",
+      "Strict displayed statement-type mapping",
       [Number(match[7]), Number(match[8])],
+    ],
+    [
+      "Bounded usefulness and need supplied",
+      [Number(match[9]), Number(match[10])],
     ],
   ]);
 }
@@ -593,6 +628,11 @@ const planClauses: Clause[] = [
       /explicitly replaced the plan's previously required\s+six-real-person Gate 1 with an owner-accepted synthetic product gate\./,
   },
   {
+    label: "plan honest provider diversity",
+    pattern:
+      /The six\s+model IDs are distinct, but provider diversity is not six-way: four are\s+Claude-family models and two are OpenAI models run through Codex\./,
+  },
+  {
     label: "plan no human-equivalent claim",
     pattern:
       /No human sessions were performed, no synthetic agent is\s+recorded as a human equivalent, and no 30-second human-comprehension claim is\s+made\./,
@@ -691,7 +731,7 @@ const rehearsalClauses: Clause[] = [
   {
     label: "rehearsal explicit thresholds",
     pattern:
-      /The owner-approved synthetic thresholds are 5\/6 for four-part content, 5\/6 for\s+predicted evidence reachability, no pass threshold for mechanical replay, 4\/6\s+for strict displayed types, and 6\/6 for bounded usefulness and need\./,
+      /The owner-approved synthetic thresholds are 5\/6 for four-part content, 5\/6 for\s+predicted evidence reachability, 6\/6 for mechanical replay, 4\/6 for strict\s+displayed types, and 6\/6 for bounded usefulness and need\./,
   },
   {
     label: "rehearsal aggregate content 6/6",
@@ -710,7 +750,7 @@ const rehearsalClauses: Clause[] = [
   {
     label: "rehearsal aggregate mechanical 6/6",
     pattern:
-      /\|\s*Chosen evidence path mechanically opened\s*\|\s*6\/6\s*\|\s*n\/a\s*\|/,
+      /\|\s*Chosen evidence path mechanically opened\s*\|\s*6\/6\s*\|\s*6\/6\s*\|/,
   },
   {
     label: "rehearsal aggregate bounded feedback 6/6",
@@ -741,19 +781,41 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
 
   it("locks and independently mutation-tests every Gate 2–7 block", () => {
     const actual = parseRoadmapGateBoundaries(roadmap);
-    expect(actual).toHaveLength(52);
+    expect(actual).toHaveLength(59);
     expect(actual).toEqual(expectedRoadmapGateBoundaries);
     expect(new Set(actual.map(({ key }) => key)).size).toBe(actual.length);
 
-    const normalizedRoadmap = normalizeWhitespace(roadmap);
+    const normalizedRoadmap = normalizeWhitespace(
+      extractSection(roadmap, "## Gate 2", "## Explicit deferrals"),
+    );
+    const seenTexts = new Map<string, number>();
     for (const boundary of expectedRoadmapGateBoundaries) {
-      expect(normalizedRoadmap.split(boundary.text)).toHaveLength(2);
-      const mutated = normalizedRoadmap.replace(
+      const totalOccurrences = expectedRoadmapGateBoundaries.filter(
+        ({ text }) => text === boundary.text,
+      ).length;
+      expect(normalizedRoadmap.split(boundary.text)).toHaveLength(
+        totalOccurrences + 1,
+      );
+      const occurrence = (seenTexts.get(boundary.text) ?? 0) + 1;
+      seenTexts.set(boundary.text, occurrence);
+      const mutated = replaceOccurrence(
+        normalizedRoadmap,
         boundary.text,
+        occurrence,
         `[REMOVED ${boundary.key}]`,
       );
       expect(mutated).not.toBe(normalizedRoadmap);
-      expect(mutated).not.toContain(boundary.text);
+      expect(mutated.split(boundary.text)).toHaveLength(totalOccurrences);
+
+      const alteredText = boundary.text.replace(/[A-Za-z0-9]/, "_");
+      const altered = replaceOccurrence(
+        normalizedRoadmap,
+        boundary.text,
+        occurrence,
+        alteredText,
+      );
+      expect(altered).not.toBe(normalizedRoadmap);
+      expect(altered.split(boundary.text)).toHaveLength(totalOccurrences);
     }
   });
 
@@ -893,7 +955,7 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
     const expectedThresholds = new Map<string, [number, number] | null>([
       ["Four-part content recovered", [5, 6]],
       ["Predicted evidence path within two interactions", [5, 6]],
-      ["Chosen evidence path mechanically opened", null],
+      ["Chosen evidence path mechanically opened", [6, 6]],
       ["Strict displayed statement-type mapping", [4, 6]],
       ["Bounded usefulness and need supplied", [6, 6]],
     ]);

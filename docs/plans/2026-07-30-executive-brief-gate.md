@@ -15,7 +15,9 @@ Status: ACCEPTED — OWNER-ACCEPTED SYNTHETIC VALIDATION
 After implementation and exact-head review, six isolated, distinct-model agents
 rehearsed the decision surface from a cold-load screenshot. The owner then
 inspected the dashboard and explicitly replaced the plan's previously required
-six-real-person Gate 1 with an owner-accepted synthetic product gate.
+six-real-person Gate 1 with an owner-accepted synthetic product gate. The six
+model IDs are distinct, but provider diversity is not six-way: four are
+Claude-family models and two are OpenAI models run through Codex.
 
 This amendment supersedes the human-only Gate 1 completion language in the
 historical tasks below. No human sessions were performed, no synthetic agent is

@@ -61,10 +61,11 @@ ADR-001 records the implemented, reviewed fixture foundation. Accepted ADR-002,
 ADR-003, and ADR-004 and the roadmap define gated future work. An accepted
 decision does not mean those systems are implemented or that Dasher is
 production- or pilot-ready. Gate 1 was accepted by explicit owner decision from
-a six-agent synthetic rehearsal. No human sessions occurred, the agents are not
-represented as human equivalents, and no 30-second human-usability claim is
-made. Later security, real-data, manager-user, and protected-release gates remain
-independent.
+a six-agent synthetic rehearsal. The six model IDs are distinct, but provider
+diversity is not six-way: four are Claude-family models and two are OpenAI models
+run through Codex. No human sessions occurred, the agents are not represented as
+human equivalents, and no 30-second human-usability claim is made. Later
+security, real-data, manager-user, and protected-release gates remain independent.
 
 See also the [product requirements](docs/product/PRODUCT_REQUIREMENTS.md) and
 [foundation implementation plan](docs/plans/2026-07-29-river-dashboard-foundation.md).

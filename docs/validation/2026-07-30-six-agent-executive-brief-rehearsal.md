@@ -38,14 +38,16 @@ Claude-family models and two are OpenAI models run through Codex.
 ## Aggregate rehearsal result
 
 The owner-approved synthetic thresholds are 5/6 for four-part content, 5/6 for
-predicted evidence reachability, no pass threshold for mechanical replay, 4/6
-for strict displayed types, and 6/6 for bounded usefulness and need.
+predicted evidence reachability, 6/6 for mechanical replay, 4/6 for strict
+displayed types, and 6/6 for bounded usefulness and need. Mechanical replay is
+reported independently from the agents' predictions and is a required
+acceptance condition.
 
 | Synthetic measure                               | Result | Rehearsal threshold |
 | ----------------------------------------------- | -----: | ------------------: |
 | Four-part content recovered                     |    6/6 |                 5/6 |
 | Predicted evidence path within two interactions |    6/6 |                 5/6 |
-| Chosen evidence path mechanically opened        |    6/6 |                 n/a |
+| Chosen evidence path mechanically opened        |    6/6 |                 6/6 |
 | Strict displayed statement-type mapping         |    4/6 |                 4/6 |
 | Bounded usefulness and need supplied            |    6/6 |                 6/6 |
 

@@ -14,6 +14,30 @@ const briefHeadlines = [
   "Review American River gauge",
 ];
 
+function relativeLuminance(rgb: string): number {
+  const channels = rgb
+    .match(/\d+(?:\.\d+)?/g)
+    ?.slice(0, 3)
+    .map(Number);
+  if (!channels || channels.length !== 3)
+    throw new Error(`invalid rgb: ${rgb}`);
+  const [red = 0, green = 0, blue = 0] = channels.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045
+      ? value / 12.92
+      : Math.pow((value + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const luminances = [
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  ].sort((left, right) => right - left);
+  return ((luminances[0] ?? 0) + 0.05) / ((luminances[1] ?? 0) + 0.05);
+}
+
 test("river dashboard interactions, evidence, and architecture", async ({
   page,
 }) => {
@@ -35,6 +59,18 @@ test("river dashboard interactions, evidence, and architecture", async ({
   for (const headline of briefHeadlines) {
     await expect(brief.getByText(headline, { exact: true })).toBeVisible();
   }
+  const importantColors = await brief
+    .locator(".brief-important")
+    .evaluate((element) => ({
+      foreground: getComputedStyle(
+        element.querySelector(".executive-brief-label")!,
+      ).color,
+      background: getComputedStyle(element.closest(".executive-brief-list")!)
+        .backgroundColor,
+    }));
+  expect(
+    contrastRatio(importantColors.foreground, importantColors.background),
+  ).toBeGreaterThanOrEqual(4.5);
   expect(
     await brief.evaluate((element) =>
       Boolean(
