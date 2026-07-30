@@ -49,7 +49,25 @@ test("river dashboard interactions, evidence, and architecture", async ({
     })),
   ).toEqual({ document: false, body: false });
 
-  await brief.getByRole("button", { name: "Evidence for Changed" }).click();
+  const changedEvidenceButton = brief.getByRole("button", {
+    name: "Evidence for Changed",
+  });
+  await changedEvidenceButton.focus();
+  expect(
+    await changedEvidenceButton.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        outlineColor: style.outlineColor,
+        outlineWidth: style.outlineWidth,
+        boxShadow: style.boxShadow,
+      };
+    }),
+  ).toEqual({
+    outlineColor: "rgb(255, 255, 255)",
+    outlineWidth: "3px",
+    boxShadow: "rgb(23, 108, 82) 0px 0px 0px 6px",
+  });
+  await changedEvidenceButton.click();
   const changedEvidence = page.getByRole("dialog", {
     name: "Sources and evidence",
   });

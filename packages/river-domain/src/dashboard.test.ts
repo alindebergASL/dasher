@@ -173,6 +173,24 @@ describe("createRiverDashboard", () => {
     if (summary?.kind === "summary") {
       expect(summary.claims[0]!.text).toMatch(/^0 gauges are rising/);
     }
+    expect(staleDashboard.executiveBrief.known.detail).toBe(
+      "0 gauges are rising and 0 gauges are falling based on fresh water-level readings.",
+    );
+    expect(staleDashboard.executiveBrief.changed).toEqual({
+      headline: "No material one-hour rise available",
+      detail:
+        "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
+      evidenceIds: ["usgs-11447650", "calculated-trends"],
+    });
+    expect(staleDashboard.executiveBrief.important.headline).toBe(
+      "2 items need attention",
+    );
+    expect(staleDashboard.executiveBrief.important.detail).toContain(
+      "Water-level reading is more than two hours old",
+    );
+    expect(staleDashboard.executiveBrief.important.detail).not.toContain(
+      "Stale threshold",
+    );
     const alertList = staleDashboard.pages[0]!.components.find(
       (component) => component.kind === "alert-list",
     );
