@@ -120,7 +120,11 @@ test("river dashboard interactions, evidence, and architecture", async ({
   await expect(feedback.getByLabel("Evidence task status")).toHaveText(
     "Starts when this dialog closes",
   );
-  await page.getByRole("button", { name: "Close session feedback" }).click();
+  await page.keyboard.press("Escape");
+  await expect(feedback).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Session feedback · not saved" }),
+  ).toBeFocused();
 
   await brief.getByRole("button", { name: "Evidence for Changed" }).click();
   await page.getByRole("button", { name: "Close evidence" }).click();
