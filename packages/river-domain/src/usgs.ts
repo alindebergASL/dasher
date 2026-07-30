@@ -1,16 +1,35 @@
 import { z } from "zod";
 
+export const USGS_PAYLOAD_MAX_BYTES = 5 * 1_024 * 1_024;
+export const USGS_MAX_TOTAL_OBSERVATIONS = 20_000;
+
+export const USGS_STRING_LIMITS = {
+  siteName: 256,
+  variableCode: 64,
+  variableDescription: 512,
+  unitCode: 32,
+  observationValue: 128,
+  isoTimestamp: 64,
+} as const;
+
 const SiteIdSchema = z.string().regex(/^\d{8,15}$/, "Invalid USGS site ID");
+const UsgsTimestampSchema = z
+  .string()
+  .max(USGS_STRING_LIMITS.isoTimestamp)
+  .datetime({ offset: true });
 
 const ValueSchema = z.object({
-  value: z.string(),
-  dateTime: z.string().datetime({ offset: true }),
+  value: z.string().max(USGS_STRING_LIMITS.observationValue),
+  dateTime: UsgsTimestampSchema,
 });
 
 const TimeSeriesSchema = z.object({
   sourceInfo: z.object({
-    siteName: z.string().min(1),
-    siteCode: z.array(z.object({ value: SiteIdSchema })).min(1),
+    siteName: z.string().min(1).max(USGS_STRING_LIMITS.siteName),
+    siteCode: z
+      .array(z.object({ value: SiteIdSchema }))
+      .min(1)
+      .max(4, "Too many site codes in USGS time series"),
     geoLocation: z.object({
       geogLocation: z.object({
         latitude: z.number().min(-90).max(90),
@@ -19,20 +38,44 @@ const TimeSeriesSchema = z.object({
     }),
   }),
   variable: z.object({
-    variableCode: z.array(z.object({ value: z.string().min(1) })).min(1),
-    variableDescription: z.string().min(1),
-    unit: z.object({ unitCode: z.string().min(1) }),
+    variableCode: z
+      .array(
+        z.object({
+          value: z.string().min(1).max(USGS_STRING_LIMITS.variableCode),
+        }),
+      )
+      .min(1)
+      .max(4, "Too many variable codes in USGS time series"),
+    variableDescription: z
+      .string()
+      .min(1)
+      .max(USGS_STRING_LIMITS.variableDescription),
+    unit: z.object({
+      unitCode: z.string().min(1).max(USGS_STRING_LIMITS.unitCode),
+    }),
     noDataValue: z.number(),
   }),
-  values: z.array(z.object({ value: z.array(ValueSchema) })).min(1),
+  values: z
+    .array(
+      z.object({
+        value: z
+          .array(ValueSchema)
+          .max(10_000, "Too many observations in USGS value group"),
+      }),
+    )
+    .min(1)
+    .max(4, "Too many value groups in USGS time series"),
 });
 
 const ResponseSchema = z.object({
   value: z.object({
     queryInfo: z.object({
-      creationTime: z.string().datetime({ offset: true }),
+      creationTime: UsgsTimestampSchema,
     }),
-    timeSeries: z.array(TimeSeriesSchema).min(1),
+    timeSeries: z
+      .array(TimeSeriesSchema)
+      .min(1)
+      .max(60, "Too many time series in USGS response"),
   }),
 });
 
@@ -60,6 +103,46 @@ export interface RiverGauge {
   retrievedAt: string;
 }
 
+function assertSerializedUsgsPayloadSize(input: unknown): void {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(input);
+  } catch (error) {
+    throw new Error("USGS payload must be JSON-serializable", { cause: error });
+  }
+
+  if (serialized === undefined) {
+    throw new Error("USGS payload must be JSON-serializable");
+  }
+
+  const byteLength = new TextEncoder().encode(serialized).byteLength;
+  if (byteLength > USGS_PAYLOAD_MAX_BYTES) {
+    throw new Error(
+      `USGS payload exceeds the ${USGS_PAYLOAD_MAX_BYTES}-byte serialized limit`,
+    );
+  }
+}
+
+function assertTotalObservationBudget(
+  response: z.infer<typeof ResponseSchema>,
+): void {
+  const totalObservations = response.value.timeSeries.reduce(
+    (responseTotal, timeSeries) =>
+      responseTotal +
+      timeSeries.values.reduce(
+        (seriesTotal, group) => seriesTotal + group.value.length,
+        0,
+      ),
+    0,
+  );
+
+  if (totalObservations > USGS_MAX_TOTAL_OBSERVATIONS) {
+    throw new Error(
+      `USGS payload exceeds the ${USGS_MAX_TOTAL_OBSERVATIONS}-observation cumulative limit`,
+    );
+  }
+}
+
 function friendlyRiverName(siteName: string): string {
   const upper = siteName.toUpperCase();
   if (upper.startsWith("SACRAMENTO")) return "Sacramento River";
@@ -68,7 +151,9 @@ function friendlyRiverName(siteName: string): string {
 }
 
 export function parseUsgsInstantaneousValues(input: unknown): RiverGauge[] {
+  assertSerializedUsgsPayloadSize(input);
   const response = ResponseSchema.parse(input);
+  assertTotalObservationBudget(response);
   const gauges = new Map<string, RiverGauge>();
 
   for (const timeSeries of response.value.timeSeries) {
