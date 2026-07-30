@@ -1,6 +1,6 @@
 # ADR-001: Dasher Foundation Architecture
 
-Status: Proposed
+Status: Accepted
 Date: 2026-07-29
 
 ## Decision
@@ -23,7 +23,7 @@ Browser
       -> Job queue
           -> Worker (connectors, normalization, metrics, planner, refresh)
               -> approved external sources (USGS first)
-              -> model gateway (organization BYOK / admin fallback)
+              -> model gateway (tenant-scoped approved provider connection)
               -> sandbox broker (generated-code jobs only)
                   -> isolated disposable runtime (no ambient secrets or network)
 ```
@@ -96,19 +96,28 @@ Generated code cannot be enabled merely by adding `eval`, `Function`, a subproce
 8. Complete audit records.
 9. Publish-time approval.
 
-Until that exists, the product may generate only `DashboardSpec` plus reviewed calculation expressions.
+Until that exists, models may propose only a strict `DashboardSpec`;
+deterministic reviewed services compute metrics.
 
 ## Source and network safety
 
-Connectors fetch through a broker that validates URL scheme/host, resolves and pins public addresses, blocks loopback/private/link-local/metadata networks, limits redirects and response size, enforces timeouts, and records the final URL. MCP servers are installed by administrators and exposed to users as named, capability-limited connections.
+Connectors fetch through a broker that validates URL scheme/host, resolves and pins public addresses, blocks loopback/private/link-local/metadata networks, limits redirects and response size, enforces timeouts, and records the final URL. Any future MCP server is administrator-approved and exposed to users only as a named, capability-limited connection under ADR-004.
 
 ## Model gateway
 
-The model gateway accepts a policy-scoped request, resolves organization BYOK or administrator fallback, redacts logs, enforces budget/rate limits, and records model/provider metadata without storing secrets. Model output is untrusted and must validate against the versioned schema. No model can directly publish, execute code, install MCP, or retrieve credentials.
+The model gateway accepts a policy-scoped request, resolves an approved
+tenant-scoped provider connection, redacts logs, enforces budget/rate limits,
+and records model/provider metadata without storing secrets. It never falls
+back across organizations, credential owners, billing principals, regions, or
+retention policies. Model output is untrusted and must validate against the
+versioned schema. No model can directly publish, execute code, install MCP, or
+retrieve credentials.
 
 ## Publication
 
-Private is default. Unlisted links are high entropy, revocable, optionally expiring, and excluded from indexing. Public publication requires an explicit preview and policy scan. Sensitive-source dashboards cannot be unlisted/public unless a configured redaction policy succeeds.
+The pilot is private-only. Unlisted and public publication are future
+capabilities requiring the separate authorization, isolation, revocation,
+cache, cookie, redaction, and human-approval gate defined by ADR-003.
 
 ## Refresh
 
@@ -140,6 +149,10 @@ Rejected as the durable target because multi-tenant authorization, jobs, and row
 - Architecture diagrams can remain accurate because they derive from executable metadata.
 - The first demo can be useful before model credentials or a sandbox are present.
 
-## Status transition
+## Acceptance record
 
-This ADR remains Proposed until the first foundation PR is reviewed. It becomes Accepted when the schema, river fixture pipeline, renderer, architecture dialog, and tests are merged.
+Accepted after foundation PR #1 merged into `main` at
+`4949591dbb032b9c8d5fbfbc48ba2cd3557cca59`. The schema, fixture pipeline,
+renderer, Architecture dialog, and tests passed independent exact-head reviews
+and GitHub CI. This acceptance records the reviewed foundation decision; it
+does not claim production or pilot readiness.

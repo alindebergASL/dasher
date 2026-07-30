@@ -2,6 +2,7 @@
 
 Status: Approved baseline
 Date: 2026-07-29
+Updated: 2026-07-30
 Domain: `luckbutton.com`
 Repository: `alindebergASL/dasher`
 
@@ -15,12 +16,22 @@ Invite-only pilot for managers and leaders, including CEOs and executive teams. 
 
 ## Initial source priority
 
-1. Web research, with visible citations and claim-level evidence reachable in no more than two clicks.
-2. CSV/XLSX upload.
-3. Google Sheets.
-4. Administrator-installed and administrator-approved MCP sources. Normal users see only safe, named connections.
+1. Secure CSV/XLSX upload for customer-owned data, with workbook, sheet, range,
+   transformation, and freshness evidence.
+2. A controlled USGS live-source proof through the same snapshot, job,
+   evidence, and dashboard contracts.
+3. A native read-only Google Sheets connector.
+4. Broad web research later, with visible citations and claim-level evidence
+   reachable within two interactions.
+5. Administrator-installed and administrator-approved remote MCP sources only
+   after the native connector proves the source contract. Normal users see
+   only safe, named, read-only connections.
 
 Later connector targets include Salesforce, HubSpot, Stripe, QuickBooks, Google Analytics, Snowflake, PostgreSQL, Airtable, Notion, and appropriate travel-data services. These are roadmap targets, not MVP scope.
+
+Controlled USGS may precede customer uploads as the first live connector and
+job-system proof. CSV/XLSX remains the first customer-owned-data product proof;
+broad research and generic connector breadth do not precede it.
 
 ## First vertical slice: Local River Conditions
 
@@ -60,7 +71,7 @@ A pilot user can go from the example request to a coherent dashboard without sel
 2. What changed?
 3. What deserves attention?
 4. What should I do or inspect next?
-5. Where did this claim come from?
+5. Can I reach the evidence for this claim within two interactions?
 
 ## Second vertical slice: Spending and Cash Flow
 
@@ -91,19 +102,24 @@ Every dashboard:
 
 ## Publication and access
 
-Initial release supports:
+The invite-only pilot supports:
 
 - Private: only explicitly authorized organization members.
-- Unlisted: revocable, high-entropy links; not indexed; optional expiry; no sensitive data by default.
-- Public: deliberately published and indexable only after an explicit review step.
 
-Password protection may follow. Public and unlisted publication are disabled for dashboards containing source classes or fields marked sensitive unless an administrator-approved redaction policy passes.
+Unlisted and public publication are future capabilities. They require a
+separate authorization, isolation, revocation, cache, cookie, redaction, and
+human-approval gate before they can be enabled. Password protection may follow
+that decision. Passing the private-pilot gates does not authorize anonymous
+access.
 
 ## AI credentials and model portability
 
 - Organization-level BYOK is the pilot default.
-- A server-administrator-managed fallback may be configured.
 - Provider credentials are encrypted and never exposed to generated code or browser clients.
+- Credentials are tenant-scoped, administrator-managed, auditable, revocable,
+  and usable only by the relevant gateway or broker.
+- Provider or credential fallback never crosses organizations, credential
+  owners, billing principals, regions, or retention policies.
 - Model adapters use an OpenAI-compatible boundary where practical.
 - The first release implements the architecture for local endpoints but validates only one known local deployment later; local-model support is not a launch dependency.
 
@@ -113,20 +129,18 @@ The first release supports manual refresh and one daily schedule per dashboard. 
 
 ## Generated code
 
-Dasher permits generated code for flexibility and creative visualizations, but never executes arbitrary code inside the web process, worker control plane, database host, or browser origin with application credentials.
+Generated code is a possible future isolated extension, not a pilot
+capability. `docs/security/GENERATED_CODE_GATE.md` remains `Status: CLOSED`.
+During the pilot, models may propose only a strict declarative
+`DashboardSpec`; reviewed deterministic services compute metrics, and the
+reviewed renderer displays validated component kinds.
 
-Generated code must run in a capability-bounded sandbox with:
-
-- No secrets by default.
-- No ambient filesystem or tenant-database access.
-- Deny-by-default network policy and explicit source allowlists.
-- CPU, memory, output-size, and wall-clock limits.
-- Immutable input bundles and explicit output contracts.
-- Dependency allowlists or reviewed, pinned build images.
-- Static and runtime policy checks.
-- Full provenance: prompt/request, code hash, runtime image, inputs, outputs, and logs.
-- Human approval before publishing code-backed components outside a private draft.
-- A safe declarative dashboard specification as the normal path; code is an isolated extension mechanism, not the control plane.
+No trusted-process execution, provider-hosted web search or code interpreter,
+model tool, arbitrary stdio MCP, browser-origin execution, or generated
+workload access to credentials may bypass the gate. A future isolated
+extension requires every sandbox, capability, resource, egress, provenance,
+output, review, and human-approval invariant in the generated-code gate, plus
+an explicit owner decision.
 
 ## Visual direction
 
