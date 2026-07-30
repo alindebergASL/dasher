@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 import {
@@ -134,5 +134,19 @@ describe("DashboardShell", () => {
     expect(
       screen.getByRole("dialog", { name: "Sources and evidence" }),
     ).toBeInTheDocument();
+  });
+
+  it("renders summary claims and metrics without React key errors", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const { container } = render(<DashboardShell dashboard={dashboard} />);
+
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(container.querySelectorAll(".summary-copy > p")).toHaveLength(3);
+      expect(container.querySelectorAll(".metric-card")).toHaveLength(4);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

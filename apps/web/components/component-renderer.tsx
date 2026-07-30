@@ -185,8 +185,8 @@ export function ComponentRenderer({
         <section className={`panel summary-panel tone-${component.tone}`}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="summary-copy">
-            {component.claims.map((claim) => (
-              <p key={claim.text}>
+            {component.claims.map((claim, index) => (
+              <p key={`${component.id}:claim:${index}`}>
                 {claim.text}{" "}
                 <button
                   aria-label={`Evidence for: ${claim.text}`}
@@ -206,8 +206,11 @@ export function ComponentRenderer({
         <section className="panel span-full">
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="metric-grid">
-            {component.metrics.map((metric) => (
-              <div className="metric-card" key={metric.label}>
+            {component.metrics.map((metric, index) => (
+              <div
+                className="metric-card"
+                key={`${component.id}:metric:${index}`}
+              >
                 <span>{metric.label}</span>
                 <strong>{metric.value}</strong>
                 {metric.change ? <small>{metric.change}</small> : null}
