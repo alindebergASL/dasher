@@ -139,7 +139,7 @@ describe("createRiverDashboard", () => {
     });
   });
 
-  it("states that configured checks are clear when no alert needs attention", () => {
+  it("keeps all-clear evidence non-empty for fresh complete gauges without thresholds", () => {
     const clearDashboard = createRiverDashboard(
       gauges.filter((gauge) => gauge.siteId !== "11446500"),
       {
@@ -147,6 +147,7 @@ describe("createRiverDashboard", () => {
       },
     );
 
+    expect(clearDashboard.freshness.status).toBe("fresh");
     expect(clearDashboard.executiveBrief.important).toEqual({
       statementTypes: ["interpreted"],
       headline: "Configured checks are clear",

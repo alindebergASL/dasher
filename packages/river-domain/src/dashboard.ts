@@ -234,6 +234,7 @@ export function createRiverDashboard(
               "No data-quality or user-defined threshold checks need attention.",
             evidenceIds: uniqueEvidenceIds(
               ...alerts.map((alert) => alert.evidenceIds),
+              ["calculated-trends"],
             ),
           },
     },
