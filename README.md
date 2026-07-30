@@ -54,13 +54,17 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - [ADR-003: Multi-tenant control plane](docs/architecture/ADR-003-multi-tenant-control-plane.md)
 - [ADR-004: Provider, OAuth, and MCP boundaries](docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
-- [Executive Brief target-role validation (pending)](docs/validation/2026-07-30-executive-brief-gate.md)
+- [Executive Brief owner-accepted synthetic validation](docs/validation/2026-07-30-executive-brief-gate.md)
+- [Six-agent Executive Brief rehearsal](docs/validation/2026-07-30-six-agent-executive-brief-rehearsal.md)
 
 ADR-001 records the implemented, reviewed fixture foundation. Accepted ADR-002,
 ADR-003, and ADR-004 and the roadmap define gated future work. An accepted
 decision does not mean those systems are implemented or that Dasher is
-production- or pilot-ready. The Executive Brief record remains pending until
-the real six-person protocol is completed; automated checks do not satisfy it.
+production- or pilot-ready. Gate 1 was accepted by explicit owner decision from
+a six-agent synthetic rehearsal. No human sessions occurred, the agents are not
+represented as human equivalents, and no 30-second human-usability claim is
+made. Later security, real-data, manager-user, and protected-release gates remain
+independent.
 
 See also the [product requirements](docs/product/PRODUCT_REQUIREMENTS.md) and
 [foundation implementation plan](docs/plans/2026-07-29-river-dashboard-foundation.md).

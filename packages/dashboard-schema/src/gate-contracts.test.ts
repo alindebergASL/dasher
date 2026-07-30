@@ -7,38 +7,77 @@ interface Clause {
   pattern: RegExp;
 }
 
-const roadmap = readFileSync(
-  new URL(
-    "../../../docs/roadmap/2026-07-30-private-pilot-roadmap.md",
-    import.meta.url,
-  ),
-  "utf8",
+function readDocument(relativePath: string): string {
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+}
+
+const readme = readDocument("../../../README.md");
+const roadmap = readDocument(
+  "../../../docs/roadmap/2026-07-30-private-pilot-roadmap.md",
 );
-const plan = readFileSync(
-  new URL(
-    "../../../docs/plans/2026-07-30-executive-brief-gate.md",
-    import.meta.url,
-  ),
-  "utf8",
+const plan = readDocument(
+  "../../../docs/plans/2026-07-30-executive-brief-gate.md",
 );
-const validation = readFileSync(
-  new URL(
-    "../../../docs/validation/2026-07-30-executive-brief-gate.md",
-    import.meta.url,
-  ),
-  "utf8",
+const validation = readDocument(
+  "../../../docs/validation/2026-07-30-executive-brief-gate.md",
 );
+const rehearsal = readDocument(
+  "../../../docs/validation/2026-07-30-six-agent-executive-brief-rehearsal.md",
+);
+
+const modelIds = [
+  "claude-fable-5",
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-haiku-4-5-20251001",
+  "gpt-5.6-sol",
+  "gpt-5.6-luna",
+] as const;
+
+function modelClauses(documentLabel: string): Clause[] {
+  return modelIds.map((model) => ({
+    label: `${documentLabel} model ${model}`,
+    pattern: new RegExp("`" + model.replaceAll(".", "\\.") + "`"),
+  }));
+}
+
+const readmeClauses: Clause[] = [
+  {
+    label: "README accepted synthetic links",
+    pattern:
+      /\[Executive Brief owner-accepted synthetic validation\]\(docs\/validation\/2026-07-30-executive-brief-gate\.md\)\s+- \[Six-agent Executive Brief rehearsal\]\(docs\/validation\/2026-07-30-six-agent-executive-brief-rehearsal\.md\)/,
+  },
+  {
+    label: "README no human-equivalent claim",
+    pattern:
+      /No human sessions occurred, the agents are not\s+represented as human equivalents, and no 30-second human-usability claim is\s+made\./,
+  },
+  {
+    label: "README later gates independent",
+    pattern:
+      /Later security, real-data, manager-user, and protected-release gates remain\s+independent\./,
+  },
+];
 
 const roadmapClauses: Clause[] = [
   {
-    label: "roadmap comprehension 5/6",
-    pattern:
-      /- At least 5 of 6 manager-shaped participants identify all four brief elements\s+within 30 seconds, uncoached\./,
+    label: "roadmap accepted synthetic status",
+    pattern: /^Status: ACCEPTED — OWNER-ACCEPTED SYNTHETIC VALIDATION$/m,
   },
   {
-    label: "roadmap evidence 5/6",
+    label: "roadmap no human-equivalent claim",
     pattern:
-      /- At least 5 of 6 reach evidence for a selected material claim within two\s+interactions\./,
+      /No human\s+sessions were conducted, no agent is represented as a human equivalent, and the\s+accepted result does not establish 30-second human comprehension or physical\s+interaction usability\./,
+  },
+  {
+    label: "roadmap synthetic content 6/6",
+    pattern:
+      /- All 6 of 6 synthetic structured answers recovered the intended Known,\s+Changed, Important, and Next safe action content\./,
+  },
+  {
+    label: "roadmap synthetic evidence 6/6 and replay",
+    pattern:
+      /- All 6 of 6 selected the requested evidence control and predicted no more than\s+two interactions; isolated Playwright replay opened every selected target in\s+one automated activation\./,
   },
   {
     label: "roadmap evidence integrity and freshness",
@@ -46,106 +85,157 @@ const roadmapClauses: Clause[] = [
       /- Every visible factual or calculated claim resolves to valid evidence; stale\s+or missing data is not presented as fresh\./,
   },
   {
-    label: "roadmap statement types 4/6",
+    label: "roadmap strict statement types 4/6",
     pattern:
-      /- At least 4 of 6 distinguish source facts, deterministic calculations, model\s+interpretation, and recommendations\./,
+      /- Exactly 4 of 6 reproduced the displayed source-fact, deterministic-\s+calculation, interpretation, and recommendation mapping without adding a\s+secondary type\./,
   },
   {
-    label: "roadmap all-six feedback",
+    label: "roadmap bounded feedback 6/6",
     pattern:
-      /- Every participant supplies a usefulness rating and one concrete missing\s+information or workflow need\./,
+      /- All 6 of 6 supplied a bounded usefulness rating and one bounded missing-\s+information or workflow-need category\./,
+  },
+  {
+    label: "roadmap explicit owner acceptance",
+    pattern:
+      /- The owner reviewed the dashboard and explicitly accepted the synthetic result\s+as the Gate 1 product decision\./,
+  },
+  {
+    label: "roadmap Gate 4 retains real-user benchmark",
+    pattern:
+      /- On the file-generated dashboard, at least 5 of 6 manager-shaped users identify\s+Known, Changed, Important, and Next safe action within 30 seconds, and\s+independently at least 5 of 6 reach requested evidence within two interactions\./,
+  },
+  {
+    label: "roadmap Gate 7 continues Gate 4 real-user goals",
+    pattern:
+      /- The Gate 4 real-user 30-second comprehension and two-interaction evidence\s+goals continue to pass on pilot dashboards\./,
   },
 ];
 
 const planClauses: Clause[] = [
   {
-    label: "plan pending status",
-    pattern: /Mark the record `Status: PENDING TARGET-ROLE VALIDATION`\./,
-  },
-  {
-    label: "plan human-only participants",
+    label: "plan accepted synthetic amendment",
     pattern:
-      /Models and agents may provide QA feedback but cannot count as participants\./,
+      /## Post-implementation governance amendment\s+Status: ACCEPTED — OWNER-ACCEPTED SYNTHETIC VALIDATION/,
   },
   {
-    label: "plan independent session outcomes",
+    label: "plan owner replaced real-person gate",
     pattern:
-      /Define two independent outcomes per session: comprehension passes when all four decision outcomes are correct without coaching within 30 seconds; evidence passes when the requested evidence opens within two counted interactions\./,
+      /explicitly replaced the plan's previously required\s+six-real-person Gate 1 with an owner-accepted synthetic product gate\./,
   },
   {
-    label: "plan independent aggregate 5/6",
+    label: "plan no human-equivalent claim",
     pattern:
-      /Define aggregate pass: at least five of six comprehension outcomes pass, independently at least five of six evidence outcomes pass,/,
+      /No human sessions were performed, no synthetic agent is\s+recorded as a human equivalent, and no 30-second human-comprehension claim is\s+made\./,
   },
   {
-    label: "plan statement types 4/6",
-    pattern: /at least four distinguish statement types/,
+    label: "plan retained synthetic metrics",
+    pattern:
+      /6-of-6 content recovery, 6-of-6\s+predicted evidence reachability, 6-of-6 mechanically valid one-activation paths,\s+4-of-6 strict statement-type mapping, and bounded usefulness\/need feedback from\s+all six\./,
   },
   {
-    label: "plan all-six feedback",
-    pattern: /every participant supplies usefulness and need fields/,
-  },
-  {
-    label: "plan separate record outcomes",
-    pattern: /separate comprehension\/evidence pass booleans/,
+    label: "plan later gates remain independent",
+    pattern:
+      /Later roadmap gates retain their independent security, real-data,\s+manager-user, and release requirements\./,
   },
 ];
 
 const validationClauses: Clause[] = [
   {
-    label: "validation pending status",
-    pattern: /^Status: PENDING TARGET-ROLE VALIDATION$/m,
+    label: "validation accepted synthetic status",
+    pattern: /^Status: ACCEPTED — OWNER-ACCEPTED SYNTHETIC VALIDATION$/m,
   },
   {
-    label: "validation independent outcome definitions",
+    label: "validation explicit gate replacement",
     pattern:
-      /The comprehension outcome passes when all four decision outcomes are correct\s+without coaching within 30 seconds\.\s+Independently, the evidence outcome passes when the requested target's evidence\s+opens within no more than two counted interactions\./,
+      /replaced the previously planned six-real-person gate with the bounded\s+six-agent rehearsal recorded below\./,
   },
   {
-    label: "validation comprehension 5/6",
-    pattern: /- at least five of six comprehension outcomes pass;/,
-  },
-  {
-    label: "validation independently evidence 5/6",
-    pattern: /- independently, at least five of six evidence outcomes pass;/,
-  },
-  {
-    label: "validation statement types 4/6",
+    label: "validation no human-equivalent claim",
     pattern:
-      /- at least four of six distinguish observed source facts, deterministic\s+calculations, interpretations, and recommendations; and/,
+      /No real-human usability sessions were conducted\. The agents are not represented\s+as humans or human-equivalent research participants\./,
   },
   {
-    label: "validation all-six feedback",
+    label: "validation accepted exact candidate",
     pattern:
-      /- all six supply a bounded usefulness rating and one bounded missing-information\s+or workflow-need category\./,
+      /- Dashboard HEAD: `9a8ef6d2dd53156c46118d8d71154d780b0b9c04`\s+- Dashboard tree: `76c3e0fe825217479b8876dbb63fc61e0e34329b`/,
   },
   {
-    label: "validation human-only decision",
+    label: "validation distinct isolated models",
     pattern:
-      /No model, agent, or automated result decides the roadmap consequence\./,
+      /- Isolation: six one-shot multimodal sessions with distinct model IDs, system\s+prompts, and manager\/community-leader personas\. Answers were not shared\./,
   },
+  ...modelClauses("validation"),
   {
-    label: "validation automation cannot count toward six",
+    label: "validation synthetic content 6/6",
     pattern:
-      /Automated tests, browser\s+checks, agents, and model reviews are engineering evidence only and do not count\s+toward the six target-role sessions\./,
+      /- all six structured answers recovered the intended Known, Changed, Important,\s+and Next safe action content;/,
   },
   {
-    label: "validation real target-role non-builder profile",
+    label: "validation synthetic evidence and replay 6/6",
     pattern:
-      /Recruit exactly six real managers or community leaders who did not build the\s+dashboard\. A participant must approach the dashboard as a new decision-support\s+view rather than as an implementer or coached reviewer\./,
+      /- all six selected the evidence control for the requested target and predicted\s+no more than two interactions;\s+- all six selected paths were mechanically verified to open the requested\s+evidence in one automated activation;/,
   },
   {
-    label: "validation separate stored outcomes",
-    pattern: /- separate comprehension-pass and evidence-pass booleans; and/,
-  },
-  {
-    label: "validation separate record columns",
-    pattern: /\| Comprehension pass \| Evidence pass \|/,
-  },
-  {
-    label: "validation zero-session pending result",
+    label: "validation strict statement types 4/6",
     pattern:
-      /Aggregate result: PENDING — 0 of 6 sessions completed; Gate 1 is not claimed\./,
+      /- four of six reproduced the displayed statement-type mapping exactly;/,
+  },
+  {
+    label: "validation all-six bounded feedback",
+    pattern:
+      /- all six supplied a bounded usefulness rating and one bounded need category;/,
+  },
+  {
+    label: "validation owner decision",
+    pattern:
+      /Aggregate result: ACCEPTED — owner-accepted synthetic Gate 1\. No human sessions\s+were performed or counted, and no claim of human-equivalent validation is made\./,
+  },
+];
+
+const rehearsalClauses: Clause[] = [
+  {
+    label: "rehearsal synthetic status",
+    pattern: /^Status: ACCEPTED AS SYNTHETIC GATE EVIDENCE$/m,
+  },
+  {
+    label: "rehearsal not human research",
+    pattern:
+      /This is a synthetic model rehearsal, not human research[\s\S]*must not be described\s+as human-equivalent validation\./,
+  },
+  ...modelClauses("rehearsal"),
+  {
+    label: "rehearsal honest provider diversity",
+    pattern:
+      /The six model IDs are distinct\. Provider diversity is not six-way: four are\s+Claude-family models and two are OpenAI Codex models\./,
+  },
+  {
+    label: "rehearsal aggregate content 6/6",
+    pattern: /\|\s*Four-part content recovered\s*\|\s*6\/6\s*\|\s*5\/6\s*\|/,
+  },
+  {
+    label: "rehearsal aggregate evidence 6/6",
+    pattern:
+      /\|\s*Predicted evidence path within two interactions\s*\|\s*6\/6\s*\|\s*5\/6\s*\|/,
+  },
+  {
+    label: "rehearsal aggregate strict types 4/6",
+    pattern:
+      /\|\s*Strict displayed statement-type mapping\s*\|\s*4\/6\s*\|\s*4\/6\s*\|/,
+  },
+  {
+    label: "rehearsal aggregate mechanical 6/6",
+    pattern:
+      /\|\s*Chosen evidence path mechanically opened\s*\|\s*6\/6\s*\|\s*n\/a\s*\|/,
+  },
+  {
+    label: "rehearsal aggregate bounded feedback 6/6",
+    pattern:
+      /\|\s*Bounded usefulness and need supplied\s*\|\s*6\/6\s*\|\s*6\/6\s*\|/,
+  },
+  {
+    label: "rehearsal owner decision without human claim",
+    pattern:
+      /explicitly replaced\s+the previously planned real-person Gate 1 with this owner-accepted synthetic\s+product gate\. No agent was entered as a human participant, and no human usability\s+claim is made\./,
   },
 ];
 
@@ -155,81 +245,102 @@ function missingClauses(document: string, clauses: Clause[]): string[] {
     .map(({ label }) => label);
 }
 
-describe("Gate 1 documentation contract", () => {
-  it("locks every governing roadmap threshold independently", () => {
+describe("owner-accepted synthetic Gate 1 documentation contract", () => {
+  it("locks the README summary without fabricating human validation", () => {
+    expect(missingClauses(readme, readmeClauses)).toEqual([]);
+  });
+
+  it("locks the roadmap decision, synthetic evidence, and retained boundaries", () => {
     expect(missingClauses(roadmap, roadmapClauses)).toEqual([]);
   });
 
-  it("locks plan independence, retained thresholds, records, and human-only status", () => {
+  it("locks the post-implementation governance amendment", () => {
     expect(missingClauses(plan, planClauses)).toEqual([]);
   });
 
-  it("locks validation independence, retained thresholds, records, and pending status", () => {
+  it("locks the accepted record without fabricating human validation", () => {
     expect(missingClauses(validation, validationClauses)).toEqual([]);
   });
 
-  it("rejects joint-threshold and weakened-threshold mutations", () => {
-    const regressedPlan = plan
+  it("locks six distinct model records and aggregate rehearsal outcomes", () => {
+    expect(missingClauses(rehearsal, rehearsalClauses)).toEqual([]);
+  });
+
+  it("rejects fabricated-human and weakened synthetic-evidence mutations", () => {
+    const fabricatedReadmeHumans = readme.replace(
+      "No human sessions occurred, the agents are not",
+      "Six human-equivalent sessions occurred, and the agents are",
+    );
+    expect(missingClauses(fabricatedReadmeHumans, readmeClauses)).toContain(
+      "README no human-equivalent claim",
+    );
+
+    const fabricatedHumans = validation.replace(
+      "No real-human usability sessions were conducted. The agents are not represented",
+      "Six human-equivalent usability sessions were conducted. The agents are represented",
+    );
+    expect(missingClauses(fabricatedHumans, validationClauses)).toContain(
+      "validation no human-equivalent claim",
+    );
+
+    const weakenedRoadmap = roadmap
       .replace(
-        "at least five of six comprehension outcomes pass, independently at least five of six evidence outcomes pass",
-        "the same five sessions pass both comprehension and evidence",
+        "All 6 of 6 synthetic structured answers",
+        "Only 5 of 6 synthetic structured answers",
       )
       .replace(
-        "at least four distinguish statement types",
-        "at least three distinguish statement types",
+        "All 6 of 6 selected the requested evidence control",
+        "Only 5 of 6 selected the requested evidence control",
       )
-      .replace(
-        "every participant supplies usefulness and need fields",
-        "five participants supply usefulness and need fields",
-      );
-    expect(missingClauses(regressedPlan, planClauses)).toEqual(
+      .replace("Exactly 4 of 6 reproduced", "Exactly 3 of 6 reproduced")
+      .replace("All 6 of 6 supplied", "Only 5 of 6 supplied");
+    expect(missingClauses(weakenedRoadmap, roadmapClauses)).toEqual(
       expect.arrayContaining([
-        "plan independent aggregate 5/6",
-        "plan statement types 4/6",
-        "plan all-six feedback",
+        "roadmap synthetic content 6/6",
+        "roadmap synthetic evidence 6/6 and replay",
+        "roadmap strict statement types 4/6",
+        "roadmap bounded feedback 6/6",
       ]),
     );
 
-    const regressedValidation = validation
-      .replace(
-        "- independently, at least five of six evidence outcomes pass;",
-        "- the same five sessions must pass both outcomes;",
-      )
-      .replace(
-        "- at least four of six distinguish",
-        "- at least three of six distinguish",
-      )
-      .replace("- all six supply", "- five of six supply");
-    expect(missingClauses(regressedValidation, validationClauses)).toEqual(
-      expect.arrayContaining([
-        "validation independently evidence 5/6",
-        "validation statement types 4/6",
-        "validation all-six feedback",
-      ]),
-    );
-
-    const missingRoadmapEvidenceIntegrity = roadmap.replace(
+    const missingEvidenceIntegrity = roadmap.replace(
       /- Every visible factual or calculated claim resolves to valid evidence; stale\s+  or missing data is not presented as fresh\.\n/,
       "",
     );
-    expect(
-      missingClauses(missingRoadmapEvidenceIntegrity, roadmapClauses),
-    ).toContain("roadmap evidence integrity and freshness");
+    expect(missingClauses(missingEvidenceIntegrity, roadmapClauses)).toContain(
+      "roadmap evidence integrity and freshness",
+    );
 
-    const automationCountedAsHuman = validation.replace(
-      "engineering evidence only and do not count",
-      "engineering evidence and may count",
+    const missingOwnerDecision = validation.replace(
+      /Aggregate result: ACCEPTED — owner-accepted synthetic Gate 1\.[\s\S]*?Gate 2 engineering may begin subject to its own constraints and approvals\./,
+      "Aggregate result: PENDING.",
+    );
+    expect(missingClauses(missingOwnerDecision, validationClauses)).toContain(
+      "validation owner decision",
+    );
+
+    const missingPlanAmendment = plan.replace(
+      "## Post-implementation governance amendment",
+      "## Historical note",
+    );
+    expect(missingClauses(missingPlanAmendment, planClauses)).toContain(
+      "plan accepted synthetic amendment",
+    );
+
+    const collapsedModelDiversity = rehearsal.replace(
+      "`gpt-5.6-luna`",
+      "`gpt-5.6-sol`",
+    );
+    expect(missingClauses(collapsedModelDiversity, rehearsalClauses)).toContain(
+      "rehearsal model gpt-5.6-luna",
+    );
+
+    const overstatedProviderDiversity = rehearsal.replace(
+      "Provider diversity is not six-way: four are",
+      "Provider diversity is fully six-way: four are",
     );
     expect(
-      missingClauses(automationCountedAsHuman, validationClauses),
-    ).toContain("validation automation cannot count toward six");
-
-    const coachedImplementersCounted = validation.replace(
-      /Recruit exactly six real managers or community leaders who did not build the\ndashboard\. A participant must approach the dashboard as a new decision-support\nview rather than as an implementer or coached reviewer\./,
-      "Recruit any six people, including coached implementers who built the dashboard.",
-    );
-    expect(
-      missingClauses(coachedImplementersCounted, validationClauses),
-    ).toContain("validation real target-role non-builder profile");
+      missingClauses(overstatedProviderDiversity, rehearsalClauses),
+    ).toContain("rehearsal honest provider diversity");
   });
 });

@@ -2,11 +2,34 @@
 
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
-**Goal:** Make known, changed, important, and next-safe-action information explicitly comprehensible within 30 seconds, with evidence reachable in no more than two interactions, while preserving the reviewed deterministic fixture and recording an honest human-validation gate.
+**Goal:** Make known, changed, important, and next-safe-action information explicit, with evidence reachable in no more than two interactions, while preserving the reviewed deterministic fixture. The original human-validation completion method is historical and is superseded by the governance amendment below.
 
-**Architecture:** Add a backward-compatible DashboardSpec 1.1 executive-brief contract while continuing to parse 1.0 dashboards. The deterministic river domain constructs three evidence-linked decision claims (`known`, `changed`, `important`); the existing top-level `nextAction` is rendered as the fourth brief item. The web app renders the brief before detailed components and keeps all evidence in the existing bounded modal. Human task-comprehension evidence remains a separate, non-fabricated gate; agent/browser checks do not count as target-role participants.
+**Architecture:** Add a backward-compatible DashboardSpec 1.1 executive-brief contract while continuing to parse 1.0 dashboards. The deterministic river domain constructs three evidence-linked decision claims (`known`, `changed`, `important`); the existing top-level `nextAction` is rendered as the fourth brief item. The web app renders the brief before detailed components and keeps all evidence in the existing bounded modal. The original plan separated human task-comprehension evidence from agent/browser checks; that completion rule is superseded by the explicit owner-accepted synthetic amendment below without reclassifying agents as humans.
 
 **Tech Stack:** TypeScript, Zod, React/Next.js, Vitest/Testing Library, Playwright, Markdown validation record.
+
+## Post-implementation governance amendment
+
+Status: ACCEPTED — OWNER-ACCEPTED SYNTHETIC VALIDATION
+
+After implementation and exact-head review, six isolated, distinct-model agents
+rehearsed the decision surface from a cold-load screenshot. The owner then
+inspected the dashboard and explicitly replaced the plan's previously required
+six-real-person Gate 1 with an owner-accepted synthetic product gate.
+
+This amendment supersedes the human-only Gate 1 completion language in the
+historical tasks below. No human sessions were performed, no synthetic agent is
+recorded as a human equivalent, and no 30-second human-comprehension claim is
+made. The accepted synthetic record preserves 6-of-6 content recovery, 6-of-6
+predicted evidence reachability, 6-of-6 mechanically valid one-activation paths,
+4-of-6 strict statement-type mapping, and bounded usefulness/need feedback from
+all six. Later roadmap gates retain their independent security, real-data,
+manager-user, and release requirements.
+
+The governing record is
+[`docs/validation/2026-07-30-executive-brief-gate.md`](../validation/2026-07-30-executive-brief-gate.md).
+Sections below remain the historical implementation plan and protocol design;
+where they require real-person Gate 1 completion, this amendment controls.
 
 ---
 
@@ -14,7 +37,7 @@
 
 - Preserve the Sacramento USGS fixture bytes and all existing calculations, pages, evidence, Architecture UI, and generated-code `Status: CLOSED` gate.
 - Do not add authentication, persistence, cookies, telemetry backends, uploads, live USGS, model/provider calls, OAuth, MCP, public publication, or deployment.
-- Do not claim Gate 1 passes until at least five of six real target-role participants satisfy the comprehension criterion and, independently, at least five of six satisfy the evidence criterion. Models and agents may provide QA feedback but cannot count as participants.
+- Historical Gate 1 completion requirement, superseded by the amendment above: require five of six real target-role participants for comprehension and, independently, five of six for evidence; models and agents could not count as participants.
 - Do not retain participant names, sensitive notes, screen recordings, or raw interaction telemetry. The validation record may contain only anonymous session IDs, rounded timings, bounded outcome fields, and non-sensitive aggregate observations.
 - Keep all brief strings and evidence-reference arrays within existing DashboardSpec budgets, include brief references in global complexity accounting, and fail closed on missing evidence.
 - Maintain a single bounded accessor-free parser snapshot; never reread the caller's original object.
@@ -109,7 +132,7 @@
 
 ### Task 5: Create the honest target-role validation record
 
-**Objective:** Define and later record the six-person comprehension test without storing real customer data or substituting agent results.
+**Historical objective, superseded by the amendment above:** Define and later record the six-person comprehension test without storing real customer data or substituting agent results.
 
 **Files:**
 
@@ -118,7 +141,7 @@
 
 **Steps:**
 
-1. Mark the record `Status: PENDING TARGET-ROLE VALIDATION`.
+1. Historical status before the amendment: `Status: PENDING TARGET-ROLE VALIDATION`.
 2. Define the participant profile: manager/community leader who did not build the dashboard.
 3. Define the cold-load script: 30 seconds without coaching; ask the participant to identify known, changed, important, and next safe action; then ask them to open evidence for the named change or action.
 4. Ask each participant to distinguish observed source facts, deterministic calculations, interpretations, and recommendations; at least four of six must succeed.
@@ -131,7 +154,7 @@
 
 ### Task 6: Exact-head verification and PR checkpoint
 
-**Objective:** Produce a reviewed immutable candidate without deploying or claiming the human gate passed.
+**Historical objective, superseded by the amendment above:** Produce a reviewed immutable candidate without deploying or claiming the human gate passed.
 
 **Steps:**
 
@@ -140,4 +163,4 @@
 3. Obtain independent exact-head spec and adversarial reviews; remediate all blocker/important findings in a new commit and repeat exact-head review.
 4. Push only the approved immutable head, open a scoped PR, and inspect clean-checkout CI on that exact head.
 5. Merge only after all protected gates pass and authorization remains valid; verify post-merge `main` CI.
-6. Do not deploy. Do not mark `executive-brief` complete until the real six-session record reaches the accepted threshold.
+6. Do not deploy. The historical completion rule required a real six-session record; the owner-accepted synthetic amendment above now controls Gate 1 completion.
