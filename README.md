@@ -26,7 +26,14 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm test:e2e
+pnpm audit --audit-level high
+pnpm audit --prod --audit-level high
 ```
+
+The same gates run in [GitHub Actions](.github/workflows/ci.yml). Current
+evidence and caveats are recorded in the
+[foundation readiness status](docs/status/2026-07-30-foundation-readiness.md)
+and [security status](docs/security/2026-07-30-security-status.md).
 
 ## Safety status
 

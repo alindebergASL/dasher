@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js 22, pnpm 10.14.0 (`packageManager` in root `package.json`), TypeScript, Next.js 16, React 19, Zod 4, Vitest 4, Testing Library, ESLint 10 (`typescript-eslint`), Prettier 3 (defaults, no config file), Playwright 1.62 (Chromium only), GitHub Actions.
 
-**Current verification surface (must never regress):** root scripts `format:check`, `lint` (`eslint . --max-warnings 0`), `typecheck` (recursive `tsc --noEmit` ×3), `test` (recursive `vitest run` ×3 — **32 unit/component tests today**: 10 in `packages/dashboard-schema/src/schema.test.ts`, 5 in `packages/river-domain/src/usgs.test.ts`, 4 in `packages/river-domain/src/metrics.test.ts`, 6 in `packages/river-domain/src/dashboard.test.ts`, 7 in `apps/web/components/dashboard-shell.test.tsx`), `build` (`next build` for `@dasher/web`), `test:e2e` (2 Playwright Chromium tests in `apps/web/e2e/river-dashboard.spec.ts`; the webServer runs `pnpm start`, so `pnpm build` must precede `pnpm test:e2e`).
+**Current verification surface (must never regress):** root scripts `format:check`, `lint` (`eslint . --max-warnings 0`), `typecheck` (recursive `tsc --noEmit` ×3), `test` (recursive `vitest run` ×3 — **31 unit/component tests at baseline**: 9 in `packages/dashboard-schema/src/schema.test.ts`, 5 in `packages/river-domain/src/usgs.test.ts`, 4 in `packages/river-domain/src/metrics.test.ts`, 6 in `packages/river-domain/src/dashboard.test.ts`, 7 in `apps/web/components/dashboard-shell.test.tsx`), `build` (`next build` for `@dasher/web`), `test:e2e` (2 Playwright Chromium tests in `apps/web/e2e/river-dashboard.spec.ts`; the webServer runs `pnpm start`, so `pnpm build` must precede `pnpm test:e2e`).
 
 ---
 
@@ -79,9 +79,9 @@
    - "rejects a trend series with an excessive number of points" (5,001 points).
 2. Run `pnpm --filter @dasher/dashboard-schema test` — expect the 5 new tests to fail.
 3. Implement in `packages/dashboard-schema/src/schema.ts`:
-   - Uniqueness: extend the existing semantic-validation section of `parseDashboardSpec` (the `assertUnique` checks at schema.ts:196–285) to also assert uniqueness of `claims[].text` per summary component, `metrics[].label` per metric-grid component, and the `` `${from}→${to}→${label}` `` tuple across `architecture.edges`.
-   - Bounds (add `.max()`, keep existing `.min()`; current planner emits 2 pages, 8 components, 3 claims, 4 metrics, 3 gauges, 4 evidence records, 6 nodes, 6 edges, 4 stage points — all far inside): `pages` ≤ 16; `components` per page ≤ 24; `claims` ≤ 24; `metrics` ≤ 24; map/table `gauges` ≤ 200; `ranking.items` ≤ 100; `alert-list.alerts` ≤ 200; `trend-list.series` ≤ 100; trend `points` ≤ 5,000 (keep `.min(2)` at schema.ts:111–113); `evidence` ≤ 500; `architecture.nodes` ≤ 64 (keep `.min(2)`); `architecture.edges` ≤ 256.
-4. Run `pnpm --filter @dasher/dashboard-schema test` (10 existing + 5 new pass), then `pnpm --filter @dasher/river-domain test` — the 6 planner tests in `packages/river-domain/src/dashboard.test.ts` prove the deterministic planner output still validates. Run `pnpm typecheck`.
+   - Uniqueness: extend the existing semantic-validation section of `parseDashboardSpec` to assert uniqueness of `claims[].text` per summary component, `metrics[].label` per metric-grid component, and the collision-safe `JSON.stringify([from, to, label])` tuple across `architecture.edges`.
+   - Bounds (add `.max()`, keep existing `.min()`; current planner output remains far inside): `pages` ≤ 16; `components` per page ≤ 24; `claims` and `metrics` ≤ 24; map/table `gauges` ≤ 200; `ranking.items` and `trend-list.series` ≤ 100; `alert-list.alerts` ≤ 200; trend `points` ≤ 5,000; `evidence` ≤ 500; `architecture.nodes` ≤ 64; `architecture.edges` ≤ 256. Final-review remediation additionally caps every `evidenceIds` list and every string category, imposes a 1 MiB serialized-spec ceiling, and enforces global item, trend-point, and evidence-reference budgets.
+4. Run `pnpm --filter @dasher/dashboard-schema test` (9 existing + 5 new pass), then `pnpm --filter @dasher/river-domain test` — the 6 planner tests in `packages/river-domain/src/dashboard.test.ts` prove the deterministic planner output still validates. Run `pnpm typecheck`.
 5. Commit: `feat: bound dashboard spec arrays and enforce key uniqueness`
 
 ---
@@ -99,8 +99,8 @@
 
 1. Write a failing test in `apps/web/components/dashboard-shell.test.tsx` (reuse the existing fixture-driven setup at the top of the file): render `DashboardShell` with the fixture-derived dashboard, spy on `console.error`, and assert no React "Encountered two children with the same key" (or any) error is emitted, and that all three summary claims and all four metric cards render as distinct elements. (This pins current behavior; it will pass before the change too — its role is regression protection. The behavioral driver is step 2's code review of the key expressions.)
 2. In `apps/web/components/component-renderer.tsx`:
-   - Line 189: change `<p key={claim.text}>` to a component-scoped positional key, `` key={`${component.id}:claim:${index}`} `` (add `index` to the `.map` callback at line 188). Positional keys are correct here: the spec is an immutable value replaced wholesale per ADR-001's immutable-dashboard-version contract, and claims carry no identity field.
-   - Line 210: change `key={metric.label}` to `` key={`${component.id}:metric:${index}`} `` likewise (map at line 209).
+   - Line 189: change `<p key={claim.text}>` to a component-scoped positional key, ``key={`${component.id}:claim:${index}`}`` (add `index` to the `.map` callback at line 188). Positional keys are correct here: the spec is an immutable value replaced wholesale per ADR-001's immutable-dashboard-version contract, and claims carry no identity field.
+   - Line 210: change `key={metric.label}` to ``key={`${component.id}:metric:${index}`}`` likewise (map at line 209).
    - Leave the nine id-keyed lists (`dashboard-shell.tsx:47,142,216`; `component-renderer.tsx:133,237,262,298,343`; `architecture-dialog.tsx:55`) untouched — Task 2's edge-uniqueness check now backs the composite key at `architecture-dialog.tsx:55`.
 3. Run `pnpm --filter @dasher/web test` (7 existing + 1 new pass), `pnpm typecheck`, `pnpm lint`, `pnpm format:check`.
 4. Commit: `fix: use stable component-scoped keys for claims and metrics`
@@ -118,10 +118,10 @@
 
 **Steps:**
 
-1. Write the test file (it runs under the package's existing bare `vitest run`, Node environment; use `node:fs` + `node:path`, resolving the repo root as `../../..` from the test file — the same relative-root convention the fixture imports use):
+1. Write the test file (it runs under the package's existing bare `vitest run`, Node environment; use `node:fs` + `node:path`, resolving the repo root as `../../..` from the test file):
    - "the generated-code gate remains CLOSED": read `docs/security/GENERATED_CODE_GATE.md` and assert it contains the exact line `Status: CLOSED`.
-   - "no dynamic code execution primitives in first-party source": recursively enumerate (`fs.readdirSync(dir, { recursive: true })`, Node 22) all `.ts`/`.tsx`/`.mjs` files under `apps/web` and `packages`, skipping `node_modules`, `.next`, `test-results`, and this test file itself; assert none contains `eval(`, `new Function(`, `child_process`, or `dangerouslySetInnerHTML`. (None does today — `component-renderer.tsx` renders only declarative JSX and an inline SVG polyline.)
-2. Run `pnpm --filter @dasher/dashboard-schema test` — both new tests pass immediately; temporarily edit the gate doc's status line locally to confirm the first test fails, then revert (no committed change to the doc).
+   - Add a clearly labeled static regression tripwire that recursively scans first-party `.js`, `.jsx`, `.cjs`, `.mjs`, `.ts`, `.tsx`, `.cts`, and `.mts` files while excluding generated/dependency directories and the probe test itself. Regex probes cover whitespace and common indirect spellings of eval/Function, dynamic import, child processes, VM/worker runtimes, WebAssembly compilation/instantiation, Deno/Bun process APIs, `document.write`, and unsafe HTML sinks. Representative adversarial spellings must be unit-tested. This tripwire is defense in depth only; it is not sandbox or generated-code isolation proof.
+2. Run `pnpm --filter @dasher/dashboard-schema test` — the gate-status, adversarial-probe, and clean-source tripwire tests pass; temporarily edit the gate doc's status line locally to confirm the first test fails, then revert (no committed change to the doc).
 3. Run `pnpm lint`, `pnpm format:check`, `pnpm typecheck`.
 4. Commit: `test: guard generated-code gate closed status`
 
@@ -141,7 +141,7 @@
 
 1. Create `docs/status/2026-07-30-foundation-readiness.md` with sections:
    - **Scope**: branch `feat/river-dashboard-foundation`, baseline commit `41ff309`, plus the commits from Tasks 1–7 of this plan (list them by subject once made).
-   - **Verification results**: a table of every gate (`pnpm install --frozen-lockfile`, `format:check`, `lint`, `typecheck`, `test`, `build`, `test:e2e`, `pnpm audit`, `pnpm audit --prod`) with pass/fail, the exact command, and the unit-test count (32 at baseline; expected 41 after Tasks 1–4: +3 usgs, +5 schema, +1 shell, +2 gate — CI requirement is **31+** and must be restated here with the actual number from the final run). Results must come from actually running the commands (Task 7), never from pasted summaries.
+   - **Verification results**: a table of every gate (`pnpm install --frozen-lockfile`, `format:check`, `lint`, `typecheck`, `test`, `build`, `test:e2e`, `pnpm audit`, `pnpm audit --prod`) with pass/fail, the exact command, and the unit-test count (31 at baseline; expected pre-remediation total 42 after Tasks 1–4: dashboard-schema package 16 = 14 schema + 2 gate, river-domain package 18 = 8 USGS + 4 metrics + 6 dashboard, web 8 — CI requirement is **31+** and must be restated here with the actual number from the final run). Results must come from actually running the commands (Task 7), never from pasted summaries. Review-remediation tests added afterward change the final count; the exact Task 7 rerun is authoritative.
    - **Known deltas**: the 7-task plan landed as one squashed commit; `docs/architecture/ADR-001-foundation.md` and `ADR-002` remain `Status: Proposed` (ADR-001 flips to Accepted only after merge — a controller action); ADR-001's repository layout is aspirational (`apps/worker`, `packages/ui|provenance|model-gateway|sandbox-contract`, `infra/*` do not exist yet); package-level `lint` scripts actually run `tsc --noEmit` (root `pnpm lint` is the only ESLint entry point).
 2. Create `docs/security/2026-07-30-security-status.md` with sections:
    - **Posture summary** (mirrors and extends README "Safety status"): fixture mode only; no live USGS, model, or generated-code paths; generated-code gate `Status: CLOSED` and now test-guarded (Task 4); `SafeSourceUrlSchema` rejects non-HTTP(S) and credential-bearing URLs; USGS parser and DashboardSpec arrays now bounded (Tasks 1–2).
@@ -166,22 +166,22 @@
 1. Create `.github/workflows/ci.yml`:
    - `name: ci`; `on: { push: { branches: [main] }, pull_request: {} }`; `permissions: { contents: read }`; `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`.
    - Single job `verify` on `ubuntu-latest`, `timeout-minutes: 30`, `env: { NEXT_TELEMETRY_DISABLED: "1" }`, steps in exactly this order (mirroring README's Verification block plus this plan's additions):
-     1. `actions/checkout@v4`.
-     2. `pnpm/action-setup@v4` with no explicit version — it reads `packageManager: pnpm@10.14.0` from the root `package.json`, keeping pnpm 10 pinned in one place.
-     3. `actions/setup-node@v4` with `node-version: 22` and `cache: pnpm`.
+     1. `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (`v4`).
+     2. `pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1` (`v4`) with no explicit version — it reads `packageManager: pnpm@10.14.0` from the root `package.json`, keeping pnpm 10 pinned in one place.
+     3. `actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020` (`v4`) with `node-version: 22` and `cache: pnpm`.
      4. `pnpm install --frozen-lockfile` (fails on any lockfile drift — the frozen-install requirement).
      5. `pnpm format:check` (Prettier).
      6. `pnpm lint` (ESLint, `--max-warnings 0`).
      7. `pnpm typecheck`.
-     8. `pnpm test` (runs all unit/component suites — 41 expected, ≥ 31 required).
+     8. `pnpm test` (runs all unit/component suites — 42 expected before review-remediation tests, ≥ 31 required).
      9. `pnpm build` (Next production build; must precede e2e because `apps/web/playwright.config.ts` `webServer` runs `pnpm start`).
      10. `pnpm --filter @dasher/web exec playwright install --with-deps chromium` (Chromium only, matching the single `chromium` project in `apps/web/playwright.config.ts`).
      11. `pnpm test:e2e`.
      12. Full audit: `pnpm audit --audit-level high`.
      13. Prod audit: `pnpm audit --prod --audit-level high`.
-     14. Gate guard (redundant with Task 4's test, cheap defense-in-depth): `grep -q "Status: CLOSED" docs/security/GENERATED_CODE_GATE.md`.
+     14. Gate guard (redundant with Task 4's test, cheap defense-in-depth): `grep -qx 'Status: CLOSED' docs/security/GENERATED_CODE_GATE.md`.
      15. Artifact hygiene — clean tree: `git status --porcelain` must be empty (`test -z "$(git status --porcelain)"`), proving builds/tests generate nothing outside the gitignored `apps/web/.next/`, `apps/web/test-results/`, `playwright-report/`, `*.tsbuildinfo` set.
-     16. `actions/upload-artifact@v4` with `if: failure()`, `name: playwright-artifacts`, paths `apps/web/playwright-report/` and `apps/web/test-results/`, `retention-days: 7`, `if-no-files-found: ignore` (bounded retention; artifacts only on failure — nothing uploaded on green runs).
+     16. `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` (`v4`) with `if: failure()`, `name: playwright-artifacts`, paths `apps/web/playwright-report/` and `apps/web/test-results/`, `retention-days: 7`, `if-no-files-found: ignore` (bounded retention; artifacts only on failure — nothing uploaded on green runs).
    - Note honored: ADR-002's "CI never calls USGS" holds — every data path in CI is the checked-in fixture.
 2. Validate the workflow YAML locally by parsing it (e.g. `node -e "..."` with a YAML parse via `pnpm exec`, or careful review — no `act` dependency required); confirm step order matches README.
 3. Run `pnpm format:check` (Prettier also checks YAML).
@@ -213,11 +213,14 @@
    pnpm test:e2e
    pnpm audit --audit-level high
    pnpm audit --prod --audit-level high
+   grep -qx 'Status: CLOSED' docs/security/GENERATED_CODE_GATE.md
    git status --short
    git status --ignored --short
+   git diff --check
    ```
 
-   Expectations: every gate passes; unit-test total ≥ 31 (expected 41: 13 schema + 8 usgs + 4 metrics + 6 dashboard + 8 web + 2 gate-guard); both Playwright tests pass; only intended source files tracked; generated directories (`node_modules/`, `apps/web/.next/`, `apps/web/test-results/`, `*.tsbuildinfo`) remain ignored. If an audit gate fails, stop and surface it — do not add ignores without a documented CVE-specific rationale (Task 5 policy).
+   Expectations: every gate passes; unit-test total ≥ 31 (expected pre-remediation total 42: dashboard-schema package 16 = 14 schema + 2 gate, river-domain package 18 = 8 USGS + 4 metrics + 6 dashboard, and web 8); both Playwright tests pass; only intended source files tracked; generated directories (`node_modules/`, `apps/web/.next/`, `apps/web/test-results/`, `*.tsbuildinfo`) remain ignored. Additional review-remediation tests change the final count, so the exact Task 7 rerun is authoritative. If an audit gate fails, stop and surface it — do not add ignores without a documented CVE-specific rationale (Task 5 policy).
+
 2. Transcribe the actual counts and audit outcomes into the two status documents. Verifier reruns are authoritative over any pasted summary.
 3. Commit: `docs: record final verification results`
 
@@ -225,7 +228,7 @@
 
 ## Review and release gate
 
-1. **Independent review #1 — specification compliance:** a reviewer who did not implement this plan verifies every task's Files/Steps against the diff (`git diff 1e62e8e..HEAD`), confirms the fixture and all e2e-asserted copy are byte-identical to `41ff309`, confirms the unit-test count and that all new tests fail without their implementation (spot-check by reverting one bound), and confirms the plan-to-commit mapping (one conventional commit per task, Tasks 1–7).
+1. **Independent review #1 — specification compliance:** a reviewer who did not implement this plan verifies every task's Files/Steps against the diff (`git diff 1e62e8e..HEAD`), confirms the fixture and all e2e-asserted copy are byte-identical to `41ff309`, confirms the unit-test count, spot-checks that behavioral driver tests fail when their production control is removed, and confirms that guard/regression tests exercise their tripwire even when they intentionally pass against the baseline. The reviewer also confirms the plan-to-commit mapping (one conventional commit per task, Tasks 1–7).
 2. **Independent review #2 — security:** a second independent reviewer verifies: gate doc still `Status: CLOSED` and the Task 4 guard actually fails when it is not; array bounds reject oversized input; no new dependencies were added; CI has `permissions: contents: read` and no secrets; audit gates are blocking; the Qwen 3.8 disposition table has no empty and no invented rows.
 3. Both reviews must run the verification commands themselves; rerun results override any reported summary.
 4. Generated-code execution remains disabled; nothing in this plan may weaken `docs/security/GENERATED_CODE_GATE.md`.
