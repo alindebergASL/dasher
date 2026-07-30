@@ -130,6 +130,11 @@ const validationClauses: Clause[] = [
       /Automated tests, browser\s+checks, agents, and model reviews are engineering evidence only and do not count\s+toward the six target-role sessions\./,
   },
   {
+    label: "validation real target-role non-builder profile",
+    pattern:
+      /Recruit exactly six real managers or community leaders who did not build the\s+dashboard\. A participant must approach the dashboard as a new decision-support\s+view rather than as an implementer or coached reviewer\./,
+  },
+  {
     label: "validation separate stored outcomes",
     pattern: /- separate comprehension-pass and evidence-pass booleans; and/,
   },
@@ -218,5 +223,13 @@ describe("Gate 1 documentation contract", () => {
     expect(
       missingClauses(automationCountedAsHuman, validationClauses),
     ).toContain("validation automation cannot count toward six");
+
+    const coachedImplementersCounted = validation.replace(
+      /Recruit exactly six real managers or community leaders who did not build the\ndashboard\. A participant must approach the dashboard as a new decision-support\nview rather than as an implementer or coached reviewer\./,
+      "Recruit any six people, including coached implementers who built the dashboard.",
+    );
+    expect(
+      missingClauses(coachedImplementersCounted, validationClauses),
+    ).toContain("validation real target-role non-builder profile");
   });
 });
