@@ -82,6 +82,72 @@ function EvidenceDrawer({
   );
 }
 
+function ExecutiveBrief({
+  dashboard,
+  onEvidence,
+}: {
+  dashboard: Extract<DashboardSpec, { schemaVersion: "1.1" }>;
+  onEvidence: (ids: string[]) => void;
+}) {
+  const items = [
+    {
+      label: "Known",
+      ...dashboard.executiveBrief.known,
+    },
+    {
+      label: "Changed",
+      ...dashboard.executiveBrief.changed,
+    },
+    {
+      label: "Important",
+      ...dashboard.executiveBrief.important,
+    },
+    {
+      label: "Next safe action",
+      headline: dashboard.nextAction.title,
+      detail: dashboard.nextAction.detail,
+      evidenceIds: dashboard.nextAction.evidenceIds,
+    },
+  ];
+
+  return (
+    <section
+      aria-labelledby="executive-brief-heading"
+      className="executive-brief"
+    >
+      <div className="executive-brief-heading">
+        <span className="eyebrow">Decision view</span>
+        <h2 id="executive-brief-heading">Executive brief</h2>
+      </div>
+      <ol className="executive-brief-list">
+        {items.map((item) => (
+          <li
+            className={`executive-brief-item brief-${item.label.toLowerCase().replaceAll(" ", "-")}`}
+            key={item.label}
+          >
+            <span
+              className="executive-brief-label"
+              data-testid="executive-brief-label"
+            >
+              {item.label}
+            </span>
+            <h3>{item.headline}</h3>
+            <p>{item.detail}</p>
+            <button
+              aria-label={`Evidence for ${item.label}`}
+              className="executive-brief-evidence"
+              onClick={() => onEvidence(item.evidenceIds)}
+              type="button"
+            >
+              View evidence
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
   const [pageId, setPageId] = useState(dashboard.pages[0]!.id);
   const [architectureOpen, setArchitectureOpen] = useState(false);
@@ -184,18 +250,6 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
                 </strong>
               </div>
             </div>
-            <div className="mobile-next">
-              <span>Next safe action</span>
-              <strong>{dashboard.nextAction.title}</strong>
-              <p>{dashboard.nextAction.detail}</p>
-              <button
-                className="next-evidence"
-                onClick={() => setEvidenceIds(dashboard.nextAction.evidenceIds)}
-                type="button"
-              >
-                Why this action
-              </button>
-            </div>
             <div className="mobile-status">
               <span
                 className={`freshness freshness-${dashboard.freshness.status}`}
@@ -209,6 +263,12 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
                   : "Unknown"}
               </span>
             </div>
+            {page.id === "overview" && dashboard.schemaVersion === "1.1" ? (
+              <ExecutiveBrief
+                dashboard={dashboard}
+                onEvidence={setEvidenceIds}
+              />
+            ) : null}
             <div className="dashboard-grid">
               {page.components.map((component) => (
                 <ComponentRenderer

@@ -219,34 +219,57 @@ export const ArchitectureEdgeSchema = z.strictObject({
   label: ShortTextSchema,
 });
 
-export const DashboardSpecSchema = z
-  .strictObject({
-    schemaVersion: z.literal("1.0"),
-    id: IdentifierSchema,
+const ExecutiveBriefClaimSchema = z.strictObject({
+  headline: ShortTextSchema,
+  detail: LongTextSchema,
+  evidenceIds: RequiredEvidenceIdsSchema,
+});
+
+const ExecutiveBriefSchema = z.strictObject({
+  known: ExecutiveBriefClaimSchema,
+  changed: ExecutiveBriefClaimSchema,
+  important: ExecutiveBriefClaimSchema,
+});
+
+const DashboardSpecShape = {
+  id: IdentifierSchema,
+  title: ShortTextSchema,
+  audience: ShortTextSchema,
+  generatedAt: IsoDateSchema,
+  dataMode: z.enum(["demo", "live"]),
+  freshness: z.strictObject({
+    status: z.enum(["fresh", "stale", "partial"]),
+    label: ShortTextSchema,
+    latestObservationAt: IsoDateSchema.optional(),
+  }),
+  nextAction: z.strictObject({
     title: ShortTextSchema,
-    audience: ShortTextSchema,
-    generatedAt: IsoDateSchema,
-    dataMode: z.enum(["demo", "live"]),
-    freshness: z.strictObject({
-      status: z.enum(["fresh", "stale", "partial"]),
-      label: ShortTextSchema,
-      latestObservationAt: IsoDateSchema.optional(),
+    detail: LongTextSchema,
+    evidenceIds: RequiredEvidenceIdsSchema,
+  }),
+  notice: LongTextSchema,
+  pages: z.array(PageSchema).min(1).max(16),
+  evidence: z.array(EvidenceSchema).max(500),
+  architecture: z.strictObject({
+    title: ShortTextSchema,
+    summary: LongTextSchema,
+    nodes: z.array(ArchitectureNodeSchema).min(2).max(64),
+    edges: z.array(ArchitectureEdgeSchema).min(1).max(256),
+  }),
+};
+
+export const DashboardSpecSchema = z
+  .discriminatedUnion("schemaVersion", [
+    z.strictObject({
+      schemaVersion: z.literal("1.0"),
+      ...DashboardSpecShape,
     }),
-    nextAction: z.strictObject({
-      title: ShortTextSchema,
-      detail: LongTextSchema,
-      evidenceIds: RequiredEvidenceIdsSchema,
+    z.strictObject({
+      schemaVersion: z.literal("1.1"),
+      ...DashboardSpecShape,
+      executiveBrief: ExecutiveBriefSchema,
     }),
-    notice: LongTextSchema,
-    pages: z.array(PageSchema).min(1).max(16),
-    evidence: z.array(EvidenceSchema).max(500),
-    architecture: z.strictObject({
-      title: ShortTextSchema,
-      summary: LongTextSchema,
-      nodes: z.array(ArchitectureNodeSchema).min(2).max(64),
-      edges: z.array(ArchitectureEdgeSchema).min(1).max(256),
-    }),
-  })
+  ])
   .superRefine((spec, context) => {
     const generatedAt = Date.parse(spec.generatedAt);
 
@@ -334,6 +357,12 @@ function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
     spec.architecture.edges.length;
   let totalTrendPoints = 0;
   let totalEvidenceReferences = spec.nextAction.evidenceIds.length;
+  if (spec.schemaVersion === "1.1") {
+    totalEvidenceReferences +=
+      spec.executiveBrief.known.evidenceIds.length +
+      spec.executiveBrief.changed.evidenceIds.length +
+      spec.executiveBrief.important.evidenceIds.length;
+  }
 
   for (const page of spec.pages) {
     totalItems += page.components.length;
@@ -484,6 +513,20 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
   for (const evidenceId of spec.nextAction.evidenceIds) {
     if (!evidenceIds.has(evidenceId)) {
       throw new Error(`Next action references missing evidence ${evidenceId}`);
+    }
+  }
+
+  if (spec.schemaVersion === "1.1") {
+    for (const [label, claim] of [
+      ["Known", spec.executiveBrief.known],
+      ["Changed", spec.executiveBrief.changed],
+      ["Important", spec.executiveBrief.important],
+    ] as const) {
+      if (
+        claim.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId))
+      ) {
+        throw new Error(`Executive brief ${label} references missing evidence`);
+      }
     }
   }
 

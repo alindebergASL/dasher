@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
@@ -23,6 +23,86 @@ const dashboard = createRiverDashboard(parseUsgsInstantaneousValues(fixture), {
 });
 
 describe("DashboardShell", () => {
+  it("renders the ordered executive brief before dashboard detail", () => {
+    const { container } = render(<DashboardShell dashboard={dashboard} />);
+    const brief = screen.getByRole("region", { name: "Executive brief" });
+    const labels = within(brief)
+      .getAllByTestId("executive-brief-label")
+      .map((element) => element.textContent);
+
+    expect(labels).toEqual([
+      "Known",
+      "Changed",
+      "Important",
+      "Next safe action",
+    ]);
+    expect(within(brief).getByText("3 gauges monitored")).toBeInTheDocument();
+    expect(
+      within(brief).getByText("Sacramento River rose fastest"),
+    ).toBeInTheDocument();
+    expect(
+      within(brief).getByText("3 items need attention"),
+    ).toBeInTheDocument();
+    expect(
+      within(brief).getByText("Review American River gauge"),
+    ).toBeInTheDocument();
+    for (const detail of [
+      "1 gauge is rising and 1 gauge is falling based on fresh water-level readings.",
+      "The fastest fresh, complete material one-hour rise is +0.3 ft at SACRAMENTO R A FREEPORT CA.",
+      "Highest priority: American River — Water-level reading is more than two hours old",
+      "AMERICAN R AT H STREET BRIDGE: Water-level reading is more than two hours old",
+    ]) {
+      expect(within(brief).getByText(detail)).toBeInTheDocument();
+    }
+
+    const dashboardGrid = container.querySelector(".dashboard-grid");
+    expect(
+      brief.compareDocumentPosition(dashboardGrid!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("opens each brief item's evidence on its first activation and restores focus", () => {
+    render(<DashboardShell dashboard={dashboard} />);
+
+    for (const label of ["Known", "Changed", "Important", "Next safe action"]) {
+      const trigger = screen.getByRole("button", {
+        name: `Evidence for ${label}`,
+      });
+      trigger.focus();
+      fireEvent.click(trigger);
+
+      expect(
+        screen.getByRole("dialog", { name: "Sources and evidence" }),
+      ).toBeInTheDocument();
+      const closeButton = screen.getByRole("button", {
+        name: "Close evidence",
+      });
+      expect(closeButton).toHaveFocus();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(
+        screen.queryByRole("dialog", { name: "Sources and evidence" }),
+      ).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    }
+  });
+
+  it("shows the brief only on Overview without a separate mobile next card", () => {
+    const { container } = render(<DashboardShell dashboard={dashboard} />);
+
+    expect(
+      screen.getByRole("region", { name: "Executive brief" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".mobile-next")).not.toBeInTheDocument();
+    expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /02Gauge details/i }));
+    expect(
+      screen.queryByRole("region", { name: "Executive brief" }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+  });
+
   it("renders the overview, freshness state, and safe next action", () => {
     render(<DashboardShell dashboard={dashboard} />);
     expect(screen.getByText("Sacramento River Conditions")).toBeInTheDocument();

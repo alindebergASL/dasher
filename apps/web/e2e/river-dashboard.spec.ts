@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+const briefLabels = ["Known", "Changed", "Important", "Next safe action"];
+const briefHeadlines = [
+  "3 gauges monitored",
+  "Sacramento River rose fastest",
+  "3 items need attention",
+  "Review American River gauge",
+];
+
 test("river dashboard interactions, evidence, and architecture", async ({
   page,
 }) => {
@@ -9,6 +17,60 @@ test("river dashboard interactions, evidence, and architecture", async ({
   await expect(
     page.getByRole("heading", { name: "Sacramento River Conditions" }),
   ).toBeVisible();
+
+  const brief = page.getByRole("region", { name: "Executive brief" });
+  await expect(brief).toBeVisible();
+  for (const label of briefLabels) {
+    await expect(brief.getByText(label, { exact: true })).toBeVisible();
+  }
+  for (const headline of briefHeadlines) {
+    await expect(brief.getByText(headline, { exact: true })).toBeVisible();
+  }
+  expect(
+    await brief.evaluate((element) =>
+      Boolean(
+        element.compareDocumentPosition(
+          document.querySelector(".dashboard-grid")!,
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ),
+  ).toBe(true);
+  expect(
+    await brief.locator(".executive-brief-list").evaluate((element) => {
+      return getComputedStyle(element).gridTemplateColumns.split(" ").length;
+    }),
+  ).toBe(4);
+  expect(
+    await page.evaluate(() => ({
+      document:
+        document.documentElement.scrollWidth >
+        document.documentElement.clientWidth,
+      body: document.body.scrollWidth > document.body.clientWidth,
+    })),
+  ).toEqual({ document: false, body: false });
+
+  await brief.getByRole("button", { name: "Evidence for Changed" }).click();
+  const changedEvidence = page.getByRole("dialog", {
+    name: "Sources and evidence",
+  });
+  await expect(changedEvidence).toBeVisible();
+  await expect(
+    changedEvidence.getByRole("link", {
+      name: /Open U\.S\. Geological Survey source/i,
+    }),
+  ).toBeVisible();
+  await expect(
+    changedEvidence.getByText(/One-, six-, and 24-hour changes are calculated/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Close evidence" }).click();
+
+  await brief
+    .getByRole("button", { name: "Evidence for Next safe action" })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Sources and evidence" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Close evidence" }).click();
 
   await page.getByRole("button", { name: /02\s+Gauge details/i }).click();
   await expect(
@@ -67,13 +129,26 @@ test("river dashboard interactions, evidence, and architecture", async ({
   await expect(architectureButton).toBeFocused();
 });
 
-test("mobile keeps freshness, next action, and contained scrolling reachable", async ({
+test("mobile keeps the two-column brief, freshness, and contained scrolling reachable", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
-  await expect(page.locator(".mobile-next")).toContainText("Next safe action");
+  const brief = page.getByRole("region", { name: "Executive brief" });
+  await expect(brief).toBeVisible();
+  for (const label of briefLabels) {
+    await expect(brief.getByText(label, { exact: true })).toBeVisible();
+  }
+  for (const headline of briefHeadlines) {
+    await expect(brief.getByText(headline, { exact: true })).toBeVisible();
+  }
+  expect(
+    await brief.locator(".executive-brief-list").evaluate((element) => {
+      return getComputedStyle(element).gridTemplateColumns.split(" ").length;
+    }),
+  ).toBe(2);
+  await expect(page.locator(".mobile-next")).toHaveCount(0);
   await expect(page.locator(".mobile-status .freshness")).toContainText(
     "1 gauge needs attention",
   );
