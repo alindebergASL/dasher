@@ -23,19 +23,23 @@ proved only target visibility and dialog mechanics, not usability.
 
 ## Independent sessions
 
-| ID  | Persona                                   | Model                       | Target      | Four-part content | Predicted interactions | Strict displayed types | Usefulness | Need                       |
-| --- | ----------------------------------------- | --------------------------- | ----------- | ----------------- | ---------------------: | ---------------------- | ---------: | -------------------------- |
-| A01 | County emergency-management director      | `claude-fable-5`            | changed     | PASS              |                      2 | MISS                   |        4/5 | More historical comparison |
-| A02 | Regional water-utility operations manager | `claude-opus-5`             | next-action | PASS              |                      2 | MISS                   |        4/5 | Clearer alert thresholds   |
-| A03 | City manager and executive generalist     | `claude-sonnet-5`           | changed     | PASS              |                      2 | PASS                   |        4/5 | Named owner or handoff     |
-| A04 | Watershed nonprofit executive director    | `claude-haiku-4-5-20251001` | next-action | PASS              |                      2 | PASS                   |        4/5 | Named owner or handoff     |
-| A05 | Private-company COO                       | `gpt-5.6-sol`               | changed     | PASS              |                      1 | PASS                   |        4/5 | Named owner or handoff     |
-| A06 | Elected county supervisor                 | `gpt-5.6-luna`              | next-action | PASS              |                      1 | PASS                   |        4/5 | Named owner or handoff     |
+| ID  | Persona                                   | Model                       | Target      | Four-part content | Predicted interactions | Mechanical activations | Strict types | Usefulness | Feedback flags           | Need category              |
+| --- | ----------------------------------------- | --------------------------- | ----------- | ----------------- | ---------------------: | ---------------------: | ------------ | ---------: | ------------------------ | -------------------------- |
+| A01 | County emergency-management director      | `claude-fable-5`            | changed     | PASS              |                      2 |                      1 | MISS         |          4 | missing-context          | More historical comparison |
+| A02 | Regional water-utility operations manager | `claude-opus-5`             | next-action | PASS              |                      2 |                      1 | MISS         |          4 | unclear, missing-context | Clearer alert thresholds   |
+| A03 | City manager and executive generalist     | `claude-sonnet-5`           | changed     | PASS              |                      2 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| A04 | Watershed nonprofit executive director    | `claude-haiku-4-5-20251001` | next-action | PASS              |                      2 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| A05 | Private-company COO                       | `gpt-5.6-sol`               | changed     | PASS              |                      1 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
+| A06 | Elected county supervisor                 | `gpt-5.6-luna`              | next-action | PASS              |                      1 |                      1 | PASS         |          4 | missing-context          | Named owner or handoff     |
 
 The six model IDs are distinct. Provider diversity is not six-way: four are
-Claude-family models and two are OpenAI Codex models.
+Claude-family models and two are OpenAI models run through Codex.
 
 ## Aggregate rehearsal result
+
+The owner-approved synthetic thresholds are 5/6 for four-part content, 5/6 for
+predicted evidence reachability, no pass threshold for mechanical replay, 4/6
+for strict displayed types, and 6/6 for bounded usefulness and need.
 
 | Synthetic measure                               | Result | Rehearsal threshold |
 | ----------------------------------------------- | -----: | ------------------: |

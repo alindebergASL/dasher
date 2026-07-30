@@ -25,6 +25,70 @@ const rehearsal = readDocument(
   "../../../docs/validation/2026-07-30-six-agent-executive-brief-rehearsal.md",
 );
 
+interface RoadmapGateBoundary {
+  key: string;
+  text: string;
+}
+
+const expectedRoadmapGateBoundaries = JSON.parse(
+  readDocument("./private-pilot-gate-boundaries.json"),
+) as RoadmapGateBoundary[];
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function parseRoadmapGateBoundaries(document: string): RoadmapGateBoundary[] {
+  const boundaries: RoadmapGateBoundary[] = [];
+  const counts = new Map<string, number>();
+  let gate: string | null = null;
+  let current: string[] = [];
+
+  const flush = () => {
+    if (gate && current.length > 0) {
+      const text = normalizeWhitespace(current.join(" "));
+      if (text.length > 0) {
+        const count = (counts.get(gate) ?? 0) + 1;
+        counts.set(gate, count);
+        boundaries.push({
+          key: `${gate}-${String(count).padStart(2, "0")}`,
+          text,
+        });
+      }
+    }
+    current = [];
+  };
+
+  for (const line of document.split("\n")) {
+    const gateHeading = line.match(/^## Gate ([2-7]) — .+$/);
+    if (gateHeading?.[1]) {
+      flush();
+      gate = `gate${gateHeading[1]}`;
+      current = [line.slice(3)];
+      flush();
+      continue;
+    }
+    if (gate && line.startsWith("## ")) {
+      flush();
+      gate = null;
+      continue;
+    }
+    if (!gate) continue;
+    if (line.startsWith("### ") || line.trim().length === 0) {
+      flush();
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      flush();
+      current = [line];
+      continue;
+    }
+    current.push(line);
+  }
+  flush();
+  return boundaries;
+}
+
 const modelIds = [
   "claude-fable-5",
   "claude-opus-5",
@@ -140,85 +204,74 @@ const expectedValidationAgentRows = [
   ],
 ] as const;
 
-const expectedRehearsalAgentRows = [
-  [
-    "A01",
-    "County emergency-management director",
-    "`claude-fable-5`",
-    "changed",
-    "PASS",
-    "2",
-    "MISS",
-    "4/5",
-    "More historical comparison",
-  ],
-  [
-    "A02",
-    "Regional water-utility operations manager",
-    "`claude-opus-5`",
-    "next-action",
-    "PASS",
-    "2",
-    "MISS",
-    "4/5",
-    "Clearer alert thresholds",
-  ],
-  [
-    "A03",
-    "City manager and executive generalist",
-    "`claude-sonnet-5`",
-    "changed",
-    "PASS",
-    "2",
-    "PASS",
-    "4/5",
-    "Named owner or handoff",
-  ],
-  [
-    "A04",
-    "Watershed nonprofit executive director",
-    "`claude-haiku-4-5-20251001`",
-    "next-action",
-    "PASS",
-    "2",
-    "PASS",
-    "4/5",
-    "Named owner or handoff",
-  ],
-  [
-    "A05",
-    "Private-company COO",
-    "`gpt-5.6-sol`",
-    "changed",
-    "PASS",
-    "1",
-    "PASS",
-    "4/5",
-    "Named owner or handoff",
-  ],
-  [
-    "A06",
-    "Elected county supervisor",
-    "`gpt-5.6-luna`",
-    "next-action",
-    "PASS",
-    "1",
-    "PASS",
-    "4/5",
-    "Named owner or handoff",
-  ],
-] as const;
+const expectedRehearsalAgentRows = expectedValidationAgentRows;
 
 function parseAgentRows(document: string): string[][] {
   return document
     .split("\n")
-    .filter((line) => /^\|\s*A0[1-6]\s*\|/.test(line))
+    .filter((line) => /^\|\s*A\d+\s*\|/.test(line))
     .map((line) =>
       line
         .split("|")
         .slice(1, -1)
         .map((cell) => cell.trim()),
     );
+}
+
+const allowedFeedbackFlags = new Set([
+  "wrong",
+  "unclear",
+  "missing-context",
+  "none",
+]);
+
+function deriveAgentResults(rows: string[][]) {
+  const total = rows.length;
+  const usefulnessScore = Number(rows[0]?.[8]);
+  return {
+    content: [rows.filter((row) => row[4] === "PASS").length, total] as [
+      number,
+      number,
+    ],
+    evidence: [rows.filter((row) => Number(row[5]) <= 2).length, total] as [
+      number,
+      number,
+    ],
+    mechanical: [rows.filter((row) => row[6] === "1").length, total] as [
+      number,
+      number,
+    ],
+    strictTypes: [rows.filter((row) => row[7] === "PASS").length, total] as [
+      number,
+      number,
+    ],
+    boundedFeedback: [
+      rows.filter(
+        (row) =>
+          Number(row[8]) >= 1 &&
+          Number(row[8]) <= 5 &&
+          row[10] !== undefined &&
+          row[10].length > 0,
+      ).length,
+      total,
+    ] as [number, number],
+    namedOwnerNeed: [
+      rows.filter((row) => row[10] === "Named owner or handoff").length,
+      total,
+    ] as [number, number],
+    usefulnessScore: [usefulnessScore, 5] as [number, number],
+    distinctModels: new Set(rows.map((row) => row[2])).size,
+    changedTargets: rows.filter((row) => row[3] === "changed").length,
+    nextActionTargets: rows.filter((row) => row[3] === "next-action").length,
+    allowedFeedback: rows.every(
+      (row) =>
+        Number(row[8]) === usefulnessScore &&
+        (row[9] ?? "")
+          .split(",")
+          .map((flag) => flag.trim())
+          .every((flag) => allowedFeedbackFlags.has(flag)),
+    ),
+  };
 }
 
 function mutateAgentCell(
@@ -254,20 +307,64 @@ function parseBoldAggregate(document: string, label: string): [number, number] {
   return [Number(match[1]), Number(match[2])];
 }
 
+function parseFraction(value: string, label: string): [number, number] {
+  const match = value.match(/^(\d+)\/(\d+)$/);
+  if (!match?.[1] || !match[2]) throw new Error(`missing fraction ${label}`);
+  return [Number(match[1]), Number(match[2])];
+}
+
+function parseTableMeasure(document: string, label: string) {
+  const line = document
+    .split("\n")
+    .find((candidate) => candidate.startsWith(`| ${label}`));
+  const cells = line
+    ?.split("|")
+    .slice(1, -1)
+    .map((cell) => cell.trim());
+  const result = cells?.[1];
+  const threshold = cells?.[2];
+  if (!result || !threshold) throw new Error(`missing table measure ${label}`);
+  return {
+    result: parseFraction(result, `${label} result`),
+    threshold:
+      threshold === "n/a"
+        ? null
+        : parseFraction(threshold, `${label} threshold`),
+  };
+}
+
 function parseTableAggregate(
   document: string,
   label: string,
 ): [number, number] {
-  const line = document
-    .split("\n")
-    .find((candidate) => candidate.startsWith(`| ${label}`));
-  const result = line
-    ?.split("|")
-    .slice(1, -1)
-    .map((cell) => cell.trim())[1];
-  const match = result?.match(/^(\d+)\/(\d+)$/);
-  if (!match?.[1] || !match[2]) throw new Error(`missing aggregate ${label}`);
-  return [Number(match[1]), Number(match[2])];
+  return parseTableMeasure(document, label).result;
+}
+
+function parseRehearsalThresholdNarrative(
+  document: string,
+): Map<string, [number, number] | null> {
+  const match = document.match(
+    /owner-approved synthetic thresholds are (\d+)\/(\d+) for four-part content, (\d+)\/(\d+) for\s+predicted evidence reachability, no pass threshold for mechanical replay, (\d+)\/(\d+)\s+for strict displayed types, and (\d+)\/(\d+) for bounded usefulness and need/,
+  );
+  if (!match || match.slice(1).some((value) => value === undefined)) {
+    throw new Error("missing rehearsal threshold narrative");
+  }
+  return new Map<string, [number, number] | null>([
+    ["Four-part content recovered", [Number(match[1]), Number(match[2])]],
+    [
+      "Predicted evidence path within two interactions",
+      [Number(match[3]), Number(match[4])],
+    ],
+    ["Chosen evidence path mechanically opened", null],
+    [
+      "Strict displayed statement-type mapping",
+      [Number(match[5]), Number(match[6])],
+    ],
+    [
+      "Bounded usefulness and need supplied",
+      [Number(match[7]), Number(match[8])],
+    ],
+  ]);
 }
 
 function parseRatio(
@@ -279,6 +376,88 @@ function parseRatio(
   if (!match?.[1] || !match[2]) throw new Error(`missing ratio ${label}`);
   return [Number(match[1]), Number(match[2])];
 }
+
+function parseStimulusHashes(document: string): [string, string] {
+  const head = document.match(
+    /(?:Rehearsal stimulus HEAD:|dashboard HEAD)\s*`([a-f0-9]{40})`/,
+  )?.[1];
+  const tree = document.match(
+    /(?:Rehearsal stimulus tree:|, tree)\s*`([a-f0-9]{40})`/,
+  )?.[1];
+  if (!head || !tree) throw new Error("missing rehearsal stimulus hashes");
+  return [head, tree];
+}
+
+function extractSection(
+  document: string,
+  startHeading: string,
+  endHeading: string,
+): string {
+  const start = document.indexOf(startHeading);
+  const end = document.indexOf(endHeading, start + startHeading.length);
+  if (start < 0 || end < 0) throw new Error(`missing section ${startHeading}`);
+  return document.slice(start, end);
+}
+
+const humanResultSubject =
+  /\b(?:human(?: participants?| sessions?| users?)|humans?|human-equivalent(?: participants?| sessions?| users?)?|real[- ](?:person|human|user)s?|participants?|manager-shaped users?)\b/i;
+const positiveHumanResult =
+  /\b(?:pass(?:ed|es)?|validat(?:e|ed|es|ion)|prov(?:e|ed|en)|succeed(?:ed|s)?|complet(?:ed|es)|met|achiev(?:e|ed|es)|conduct(?:ed|s)?|test(?:ed|s)?|interview(?:ed|s)?|enroll(?:ed|s)?|includ(?:ed|es)?|participat(?:ed|es)?|occur(?:red|s)?|happen(?:ed|s)?|perform(?:ed|s)?|count(?:ed|s)?)\b/i;
+
+function hasSubjectScopedNegation(claim: string): boolean {
+  const subject = humanResultSubject.exec(claim);
+  if (!subject || subject.index === undefined) return false;
+  const before = claim.slice(Math.max(0, subject.index - 80), subject.index);
+  const after = claim.slice(
+    subject.index + subject[0].length,
+    subject.index + 100,
+  );
+  const negationBefore =
+    /(?:\bno|\bzero|\bnot one|\bnone(?: of the)?)\s+(?:[\w-]+\s+){0,4}$/i.test(
+      before,
+    ) ||
+    /\b(?:do|does|did|can|must|is|are|was|were)\s+not\s+(?:[\w-]+\s+){0,8}$/i.test(
+      before,
+    );
+  const negationAfter =
+    /^\s+(?:(?:did|does|do|was|were|is|are|has|have|had|must|can)\s+not|never|cannot)\b/i.test(
+      after,
+    );
+  const laterPositiveResult = /\b(?:and|but|however|yet)\b/i.test(after)
+    ? positiveHumanResult.test(
+        after.slice(after.search(/\b(?:and|but|however|yet)\b/i)),
+      )
+    : false;
+  return negationBefore || (negationAfter && !laterPositiveResult);
+}
+
+function findFabricatedHumanClaims(document: string): string[] {
+  return document
+    .replace(/`[^`]*`/g, "")
+    .replace(/\n+/g, " ")
+    .split(
+      /(?<=[.!?;])\s+|,\s*(?:and|but|however|yet)\s+|\s+(?:but|however|yet)\s+/i,
+    )
+    .map((claim) => claim.trim())
+    .filter(
+      (claim) =>
+        ((humanResultSubject.test(claim) && positiveHumanResult.test(claim)) ||
+          /\bresults?\s+(?:are|were)\s+human-equivalent\b/i.test(claim)) &&
+        !hasSubjectScopedNegation(claim),
+    );
+}
+
+const syntheticClaimDocuments = [
+  readme,
+  extractSection(roadmap, "## Gate 1", "## Gate 2"),
+  extractSection(
+    plan,
+    "## Post-implementation governance amendment",
+    "## Hard boundaries",
+  ),
+  validation,
+  rehearsal,
+];
 
 const roadmapClauses: Clause[] = [
   {
@@ -498,11 +677,21 @@ const rehearsalClauses: Clause[] = [
     pattern:
       /This is a synthetic model rehearsal, not human research[\s\S]*must not be described\s+as human-equivalent validation\./,
   },
+  {
+    label: "rehearsal exact stimulus",
+    pattern:
+      /dashboard HEAD\s+`9a8ef6d2dd53156c46118d8d71154d780b0b9c04`, tree\s+`76c3e0fe825217479b8876dbb63fc61e0e34329b`/,
+  },
   ...modelClauses("rehearsal"),
   {
     label: "rehearsal honest provider diversity",
     pattern:
-      /The six model IDs are distinct\. Provider diversity is not six-way: four are\s+Claude-family models and two are OpenAI Codex models\./,
+      /The six model IDs are distinct\. Provider diversity is not six-way: four are\s+Claude-family models and two are OpenAI models run through Codex\./,
+  },
+  {
+    label: "rehearsal explicit thresholds",
+    pattern:
+      /The owner-approved synthetic thresholds are 5\/6 for four-part content, 5\/6 for\s+predicted evidence reachability, no pass threshold for mechanical replay, 4\/6\s+for strict displayed types, and 6\/6 for bounded usefulness and need\./,
   },
   {
     label: "rehearsal aggregate content 6/6",
@@ -550,6 +739,24 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
     expect(missingClauses(roadmap, roadmapClauses)).toEqual([]);
   });
 
+  it("locks and independently mutation-tests every Gate 2–7 block", () => {
+    const actual = parseRoadmapGateBoundaries(roadmap);
+    expect(actual).toHaveLength(52);
+    expect(actual).toEqual(expectedRoadmapGateBoundaries);
+    expect(new Set(actual.map(({ key }) => key)).size).toBe(actual.length);
+
+    const normalizedRoadmap = normalizeWhitespace(roadmap);
+    for (const boundary of expectedRoadmapGateBoundaries) {
+      expect(normalizedRoadmap.split(boundary.text)).toHaveLength(2);
+      const mutated = normalizedRoadmap.replace(
+        boundary.text,
+        `[REMOVED ${boundary.key}]`,
+      );
+      expect(mutated).not.toBe(normalizedRoadmap);
+      expect(mutated).not.toContain(boundary.text);
+    }
+  });
+
   it("locks the post-implementation governance amendment", () => {
     expect(missingClauses(plan, planClauses)).toEqual([]);
   });
@@ -562,95 +769,58 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
     expect(missingClauses(rehearsal, rehearsalClauses)).toEqual([]);
   });
 
-  it("locks every per-agent result and derives the accepted aggregates", () => {
+  it("cross-locks the stimulus hashes and rejects additive human fabrication", () => {
+    const stimulusHashes = parseStimulusHashes(validation);
+    expect(parseStimulusHashes(rehearsal)).toEqual(stimulusHashes);
+    for (const document of [validation, rehearsal]) {
+      for (const hash of stimulusHashes) {
+        expect(document.split(`\`${hash}\``)).toHaveLength(2);
+      }
+    }
+    for (const document of syntheticClaimDocuments) {
+      expect(findFabricatedHumanClaims(document)).toEqual([]);
+    }
+
+    for (const fabricated of [
+      "Seven human participants passed the study.",
+      "The dashboard passed validation with six real users.",
+      "The study included human participants.",
+      "Results are human-equivalent.",
+      "Six human sessions occurred.",
+      "Seven human participants passed the study with no coaching.",
+      "No synthetic agents passed, and seven human participants passed the study.",
+      "Seven humans passed with no coaching.",
+      "No synthetic agents passed, and seven humans passed.",
+      "Seven human participants did not receive coaching and passed.",
+    ]) {
+      expect(findFabricatedHumanClaims(fabricated)).not.toEqual([]);
+    }
+    for (const honestNegation of [
+      "No human sessions occurred.",
+      "Human sessions did not occur.",
+      "None of the human participants passed the study.",
+      "None participants passed.",
+    ]) {
+      expect(findFabricatedHumanClaims(honestNegation)).toEqual([]);
+    }
+  });
+
+  it("locks every per-agent result and derives each record independently", () => {
     const validationRows = parseAgentRows(validation);
     const rehearsalRows = parseAgentRows(rehearsal);
-    const total = validationRows.length;
-    const contentRecovered = validationRows.filter(
-      (row) => row[4] === "PASS",
-    ).length;
-    const evidenceWithinTwo = validationRows.filter(
-      (row) => Number(row[5]) <= 2,
-    ).length;
-    const mechanicalInOne = validationRows.filter(
-      (row) => row[6] === "1",
-    ).length;
-    const strictTypes = validationRows.filter(
-      (row) => row[7] === "PASS",
-    ).length;
-    const boundedFeedback = validationRows.filter(
-      (row) =>
-        Number(row[8]) >= 1 &&
-        Number(row[8]) <= 5 &&
-        row[10] !== undefined &&
-        row[10].length > 0,
-    ).length;
-    const namedOwnerNeed = validationRows.filter(
-      (row) => row[10] === "Named owner or handoff",
-    ).length;
-    const usefulnessScore = Number(validationRows[0]?.[8]);
-    const allowedFeedback = new Set([
-      "wrong",
-      "unclear",
-      "missing-context",
-      "none",
-    ]);
-    const targets = validationRows.map((row) => row[3]);
+    const validationDerived = deriveAgentResults(validationRows);
+    const rehearsalDerived = deriveAgentResults(rehearsalRows);
 
     expect(validationRows).toEqual(expectedValidationAgentRows);
     expect(rehearsalRows).toEqual(expectedRehearsalAgentRows);
-    expect(new Set(validationRows.map((row) => row[2])).size).toBe(6);
-    expect(targets.filter((target) => target === "changed")).toHaveLength(3);
-    expect(targets.filter((target) => target === "next-action")).toHaveLength(
-      3,
-    );
-    expect(
-      validationRows.every((row) => Number(row[8]) === usefulnessScore),
-    ).toBe(true);
-    expect(
-      validationRows.every((row) =>
-        (row[9] ?? "")
-          .split(",")
-          .map((flag) => flag.trim())
-          .every((flag) => allowedFeedback.has(flag)),
-      ),
-    ).toBe(true);
+    expect(rehearsalRows).toEqual(validationRows);
+    expect(rehearsalDerived).toEqual(validationDerived);
+    expect(validationDerived.distinctModels).toBe(6);
+    expect(validationDerived.changedTargets).toBe(3);
+    expect(validationDerived.nextActionTargets).toBe(3);
+    expect(validationDerived.allowedFeedback).toBe(true);
 
-    expect(
-      rehearsalRows.map((row) => [
-        row[0],
-        row[1],
-        row[2],
-        row[3],
-        row[4],
-        row[5],
-        row[6],
-        row[7]?.replace("/5", ""),
-        row[8],
-      ]),
-    ).toEqual(
-      validationRows.map((row) => [
-        row[0],
-        row[1],
-        row[2],
-        row[3],
-        row[4],
-        row[5],
-        row[7],
-        row[8],
-        row[10],
-      ]),
-    );
-
-    const derived = {
-      content: [contentRecovered, total] as [number, number],
-      evidence: [evidenceWithinTwo, total] as [number, number],
-      mechanical: [mechanicalInOne, total] as [number, number],
-      strictTypes: [strictTypes, total] as [number, number],
-      boundedFeedback: [boundedFeedback, total] as [number, number],
-      namedOwnerNeed: [namedOwnerNeed, total] as [number, number],
-      usefulnessScore: [usefulnessScore, 5] as [number, number],
-    };
+    const derived = validationDerived;
 
     expect(
       parseBoldAggregate(validation, "Synthetic four-part content recovery"),
@@ -686,39 +856,54 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
 
     expect(
       parseTableAggregate(rehearsal, "Four-part content recovered"),
-    ).toEqual(derived.content);
+    ).toEqual(rehearsalDerived.content);
     expect(
       parseTableAggregate(
         rehearsal,
         "Predicted evidence path within two interactions",
       ),
-    ).toEqual(derived.evidence);
+    ).toEqual(rehearsalDerived.evidence);
     expect(
       parseTableAggregate(
         rehearsal,
         "Chosen evidence path mechanically opened",
       ),
-    ).toEqual(derived.mechanical);
+    ).toEqual(rehearsalDerived.mechanical);
     expect(
       parseTableAggregate(rehearsal, "Strict displayed statement-type mapping"),
-    ).toEqual(derived.strictTypes);
+    ).toEqual(rehearsalDerived.strictTypes);
     expect(
       parseTableAggregate(rehearsal, "Bounded usefulness and need supplied"),
-    ).toEqual(derived.boundedFeedback);
+    ).toEqual(rehearsalDerived.boundedFeedback);
     expect(
       parseRatio(
         rehearsal,
         /Every model rated the dashboard\s+(\d+)\/(\d+) useful\./,
         "rehearsal usefulness score",
       ),
-    ).toEqual(derived.usefulnessScore);
+    ).toEqual(rehearsalDerived.usefulnessScore);
     expect(
       parseRatio(
         rehearsal,
         /\*\*(\d+) of (\d+)\*\* selected `Named owner or handoff`/,
         "rehearsal repeated need",
       ),
-    ).toEqual(derived.namedOwnerNeed);
+    ).toEqual(rehearsalDerived.namedOwnerNeed);
+
+    const expectedThresholds = new Map<string, [number, number] | null>([
+      ["Four-part content recovered", [5, 6]],
+      ["Predicted evidence path within two interactions", [5, 6]],
+      ["Chosen evidence path mechanically opened", null],
+      ["Strict displayed statement-type mapping", [4, 6]],
+      ["Bounded usefulness and need supplied", [6, 6]],
+    ]);
+    expect(parseRehearsalThresholdNarrative(rehearsal)).toEqual(
+      expectedThresholds,
+    );
+    for (const [label, threshold] of expectedThresholds) {
+      expect(rehearsal.split(label)).toHaveLength(2);
+      expect(parseTableMeasure(rehearsal, label).threshold).toEqual(threshold);
+    }
   });
 
   it("rejects per-agent and displayed-aggregate mutations", () => {
@@ -741,6 +926,14 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
       parseAgentRows(mutateAgentCell(rehearsal, "A02", 5, "99")),
     ).not.toEqual(expectedRehearsalAgentRows);
 
+    const a06 = rehearsal
+      .split("\n")
+      .find((line) => /^\|\s*A06\s*\|/.test(line));
+    if (!a06) throw new Error("missing A06 row");
+    const extraAgent = `${rehearsal}\n${a06.replace("A06", "A07")}`;
+    expect(parseAgentRows(extraAgent)).toHaveLength(7);
+    expect(parseAgentRows(extraAgent)).not.toEqual(expectedRehearsalAgentRows);
+
     const misstatedValidationAggregate = validation.replace(
       "Synthetic four-part content recovery: **6 of 6**",
       "Synthetic four-part content recovery: **5 of 6**",
@@ -762,6 +955,17 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
         "Four-part content recovered",
       ),
     ).not.toEqual([6, 6]);
+
+    const misstatedRehearsalThreshold = rehearsal.replace(
+      "| Four-part content recovered                     |    6/6 |                 5/6 |",
+      "| Four-part content recovered                     |    6/6 |                 4/6 |",
+    );
+    expect(
+      parseTableMeasure(
+        misstatedRehearsalThreshold,
+        "Four-part content recovered",
+      ).threshold,
+    ).not.toEqual([5, 6]);
   });
 
   it("rejects fabricated-human and weakened synthetic-evidence mutations", () => {
