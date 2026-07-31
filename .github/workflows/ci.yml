@@ -61,3 +61,38 @@ jobs:
             apps/web/test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DASHER_TEST_OWNER_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_ci
+      DASHER_TEST_APP_DSN: postgresql://dasher_test_0123456789abcdef0123456789abcdef:dasher_ci_app_password@localhost:5432/dasher_ci
+      DASHER_TEST_HMAC_KEY_B64URL: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    services:
+      postgres:
+        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+        env:
+          POSTGRES_DB: dasher_ci
+          POSTGRES_PASSWORD: dasher_ci_owner_password
+          POSTGRES_USER: dasher_ci_owner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=dasher_ci_owner --dbname=dasher_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @dasher/control-plane test:postgres

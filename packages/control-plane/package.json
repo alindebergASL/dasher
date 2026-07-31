@@ -1,0 +1,26 @@
+{
+  "name": "@dasher/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./migrator": "./src/migrator.ts",
+    "./preflight": "./src/preflight.ts"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --exclude test/postgres.integration.test.ts",
+    "test:postgres": "vitest run test/postgres.integration.test.ts --no-file-parallelism"
+  },
+  "dependencies": {
+    "pg": "^8.22.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10"
+  }
+}

@@ -13,26 +13,42 @@
   },
   {
     "key": "gate2-04",
-    "text": "### Exit criteria"
+    "text": "Plan the verified-principal boundary before adding a sign-in path: built-in passwordless email magic links are the proposed default; Google Workspace and Microsoft Entra OIDC are optional; organizations may require an IdP; and email is only delivery/invite binding. No matching email automatically links an account. Explicit linking requires proof of both bindings, recent authentication, policy approval, and atomic audit. This roadmap does not claim local authentication or any IdP integration exists."
   },
   {
     "key": "gate2-05",
-    "text": "- Invite replay/race/expiry/email and session rotation/CSRF tests pass."
+    "text": "Gate 2 planning also defines the workspace lifecycle and append-only run ledger before later dashboard persistence. It does not edit immutable migrations `0001` or `0002`."
   },
   {
     "key": "gate2-06",
-    "text": "- Cross-tenant read, count, update, delete, reference, enqueue, storage, signed URL, job, evidence, and cache tests deny access under restricted runtime roles with forced RLS."
+    "text": "### Exit criteria"
   },
   {
     "key": "gate2-07",
-    "text": "- Forged or missing tenant context, pooled-connection reuse, composite-FK violations, and membership revocation races fail closed."
+    "text": "- Invite replay/race/expiry/email and session rotation/CSRF tests pass."
   },
   {
     "key": "gate2-08",
-    "text": "- Immutable-record enforcement, compare-and-swap promotion, audit atomicity, backup restore, credential rotation, and object retention/deletion are demonstrated in the exact integration environment."
+    "text": "- Before any newly implemented sign-in path is enabled, verified-principal, magic-link or OIDC callback, organization IdP policy, email-change, no-automatic-linking, explicit-link audit/recovery, and revocation tests pass for that path."
   },
   {
     "key": "gate2-09",
+    "text": "- Cross-tenant read, count, update, delete, reference, enqueue, storage, signed URL, job, evidence, and cache tests deny access under restricted runtime roles with forced RLS."
+  },
+  {
+    "key": "gate2-10",
+    "text": "- Forged or missing tenant context, pooled-connection reuse, composite-FK violations, and membership revocation races fail closed."
+  },
+  {
+    "key": "gate2-11",
+    "text": "- Immutable-record enforcement, compare-and-swap promotion, audit atomicity, backup restore, credential rotation, and object retention/deletion are demonstrated in the exact integration environment."
+  },
+  {
+    "key": "gate2-12",
+    "text": "- The reviewed successor-schema plan covers multiple durable and disposable dashboards, exact lineage, expiry/access-revocation/cleanup, explicit promotion, append-only runs/checkpoints, and every concurrency or retention decision without changing immutable `0001` or `0002`."
+  },
+  {
+    "key": "gate2-13",
     "text": "- The owner authorizes the permitted real-data classes and data-processing terms before Gate 4 receives customer data."
   },
   {
@@ -125,30 +141,50 @@
   },
   {
     "key": "gate5-03",
-    "text": "### Exit criteria"
+    "text": "Implement the ADR-005 harness contract through this gateway: start with one governed adaptive orchestrator; allow dynamic plans, bounded specialist and reviewer roles, multiple creative candidates, typed calculation graphs, and structured revision; and keep tools in Dasher's typed capability broker rather than provider-hosted tool APIs. A durable append-only run/checkpoint ledger and claim-to-source evidence chain cover every attempt. Autonomy tiers cannot cross new authority/source, publish/audience, or recurring-cost boundaries without human approval."
   },
   {
     "key": "gate5-04",
-    "text": "- Fake-provider mode exercises the full request and validation path with zero network and zero credential access."
+    "text": "### Exit criteria"
   },
   {
     "key": "gate5-05",
-    "text": "- Credential class, exact endpoint, region/workspace, and model validation occur before data leaves; tests prove a prefix alone cannot classify a key."
+    "text": "- Fake-provider mode exercises the full request and validation path with zero network and zero credential access."
   },
   {
     "key": "gate5-06",
-    "text": "- Provider tools, arbitrary compatible base URLs, unsupported plan credentials, cross-tenant fallback, and requests beyond budget are rejected before transport."
+    "text": "- Fake-provider and replay modes cover dynamic plans, multiple candidates, bounded specialist/reviewer work, typed-tool denial, structured repair, checkpoints, cancellation, resume, revocation races, and terminal outcomes."
   },
   {
     "key": "gate5-07",
-    "text": "- Invalid `DashboardSpec`, invented or cross-tenant evidence, unsupported calculations, unsafe URLs, non-finite values, and unknown components cannot create a candidate."
+    "text": "- Credential class, exact endpoint, region/workspace, and model validation occur before data leaves; tests prove a prefix alone cannot classify a key."
   },
   {
     "key": "gate5-08",
-    "text": "- Credential redaction scans, rotation/revocation races, per-tenant metering, capped live smoke, and the provider kill switch pass."
+    "text": "- Provider tools, arbitrary compatible base URLs, unsupported plan credentials, cross-tenant fallback, and requests beyond budget are rejected before transport."
   },
   {
     "key": "gate5-09",
+    "text": "- Invalid `DashboardSpec`, invented or cross-tenant evidence, unsupported calculations, unsafe URLs, non-finite values, and unknown components cannot create a candidate."
+  },
+  {
+    "key": "gate5-10",
+    "text": "- Calculation-graph validators reject cycles, type/unit/evidence errors, unsupported expressions, policy/resource violations, and unbounded work; trusted deterministic services alone execute accepted graphs."
+  },
+  {
+    "key": "gate5-11",
+    "text": "- Ledger reconstruction reaches every accepted claim, calculation, evidence item, candidate, approval, and dashboard version without exposing credentials or unnecessary sensitive content."
+  },
+  {
+    "key": "gate5-12",
+    "text": "- Evaluation demonstrates useful diversity in narratives, layouts, supported components, metrics, comparisons, and transformations without weakening hard invariants; synthetic review does not satisfy the manager-user gate."
+  },
+  {
+    "key": "gate5-13",
+    "text": "- Credential redaction scans, rotation/revocation races, per-tenant metering, capped live smoke, and the provider kill switch pass."
+  },
+  {
+    "key": "gate5-14",
     "text": "- At least 9 of 10 representative conversational corrections produce the expected previewable version with Accept/Undo and unchanged underlying evidence unless a new source job is explicitly authorized."
   },
   {
@@ -221,18 +257,22 @@
   },
   {
     "key": "gate7-10",
-    "text": "- The Gate 4 real-user 30-second comprehension and two-interaction evidence goals continue to pass on pilot dashboards."
+    "text": "- The pilot demonstrates multiple dashboards in a workspace, including durable version/refresh/changed-since lineage and disposable expiry/cleanup; any disposable-to-durable promotion preserves snapshots, evidence, versions, and calculation lineage and creates no implicit schedule."
   },
   {
     "key": "gate7-11",
-    "text": "- At least three of five interviewed managers identify a decision Dasher changed or accelerated; the top three repeated problems are fixed or explicitly declined with a reason."
+    "text": "- The Gate 4 real-user 30-second comprehension and two-interaction evidence goals continue to pass on pilot dashboards."
   },
   {
     "key": "gate7-12",
-    "text": "- Continued access is paused if a prerequisite gate regresses or the owner withdraws authorization."
+    "text": "- At least three of five interviewed managers identify a decision Dasher changed or accelerated; the top three repeated problems are fixed or explicitly declined with a reason."
   },
   {
     "key": "gate7-13",
+    "text": "- Continued access is paused if a prerequisite gate regresses or the owner withdraws authorization."
+  },
+  {
+    "key": "gate7-14",
     "text": "The owner's entry go/no-go authorizes only a bounded private launch. Meeting the post-launch criteria supports continued learning. Neither is production readiness."
   }
 ]

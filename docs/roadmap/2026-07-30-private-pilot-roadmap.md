@@ -17,6 +17,11 @@ The governing product loop is:
 > request → source understanding → validated draft → versioned correction →
 > refresh without provenance loss
 
+The 2026-07-31 owner-approved direction expands that loop into a multi-
+dashboard workspace with long-term durable and explicitly expiring disposable
+dashboards. It also proposes ADR-005's governed agentic harness. These are
+target requirements and sequencing constraints, not implementation claims.
+
 Stages advance by evidence, not dates. A later stage cannot compensate for an
 unmet earlier security or comprehension gate.
 
@@ -26,7 +31,11 @@ unmet earlier security or comprehension gate.
   signup.
 - The control-plane gates in ADR-003 pass before real customer data.
 - Deterministic services compute metrics. Models may classify, map, plan,
-  explain, and propose a strict `DashboardSpec`.
+  explain, propose typed calculation graphs for deterministic validation and
+  execution, and produce one or more strict `DashboardSpec` candidates.
+- Hard safety invariants are fixed, while narratives, plans, layouts, supported
+  components, metrics, comparisons, and transformations remain a flexible
+  creative envelope. Governed does not mean template-bound.
 - Generated-code status remains `CLOSED`. There is no trusted-process code
   execution, provider-hosted tool use, model web search/code interpreter,
   arbitrary stdio MCP, or generated workload access to credentials.
@@ -36,6 +45,33 @@ unmet earlier security or comprehension gate.
 - Native read-only Google Sheets precedes broad or generic MCP.
 - Simple manager-facing workflows are the default. Administrative controls are
   progressively disclosed.
+- The pilot target is a multi-dashboard workspace. Durable dashboards retain
+  versions, refresh/schedule history, and changed-since value and provenance;
+  disposable dashboards explicitly expire, have no recurring work by default,
+  clean up securely, and may be explicitly promoted without losing lineage.
+- External IdPs are optional. The target uses a provider-neutral verified
+  principal, proposes built-in email magic links, permits optional Google
+  Workspace or Microsoft Entra OIDC and organization-required IdP policy, and
+  never links accounts automatically by email.
+- Agentic tools are typed and capability-scoped, reauthorize every use and
+  result commit, and leave an append-only run/checkpoint and evidence record.
+  Humans approve authority/source, publish/audience, and recurring-cost
+  boundaries.
+
+## Sequencing amendment before new immutable schema
+
+ADR-005 and a reviewed implementation plan must precede any new immutable
+dashboard-lifecycle schema or agentic harness implementation. The plan must
+resolve durable/disposable and run state machines, expiry and cleanup policy,
+promotion and refresh races, ledger/checkpoint records, safe-expression
+primitives, approvals, replay, resource budgets, and evaluation criteria.
+
+Immutable migrations `0001_identity_audit.sql` and
+`0002_security_boundary.sql` are not edited. Provider-neutral credential
+bindings, explicit identity linking, dashboard lifecycle, and harness records
+require separately planned, forward-only migrations. Exact disposable TTLs
+remain an open owner product decision. The declarative `DashboardSpec` remains
+the compatible rendering contract and the generated-code gate stays `CLOSED`.
 
 ## Gate 0 — Foundation checkpoint complete
 
@@ -106,9 +142,25 @@ backup/restore, kill switches, and incident controls.
 Use synthetic data for this gate. Admin workflows cover invites, membership,
 roles, model credentials, and source connections with progressive disclosure.
 
+Plan the verified-principal boundary before adding a sign-in path: built-in
+passwordless email magic links are the proposed default; Google Workspace and
+Microsoft Entra OIDC are optional; organizations may require an IdP; and email
+is only delivery/invite binding. No matching email automatically links an
+account. Explicit linking requires proof of both bindings, recent
+authentication, policy approval, and atomic audit. This roadmap does not claim
+local authentication or any IdP integration exists.
+
+Gate 2 planning also defines the workspace lifecycle and append-only run ledger
+before later dashboard persistence. It does not edit immutable migrations
+`0001` or `0002`.
+
 ### Exit criteria
 
 - Invite replay/race/expiry/email and session rotation/CSRF tests pass.
+- Before any newly implemented sign-in path is enabled, verified-principal,
+  magic-link or OIDC callback, organization IdP policy, email-change,
+  no-automatic-linking, explicit-link audit/recovery, and revocation tests pass
+  for that path.
 - Cross-tenant read, count, update, delete, reference, enqueue, storage, signed
   URL, job, evidence, and cache tests deny access under restricted runtime
   roles with forced RLS.
@@ -117,6 +169,10 @@ roles, model credentials, and source connections with progressive disclosure.
 - Immutable-record enforcement, compare-and-swap promotion, audit atomicity,
   backup restore, credential rotation, and object retention/deletion are
   demonstrated in the exact integration environment.
+- The reviewed successor-schema plan covers multiple durable and disposable
+  dashboards, exact lineage, expiry/access-revocation/cleanup, explicit
+  promotion, append-only runs/checkpoints, and every concurrency or retention
+  decision without changing immutable `0001` or `0002`.
 - The owner authorizes the permitted real-data classes and data-processing
   terms before Gate 4 receives customer data.
 
@@ -186,10 +242,22 @@ live planning proof. Standard OpenAI Platform BYOK may follow through the same
 contract. The model may map, plan, explain, and propose; deterministic services
 calculate.
 
+Implement the ADR-005 harness contract through this gateway: start with one
+governed adaptive orchestrator; allow dynamic plans, bounded specialist and
+reviewer roles, multiple creative candidates, typed calculation graphs, and
+structured revision; and keep tools in Dasher's typed capability broker rather
+than provider-hosted tool APIs. A durable append-only run/checkpoint ledger and
+claim-to-source evidence chain cover every attempt. Autonomy tiers cannot cross
+new authority/source, publish/audience, or recurring-cost boundaries without
+human approval.
+
 ### Exit criteria
 
 - Fake-provider mode exercises the full request and validation path with zero
   network and zero credential access.
+- Fake-provider and replay modes cover dynamic plans, multiple candidates,
+  bounded specialist/reviewer work, typed-tool denial, structured repair,
+  checkpoints, cancellation, resume, revocation races, and terminal outcomes.
 - Credential class, exact endpoint, region/workspace, and model validation
   occur before data leaves; tests prove a prefix alone cannot classify a key.
 - Provider tools, arbitrary compatible base URLs, unsupported plan
@@ -198,6 +266,15 @@ calculate.
 - Invalid `DashboardSpec`, invented or cross-tenant evidence, unsupported
   calculations, unsafe URLs, non-finite values, and unknown components cannot
   create a candidate.
+- Calculation-graph validators reject cycles, type/unit/evidence errors,
+  unsupported expressions, policy/resource violations, and unbounded work;
+  trusted deterministic services alone execute accepted graphs.
+- Ledger reconstruction reaches every accepted claim, calculation, evidence
+  item, candidate, approval, and dashboard version without exposing
+  credentials or unnecessary sensitive content.
+- Evaluation demonstrates useful diversity in narratives, layouts, supported
+  components, metrics, comparisons, and transformations without weakening hard
+  invariants; synthetic review does not satisfy the manager-user gate.
 - Credential redaction scans, rotation/revocation races, per-tenant metering,
   capped live smoke, and the provider kill switch pass.
 - At least 9 of 10 representative conversational corrections produce the
@@ -252,6 +329,10 @@ visible only to explicitly authorized organization members.
 - At least three approved pilot organizations independently create a dashboard
   from their own authorized or sanitized workbook, with a champion returning
   on at least two separate days.
+- The pilot demonstrates multiple dashboards in a workspace, including durable
+  version/refresh/changed-since lineage and disposable expiry/cleanup; any
+  disposable-to-durable promotion preserves snapshots, evidence, versions, and
+  calculation lineage and creates no implicit schedule.
 - The Gate 4 real-user 30-second comprehension and two-interaction evidence
   goals continue to pass on pilot dashboards.
 - At least three of five interviewed managers identify a decision Dasher
@@ -278,6 +359,8 @@ The roadmap does not include:
 - public signup, self-serve billing, or a connector marketplace/catalog;
 - unsupported consumer Codex/ChatGPT OAuth, token collection, or local
   authentication import;
+- automatic email-based account linking or treating an email address as
+  canonical identity;
 - Codex Business/Enterprise access tokens without the contract and gates in
   ADR-004; or
 - broad Salesforce, HubSpot, Stripe, QuickBooks, analytics, database, travel,
@@ -298,5 +381,7 @@ Only the owner may decide:
 4. The liability boundary: Dasher remains decision support, not an official
    warning, accounting, fiduciary, or autonomous action system.
 5. Any future change of `docs/security/GENERATED_CODE_GATE.md` from `CLOSED`.
+6. Default, minimum, maximum, and organization-configurable disposable-
+   dashboard TTLs and their retention/legal-hold interaction.
 
 These decisions cannot be inferred from passing tests or delegated to a model.

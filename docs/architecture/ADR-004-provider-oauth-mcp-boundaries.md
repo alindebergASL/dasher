@@ -16,6 +16,11 @@ This ADR accepts boundaries and dispositions; it does not claim a gateway,
 credential store, OAuth integration, or MCP broker exists in the current
 fixture foundation.
 
+The 2026-07-31 amendment distinguishes optional sign-in IdPs from model and
+source-provider authorization and aligns the gateway and typed-tool boundaries
+with the proposed agentic harness in ADR-005. It does not enable any provider,
+tool, OAuth, or authentication path.
+
 ## Credential disposition
 
 | Credential or integration class                            | Disposition                   | Dasher posture                                                                                                                                                                            |
@@ -31,6 +36,23 @@ fixture foundation.
 Credential class must be established from configured product, issuer,
 endpoint, workspace/region, provider validation, and explicit administrator
 selection. A key prefix alone is never sufficient.
+
+## Identity-provider boundary
+
+External IdPs are optional sign-in integrations behind ADR-003's provider-
+neutral verified-principal boundary. The target built-in path is passwordless,
+with email magic links as the proposed default; optional Google Workspace and
+Microsoft Entra OIDC may be enabled, and an organization may require an
+approved IdP. This is separate from Google or Microsoft data-source consent,
+model-provider credentials, and MCP authorization.
+
+Email is a delivery and invitation/account binding, not a principal identifier.
+No email match automatically links a built-in credential, Google identity,
+Microsoft identity, model-provider account, or source connection. Linking is a
+separate, reauthenticated, policy-allowed, audited operation that proves both
+identity bindings. This ADR does not claim any local-authentication, magic-link,
+OIDC, or linking implementation exists, and immutable migrations `0001` and
+`0002` are not changed by this direction.
 
 ## Provider-neutral gateway contract
 
@@ -87,18 +109,49 @@ content.
 
 ## Model-output boundary
 
-Models may classify source fields, propose mappings and plans, explain
-deterministic results, and propose a strict versioned `DashboardSpec`. Models
-do not compute authoritative metrics, fetch new sources during repair, select
-credentials, change endpoint policy, install or call tools, publish, or
-execute code.
+Models may classify source fields, propose mappings and adaptive plans, explore
+multiple narratives, layouts, supported components, metrics, comparisons, and
+transformations, explain deterministic results, and propose multiple strict
+versioned `DashboardSpec` candidates. Within ADR-005's governed harness, a
+model may propose typed calculation graphs and safe expressions and revise a
+candidate from structured validation feedback. Governed output is not limited
+to a fixed template catalog.
+
+Trusted deterministic services validate and execute accepted calculations;
+model output is not an authoritative metric. Models do not fetch new sources
+during repair, select credentials, change endpoint policy, grant capabilities,
+install or directly call provider tools, publish, schedule recurring work, or
+execute code or SQL.
 
 Output is untrusted. Unknown fields and component kinds, non-finite values,
 unsafe URLs, invented or cross-tenant evidence identifiers, unsupported
-calculations, tool requests, and policy changes fail validation. A repair
-attempt receives only the same approved input set; research or tool use is a
-new separately authorized source job. Generated-code execution remains
-`CLOSED`.
+calculations or expressions, type or unit errors, resource violations, direct
+provider-tool requests, and policy changes fail validation. A repair attempt
+receives only the same approved input set and structured findings; research or
+tool use is a new separately authorized source job. Generated-code execution
+remains `CLOSED`.
+
+## Agentic tool and run alignment
+
+The inference provider remains tool-free. ADR-005's orchestrator may request a
+typed operation only through Dasher's capability broker. Each capability binds
+an organization, actor or service, run purpose, tool and operation, approved
+resources and source connection, policy/manifest revision, expiry, and call,
+resource, and cost limits. Current authorization and capability state are
+checked before every call and before its result commits.
+
+The model receives typed inputs and opaque handles, never credentials or
+ambient network/database authority. Tool descriptions and results are hostile
+data and cannot select a credential, destination, scope, follow-on call, publish
+transition, or schedule. Authority/source, publish/audience, and recurring-cost
+boundaries require human approval. Tools, candidates, validation feedback,
+approvals, provider metadata, usage, checkpoints, and evidence lineage are
+recorded in ADR-005's proposed append-only run ledger.
+
+Fake-provider, content-addressed replay, and evaluation modes exercise this
+boundary before capped live inference. Replay cannot grant current authority or
+commit silently. This alignment does not claim the broker, ledger, harness, or
+gateway is implemented.
 
 ## Codex paths
 
@@ -193,7 +246,9 @@ a second call.
 ### Standard API BYOK
 
 - A fake-provider mode proves zero network and zero credential access while
-  exercising the full planning and validation path.
+  exercising adaptive plans, multiple candidates, structured revision, typed
+  calculation validation, bounded specialist/reviewer work, and terminal run
+  states.
 - Credential class, endpoint, region/workspace, and model mismatches fail
   before prompt data leaves. Tests prove prefixes alone do not classify keys.
 - Arbitrary base URLs, provider tools, unsupported credential/endpoint pairs,
@@ -204,6 +259,9 @@ a second call.
   pre-call, in-flight response, and commit are tested.
 - Secret scans find no credential material in logs, errors, audit, jobs,
   prompts, caches, or artifacts.
+- Replay and evaluation prove that provider adapters cannot call tools or
+  commit state and that stale authority, approval, policy, or budget rejects
+  every attempt and result commit.
 - An explicitly approved, capped live smoke test and per-tenant kill switch
   pass before a provider is enabled.
 
@@ -218,6 +276,9 @@ a second call.
 - Google tests cover separate login/data consent, removed membership,
   connection-owner disablement, admin policy change, cross-organization token
   sharing, approved-file/range enforcement, and denial of action tools.
+- Any sign-in IdP tests cover verified issuer/subject, organization IdP policy,
+  email-claim changes, denial of automatic email linking, explicit link/unlink
+  audit, recovery, and revocation without conflating login and data consent.
 - An unavailable authoritative contract, metadata endpoint, provider
   environment, or security control fails the gate; mocks do not enable a live
   credential path.
@@ -249,6 +310,12 @@ less OAuth, manifest, tool, and prompt-injection authority.
 Rejected. Separate identity and data authorization make scope, ownership, and
 revocation legible.
 
+### Treat model-provider OAuth as user sign-in
+
+Rejected. A model billing credential does not establish a Dasher principal,
+organization membership, or data-source grant. Sign-in, inference, and source
+authorization remain separate verified boundaries.
+
 ## Consequences
 
 - The pilot has a supported standard-key route without depending on consumer
@@ -257,6 +324,12 @@ revocation legible.
   endpoints or credential guessing.
 - Google and MCP arrive later, with smaller read-only authority and explicit
   drift behavior.
+- Optional sign-in IdPs do not make provider email or model/source OAuth a
+  canonical Dasher identity, and organizations can still require an approved
+  IdP by policy.
+- Creative model planning remains provider-neutral and tool-free at the
+  transport layer; typed tools, approvals, validation, replay, and durable run
+  history stay under Dasher control.
 - Side-effect tools, generic MCP, Codex subscription auth, and generated code
   cannot become shortcuts around the accepted control-plane gates.
 
