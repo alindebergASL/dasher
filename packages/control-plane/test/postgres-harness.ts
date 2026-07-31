@@ -12,6 +12,10 @@ export const fixtureMigrationDirectory = fileURLToPath(
   new URL("./fixtures/migrations", import.meta.url),
 );
 
+export const canonicalMigrationDirectory = fileURLToPath(
+  new URL("../migrations", import.meta.url),
+);
+
 export const checksumDriftMigrationDirectory = fileURLToPath(
   new URL("./fixtures/migrations-checksum-drift", import.meta.url),
 );

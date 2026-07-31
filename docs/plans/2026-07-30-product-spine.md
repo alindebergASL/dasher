@@ -270,8 +270,11 @@ CHECK (actor_kind IN ('user','service'))`; nullable `actor_user_id` and
   `target_type varchar(32)`, `target_id uuid`, `outcome CHECK
 (outcome = 'succeeded')`; nullable `content_sha256`, `source_ref
 varchar(200)`, `provider varchar(64)`, `credential_version varchar(64)`,
-  `usage_units numeric(20,6) CHECK (usage_units >= 0)`, `cost_minor_units
-bigint CHECK (cost_minor_units >= 0)`; and non-null `deployment_revision
+  `usage_units numeric(20,6) CHECK (usage_units IS NULL OR (usage_units <>
+'NaN'::numeric AND usage_units >= 0))`, `cost_minor_units bigint CHECK (cost_minor_units >= 0)`;
+  PostgreSQL `numeric` admits `NaN`, so the usage constraint must reject it
+  explicitly before the migration bytes become immutable; finite precision
+  already rejects infinities. The table also has non-null `deployment_revision
 varchar(64)`. Unique `audit_events_org_id_key (organization_id,
 audit_event_id)`.
 
