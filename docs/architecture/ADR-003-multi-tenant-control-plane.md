@@ -17,6 +17,11 @@ This is an accepted target architecture, not a description of the current
 fixture-only foundation. The foundation has no identity, tenant database,
 uploads, live connector, provider access, durable jobs, or deployment.
 
+The 2026-07-31 product amendment adds a provider-neutral verified-principal
+target, optional external IdPs, and first-class durable and disposable
+dashboard lifecycles. It does not claim those capabilities exist. ADR-005
+defines the proposed agentic harness that uses these control-plane boundaries.
+
 Generated-code execution remains `CLOSED` under
 `docs/security/GENERATED_CODE_GATE.md`. Provider-hosted tools, model web
 search or code interpreters, parser hooks, arbitrary stdio MCP, and generated
@@ -110,12 +115,39 @@ tokens have at least 256 bits of randomness; only a keyed hash is stored.
 Acceptance is a single conditional transaction, rejects replay and email
 mismatch, and takes the role from the stored invitation.
 
-External identity is keyed by issuer and subject, not email alone. Sessions
-use opaque, rotated, host-only, `Secure`, `HttpOnly` cookies with an explicit
-idle and absolute lifetime. State-changing requests require CSRF protection.
-Credential, membership, role, connection, and any future publication changes
-require recent or step-up authentication. Session, membership, and invite
-revocation must stop subsequent requests and derived work.
+Every successful sign-in must resolve through a provider-neutral boundary to a
+stable verified principal and then to current organization authority. The
+principal is not an email address. External identity is keyed by issuer and
+subject, not email alone.
+
+The target includes a built-in passwordless path, with email magic links as the
+proposed default. Email is a verified delivery and invitation/account binding,
+not canonical identity; changing an address must not replace the stable
+principal. Optional Google Workspace and Microsoft Entra OIDC integrations may
+also verify principals. An organization may require an approved IdP, but an
+external IdP is not a universal product dependency.
+
+Matching email addresses never automatically merge users, credentials, or
+provider identities. Linking requires an explicit, recent-authentication,
+policy-allowed operation that proves control of both bindings and atomically
+records the actor, principals, providers, outcome, and authority revision in
+the audit trail. Unlink and recovery behavior must fail closed and preserve at
+least one organization-policy-compliant sign-in path.
+
+This target does not claim local authentication, magic links, OIDC, or identity
+linking exists. Immutable migrations `0001_identity_audit.sql` and
+`0002_security_boundary.sql` retain their current `(issuer, subject)` identity
+contract and are not edited. The current one-external-identity-per-user shape
+does not implement the future linking model; any credential-binding or linking
+schema is designed first and added only through a separately reviewed,
+forward-only migration.
+
+Sessions use opaque, rotated, host-only, `Secure`, `HttpOnly` cookies with an
+explicit idle and absolute lifetime. State-changing requests require CSRF
+protection. Credential, membership, role, connection, identity-link,
+organization-IdP-policy, and any future publication changes require recent or
+step-up authentication. Session, membership, invite, identity binding, and IdP
+policy revocation must stop subsequent requests and derived work.
 
 ## Immutable records
 
@@ -133,10 +165,21 @@ The durable model separates mutable heads and leases from immutable facts:
   bytes, content hash, parent, source snapshot set, validation results, actor,
   and planner/model provenance. A compare-and-swap head selects the current
   version. Failed work cannot replace the last good version.
+- The workspace may contain multiple durable and disposable dashboards.
+  Durable dashboards retain version and refresh history plus typed
+  changed-since value and provenance. Disposable dashboards have explicit
+  expiry, no recurring work by default, access revocation and secure cleanup
+  states, and an explicit promotion path that preserves snapshot, evidence,
+  version, calculation, and origin lineage. Exact TTLs remain owner-reserved.
 - A job has an immutable request, tenant and actor authority revision,
   input hashes, policy revision, and idempotency key. Attempts and lifecycle
   events, including terminal outcomes, are append-only. Only short-lived claim,
   lease, heartbeat, and cancellation coordination is mutable.
+- Agentic runs and checkpoints follow the same append-only principle. Their
+  durable record covers plans, bounded specialist/reviewer work, tool attempts,
+  authorization outcomes, candidates, calculation graphs, validation feedback,
+  approvals, model/provider metadata, costs, and terminal outcomes without
+  storing credentials. ADR-005 defines the proposed record and state machine.
 - Security-sensitive mutations and their append-only audit events commit
   atomically. Application roles cannot update or delete audit entries.
 
@@ -144,6 +187,11 @@ Dashboards render snapshots and versions; they never query mutable external
 data at render time. Model proposals must pass strict schema validation,
 same-tenant evidence resolution, calculation policy, and current
 authorization before becoming a candidate version.
+
+Dashboard expiry, cleanup, promotion, refresh, and run/checkpoint transitions
+must be documented and planned before their immutable schema is authored.
+Neither an expiring dashboard nor replay may bypass retention, legal hold,
+audit, or current authorization policy.
 
 ## Object storage and ingress
 
@@ -184,6 +232,12 @@ credential, schedule, policy, and budget when claiming work; immediately
 before each external attempt or retry; after any wait or continuation; and in
 the transaction that writes a candidate, cache entry, usage record, or final
 state.
+
+The same rule applies to every agentic typed-tool use and result commit. A
+capability is narrow, typed, purpose-bound, tenant-bound, revocable, expiring,
+and budgeted; it is not a bearer of ambient authority. Human approval is
+required before new or broadened authority, a source or connection, a publish
+or audience transition, or recurring schedule/cost can be crossed.
 
 Revoking a user, membership, credential, connection, source, or schedule
 cancels dependent work. If revocation races with an in-flight external call,
@@ -241,15 +295,15 @@ The implementation must deny or preserve the prior good state when:
 
 ## Acceptance gates
 
-| Gate                              | Enables                                                | Required evidence                                                                                                                                                                                                                       |
-| --------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foundation checkpoint             | Continued fixture development                          | Merged foundation schema, fixture pipeline, renderer, Architecture dialog, tests, and CI remain green; generated-code status is exactly `CLOSED`.                                                                                       |
-| Identity and tenant policy        | Invitations and durable tenant rows                    | Invite/session/CSRF/role tests; PostgreSQL `FORCE RLS` cross-tenant matrix under restricted roles; composite-FK, forged-context, missing-context, pool-reuse, and mid-flight revocation tests.                                          |
-| Immutable persistence and storage | Durable sources, evidence, dashboards, jobs, and audit | Insert-only enforcement; candidate promotion race and failure tests; audit atomicity; tenant storage and signed-URL isolation; backup restore; retention and deletion procedure.                                                        |
-| Ingestion                         | Controlled USGS and then approved CSV/XLSX data        | Early raw and expanded byte limits; SSRF, redirect, timeout, decompression, malformed-input, macro/link/formula, parser-isolation, quarantine/promotion, and orphan-cleanup tests.                                                      |
-| Job authority                     | Manual refresh, then one daily schedule                | Deduplication, leases, retry bounds, failure preservation, payload secret scan, and revocation at claim, wait, pre-call, retry, continuation, and commit.                                                                               |
-| Model gateway                     | Standard organization BYOK                             | Fake-provider zero-network/zero-secret proof; endpoint/region/model/credential classification before data leaves; schema and evidence negative tests; transport-level budget block; log secret scan; live capped smoke and kill switch. |
-| Private pilot operations          | Owner pilot go/no-go review                            | All prior gates on the exact deployment, monitoring and incident drill, no unresolved isolation blocker, and explicit owner decisions on real data, terms, cohort, liability, and release.                                              |
+| Gate                              | Enables                                                | Required evidence                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foundation checkpoint             | Continued fixture development                          | Merged foundation schema, fixture pipeline, renderer, Architecture dialog, tests, and CI remain green; generated-code status is exactly `CLOSED`.                                                                                                                                                                                       |
+| Identity and tenant policy        | Invitations and durable tenant rows                    | Invite/session/CSRF/role tests; verified-principal and email-binding tests; no-email-linking and explicit-link audit tests when those paths are proposed for enablement; PostgreSQL `FORCE RLS` cross-tenant matrix under restricted roles; composite-FK, forged-context, missing-context, pool-reuse, and mid-flight revocation tests. |
+| Immutable persistence and storage | Durable sources, evidence, dashboards, jobs, and audit | Insert-only enforcement; durable refresh and disposable expiry/cleanup/promotion races; complete evidence/version lineage; candidate promotion failure tests; audit atomicity; tenant storage and signed-URL isolation; backup restore; retention and deletion procedure.                                                               |
+| Ingestion                         | Controlled USGS and then approved CSV/XLSX data        | Early raw and expanded byte limits; SSRF, redirect, timeout, decompression, malformed-input, macro/link/formula, parser-isolation, quarantine/promotion, and orphan-cleanup tests.                                                                                                                                                      |
+| Job authority                     | Manual refresh, then one daily schedule                | Deduplication, leases, retry bounds, failure preservation, payload secret scan, and revocation at claim, wait, pre-call, retry, continuation, and commit.                                                                                                                                                                               |
+| Model gateway                     | Standard organization BYOK                             | Fake-provider zero-network/zero-secret proof; endpoint/region/model/credential classification before data leaves; schema and evidence negative tests; transport-level budget block; log secret scan; live capped smoke and kill switch.                                                                                                 |
+| Private pilot operations          | Owner pilot go/no-go review                            | All prior gates on the exact deployment, monitoring and incident drill, no unresolved isolation blocker, and explicit owner decisions on real data, terms, cohort, liability, and release.                                                                                                                                              |
 
 Gate evidence must identify the exact revision and environment. Passing a gate
 does not imply production readiness or authorize the next owner-reserved
@@ -284,6 +338,19 @@ humans control publication.
 Rejected. Anonymous access changes the authorization, cache, cookie,
 revocation, and data-sanitization boundary and needs a separate decision.
 
+### Require one external IdP for every organization
+
+Rejected. External IdPs are valuable optional policy integrations, but making
+one mandatory would prevent a built-in invite-only passwordless path and couple
+canonical identity to a provider. Organizations may still require an approved
+IdP.
+
+### Link accounts automatically when provider emails match
+
+Rejected. Email reassignment, aliases, provider differences, and unverified
+claims make matching unsafe. Linking is an explicit, reauthenticated, audited
+operation over verified bindings; email is not canonical identity.
+
 ## Consequences
 
 - Meaningful identity, schema, database, storage, and operations work precedes
@@ -292,6 +359,12 @@ revocation, and data-sanitization boundary and needs a separate decision.
   authority held by any compromised component.
 - Immutable snapshots, evidence, versions, and job events cost storage but
   make refresh, correction, audit, and rollback inspectable.
+- Provider-neutral principals and explicit credential linking add recovery and
+  migration work but prevent email or an optional IdP from becoming canonical
+  identity.
+- First-class disposable dashboards reduce long-lived data only if expiry,
+  access revocation, cleanup, retention, and promotion lineage are implemented
+  as governed lifecycle transitions.
 - The same snapshot-to-`DashboardSpec` path can serve files and live sources
   without source-specific renderer authority.
 - Public publication, generated code, broad MCP, and side-effect tools remain

@@ -2,7 +2,7 @@
 
 Status: Approved baseline
 Date: 2026-07-29
-Updated: 2026-07-30
+Updated: 2026-07-31
 Domain: `luckbutton.com`
 Repository: `alindebergASL/dasher`
 
@@ -89,6 +89,27 @@ Combine employee lists, project trackers, time-off calendars, engagement surveys
 
 Combine account briefs, meeting notes, emails, opportunities, support issues, and current company news into account health, what changed, opportunity and stakeholder maps, executive priorities, risks, meeting readiness, next-best actions, and an evidence drawer.
 
+## Multi-dashboard workspace
+
+The pilot target is a workspace with multiple dashboards, not a single
+dashboard per user or organization. Long-term durable dashboards and quick
+disposable dashboards are first-class:
+
+- Durable dashboards preserve version history, support manual refresh and an
+  explicitly authorized schedule, preserve the prior good version on failure,
+  and show what changed since an identified prior version with value and
+  provenance.
+- Disposable dashboards require an explicit expiry, create no recurring work
+  by default, revoke access and enter secure cleanup at expiry, and expose
+  cleanup state. Exact TTL defaults and limits remain an open product decision.
+- An authorized user may explicitly promote an unexpired disposable dashboard
+  to durable. Promotion preserves snapshots, evidence, accepted and candidate
+  versions, calculations, and origin lineage; it does not silently add a
+  schedule or source authority.
+
+These are approved product directions, not implemented capabilities in the
+current foundation.
+
 ## Dashboard interaction contract
 
 Every dashboard:
@@ -99,6 +120,50 @@ Every dashboard:
 - Makes generated calculations and transformations inspectable.
 - Provides an `Architecture` button that opens a simple diagram understandable to a nontechnical user. The diagram explains, in plain language, the inputs, refresh path, transformations/calculations, AI contribution, pages/components, and outputs/alerts. Technical detail may be progressively disclosed but is not the default.
 - Distinguishes measured facts, calculated values, AI interpretations, and recommendations.
+
+## Agentic creation contract
+
+The target creation experience uses one governed adaptive orchestrator that
+may form dynamic plans, use bounded specialist or reviewer passes, generate
+multiple creative candidate `DashboardSpec` values, and revise candidates from
+structured validation feedback. Within a reviewed component and calculation
+contract, it may explore narratives, layouts, components, metrics,
+comparisons, and transformations. Governed does not mean template-bound.
+
+Hard safety constraints remain fixed: models have no credentials or ambient
+authority and cannot execute arbitrary code or SQL, create hidden side effects,
+or present unsupported claims. Models may propose typed calculation graphs and
+safe expressions; trusted deterministic services validate types, units,
+evidence, authorization, resources, and policy, then execute accepted graphs.
+The output remains a declarative, versioned `DashboardSpec` while the generated-
+code gate is closed.
+
+Tools are typed and capability-scoped, with current authorization checked on
+every use and result commit. Runs and checkpoints have a durable append-only
+ledger and claim-to-source evidence chain. Autonomy is tiered, and a human must
+approve new or broadened authority, sources/connections, publication or
+audience, and recurring schedules or costs. Provider access is neutral behind
+the model gateway; fake-provider, replay, adversarial, and evaluation modes
+precede live enablement. ADR-005 defines the proposed architecture and gates;
+none of these harness capabilities is claimed as implemented.
+
+## Identity and sign-in target
+
+External identity providers are optional integrations, not a prerequisite for
+the product. The target authentication boundary resolves every successful sign-
+in to a provider-neutral verified principal and current organization authority.
+A built-in passwordless path is required; email magic links are the proposed
+default. Organizations may optionally enable Google Workspace or Microsoft
+Entra OIDC and may require an approved IdP by policy.
+
+Email is a delivery address and invitation/account binding, not canonical
+identity. Dasher must not automatically link accounts because email addresses
+match across credentials or providers. Linking requires an explicit,
+reauthenticated, policy-allowed, audited action that proves control of both
+bindings. The current foundation does not provide local authentication, magic
+links, or external-IdP login. Immutable identity migrations remain unchanged;
+any required credential-binding evolution must be planned and added through a
+new forward-only migration.
 
 ## Publication and access
 
@@ -125,7 +190,10 @@ access.
 
 ## Refresh
 
-The first release supports manual refresh and one daily schedule per dashboard. Refresh runs are observable, idempotent where possible, and preserve the previous good version if a refresh fails.
+Durable dashboards first support manual refresh and one explicitly authorized
+daily schedule. Refresh runs are observable, idempotent where possible, expose
+changed-since value and provenance, and preserve the previous good version if a
+refresh fails. Disposable dashboards have no recurring work by default.
 
 ## Generated code
 

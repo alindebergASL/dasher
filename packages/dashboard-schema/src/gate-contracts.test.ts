@@ -15,6 +15,18 @@ const readme = readDocument("../../../README.md");
 const roadmap = readDocument(
   "../../../docs/roadmap/2026-07-30-private-pilot-roadmap.md",
 );
+const productRequirements = readDocument(
+  "../../../docs/product/PRODUCT_REQUIREMENTS.md",
+);
+const adr003 = readDocument(
+  "../../../docs/architecture/ADR-003-multi-tenant-control-plane.md",
+);
+const adr004 = readDocument(
+  "../../../docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md",
+);
+const adr005 = readDocument(
+  "../../../docs/architecture/ADR-005-agentic-dashboard-harness.md",
+);
 const plan = readDocument(
   "../../../docs/plans/2026-07-30-executive-brief-gate.md",
 );
@@ -30,12 +42,31 @@ interface RoadmapGateBoundary {
   text: string;
 }
 
+interface ExactClause {
+  label: string;
+  text: string;
+}
+
+interface DocumentClauseContract {
+  label: string;
+  document: string;
+  clauses: ExactClause[];
+}
+
 const expectedRoadmapGateBoundaries = JSON.parse(
   readDocument("./private-pilot-gate-boundaries.json"),
 ) as RoadmapGateBoundary[];
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeClauseText(value: string): string {
+  return normalizeWhitespace(value).replaceAll("`", "");
+}
+
+function exactClause(label: string, text: string): ExactClause {
+  return { label, text: normalizeClauseText(text) };
 }
 
 function replaceOccurrence(
@@ -128,27 +159,453 @@ function modelClauses(documentLabel: string): Clause[] {
   }));
 }
 
-const readmeClauses: Clause[] = [
+const readmeClauses: ExactClause[] = [
+  exactClause(
+    "README accepted synthetic links",
+    `- [Executive Brief owner-accepted synthetic validation](docs/validation/2026-07-30-executive-brief-gate.md)
+    - [Six-agent Executive Brief rehearsal](docs/validation/2026-07-30-six-agent-executive-brief-rehearsal.md)`,
+  ),
+  exactClause(
+    "README no human-equivalent claim",
+    `No human sessions occurred, the agents are not represented as human
+    equivalents, and no 30-second human-usability claim is made.`,
+  ),
+  exactClause(
+    "README honest provider diversity",
+    `The six model IDs are distinct, but provider diversity is not six-way: four are
+    Claude-family models and two are OpenAI models run through Codex.`,
+  ),
+  exactClause(
+    "README later gates independent",
+    `Later security, real-data, manager-user, and protected-release gates remain
+    independent.`,
+  ),
+];
+
+const productRequirementClauses: ExactClause[] = [
+  exactClause(
+    "PRD multi-dashboard workspace",
+    `The pilot target is a workspace with multiple dashboards, not a single
+    dashboard per user or organization. Long-term durable dashboards and quick
+    disposable dashboards are first-class:`,
+  ),
+  exactClause(
+    "PRD durable lifecycle",
+    `- Durable dashboards preserve version history, support manual refresh and an
+    explicitly authorized schedule, preserve the prior good version on failure,
+    and show what changed since an identified prior version with value and
+    provenance.`,
+  ),
+  exactClause(
+    "PRD disposable expiry and cleanup",
+    `- Disposable dashboards require an explicit expiry, create no recurring work
+    by default, revoke access and enter secure cleanup at expiry, and expose
+    cleanup state.`,
+  ),
+  exactClause(
+    "PRD lineage-preserving promotion",
+    `- An authorized user may explicitly promote an unexpired disposable dashboard
+    to durable. Promotion preserves snapshots, evidence, accepted and candidate
+    versions, calculations, and origin lineage; it does not silently add a
+    schedule or source authority.`,
+  ),
+  exactClause(
+    "PRD lifecycle direction is prospective",
+    `These are approved product directions, not implemented capabilities in the
+    current foundation.`,
+  ),
+  exactClause(
+    "PRD governed creative envelope",
+    `Within a reviewed component and calculation contract, it may explore
+    narratives, layouts, components, metrics, comparisons, and transformations.
+    Governed does not mean template-bound.`,
+  ),
+  exactClause(
+    "PRD typed calculation validation and execution",
+    `Models may propose typed calculation graphs and safe expressions; trusted
+    deterministic services validate types, units, evidence, authorization,
+    resources, and policy, then execute accepted graphs.`,
+  ),
+  exactClause(
+    "PRD capability-scoped current authorization",
+    `Tools are typed and capability-scoped, with current authorization checked on
+    every use and result commit.`,
+  ),
+  exactClause(
+    "PRD append-only run and evidence ledger",
+    `Runs and checkpoints have a durable append-only ledger and claim-to-source
+    evidence chain.`,
+  ),
+  exactClause(
+    "PRD human approval boundaries",
+    `Autonomy is tiered, and a human must approve new or broadened authority,
+    sources/connections, publication or audience, and recurring schedules or
+    costs.`,
+  ),
+  exactClause(
+    "PRD provider-neutral prospective harness",
+    `Provider access is neutral behind the model gateway; fake-provider, replay,
+    adversarial, and evaluation modes precede live enablement. ADR-005 defines
+    the proposed architecture and gates; none of these harness capabilities is
+    claimed as implemented.`,
+  ),
+  exactClause(
+    "PRD external IdPs optional",
+    `External identity providers are optional integrations, not a prerequisite for
+    the product.`,
+  ),
+  exactClause(
+    "PRD optional and organization-required IdPs",
+    `Organizations may optionally enable Google Workspace or Microsoft Entra OIDC
+    and may require an approved IdP by policy.`,
+  ),
+  exactClause(
+    "PRD no automatic email linking",
+    `Email is a delivery address and invitation/account binding, not canonical
+    identity. Dasher must not automatically link accounts because email addresses
+    match across credentials or providers. Linking requires an explicit,
+    reauthenticated, policy-allowed, audited action that proves control of both
+    bindings.`,
+  ),
+  exactClause(
+    "PRD identity implementation and migration status",
+    `The current foundation does not provide local authentication, magic links, or
+    external-IdP login. Immutable identity migrations remain unchanged; any
+    required credential-binding evolution must be planned and added through a
+    new forward-only migration.`,
+  ),
+  exactClause(
+    "PRD generated-code gate closed",
+    `Generated code is a possible future isolated extension, not a pilot
+    capability. docs/security/GENERATED_CODE_GATE.md remains Status: CLOSED.`,
+  ),
+  exactClause(
+    "PRD declarative DashboardSpec",
+    `During the pilot, models may propose only a strict declarative DashboardSpec;
+    reviewed deterministic services compute metrics, and the reviewed renderer
+    displays validated component kinds.`,
+  ),
+  exactClause(
+    "PRD no provider-hosted tools around the gate",
+    `No trusted-process execution, provider-hosted web search or code interpreter,
+    model tool, arbitrary stdio MCP, browser-origin execution, or generated
+    workload access to credentials may bypass the gate.`,
+  ),
+];
+
+const adr003Clauses: ExactClause[] = [
+  exactClause(
+    "ADR-003 target is not current implementation",
+    `This is an accepted target architecture, not a description of the current
+    fixture-only foundation. The foundation has no identity, tenant database,
+    uploads, live connector, provider access, durable jobs, or deployment.`,
+  ),
+  exactClause(
+    "ADR-003 amendment is prospective",
+    `The 2026-07-31 product amendment adds a provider-neutral verified-principal
+    target, optional external IdPs, and first-class durable and disposable
+    dashboard lifecycles. It does not claim those capabilities exist.`,
+  ),
+  exactClause(
+    "ADR-003 generated-code gate closed",
+    `Generated-code execution remains CLOSED under
+    docs/security/GENERATED_CODE_GATE.md.`,
+  ),
+  exactClause(
+    "ADR-003 declarative DashboardSpec boundary",
+    `They may propose data mappings, classifications, plans, explanations, and a
+    strict DashboardSpec; they do not grant authority.`,
+  ),
+  exactClause(
+    "ADR-003 trusted deterministic authority",
+    `Authoritative decisions come from server-derived identity and current
+    membership, PostgreSQL-enforced tenant policy, immutable source and dashboard
+    records, brokered capabilities, deterministic calculations, and explicit
+    human approval. Deterministic services compute displayed metrics.`,
+  ),
+  exactClause(
+    "ADR-003 optional external IdPs",
+    `The target includes a built-in passwordless path, with email magic links as the
+    proposed default. Email is a verified delivery and invitation/account binding,
+    not canonical identity; changing an address must not replace the stable
+    principal. Optional Google Workspace and Microsoft Entra OIDC integrations may
+    also verify principals. An organization may require an approved IdP, but an
+    external IdP is not a universal product dependency.`,
+  ),
+  exactClause(
+    "ADR-003 no automatic email linking",
+    `Matching email addresses never automatically merge users, credentials, or
+    provider identities. Linking requires an explicit, recent-authentication,
+    policy-allowed operation that proves control of both bindings and atomically
+    records the actor, principals, providers, outcome, and authority revision in
+    the audit trail.`,
+  ),
+  exactClause(
+    "ADR-003 identity status and immutable migrations",
+    `This target does not claim local authentication, magic links, OIDC, or identity
+    linking exists. Immutable migrations 0001_identity_audit.sql and
+    0002_security_boundary.sql retain their current (issuer, subject) identity
+    contract and are not edited.`,
+  ),
+  exactClause(
+    "ADR-003 durable and disposable lifecycle",
+    `- The workspace may contain multiple durable and disposable dashboards.
+    Durable dashboards retain version and refresh history plus typed
+    changed-since value and provenance. Disposable dashboards have explicit
+    expiry, no recurring work by default, access revocation and secure cleanup
+    states, and an explicit promotion path that preserves snapshot, evidence,
+    version, calculation, and origin lineage.`,
+  ),
+  exactClause(
+    "ADR-003 append-only run and evidence record",
+    `- Agentic runs and checkpoints follow the same append-only principle. Their
+    durable record covers plans, bounded specialist/reviewer work, tool attempts,
+    authorization outcomes, candidates, calculation graphs, validation feedback,
+    approvals, model/provider metadata, costs, and terminal outcomes without
+    storing credentials.`,
+  ),
+  exactClause(
+    "ADR-003 schema sequencing",
+    `Dashboard expiry, cleanup, promotion, refresh, and run/checkpoint transitions
+    must be documented and planned before their immutable schema is authored.`,
+  ),
+  exactClause(
+    "ADR-003 capability reauthorization",
+    `The same rule applies to every agentic typed-tool use and result commit. A
+    capability is narrow, typed, purpose-bound, tenant-bound, revocable, expiring,
+    and budgeted; it is not a bearer of ambient authority.`,
+  ),
+  exactClause(
+    "ADR-003 human approval boundaries",
+    `Human approval is required before new or broadened authority, a source or
+    connection, a publish or audience transition, or recurring schedule/cost can
+    be crossed.`,
+  ),
+];
+
+const adr004Clauses: ExactClause[] = [
+  exactClause(
+    "ADR-004 target is not current implementation",
+    `This ADR accepts boundaries and dispositions; it does not claim a gateway,
+    credential store, OAuth integration, or MCP broker exists in the current
+    fixture foundation.`,
+  ),
+  exactClause(
+    "ADR-004 amendment does not enable implementation",
+    `The 2026-07-31 amendment distinguishes optional sign-in IdPs from model and
+    source-provider authorization and aligns the gateway and typed-tool boundaries
+    with the proposed agentic harness in ADR-005. It does not enable any provider,
+    tool, OAuth, or authentication path.`,
+  ),
+  exactClause(
+    "ADR-004 optional external IdPs",
+    `External IdPs are optional sign-in integrations behind ADR-003's provider-
+    neutral verified-principal boundary. The target built-in path is passwordless,
+    with email magic links as the proposed default; optional Google Workspace and
+    Microsoft Entra OIDC may be enabled, and an organization may require an
+    approved IdP.`,
+  ),
+  exactClause(
+    "ADR-004 no automatic email linking",
+    `Email is a delivery and invitation/account binding, not a principal identifier.
+    No email match automatically links a built-in credential, Google identity,
+    Microsoft identity, model-provider account, or source connection. Linking is a
+    separate, reauthenticated, policy-allowed, audited operation that proves both
+    identity bindings.`,
+  ),
+  exactClause(
+    "ADR-004 identity status and immutable migrations",
+    `This ADR does not claim any local-authentication, magic-link, OIDC, or linking
+    implementation exists, and immutable migrations 0001 and 0002 are not changed
+    by this direction.`,
+  ),
+  exactClause(
+    "ADR-004 provider inference-only",
+    `Disable provider-hosted web search, code interpreters, file tools, remote MCP,
+    and other tools. Provider requests are inference-only.`,
+  ),
+  exactClause(
+    "ADR-004 governed creative envelope",
+    `Models may classify source fields, propose mappings and adaptive plans, explore
+    multiple narratives, layouts, supported components, metrics, comparisons, and
+    transformations, explain deterministic results, and propose multiple strict
+    versioned DashboardSpec candidates.`,
+  ),
+  exactClause(
+    "ADR-004 not template-bound",
+    `Governed output is not limited to a fixed template catalog.`,
+  ),
+  exactClause(
+    "ADR-004 typed calculation graphs",
+    `Within ADR-005's governed harness, a model may propose typed calculation graphs
+    and safe expressions and revise a candidate from structured validation
+    feedback.`,
+  ),
+  exactClause(
+    "ADR-004 deterministic validation and execution",
+    `Trusted deterministic services validate and execute accepted calculations;
+    model output is not an authoritative metric.`,
+  ),
+  exactClause(
+    "ADR-004 generated-code gate closed",
+    `Generated-code execution remains CLOSED.`,
+  ),
+  exactClause(
+    "ADR-004 capability-scoped current authorization",
+    `The inference provider remains tool-free. ADR-005's orchestrator may request a
+    typed operation only through Dasher's capability broker. Each capability binds
+    an organization, actor or service, run purpose, tool and operation, approved
+    resources and source connection, policy/manifest revision, expiry, and call,
+    resource, and cost limits. Current authorization and capability state are
+    checked before every call and before its result commits.`,
+  ),
+  exactClause(
+    "ADR-004 approval and append-only evidence ledger",
+    `Authority/source, publish/audience, and recurring-cost boundaries require human
+    approval. Tools, candidates, validation feedback, approvals, provider metadata,
+    usage, checkpoints, and evidence lineage are recorded in ADR-005's proposed
+    append-only run ledger.`,
+  ),
+  exactClause(
+    "ADR-004 harness remains prospective",
+    `This alignment does not claim the broker, ledger, harness, or gateway is
+    implemented.`,
+  ),
+];
+
+const adr005Clauses: ExactClause[] = [
+  exactClause("ADR-005 proposed status", `Status: Proposed`),
+  exactClause(
+    "ADR-005 target is not current implementation",
+    `This ADR records an owner-approved product direction as a proposed target
+    architecture. It does not claim that the harness, identity paths, dashboard
+    lifecycle, tools, ledger, provider gateway, scheduling, or cleanup exists.`,
+  ),
+  exactClause(
+    "ADR-005 governed creative orchestrator",
+    `The agentic dashboard harness is a core product capability. Dasher will start
+    with one governed adaptive orchestrator per run. The orchestrator may form and
+    revise dynamic plans, request bounded specialist or reviewer passes, generate
+    multiple creative candidate DashboardSpec values, and respond structurally to
+    validation feedback.`,
+  ),
+  exactClause(
+    "ADR-005 typed calculation validation and execution",
+    `Trusted deterministic services validate and execute approved typed operations;
+    they do not dictate the dashboard's ideas. Models may propose typed calculation
+    graphs and safe expressions. Trusted validators and execution services enforce
+    schema, operation allowlists, types, units, evidence coverage, authorization,
+    resource ceilings, and policy before any result can become a candidate.`,
+  ),
+  exactClause(
+    "ADR-005 capability ledger and approval boundaries",
+    `The harness will use capability-scoped typed tools, current authorization on
+    every use, an append-only run and checkpoint ledger, an end-to-end evidence
+    chain, explicit autonomy tiers, and human approval at authority, source,
+    publish, and recurring-cost boundaries.`,
+  ),
+  exactClause(
+    "ADR-005 generated-code gate and declarative DashboardSpec",
+    `Generated-code execution remains CLOSED. The only presentation output is a
+    validated, versioned declarative DashboardSpec.`,
+  ),
+  exactClause(
+    "ADR-005 governed is not template-bound",
+    `Governed does not mean template-bound. The boundary is deliberately split:`,
+  ),
+  exactClause(
+    "ADR-005 creative envelope",
+    `- create and compare multiple candidate dashboard narratives, page structures,
+    layouts, supported component combinations, metrics, comparisons, and
+    transformations;`,
+  ),
+  exactClause(
+    "ADR-005 durable lifecycle",
+    `A durable dashboard is intended to remain useful over time. It has insert-only
+    version history, manual refresh and an explicitly authorized schedule,
+    prior-good-version preservation, and visible changed-since value with the
+    provenance that supports that comparison.`,
+  ),
+  exactClause(
+    "ADR-005 disposable expiry and cleanup",
+    `A disposable dashboard is optimized for quick, bounded use. Creation requires
+    an explicit expiry, schedules no recurring work by default, and enters secure
+    cleanup when it expires.`,
+  ),
+  exactClause(
+    "ADR-005 lineage-preserving promotion",
+    `An authorized user may explicitly promote an unexpired disposable dashboard to
+    durable. Promotion is a reviewed lifecycle transition, not a lossy copy: it
+    preserves source snapshots, evidence, candidate and accepted versions,
+    calculation lineage, and the disposable-to-durable relationship.`,
+  ),
+  exactClause(
+    "ADR-005 current tool reauthorization",
+    `Before each tool attempt and before accepting its result, the broker verifies
+    current membership or service authority, capability state, source and
+    connection approval, credential version, policy, dashboard state, expiry, and
+    budget.`,
+  ),
+  exactClause(
+    "ADR-005 provider inference-only",
+    `Provider-hosted tools remain disabled: the orchestrator requests tools through
+    Dasher's broker, and the provider receives inference-only requests through
+    ADR-004's gateway.`,
+  ),
+  exactClause(
+    "ADR-005 human approval boundaries",
+    `Regardless of tier, a human must approve any new or broadened authority, source
+    or connection, publication or audience change, and new or increased recurring
+    schedule/cost.`,
+  ),
+  exactClause(
+    "ADR-005 governed refresh cannot auto-advance",
+    `3. **Governed refresh:** refresh an existing durable dashboard only within a
+    previously human-approved source set, schedule, and cost ceiling, producing
+    a validated candidate. Whether policy may automatically advance that
+    candidate to the active head is Open Product Decision 3 and must remain
+    disabled until that decision is explicitly resolved; new authority still
+    pauses for approval.`,
+  ),
+  exactClause(
+    "ADR-005 schema and plan sequencing",
+    `- This proposed ADR and a reviewed implementation plan precede any new
+    immutable dashboard-schema migration or harness implementation.`,
+  ),
+  exactClause(
+    "ADR-005 immutable migrations",
+    `- Immutable migrations 0001_identity_audit.sql and
+    0002_security_boundary.sql are not edited. Required identity and dashboard
+    evolution uses separately reviewed, forward-only migrations.`,
+  ),
+  exactClause(
+    "ADR-005 DashboardSpec version contract",
+    `- Existing DashboardSpec 1.0 remains readable without executiveBrief and
+    rejects executiveBrief; 1.1 remains the current Executive Brief contract and
+    requires its strict evidence-linked executiveBrief. Lifecycle metadata, typed
+    calculation graphs, safe-expression fields, or component-contract expansion
+    must not be added silently to 1.0 or 1.1. Any serialized-spec expansion
+    requires an explicit new schema version, a strict validator, deterministic
+    migration or adaptation, and backward-compatibility and unknown-field
+    rejection tests.`,
+  ),
+  exactClause(
+    "ADR-005 versioned compatibility and closed gate",
+    `- The harness remains compatible with those versioned declarative DashboardSpec
+    contracts, and
+    docs/security/GENERATED_CODE_GATE.md remains exactly Status: CLOSED.`,
+  ),
+];
+
+const foundationClauseContracts: DocumentClauseContract[] = [
   {
-    label: "README accepted synthetic links",
-    pattern:
-      /\[Executive Brief owner-accepted synthetic validation\]\(docs\/validation\/2026-07-30-executive-brief-gate\.md\)\s+- \[Six-agent Executive Brief rehearsal\]\(docs\/validation\/2026-07-30-six-agent-executive-brief-rehearsal\.md\)/,
+    label: "PRODUCT_REQUIREMENTS",
+    document: productRequirements,
+    clauses: productRequirementClauses,
   },
-  {
-    label: "README no human-equivalent claim",
-    pattern:
-      /No human sessions occurred, the agents are not represented as\s+human equivalents, and no 30-second human-usability claim is made\./,
-  },
-  {
-    label: "README honest provider diversity",
-    pattern:
-      /The six model IDs are distinct, but provider\s+diversity is not six-way: four are Claude-family models and two are OpenAI models\s+run through Codex\./,
-  },
-  {
-    label: "README later gates independent",
-    pattern:
-      /Later\s+security, real-data, manager-user, and protected-release gates remain independent\./,
-  },
+  { label: "ADR-003", document: adr003, clauses: adr003Clauses },
+  { label: "ADR-004", document: adr004, clauses: adr004Clauses },
+  { label: "ADR-005", document: adr005, clauses: adr005Clauses },
 ];
 
 const expectedValidationAgentRows = [
@@ -770,18 +1227,94 @@ function missingClauses(document: string, clauses: Clause[]): string[] {
     .map(({ label }) => label);
 }
 
+function missingReadmeClauses(document: string): string[] {
+  return missingExactClauses(document, readmeClauses);
+}
+
+function missingExactClauses(
+  document: string,
+  clauses: ExactClause[],
+): string[] {
+  const normalizedDocument = normalizeClauseText(document);
+  return clauses
+    .filter(({ text }) => !normalizedDocument.includes(text))
+    .map(({ label }) => label);
+}
+
 describe("owner-accepted synthetic Gate 1 documentation contract", () => {
   it("locks the README summary without fabricating human validation", () => {
-    expect(missingClauses(readme, readmeClauses)).toEqual([]);
+    const normalizedReadme = normalizeClauseText(readme);
+    expect(missingReadmeClauses(readme)).toEqual([]);
+    expect(new Set(readmeClauses.map(({ label }) => label)).size).toBe(
+      readmeClauses.length,
+    );
+    expect(new Set(readmeClauses.map(({ text }) => text)).size).toBe(
+      readmeClauses.length,
+    );
+
+    for (const clause of readmeClauses) {
+      expect(normalizedReadme.split(clause.text)).toHaveLength(2);
+      const removed = replaceOccurrence(
+        normalizedReadme,
+        clause.text,
+        1,
+        `[REMOVED ${clause.label}]`,
+      );
+      expect(missingReadmeClauses(removed)).toContain(clause.label);
+
+      const altered = replaceOccurrence(
+        normalizedReadme,
+        clause.text,
+        1,
+        clause.text.replace(/[A-Za-z0-9]/, "_"),
+      );
+      expect(missingReadmeClauses(altered)).toContain(clause.label);
+    }
   });
 
   it("locks the roadmap decision, synthetic evidence, and retained boundaries", () => {
     expect(missingClauses(roadmap, roadmapClauses)).toEqual([]);
   });
 
+  it.each(foundationClauseContracts)(
+    "locks and independently mutation-tests $label safety clauses",
+    ({ document, clauses }) => {
+      const normalizedDocument = normalizeClauseText(document);
+      expect(clauses).not.toHaveLength(0);
+      expect(new Set(clauses.map(({ label }) => label)).size).toBe(
+        clauses.length,
+      );
+      expect(new Set(clauses.map(({ text }) => text)).size).toBe(
+        clauses.length,
+      );
+      expect(missingExactClauses(normalizedDocument, clauses)).toEqual([]);
+
+      for (const clause of clauses) {
+        expect(normalizedDocument.split(clause.text)).toHaveLength(2);
+
+        const removed = replaceOccurrence(
+          normalizedDocument,
+          clause.text,
+          1,
+          `[REMOVED ${clause.label}]`,
+        );
+        expect(missingExactClauses(removed, clauses)).toContain(clause.label);
+
+        const alteredText = clause.text.replace(/[A-Za-z0-9]/, "_");
+        const altered = replaceOccurrence(
+          normalizedDocument,
+          clause.text,
+          1,
+          alteredText,
+        );
+        expect(missingExactClauses(altered, clauses)).toContain(clause.label);
+      }
+    },
+  );
+
   it("locks and independently mutation-tests every Gate 2–7 block", () => {
     const actual = parseRoadmapGateBoundaries(roadmap);
-    expect(actual).toHaveLength(59);
+    expect(actual).toHaveLength(69);
     expect(actual).toEqual(expectedRoadmapGateBoundaries);
     expect(new Set(actual.map(({ key }) => key)).size).toBe(actual.length);
 
@@ -1035,7 +1568,7 @@ describe("owner-accepted synthetic Gate 1 documentation contract", () => {
       "No human sessions occurred, the agents are not",
       "Six human-equivalent sessions occurred, and the agents are",
     );
-    expect(missingClauses(fabricatedReadmeHumans, readmeClauses)).toContain(
+    expect(missingReadmeClauses(fabricatedReadmeHumans)).toContain(
       "README no human-equivalent claim",
     );
 

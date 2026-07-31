@@ -42,6 +42,8 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - Identity, multi-tenant persistence, uploads, jobs, provider access, and MCP:
   not implemented.
 - Model calls: disabled.
+- Multi-dashboard durable/disposable lifecycle, passwordless or external-IdP
+  sign-in, and the agentic dashboard harness: not implemented.
 - Generated-code execution: disabled until the sandbox gate in `docs/security/GENERATED_CODE_GATE.md` is satisfied.
 - Pilot publication: private-only by accepted design; no publication system is
   implemented.
@@ -53,6 +55,7 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - [ADR-002: USGS live adapter boundary](docs/architecture/ADR-002-usgs-live-adapter.md)
 - [ADR-003: Multi-tenant control plane](docs/architecture/ADR-003-multi-tenant-control-plane.md)
 - [ADR-004: Provider, OAuth, and MCP boundaries](docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md)
+- [ADR-005: Agentic dashboard harness](docs/architecture/ADR-005-agentic-dashboard-harness.md)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
 - [Executive Brief owner-accepted synthetic validation](docs/validation/2026-07-30-executive-brief-gate.md)
 - [Six-agent Executive Brief rehearsal](docs/validation/2026-07-30-six-agent-executive-brief-rehearsal.md)
@@ -66,6 +69,10 @@ diversity is not six-way: four are Claude-family models and two are OpenAI model
 run through Codex. No human sessions occurred, the agents are not represented as
 human equivalents, and no 30-second human-usability claim is made. Later
 security, real-data, manager-user, and protected-release gates remain independent.
+
+Proposed ADR-005 records the owner-approved direction and gates for a
+multi-dashboard workspace and governed, non-template-bound agentic harness. Its
+proposed status does not claim implementation or authorize a later gate.
 
 See also the [product requirements](docs/product/PRODUCT_REQUIREMENTS.md) and
 [foundation implementation plan](docs/plans/2026-07-29-river-dashboard-foundation.md).
