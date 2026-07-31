@@ -1,5 +1,34 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
+const createHmacCapability = createHmac;
+const randomBytesCapability = randomBytes;
+const timingSafeEqualCapability = timingSafeEqual;
+const arrayIsArray = Array.isArray;
+const arrayConstructor = Array;
+const bufferConstructor = Buffer;
+const bufferFrom = Buffer.from;
+const bufferToString = Buffer.prototype.toString;
+const functionHasInstance = Function.prototype[Symbol.hasInstance];
+const mapConstructor = Map;
+const mapGet = Map.prototype.get;
+const mapHas = Map.prototype.has;
+const mapSet = Map.prototype.set;
+const numberConstructor = Number;
+const numberIsInteger = Number.isInteger;
+const numberIsSafeInteger = Number.isSafeInteger;
+const objectFreeze = Object.freeze;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const reflectApply = Reflect.apply;
+const regexpTest = RegExp.prototype.test;
+const setAdd = Set.prototype.add;
+const setConstructor = Set;
+const setHas = Set.prototype.has;
+const stringSplit = String.prototype.split;
+const stringConstructor = String;
+const uint8ArrayConstructor = Uint8Array;
+const uint8ArraySet = Uint8Array.prototype.set;
+
 const secretByteLength = 32;
 const digestByteLength = 32;
 const maximumVerificationVersions = 3;
@@ -9,15 +38,18 @@ const minimumWireValueLength = 48;
 const maximumWireValueLength = 52;
 const versionPattern = /^[1-9][0-9]{0,4}$/;
 const encodedSecretPattern = /^[A-Za-z0-9_-]{43}$/;
-const hmacFrameSeparator = Uint8Array.of(0);
-const typedArrayPrototype = Object.getPrototypeOf(
-  Uint8Array.prototype,
+const hmacFrameSeparator = new uint8ArrayConstructor(1);
+const typedArrayPrototype = objectGetPrototypeOf(
+  uint8ArrayConstructor.prototype,
 ) as object;
-const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(
+const typedArrayByteLengthGetter = objectGetOwnPropertyDescriptor(
   typedArrayPrototype,
   "byteLength",
 )!.get!;
-const typedArraySet = Uint8Array.prototype.set;
+const hmacMethodProbe = createHmacCapability("sha256", hmacFrameSeparator);
+const hmacUpdate = hmacMethodProbe.update;
+const hmacDigest = hmacMethodProbe.digest;
+reflectApply(hmacDigest, hmacMethodProbe, []);
 
 export type SecretKind = "invite" | "session" | "csrf";
 
@@ -61,6 +93,7 @@ export class SecretPrimitiveError extends Error {
     super(errorMessages[code]);
     this.name = "SecretPrimitiveError";
     this.code = code;
+    objectFreeze(this);
   }
 }
 
@@ -115,16 +148,16 @@ interface VerificationKeyPropertySnapshot {
   readonly key: unknown;
 }
 
-const kindMetadata = Object.freeze({
-  invite: Object.freeze({
+const kindMetadata = objectFreeze({
+  invite: objectFreeze({
     prefix: "i1",
     domainLabel: "dasher:invite:v1",
   }),
-  session: Object.freeze({
+  session: objectFreeze({
     prefix: "s1",
     domainLabel: "dasher:session:v1",
   }),
-  csrf: Object.freeze({
+  csrf: objectFreeze({
     prefix: "c1",
     domainLabel: "dasher:csrf:v1",
   }),
@@ -137,18 +170,18 @@ function reject(code: SecretPrimitiveErrorCode): never {
 function isCanonicalVersion(version: unknown): version is number {
   return (
     typeof version === "number" &&
-    Number.isInteger(version) &&
+    numberIsInteger(version) &&
     version >= 1 &&
     version <= maximumVersion
   );
 }
 
 function parseVersion(encodedVersion: string): number {
-  if (!versionPattern.test(encodedVersion)) {
+  if (!reflectApply(regexpTest, versionPattern, [encodedVersion])) {
     return reject("invalid_version");
   }
 
-  const version = Number(encodedVersion);
+  const version = reflectApply(numberConstructor, undefined, [encodedVersion]);
   if (!isCanonicalVersion(version)) {
     return reject("invalid_version");
   }
@@ -202,7 +235,7 @@ function snapshotIndexedArray(
 ): readonly unknown[] {
   let length: number;
   try {
-    if (!Array.isArray(candidate)) {
+    if (!arrayIsArray(candidate)) {
       return reject("invalid_configuration");
     }
     length = candidate.length;
@@ -210,14 +243,14 @@ function snapshotIndexedArray(
     return reject("invalid_configuration");
   }
 
-  if (!Number.isSafeInteger(length) || length < 0) {
+  if (!numberIsSafeInteger(length) || length < 0) {
     return reject("invalid_configuration");
   }
   if (length < minimumLength || length > maximumLength) {
     return reject(boundsError);
   }
 
-  const snapshot = new Array<unknown>(length);
+  const snapshot = new arrayConstructor<unknown>(length);
   try {
     for (let index = 0; index < length; index += 1) {
       snapshot[index] = candidate[index];
@@ -249,14 +282,20 @@ function snapshotVerificationKeyProperties(
 
 function copyExactBytes(candidate: unknown): Uint8Array | undefined {
   if (
-    !(candidate instanceof Uint8Array) ||
-    typedArrayByteLengthGetter.call(candidate) !== secretByteLength
+    !reflectApply(functionHasInstance, uint8ArrayConstructor, [candidate]) ||
+    reflectApply(typedArrayByteLengthGetter, candidate, []) !== secretByteLength
   ) {
     return undefined;
   }
 
-  const snapshot = new Uint8Array(secretByteLength);
-  typedArraySet.call(snapshot, candidate);
+  const snapshot = new uint8ArrayConstructor(secretByteLength);
+  reflectApply(uint8ArraySet, snapshot, [candidate]);
+  return snapshot;
+}
+
+function copyTrustedDigest(candidate: Uint8Array): Uint8Array {
+  const snapshot = new uint8ArrayConstructor(digestByteLength);
+  reflectApply(uint8ArraySet, snapshot, [candidate]);
   return snapshot;
 }
 
@@ -285,23 +324,28 @@ function generateSecret(randomByteSource: RandomByteSource): Uint8Array {
 }
 
 function encodeSecret(secret: Uint8Array): string {
-  return Buffer.from(secret).toString("base64url");
+  const buffer = reflectApply(bufferFrom, bufferConstructor, [secret]);
+  return reflectApply(bufferToString, buffer, ["base64url"]);
 }
 
 function decodeSecret(encodedSecret: string): Uint8Array {
-  if (!encodedSecretPattern.test(encodedSecret)) {
+  if (!reflectApply(regexpTest, encodedSecretPattern, [encodedSecret])) {
     return reject("invalid_token");
   }
 
-  const decoded = Buffer.from(encodedSecret, "base64url");
+  const decoded = reflectApply(bufferFrom, bufferConstructor, [
+    encodedSecret,
+    "base64url",
+  ]);
   if (
-    decoded.byteLength !== secretByteLength ||
+    reflectApply(typedArrayByteLengthGetter, decoded, []) !==
+      secretByteLength ||
     encodeSecret(decoded) !== encodedSecret
   ) {
     return reject("invalid_token");
   }
 
-  return Uint8Array.from(decoded);
+  return copyTrustedDigest(decoded);
 }
 
 function digestSecret(
@@ -309,22 +353,22 @@ function digestSecret(
   domainLabel: SecretKindMetadata["domainLabel"],
   secret: Uint8Array,
 ): Uint8Array {
-  const digest = createHmac("sha256", key)
-    .update(domainLabel, "ascii")
-    .update(hmacFrameSeparator)
-    .update(secret)
-    .digest();
+  const hmac = createHmacCapability("sha256", key);
+  reflectApply(hmacUpdate, hmac, [domainLabel, "ascii"]);
+  reflectApply(hmacUpdate, hmac, [hmacFrameSeparator]);
+  reflectApply(hmacUpdate, hmac, [secret]);
+  const digest = reflectApply(hmacDigest, hmac, []);
 
-  return Uint8Array.from(digest);
+  return copyTrustedDigest(digest);
 }
 
 function persistenceMaterial(
   keyVersion: number,
   digest: Uint8Array,
 ): SecretPersistenceMaterial {
-  return Object.freeze({
+  return objectFreeze({
     keyVersion,
-    digest: Uint8Array.from(digest),
+    digest: copyTrustedDigest(digest),
   });
 }
 
@@ -341,7 +385,7 @@ function parseToken(
   }
 
   const metadata = metadataFor(kind);
-  const segments = wireValue.split(".");
+  const segments = reflectApply(stringSplit, wireValue, ["."]);
   if (segments.length !== 3) {
     return reject("invalid_token");
   }
@@ -367,15 +411,15 @@ export function constantTimeDigestEqual(
 ): boolean {
   try {
     if (
-      !(left instanceof Uint8Array) ||
-      !(right instanceof Uint8Array) ||
-      typedArrayByteLengthGetter.call(left) !== digestByteLength ||
-      typedArrayByteLengthGetter.call(right) !== digestByteLength
+      !reflectApply(functionHasInstance, uint8ArrayConstructor, [left]) ||
+      !reflectApply(functionHasInstance, uint8ArrayConstructor, [right]) ||
+      reflectApply(typedArrayByteLengthGetter, left, []) !== digestByteLength ||
+      reflectApply(typedArrayByteLengthGetter, right, []) !== digestByteLength
     ) {
       return false;
     }
 
-    return timingSafeEqual(left, right);
+    return timingSafeEqualCapability(left, right);
   } catch {
     return false;
   }
@@ -415,36 +459,43 @@ export class SecretKeyRing {
             "oversized_retired_versions",
           );
 
-    const verificationKeys = new Map<number, Uint8Array>();
-    for (const candidate of verificationKeyEntries) {
+    const verificationKeys = new mapConstructor<number, Uint8Array>();
+    for (let index = 0; index < verificationKeyEntries.length; index += 1) {
+      const candidate = verificationKeyEntries[index];
       const entry = snapshotVerificationKeyProperties(candidate);
       if (!isCanonicalVersion(entry.version)) {
         reject("invalid_version");
       }
-      if (verificationKeys.has(entry.version)) {
+      if (reflectApply(mapHas, verificationKeys, [entry.version])) {
         reject("duplicate_version");
       }
 
-      verificationKeys.set(entry.version, snapshotKeyBytes(entry.key));
+      reflectApply(mapSet, verificationKeys, [
+        entry.version,
+        snapshotKeyBytes(entry.key),
+      ]);
     }
 
-    if (!verificationKeys.has(configuration.currentVersion)) {
+    if (
+      !reflectApply(mapHas, verificationKeys, [configuration.currentVersion])
+    ) {
       reject("current_version_missing");
     }
 
-    const retiredVersionSet = new Set<number>();
-    for (const version of retiredVersionEntries) {
+    const retiredVersionSet = new setConstructor<number>();
+    for (let index = 0; index < retiredVersionEntries.length; index += 1) {
+      const version = retiredVersionEntries[index];
       if (!isCanonicalVersion(version)) {
         reject("invalid_version");
       }
-      if (retiredVersionSet.has(version)) {
+      if (reflectApply(setHas, retiredVersionSet, [version])) {
         reject("duplicate_version");
       }
-      if (verificationKeys.has(version)) {
+      if (reflectApply(mapHas, verificationKeys, [version])) {
         reject("retired_version_overlap");
       }
 
-      retiredVersionSet.add(version);
+      reflectApply(setAdd, retiredVersionSet, [version]);
     }
 
     this.#currentVersion = configuration.currentVersion;
@@ -452,22 +503,24 @@ export class SecretKeyRing {
     this.#retiredVersions = retiredVersionSet;
     this.#randomByteSource =
       (configuration.randomByteSource as RandomByteSource | undefined) ??
-      randomBytes;
+      randomBytesCapability;
   }
 
   issue<Kind extends SecretKind>(kind: Kind): IssuedSecret<Kind> {
     const metadata = metadataFor(kind);
     const secret = generateSecret(this.#randomByteSource);
-    const key = this.#verificationKeys.get(this.#currentVersion);
+    const key = reflectApply(mapGet, this.#verificationKeys, [
+      this.#currentVersion,
+    ]);
     if (key === undefined) {
       return reject("current_version_missing");
     }
 
     const encodedSecret = encodeSecret(secret);
     const wireValue =
-      `${metadata.prefix}.${String(this.#currentVersion)}.${encodedSecret}` as SecretWireValue<Kind>;
+      `${metadata.prefix}.${reflectApply(stringConstructor, undefined, [this.#currentVersion])}.${encodedSecret}` as SecretWireValue<Kind>;
 
-    return Object.freeze({
+    return objectFreeze({
       wireValue,
       persistence: persistenceMaterial(
         this.#currentVersion,
@@ -479,10 +532,10 @@ export class SecretKeyRing {
   verify(kind: SecretKind, wireValue: string): SecretPersistenceMaterial {
     const metadata = metadataFor(kind);
     const parsed = parseToken(kind, wireValue);
-    const key = this.#verificationKeys.get(parsed.version);
+    const key = reflectApply(mapGet, this.#verificationKeys, [parsed.version]);
 
     if (key === undefined) {
-      if (this.#retiredVersions.has(parsed.version)) {
+      if (reflectApply(setHas, this.#retiredVersions, [parsed.version])) {
         return reject("retired_version");
       }
       return reject("unknown_version");

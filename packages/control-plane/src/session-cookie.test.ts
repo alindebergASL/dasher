@@ -6,6 +6,9 @@ import {
   type SessionCookieMetadata,
 } from "./session-cookie.js";
 
+const intrinsicDefineProperty = Object.defineProperty;
+const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+
 type Assert<Type extends true> = Type;
 type MetadataHasNoDomain = Assert<
   "domain" extends keyof SessionCookieMetadata ? false : true
@@ -30,6 +33,69 @@ function captureError(
 }
 
 describe("createSessionCookieMetadata", () => {
+  it("uses captured numeric, apply, and freeze intrinsics for exact bounds", () => {
+    const marker = "cookie-intrinsic-marker";
+    const safeDescriptor = intrinsicGetOwnPropertyDescriptor(
+      Number,
+      "isSafeInteger",
+    )!;
+    const numberDescriptor = intrinsicGetOwnPropertyDescriptor(
+      globalThis,
+      "Number",
+    )!;
+    const bigIntDescriptor = intrinsicGetOwnPropertyDescriptor(
+      globalThis,
+      "BigInt",
+    )!;
+    const freezeDescriptor = intrinsicGetOwnPropertyDescriptor(
+      Object,
+      "freeze",
+    )!;
+    const applyDescriptor = intrinsicGetOwnPropertyDescriptor(
+      Reflect,
+      "apply",
+    )!;
+    const invalidTimestamp = Number.MAX_SAFE_INTEGER + 1;
+    let metadata: SessionCookieMetadata | undefined;
+    let invalidError: unknown;
+    try {
+      intrinsicDefineProperty(Number, "isSafeInteger", {
+        ...safeDescriptor,
+        value: () => true,
+      });
+      for (const [target, property, descriptor] of [
+        [globalThis, "Number", numberDescriptor],
+        [globalThis, "BigInt", bigIntDescriptor],
+        [Object, "freeze", freezeDescriptor],
+        [Reflect, "apply", applyDescriptor],
+      ] as const) {
+        intrinsicDefineProperty(target, property, {
+          ...descriptor,
+          value: () => {
+            throw new Error(marker);
+          },
+        });
+      }
+      metadata = createSessionCookieMetadata(1_000, 61_999);
+      try {
+        createSessionCookieMetadata(invalidTimestamp, 0);
+      } catch (error) {
+        invalidError = error;
+      }
+    } finally {
+      intrinsicDefineProperty(Number, "isSafeInteger", safeDescriptor);
+      intrinsicDefineProperty(globalThis, "Number", numberDescriptor);
+      intrinsicDefineProperty(globalThis, "BigInt", bigIntDescriptor);
+      intrinsicDefineProperty(Object, "freeze", freezeDescriptor);
+      intrinsicDefineProperty(Reflect, "apply", applyDescriptor);
+    }
+
+    expect(metadata).toMatchObject({ maxAge: 60 });
+    expect(invalidError).toBeInstanceOf(SessionCookieMetadataError);
+    expect(invalidError).toMatchObject({ code: "invalid_timestamp" });
+    expect(String(invalidError)).not.toContain(marker);
+  });
+
   it("returns the exact host-only session cookie invariants", () => {
     const metadata = createSessionCookieMetadata(1_000, 61_000);
 

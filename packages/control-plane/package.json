@@ -6,10 +6,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./email": "./src/email.ts",
+    "./invitation-repository": "./src/invitation-repository.ts",
     "./migrator": "./src/migrator.ts",
     "./preflight": "./src/preflight.ts",
     "./secrets": "./src/secrets.ts",
-    "./session-cookie": "./src/session-cookie.ts"
+    "./session-cookie": "./src/session-cookie.ts",
+    "./verified-principal": "./src/verified-principal.ts"
   },
   "scripts": {
     "lint": "tsc --noEmit",

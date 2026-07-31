@@ -1,4 +1,9 @@
 const sessionCookieName = "__Host-dasher_session" as const;
+const bigIntConstructor = BigInt;
+const numberConstructor = Number;
+const numberIsSafeInteger = Number.isSafeInteger;
+const objectFreeze = Object.freeze;
+const reflectApply = Reflect.apply;
 
 export type SessionCookieMetadataErrorCode =
   "invalid_timestamp" | "nonfuture_expiry";
@@ -15,6 +20,7 @@ export class SessionCookieMetadataError extends Error {
     super(errorMessages[code]);
     this.name = "SessionCookieMetadataError";
     this.code = code;
+    objectFreeze(this);
   }
 }
 
@@ -36,8 +42,8 @@ export function createSessionCookieMetadata(
   absoluteExpiryEpochMilliseconds: number,
 ): SessionCookieMetadata {
   if (
-    !Number.isSafeInteger(currentEpochMilliseconds) ||
-    !Number.isSafeInteger(absoluteExpiryEpochMilliseconds)
+    !numberIsSafeInteger(currentEpochMilliseconds) ||
+    !numberIsSafeInteger(absoluteExpiryEpochMilliseconds)
   ) {
     return reject("invalid_timestamp");
   }
@@ -46,15 +52,17 @@ export function createSessionCookieMetadata(
   }
 
   const durationMilliseconds =
-    BigInt(absoluteExpiryEpochMilliseconds) - BigInt(currentEpochMilliseconds);
+    reflectApply(bigIntConstructor, undefined, [
+      absoluteExpiryEpochMilliseconds,
+    ]) - reflectApply(bigIntConstructor, undefined, [currentEpochMilliseconds]);
   const maxAge = durationMilliseconds / 1_000n;
 
-  return Object.freeze({
+  return objectFreeze({
     name: sessionCookieName,
     secure: true,
     httpOnly: true,
     path: "/",
     sameSite: "lax",
-    maxAge: Number(maxAge),
+    maxAge: reflectApply(numberConstructor, undefined, [maxAge]),
   });
 }

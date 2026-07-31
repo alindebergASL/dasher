@@ -5,11 +5,17 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  InvitationRepository,
+  OperationDeniedError,
+  OperationInternalError,
+  SecretKeyRing,
   bootstrapManagedRoles,
+  createVerifiedPrincipalFromServerVerification,
   discoverMigrations,
   parsePostgresIntegrationEnv,
   runMigrations,
   type MigrationClient,
+  type PgCompatiblePool,
 } from "../src/index.js";
 import {
   borrowedClientPool,
@@ -1871,14 +1877,18 @@ async function createTask4Actor(
   appClient: PoolClient,
   role: "admin" | "editor" | "viewer",
   organizationId?: string,
+  credentials?: Readonly<{
+    csrfDigest: Buffer;
+    sessionDigest: Buffer;
+  }>,
 ): Promise<Task4Actor> {
   const actor = {
-    csrfDigest: randomBytes(32),
+    csrfDigest: credentials?.csrfDigest ?? randomBytes(32),
     identityIssuer: "https://task4-fixture.test",
     identitySubject: randomUUID(),
     membershipId: randomUUID(),
     organizationId: organizationId ?? randomUUID(),
-    sessionDigest: randomBytes(32),
+    sessionDigest: credentials?.sessionDigest ?? randomBytes(32),
     sessionId: randomUUID(),
     userId: randomUUID(),
   };
@@ -2158,6 +2168,83 @@ async function acceptTask4Invitation(
     ],
   );
   return acceptance;
+}
+
+function createTask6KeyRing(): SecretKeyRing {
+  return new SecretKeyRing({
+    currentVersion: 1,
+    verificationKeys: [
+      {
+        version: 1,
+        key: Uint8Array.from({ length: 32 }, (_, index) => index + 1),
+      },
+      {
+        version: 2,
+        key: Uint8Array.from({ length: 32 }, (_, index) => index + 65),
+      },
+    ],
+    retiredVersions: [3],
+  });
+}
+
+function task6BorrowedPool(client: PoolClient): PgCompatiblePool {
+  return {
+    async connect() {
+      return {
+        async query(text: string, values?: readonly unknown[]) {
+          return client.query(
+            text,
+            values === undefined ? undefined : [...values],
+          );
+        },
+        release() {
+          // The integration test owns the role-configured client.
+        },
+      };
+    },
+  };
+}
+
+function task6UuidSource(values: readonly string[]): () => string {
+  let index = 0;
+  return () => {
+    const value = values[index];
+    index += 1;
+    if (value === undefined) {
+      throw new Error("Task 6 integration UUID source exhausted");
+    }
+    return value;
+  };
+}
+
+function createTask6Repository(
+  client: PoolClient,
+  keyRing: SecretKeyRing,
+  uuidValues: readonly string[],
+  events: Array<Readonly<{ requestId: string; reason: string }>> = [],
+): InvitationRepository {
+  return new InvitationRepository({
+    pool: task6BorrowedPool(client),
+    keyRing,
+    deploymentRevision: "task6-repository-integration",
+    securityEventSink: (event) => {
+      events.push(event);
+    },
+    uuidSource: task6UuidSource(uuidValues),
+  });
+}
+
+function task6Principal(
+  email: string,
+  issuer: string = "https://task6-provider.test/immutable",
+  subject: string = randomUUID(),
+) {
+  return createVerifiedPrincipalFromServerVerification({
+    issuer,
+    subject,
+    emailVerified: true,
+    verifiedEmail: email,
+  });
 }
 
 function invitationFamilyLockSql(): string {
@@ -7273,6 +7360,869 @@ describe.sequential(
         await second.query("RESET ROLE").catch(() => undefined);
         first.release();
         second.release();
+      }
+    });
+
+    it("runs Task 6 repository issue and accept with exact DB winners, session, cookie, identity, and audit", async () => {
+      const client = await appPool!.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        const actor = await createTask4Actor(client, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const invitationId = randomUUID();
+        const issueAuditId = randomUUID();
+        const proposedUserId = randomUUID();
+        const proposedMembershipId = randomUUID();
+        const proposedSessionId = randomUUID();
+        const acceptAuditId = randomUUID();
+        const repository = createTask6Repository(client, keyRing, [
+          invitationId,
+          issueAuditId,
+          proposedUserId,
+          proposedMembershipId,
+          proposedSessionId,
+          acceptAuditId,
+        ]);
+        const email = `task6-${randomUUID()}@example.test`;
+        const issued = await repository.issueInvitation({
+          requestId: randomUUID(),
+          email: email.toUpperCase(),
+          role: "editor",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+        const issuer = "https://task6-provider.test/exact";
+        const subject = randomUUID();
+        const accepted = await repository.acceptInvitation({
+          requestId: randomUUID(),
+          inviteToken: issued.inviteToken,
+          principal: task6Principal(email, issuer, subject),
+        });
+
+        expect(issued.invitationId).toBe(invitationId);
+        expect(issued.expiresAt).toBeInstanceOf(Date);
+        expect(accepted).toMatchObject({
+          userId: proposedUserId,
+          organizationId: actor.organizationId,
+          membershipId: proposedMembershipId,
+          sessionId: proposedSessionId,
+          role: "editor",
+          authorityRevision: 1,
+        });
+        expect(accepted.sessionCookie).toMatchObject({
+          name: "__Host-dasher_session",
+          secure: true,
+          httpOnly: true,
+          path: "/",
+          sameSite: "lax",
+        });
+        expect([604_799, 604_800]).toContain(accepted.sessionCookie.maxAge);
+        expect(accepted.idleExpiresAt.getTime()).toBeLessThan(
+          accepted.absoluteExpiresAt.getTime(),
+        );
+
+        const sessionPersistence = keyRing.verify(
+          "session",
+          accepted.sessionToken,
+        );
+        const csrfPersistence = keyRing.verify("csrf", accepted.csrfValue);
+        const persisted = await ownerPool.query<{
+          readonly accepted_user_id: string;
+          readonly action: string[];
+          readonly csrf_digest: string;
+          readonly identity_user_id: string;
+          readonly invitation_expires_at: Date;
+          readonly session_digest: string;
+          readonly session_idle_expires_at: Date;
+          readonly session_absolute_expires_at: Date;
+        }>(
+          `
+            SELECT
+              invitation.accepted_user_id::text,
+              invitation.expires_at AS invitation_expires_at,
+              identity_row.user_id::text AS identity_user_id,
+              pg_catalog.encode(session_row.token_digest, 'hex') AS session_digest,
+              pg_catalog.encode(session_row.csrf_digest, 'hex') AS csrf_digest,
+              session_row.idle_expires_at AS session_idle_expires_at,
+              session_row.absolute_expires_at AS session_absolute_expires_at,
+              ARRAY(
+                SELECT audit.action
+                FROM dasher.audit_events AS audit
+                WHERE audit.audit_event_id = ANY($7::uuid[])
+                ORDER BY audit.action
+              ) AS action
+            FROM dasher.invitations AS invitation
+            JOIN dasher.external_identities AS identity_row
+              ON identity_row.issuer = $2
+             AND identity_row.subject = $3
+            JOIN dasher.sessions AS session_row
+              ON session_row.session_id = $4::uuid
+            WHERE invitation.invitation_id = $1::uuid
+              AND session_row.user_id = $5::uuid
+              AND session_row.organization_id = $6::uuid
+          `,
+          [
+            invitationId,
+            issuer,
+            subject,
+            proposedSessionId,
+            proposedUserId,
+            actor.organizationId,
+            [issueAuditId, acceptAuditId],
+          ],
+        );
+        expect(persisted.rows[0]).toMatchObject({
+          accepted_user_id: proposedUserId,
+          identity_user_id: proposedUserId,
+          invitation_expires_at: issued.expiresAt,
+          session_idle_expires_at: accepted.idleExpiresAt,
+          session_absolute_expires_at: accepted.absoluteExpiresAt,
+          session_digest: Buffer.from(sessionPersistence.digest).toString(
+            "hex",
+          ),
+          csrf_digest: Buffer.from(csrfPersistence.digest).toString("hex"),
+          action: ["invitation.accepted", "invitation.issued"],
+        });
+      } finally {
+        await client.query("RESET ROLE").catch(() => undefined);
+        client.release();
+      }
+    });
+
+    it("keeps an exact immutable identity and existing active membership unchanged through Task 6 wrappers", async () => {
+      const client = await appPool!.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        const admin = await createTask4Actor(client, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const existing = await createTask4Actor(
+          client,
+          "viewer",
+          admin.organizationId,
+        );
+        const proposedUserId = randomUUID();
+        const proposedMembershipId = randomUUID();
+        const proposedSessionId = randomUUID();
+        const repository = createTask6Repository(client, keyRing, [
+          randomUUID(),
+          randomUUID(),
+          proposedUserId,
+          proposedMembershipId,
+          proposedSessionId,
+          randomUUID(),
+        ]);
+        const email = `existing-${randomUUID()}@example.test`;
+        const issued = await repository.issueInvitation({
+          requestId: randomUUID(),
+          email,
+          role: "admin",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+        const accepted = await repository.acceptInvitation({
+          requestId: randomUUID(),
+          inviteToken: issued.inviteToken,
+          principal: task6Principal(
+            email,
+            existing.identityIssuer,
+            existing.identitySubject,
+          ),
+        });
+
+        expect(accepted).toMatchObject({
+          userId: existing.userId,
+          membershipId: existing.membershipId,
+          organizationId: admin.organizationId,
+          role: "viewer",
+          authorityRevision: 1,
+          sessionId: proposedSessionId,
+        });
+        expect(accepted.userId).not.toBe(proposedUserId);
+        expect(accepted.membershipId).not.toBe(proposedMembershipId);
+        const state = await ownerPool.query<{
+          readonly action: string;
+          readonly membership_count: string;
+          readonly role: string;
+          readonly authority_revision: string;
+        }>(
+          `
+            SELECT
+              membership.role,
+              membership.authority_revision::text,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.memberships
+                WHERE organization_id = $1::uuid
+                  AND user_id = $2::uuid
+              ) AS membership_count,
+              (
+                SELECT action
+                FROM dasher.audit_events
+                WHERE target_id = $3::uuid
+                  AND action = 'invitation.accepted_existing_membership'
+              ) AS action
+            FROM dasher.memberships AS membership
+            WHERE membership.membership_id = $4::uuid
+          `,
+          [
+            admin.organizationId,
+            existing.userId,
+            issued.invitationId,
+            existing.membershipId,
+          ],
+        );
+        expect(state.rows[0]).toEqual({
+          action: "invitation.accepted_existing_membership",
+          authority_revision: "1",
+          membership_count: "1",
+          role: "viewer",
+        });
+      } finally {
+        await client.query("RESET ROLE").catch(() => undefined);
+        client.release();
+      }
+    });
+
+    it("normalizes Task 6 replay, wrong email, expiry, revoked membership, and retired key to denials", async () => {
+      const client = await appPool!.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        const admin = await createTask4Actor(client, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const events: Array<Readonly<{ requestId: string; reason: string }>> =
+          [];
+        const uuidValues = Array.from({ length: 30 }, () => randomUUID());
+        const repository = createTask6Repository(
+          client,
+          keyRing,
+          uuidValues,
+          events,
+        );
+        const baseEmail = `denial-${randomUUID()}@example.test`;
+        const issued = await repository.issueInvitation({
+          requestId: randomUUID(),
+          email: baseEmail,
+          role: "viewer",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: issued.inviteToken,
+            principal: task6Principal(`wrong-${baseEmail}`),
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+        const exactPrincipal = task6Principal(baseEmail);
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: issued.inviteToken,
+            principal: exactPrincipal,
+          }),
+        ).resolves.toMatchObject({ organizationId: admin.organizationId });
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: issued.inviteToken,
+            principal: exactPrincipal,
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+
+        const expiredEmail = `expired-${randomUUID()}@example.test`;
+        const expired = await repository.issueInvitation({
+          requestId: randomUUID(),
+          email: expiredEmail,
+          role: "viewer",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+        await ownerPool.query(
+          "UPDATE dasher.invitations SET expires_at = pg_catalog.clock_timestamp() WHERE invitation_id = $1::uuid",
+          [expired.invitationId],
+        );
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: expired.inviteToken,
+            principal: task6Principal(expiredEmail),
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+
+        const revoked = await createTask4Actor(
+          client,
+          "viewer",
+          admin.organizationId,
+        );
+        await ownerPool.query(
+          "UPDATE dasher.memberships SET state = 'revoked', authority_revision = authority_revision + 1, revoked_at = pg_catalog.clock_timestamp(), updated_at = pg_catalog.clock_timestamp() WHERE membership_id = $1::uuid",
+          [revoked.membershipId],
+        );
+        const revokedEmail = `revoked-${randomUUID()}@example.test`;
+        const revokedInvitation = await repository.issueInvitation({
+          requestId: randomUUID(),
+          email: revokedEmail,
+          role: "admin",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: revokedInvitation.inviteToken,
+            principal: task6Principal(
+              revokedEmail,
+              revoked.identityIssuer,
+              revoked.identitySubject,
+            ),
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+
+        const retiredSecret = Buffer.alloc(32, 7).toString("base64url");
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: `i1.3.${retiredSecret}`,
+            principal: task6Principal(baseEmail),
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+        expect(
+          events.filter((event) => event.reason === "state_invalid"),
+        ).toHaveLength(4);
+        expect(
+          events.filter((event) => event.reason === "input_invalid"),
+        ).toHaveLength(1);
+        for (const event of events) {
+          expect(Object.keys(event).sort()).toEqual(["reason", "requestId"]);
+          expect(Object.isFrozen(event)).toBe(true);
+        }
+      } finally {
+        await client.query("RESET ROLE").catch(() => undefined);
+        client.release();
+      }
+    });
+
+    it("allows exactly one concurrent Task 6 acceptance with no duplicate membership, session, or audit", async () => {
+      const issuerClient = await appPool!.connect();
+      const first = await appPool!.connect();
+      const second = await appPool!.connect();
+      const blocker = await ownerPool.connect();
+      const retainedOperations: Array<SettledDatabasePromise<unknown>> = [];
+      try {
+        await issuerClient.query("SET ROLE dasher_app");
+        await first.query("SET ROLE dasher_app");
+        await second.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        const admin = await createTask4Actor(issuerClient, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const issueRepository = createTask6Repository(issuerClient, keyRing, [
+          randomUUID(),
+          randomUUID(),
+        ]);
+        const email = `race-${randomUUID()}@example.test`;
+        const issued = await issueRepository.issueInvitation({
+          requestId: randomUUID(),
+          email,
+          role: "editor",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+        const firstIds = [
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+        ];
+        const secondIds = [
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+        ];
+        const firstRepository = createTask6Repository(first, keyRing, firstIds);
+        const secondRepository = createTask6Repository(
+          second,
+          keyRing,
+          secondIds,
+        );
+        const principal = task6Principal(email);
+
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "SELECT invitation_id FROM dasher.invitations WHERE invitation_id = $1::uuid FOR UPDATE",
+          [issued.invitationId],
+        );
+        const firstPid = await appBackendPid(first);
+        const secondPid = await appBackendPid(second);
+        const firstAcceptance = retainDatabasePromise(
+          retainedOperations,
+          firstRepository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: issued.inviteToken,
+            principal,
+          }),
+        );
+        await waitForDatabaseLock(
+          ownerPool as unknown as PoolClient,
+          firstPid,
+          ["transactionid", "tuple"],
+          firstAcceptance,
+        );
+        const secondAcceptance = retainDatabasePromise(
+          retainedOperations,
+          secondRepository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: issued.inviteToken,
+            principal,
+          }),
+        );
+        await waitForDatabaseLock(
+          ownerPool as unknown as PoolClient,
+          secondPid,
+          ["advisory", "transactionid", "tuple"],
+          secondAcceptance,
+        );
+        await blocker.query("ROLLBACK");
+        const results = await Promise.all([firstAcceptance, secondAcceptance]);
+        expect(
+          results.filter((result) => result.status === "fulfilled"),
+        ).toHaveLength(1);
+        expect(
+          results.filter((result) => result.status === "rejected"),
+        ).toHaveLength(1);
+        const rejected = results.find((result) => result.status === "rejected");
+        expect(
+          rejected?.status === "rejected" ? rejected.reason : undefined,
+        ).toBeInstanceOf(OperationDeniedError);
+
+        const state = await ownerPool.query<{
+          readonly acceptance_audit_count: string;
+          readonly membership_count: string;
+          readonly session_count: string;
+        }>(
+          `
+            SELECT
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.memberships
+                WHERE organization_id = $1::uuid
+                  AND user_id = (
+                    SELECT accepted_user_id
+                    FROM dasher.invitations
+                    WHERE invitation_id = $2::uuid
+                  )
+              ) AS membership_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.sessions
+                WHERE session_id = ANY($3::uuid[])
+              ) AS session_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.audit_events
+                WHERE audit_event_id = ANY($4::uuid[])
+              ) AS acceptance_audit_count
+          `,
+          [
+            admin.organizationId,
+            issued.invitationId,
+            [firstIds[2], secondIds[2]],
+            [firstIds[3], secondIds[3]],
+          ],
+        );
+        expect(state.rows[0]).toEqual({
+          acceptance_audit_count: "1",
+          membership_count: "1",
+          session_count: "1",
+        });
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        await Promise.all(retainedOperations);
+        await issuerClient.query("RESET ROLE").catch(() => undefined);
+        await first.query("RESET ROLE").catch(() => undefined);
+        await second.query("RESET ROLE").catch(() => undefined);
+        blocker.release();
+        issuerClient.release();
+        first.release();
+        second.release();
+      }
+    });
+
+    it("converges concurrent Task 6 wrapper acceptances on one external-identity winner across organizations", async () => {
+      const first = await appPool!.connect();
+      const second = await appPool!.connect();
+      const blocker = await ownerPool.connect();
+      const retainedOperations: Array<SettledDatabasePromise<unknown>> = [];
+      let blockerOpen = false;
+      try {
+        await first.query("SET ROLE dasher_app");
+        await second.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const firstCurrentSession = keyRing.issue("session");
+        const firstCurrentCsrf = keyRing.issue("csrf");
+        const secondCurrentSession = keyRing.issue("session");
+        const secondCurrentCsrf = keyRing.issue("csrf");
+        const firstAdmin = await createTask4Actor(first, "admin", undefined, {
+          sessionDigest: Buffer.from(firstCurrentSession.persistence.digest),
+          csrfDigest: Buffer.from(firstCurrentCsrf.persistence.digest),
+        });
+        const secondAdmin = await createTask4Actor(second, "admin", undefined, {
+          sessionDigest: Buffer.from(secondCurrentSession.persistence.digest),
+          csrfDigest: Buffer.from(secondCurrentCsrf.persistence.digest),
+        });
+        expect(firstAdmin.organizationId).not.toBe(secondAdmin.organizationId);
+
+        const firstIds = Array.from({ length: 6 }, () => randomUUID());
+        const secondIds = Array.from({ length: 6 }, () => randomUUID());
+        const firstEvents: Array<
+          Readonly<{ requestId: string; reason: string }>
+        > = [];
+        const secondEvents: Array<
+          Readonly<{ requestId: string; reason: string }>
+        > = [];
+        const firstRepository = createTask6Repository(
+          first,
+          keyRing,
+          firstIds,
+          firstEvents,
+        );
+        const secondRepository = createTask6Repository(
+          second,
+          keyRing,
+          secondIds,
+          secondEvents,
+        );
+        const marker = randomUUID();
+        const email = `identity-race-${marker}@example.test`;
+        const issuer = `https://task6-provider.test/identity-race/${marker}`;
+        const subject = `subject-${marker}`;
+        const firstIssued = await firstRepository.issueInvitation({
+          requestId: randomUUID(),
+          email,
+          role: "editor",
+          currentSessionToken: firstCurrentSession.wireValue,
+          currentCsrfValue: firstCurrentCsrf.wireValue,
+        });
+        const secondIssued = await secondRepository.issueInvitation({
+          requestId: randomUUID(),
+          email,
+          role: "viewer",
+          currentSessionToken: secondCurrentSession.wireValue,
+          currentCsrfValue: secondCurrentCsrf.wireValue,
+        });
+        const principal = task6Principal(email, issuer, subject);
+
+        await blocker.query("BEGIN");
+        blockerOpen = true;
+        await blocker.query(
+          "LOCK TABLE dasher.external_identities IN ACCESS EXCLUSIVE MODE",
+        );
+        const firstPid = await appBackendPid(first);
+        const secondPid = await appBackendPid(second);
+        const firstAcceptance = retainDatabasePromise(
+          retainedOperations,
+          firstRepository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: firstIssued.inviteToken,
+            principal,
+          }),
+        );
+        await waitForDatabaseLock(
+          ownerPool as unknown as PoolClient,
+          firstPid,
+          "relation",
+          firstAcceptance,
+        );
+        const secondAcceptance = retainDatabasePromise(
+          retainedOperations,
+          secondRepository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: secondIssued.inviteToken,
+            principal,
+          }),
+        );
+        await waitForDatabaseLock(
+          ownerPool as unknown as PoolClient,
+          secondPid,
+          "relation",
+          secondAcceptance,
+        );
+        await blocker.query("ROLLBACK");
+        blockerOpen = false;
+
+        const [firstSettled, secondSettled] = await Promise.all([
+          firstAcceptance,
+          secondAcceptance,
+        ]);
+        expect(firstSettled.status).toBe("fulfilled");
+        expect(secondSettled.status).toBe("fulfilled");
+        if (
+          firstSettled.status !== "fulfilled" ||
+          secondSettled.status !== "fulfilled"
+        ) {
+          throw new Error("Task 6 identity race did not settle successfully");
+        }
+        const firstResult = firstSettled.value;
+        const secondResult = secondSettled.value;
+        const winningUserId = firstResult.userId;
+        const proposedUsers = [firstIds[2]!, secondIds[2]!];
+        const losingUserId = proposedUsers.find(
+          (candidate) => candidate !== winningUserId,
+        )!;
+        expect(proposedUsers).toContain(winningUserId);
+        expect(secondResult.userId).toBe(winningUserId);
+        expect(firstResult).toMatchObject({
+          organizationId: firstAdmin.organizationId,
+          membershipId: firstIds[3],
+          sessionId: firstIds[4],
+          role: "editor",
+          authorityRevision: 1,
+        });
+        expect(secondResult).toMatchObject({
+          organizationId: secondAdmin.organizationId,
+          membershipId: secondIds[3],
+          sessionId: secondIds[4],
+          role: "viewer",
+          authorityRevision: 1,
+        });
+
+        const state = await ownerPool.query<{
+          readonly acceptance_audit_count: string;
+          readonly accepted_invitation_count: string;
+          readonly identity_count: string;
+          readonly loser_membership_count: string;
+          readonly loser_session_count: string;
+          readonly membership_count: string;
+          readonly proposed_user_count: string;
+          readonly session_count: string;
+        }>(
+          `
+            SELECT
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.external_identities
+                WHERE issuer = $1 AND subject = $2 AND user_id = $3::uuid
+              ) AS identity_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.users
+                WHERE user_id = ANY($4::uuid[])
+              ) AS proposed_user_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.invitations
+                WHERE invitation_id = ANY($5::uuid[])
+                  AND accepted_user_id = $3::uuid
+              ) AS accepted_invitation_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.memberships
+                WHERE membership_id = ANY($6::uuid[])
+                  AND user_id = $3::uuid
+              ) AS membership_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.sessions
+                WHERE session_id = ANY($7::uuid[])
+                  AND user_id = $3::uuid
+              ) AS session_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.audit_events
+                WHERE audit_event_id = ANY($8::uuid[])
+                  AND action = 'invitation.accepted'
+              ) AS acceptance_audit_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.memberships
+                WHERE user_id = $9::uuid
+                  AND membership_id = ANY($6::uuid[])
+              ) AS loser_membership_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.sessions
+                WHERE user_id = $9::uuid
+                  AND session_id = ANY($7::uuid[])
+              ) AS loser_session_count
+          `,
+          [
+            issuer,
+            subject,
+            winningUserId,
+            proposedUsers,
+            [firstIds[0], secondIds[0]],
+            [firstIds[3], secondIds[3]],
+            [firstIds[4], secondIds[4]],
+            [firstIds[5], secondIds[5]],
+            losingUserId,
+          ],
+        );
+        expect(state.rows[0]).toEqual({
+          acceptance_audit_count: "2",
+          accepted_invitation_count: "2",
+          identity_count: "1",
+          loser_membership_count: "0",
+          loser_session_count: "0",
+          membership_count: "2",
+          proposed_user_count: "1",
+          session_count: "2",
+        });
+        expect(firstEvents).toEqual([]);
+        expect(secondEvents).toEqual([]);
+        expect(JSON.stringify([firstEvents, secondEvents])).not.toContain(
+          marker,
+        );
+        await expect(first.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+        await expect(second.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+      } finally {
+        if (blockerOpen) {
+          await blocker.query("ROLLBACK").catch(() => undefined);
+        }
+        await Promise.all(retainedOperations);
+        await first.query("RESET ROLE").catch(() => undefined);
+        await second.query("RESET ROLE").catch(() => undefined);
+        blocker.release();
+        first.release();
+        second.release();
+      }
+    });
+
+    it("rolls back every Task 6 acceptance mutation when the audit insert privilege is revoked", async () => {
+      const client = await appPool!.connect();
+      const revoker = await ownerPool.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        await createTask4Actor(client, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const invitationId = randomUUID();
+        const proposedUserId = randomUUID();
+        const proposedMembershipId = randomUUID();
+        const proposedSessionId = randomUUID();
+        const acceptAuditId = randomUUID();
+        const repository = createTask6Repository(client, keyRing, [
+          invitationId,
+          randomUUID(),
+          proposedUserId,
+          proposedMembershipId,
+          proposedSessionId,
+          acceptAuditId,
+        ]);
+        const email = `audit-failure-${randomUUID()}@example.test`;
+        const issuer = "https://task6-provider.test/audit-failure";
+        const subject = randomUUID();
+        const issued = await repository.issueInvitation({
+          requestId: randomUUID(),
+          email,
+          role: "viewer",
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        });
+
+        await revoker.query("BEGIN");
+        await revoker.query(`
+          REVOKE INSERT (${task4AuditColumnsSql})
+          ON dasher.audit_events
+          FROM dasher_security_definer
+        `);
+        await revoker.query("COMMIT");
+        await expect(
+          repository.acceptInvitation({
+            requestId: randomUUID(),
+            inviteToken: issued.inviteToken,
+            principal: task6Principal(email, issuer, subject),
+          }),
+        ).rejects.toBeInstanceOf(OperationInternalError);
+
+        const residue = await ownerPool.query<{
+          readonly accepted_user_id: string | null;
+          readonly audit_count: string;
+          readonly identity_count: string;
+          readonly membership_count: string;
+          readonly session_count: string;
+          readonly user_count: string;
+        }>(
+          `
+            SELECT
+              invitation.accepted_user_id::text,
+              (
+                SELECT pg_catalog.count(*)::text FROM dasher.users
+                WHERE user_id = $2::uuid
+              ) AS user_count,
+              (
+                SELECT pg_catalog.count(*)::text FROM dasher.external_identities
+                WHERE issuer = $3 AND subject = $4
+              ) AS identity_count,
+              (
+                SELECT pg_catalog.count(*)::text FROM dasher.memberships
+                WHERE membership_id = $5::uuid
+              ) AS membership_count,
+              (
+                SELECT pg_catalog.count(*)::text FROM dasher.sessions
+                WHERE session_id = $6::uuid
+              ) AS session_count,
+              (
+                SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+                WHERE audit_event_id = $7::uuid
+              ) AS audit_count
+            FROM dasher.invitations AS invitation
+            WHERE invitation.invitation_id = $1::uuid
+          `,
+          [
+            invitationId,
+            proposedUserId,
+            issuer,
+            subject,
+            proposedMembershipId,
+            proposedSessionId,
+            acceptAuditId,
+          ],
+        );
+        expect(residue.rows[0]).toEqual({
+          accepted_user_id: null,
+          audit_count: "0",
+          identity_count: "0",
+          membership_count: "0",
+          session_count: "0",
+          user_count: "0",
+        });
+      } finally {
+        await revoker.query("ROLLBACK").catch(() => undefined);
+        await revoker.query(`
+          GRANT INSERT (${task4AuditColumnsSql})
+          ON dasher.audit_events
+          TO dasher_security_definer
+        `);
+        await client.query("RESET ROLE").catch(() => undefined);
+        revoker.release();
+        client.release();
       }
     });
 

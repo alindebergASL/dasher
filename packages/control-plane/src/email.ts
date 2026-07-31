@@ -8,6 +8,11 @@ const errorMessages = {
   invalid_type: "Email address must be a string",
 } as const satisfies Record<EmailNormalizationErrorCode, string>;
 
+const objectFreeze = Object.freeze;
+const reflectApply = Reflect.apply;
+const stringCharCodeAt = String.prototype.charCodeAt;
+const stringFromCharCode = String.fromCharCode;
+
 export class EmailNormalizationError extends Error {
   readonly code: EmailNormalizationErrorCode;
 
@@ -15,6 +20,7 @@ export class EmailNormalizationError extends Error {
     super(errorMessages[code]);
     this.name = "EmailNormalizationError";
     this.code = code;
+    objectFreeze(this);
   }
 }
 
@@ -34,7 +40,7 @@ export function normalizeEmailAddress(input: string): string {
   let normalized = "";
 
   for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
+    const code = reflectApply(stringCharCodeAt, input, [index]);
     if (code < 0x21 || code > 0x7e) {
       return reject("invalid_character");
     }
@@ -46,9 +52,9 @@ export function normalizeEmailAddress(input: string): string {
       separatorIndex = index;
     }
 
-    normalized += String.fromCharCode(
+    normalized += reflectApply(stringFromCharCode, undefined, [
       code >= 0x41 && code <= 0x5a ? code + 0x20 : code,
-    );
+    ]);
   }
 
   if (separatorIndex <= 0 || separatorIndex === input.length - 1) {

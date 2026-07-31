@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +11,10 @@ import {
   type SecretKind,
   type SecretPersistenceMaterial,
 } from "./secrets.js";
+
+const intrinsicDefineProperty = Object.defineProperty;
+const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const intrinsicReflectDeleteProperty = Reflect.deleteProperty;
 
 const vectorKey = Uint8Array.from({ length: 32 }, (_, index) => index);
 const vectorSecret = Uint8Array.from(
@@ -69,6 +76,96 @@ function hex(value: Uint8Array): string {
 }
 
 describe("SecretKeyRing deterministic cryptography", () => {
+  it("retains module-snapshotted node:crypto capabilities and Hmac methods", () => {
+    const marker = "mutable-node-crypto-diagnostic-marker";
+    const mutableCrypto = crypto as typeof crypto;
+    const originalCreateHmac = mutableCrypto.createHmac;
+    const originalRandomBytes = mutableCrypto.randomBytes;
+    const originalTimingSafeEqual = mutableCrypto.timingSafeEqual;
+    const hmacProbe = originalCreateHmac("sha256", vectorKey);
+    const hmacPrototype = Object.getPrototypeOf(hmacProbe) as object;
+    const updateDescriptor = Object.getOwnPropertyDescriptor(
+      hmacPrototype,
+      "update",
+    )!;
+    const digestDescriptor = Object.getOwnPropertyDescriptor(
+      hmacPrototype,
+      "digest",
+    )!;
+    hmacProbe.digest();
+    const baseline = ring().issue("invite");
+    const unequalLeft = bytes(0x10);
+    const unequalRight = bytes(0x20);
+    let createHmacCalls = 0;
+    let randomBytesCalls = 0;
+    let timingSafeEqualCalls = 0;
+    let deterministicAfterMutation: typeof baseline | undefined;
+    let defaultEntropyAfterMutation: typeof baseline | undefined;
+    let unequalAccepted: boolean | undefined;
+    try {
+      mutableCrypto.createHmac = (() => {
+        createHmacCalls += 1;
+        throw new Error(marker);
+      }) as typeof mutableCrypto.createHmac;
+      mutableCrypto.randomBytes = ((size: number) => {
+        randomBytesCalls += 1;
+        return Buffer.alloc(size, 0x41);
+      }) as typeof mutableCrypto.randomBytes;
+      mutableCrypto.timingSafeEqual = ((): boolean => {
+        timingSafeEqualCalls += 1;
+        return true;
+      }) as typeof mutableCrypto.timingSafeEqual;
+      syncBuiltinESMExports();
+      Object.defineProperty(hmacPrototype, "update", {
+        ...updateDescriptor,
+        value() {
+          throw new Error(marker);
+        },
+      });
+      Object.defineProperty(hmacPrototype, "digest", {
+        ...digestDescriptor,
+        value() {
+          throw new Error(marker);
+        },
+      });
+
+      deterministicAfterMutation = ring().issue("invite");
+      defaultEntropyAfterMutation = new SecretKeyRing({
+        currentVersion: 2,
+        verificationKeys: [{ version: 2, key: vectorKey }],
+      }).issue("invite");
+      unequalAccepted = constantTimeDigestEqual(unequalLeft, unequalRight);
+    } finally {
+      Object.defineProperty(hmacPrototype, "update", updateDescriptor);
+      Object.defineProperty(hmacPrototype, "digest", digestDescriptor);
+      mutableCrypto.createHmac = originalCreateHmac;
+      mutableCrypto.randomBytes = originalRandomBytes;
+      mutableCrypto.timingSafeEqual = originalTimingSafeEqual;
+      syncBuiltinESMExports();
+    }
+
+    expect(deterministicAfterMutation).toEqual(baseline);
+    expect(defaultEntropyAfterMutation?.wireValue).toMatch(/^i1\.2\./u);
+    expect(defaultEntropyAfterMutation?.wireValue).not.toBe(
+      `i1.2.${Buffer.alloc(32, 0x41).toString("base64url")}`,
+    );
+    expect(unequalAccepted).toBe(false);
+    expect({ createHmacCalls, randomBytesCalls, timingSafeEqualCalls }).toEqual(
+      {
+        createHmacCalls: 0,
+        randomBytesCalls: 0,
+        timingSafeEqualCalls: 0,
+      },
+    );
+    expect(
+      JSON.stringify([
+        deterministicAfterMutation,
+        defaultEntropyAfterMutation,
+        unequalAccepted,
+      ]),
+    ).not.toContain(marker);
+  });
+
   it.each([
     [
       "invite",
@@ -224,6 +321,112 @@ describe("SecretKeyRing deterministic cryptography", () => {
 });
 
 describe("SecretKeyRing parsing and matching", () => {
+  it("uses captured parsing, collection, byte, numeric, apply, and freeze intrinsics", () => {
+    const marker = "post-load-secret-intrinsic-marker";
+    const configured = new SecretKeyRing(
+      {
+        currentVersion: 2,
+        verificationKeys: [
+          { version: 1, key: bytes(0x40) },
+          { version: 2, key: vectorKey },
+        ],
+        retiredVersions: [3],
+      },
+      { randomBytes: () => vectorSecret },
+    );
+    const valid = configured.issue("invite");
+    const reconstructionKeys = [
+      { version: 1, key: bytes(0x40) },
+      { version: 2, key: Uint8Array.from(vectorKey) },
+    ];
+    const targets = [
+      [Array, "isArray"],
+      [Number, "isInteger"],
+      [Number, "isSafeInteger"],
+      [RegExp.prototype, "test"],
+      [String.prototype, "split"],
+      [Object, "freeze"],
+      [Reflect, "apply"],
+      [Uint8Array, "from"],
+      [Uint8Array.prototype, "set"],
+      [Uint8Array.prototype, Symbol.iterator],
+      [Map.prototype, "get"],
+      [Map.prototype, "has"],
+      [Map.prototype, "set"],
+      [Set.prototype, "add"],
+      [Set.prototype, "has"],
+    ] as const;
+    const descriptors = targets.map(([target, property]) =>
+      intrinsicGetOwnPropertyDescriptor(target, property),
+    );
+    const hasInstanceDescriptor = intrinsicGetOwnPropertyDescriptor(
+      Uint8Array,
+      Symbol.hasInstance,
+    );
+    let issued: ReturnType<SecretKeyRing["issue"]> | undefined;
+    let verified: SecretPersistenceMaterial | undefined;
+    let malformedError: unknown;
+    let reconstructed: SecretKeyRing | undefined;
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const [target, property] = targets[index]!;
+        intrinsicDefineProperty(target, property, {
+          ...descriptors[index],
+          configurable: true,
+          value: () => {
+            throw new Error(marker);
+          },
+        });
+      }
+      intrinsicDefineProperty(Uint8Array, Symbol.hasInstance, {
+        configurable: true,
+        value: () => false,
+      });
+
+      issued = configured.issue("invite");
+      verified = configured.verify("invite", valid.wireValue);
+      try {
+        configured.verify("invite", `i1.2.${"!".repeat(43)}`);
+      } catch (error) {
+        malformedError = error;
+      }
+      reconstructed = new SecretKeyRing(
+        {
+          currentVersion: 2,
+          verificationKeys: reconstructionKeys,
+          retiredVersions: [3],
+        },
+        { randomBytes: () => vectorSecret },
+      );
+    } finally {
+      for (let index = 0; index < targets.length; index += 1) {
+        const [target, property] = targets[index]!;
+        const descriptor = descriptors[index];
+        if (descriptor === undefined) {
+          intrinsicReflectDeleteProperty(target, property);
+        } else {
+          intrinsicDefineProperty(target, property, descriptor);
+        }
+      }
+      if (hasInstanceDescriptor === undefined) {
+        intrinsicReflectDeleteProperty(Uint8Array, Symbol.hasInstance);
+      } else {
+        intrinsicDefineProperty(
+          Uint8Array,
+          Symbol.hasInstance,
+          hasInstanceDescriptor,
+        );
+      }
+    }
+
+    expect(issued?.wireValue).toBe(valid.wireValue);
+    expect(verified).toEqual(valid.persistence);
+    expect(malformedError).toBeInstanceOf(SecretPrimitiveError);
+    expect(malformedError).toMatchObject({ code: "invalid_token" });
+    expect(reconstructed).toBeInstanceOf(SecretKeyRing);
+    expect(String(malformedError)).not.toContain(marker);
+  });
+
   it("returns persistence-only material from issue and verification", () => {
     const configured = ring();
     const issued = configured.issue("csrf");

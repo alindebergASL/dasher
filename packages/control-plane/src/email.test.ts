@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { EmailNormalizationError, normalizeEmailAddress } from "./email.js";
 
+const intrinsicDefineProperty = Object.defineProperty;
+const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+
 function captureError(input: string): EmailNormalizationError {
   try {
     normalizeEmailAddress(input);
@@ -19,6 +22,47 @@ function lowercaseAscii(character: string): string {
 }
 
 describe("normalizeEmailAddress", () => {
+  it("uses captured character, apply, and freeze intrinsics after module load", () => {
+    const marker = "email-intrinsic-marker";
+    const targets = [
+      [String.prototype, "charCodeAt"],
+      [String, "fromCharCode"],
+      [Object, "freeze"],
+      [Reflect, "apply"],
+    ] as const;
+    const descriptors = targets.map(([target, property]) =>
+      intrinsicGetOwnPropertyDescriptor(target, property),
+    );
+    let normalized: string | undefined;
+    let invalidError: unknown;
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const [target, property] = targets[index]!;
+        intrinsicDefineProperty(target, property, {
+          ...descriptors[index],
+          value: () => {
+            throw new Error(marker);
+          },
+        });
+      }
+      normalized = normalizeEmailAddress("USER@EXAMPLE.TEST");
+      try {
+        normalizeEmailAddress(`bad\n${marker}@example.test`);
+      } catch (error) {
+        invalidError = error;
+      }
+    } finally {
+      for (let index = 0; index < targets.length; index += 1) {
+        const [target, property] = targets[index]!;
+        intrinsicDefineProperty(target, property, descriptors[index]!);
+      }
+    }
+
+    expect(normalized).toBe("user@example.test");
+    expect(invalidError).toBeInstanceOf(EmailNormalizationError);
+    expect(String(invalidError)).not.toContain(marker);
+  });
+
   it("exhaustively handles every ASCII byte in a local-part position", () => {
     for (let code = 0; code <= 0x7f; code += 1) {
       const character = String.fromCharCode(code);
