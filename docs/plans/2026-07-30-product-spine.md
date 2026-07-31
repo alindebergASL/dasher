@@ -14,11 +14,12 @@ process connects through a restricted login, explicitly assumes the
 `NOBYPASSRLS` `dasher_app` role, and invokes fixed service operations. Every
 authenticated mutation runs in one transaction whose context is initialized
 from a live session digest and whose membership and session are revalidated
-under locks before commit, except the two invitation-family authenticated entry
-functions that take and revalidate explicit live session proof so they can
-acquire their family advisory lock before any row lock. Direct app DML is
-read-only; reviewed, operation-specific functions own all mutations and their
-audit writes.
+under locks before commit. Every Task 4 entry that can lock or mutate a
+membership or session first derives its organization only from its trusted
+bounded session, identity, or invitation proof and acquires its complete
+canonical advisory-key set before any row lock. Direct app DML is read-only;
+reviewed, operation-specific functions own all mutations and their audit
+writes.
 
 **Tech stack:** Node 22, TypeScript 5.9, pnpm 10.14, ESM, `pg`, Zod, Vitest,
 PostgreSQL 16, and a digest-pinned GitHub Actions PostgreSQL service.
@@ -645,6 +646,29 @@ Typed argument conversion that PostgreSQL performs before entering a function
 is prevalidated and normalized by the later repository boundary; it is never
 fed unvalidated public text.
 
+Session-insert uniqueness handling is constraint-exact. In
+`accept_invitation`, `issue_session`, and `rotate_session`, the
+`unique_violation` exception handler immediately obtains
+`CONSTRAINT_NAME` with `GET STACKED DIAGNOSTICS` and compares it to this closed
+immutable-`0001` allowlist:
+
+- `sessions_pkey`: the proposed global session-ID conflict;
+- `sessions_token_key`: the supplied session token key-version/digest
+  conflict;
+- `sessions_csrf_key`: the supplied CSRF key-version/digest conflict.
+
+Each named branch raises only exact `P1002`/`dasher_conflict` with no
+detail/hint/object metadata. `sessions_org_id_key` is not a fourth expected
+insert-conflict branch: because `session_id` is already the global primary key,
+that composite uniqueness constraint exists for same-organization foreign-key
+support and cannot be the independent caller-proposed-ID race. A null, empty,
+or any other constraint name—including a future or test-injected unique
+constraint—must not be normalized by a blanket handler. The original
+unexpected fault is rethrown for later internal classification; the handler
+does not copy the stacked constraint name or any raw detail, hint, schema,
+table, column, datatype, or SQL text into a custom exception or log. It is
+never relabeled `P1001` or `P1002`.
+
 The future repository maps exact SQLSTATE `P1001` to one typed denial and exact
 SQLSTATE `P1002` to one typed conflict by code only, without inspecting a
 database message. A future HTTP adapter maps them respectively to status `403`
@@ -653,7 +677,11 @@ with exact body `{"error":"operation_denied"}` and status `409` with exact body
 route. Every other SQLSTATE, including an unexpected error whose message
 happens to match a fixed message, remains internal and is not silently
 relabeled. The future boundary sanitizes it to a generic internal response and
-never exposes raw SQL details publicly.
+never exposes its constraint, detail, hint, schema, table, column, datatype,
+SQL text, or raw message publicly. Task 4 can assert only that such an injected
+unexpected uniqueness fault is not `P1001`/`P1002` and that the SQL function
+did not synthesize or log stacked diagnostics; the later repository/public
+mapping seam owns generic HTTP sanitization.
 
 Security logging uses only request ID plus one of these bounded reason codes:
 `input_invalid`, `authority_invalid`, `state_invalid`, `expired`, `replay`,
@@ -772,23 +800,90 @@ event. The caller cannot supply or shorten the fixed seven-day lifetime.
 Requested role must be exactly `viewer`, `editor`, or `admin`; any other value
 or any value above the derived `admin` ceiling is denied.
 
-Issue, revoke, and accept use one fixed invitation-family transaction lock:
+Every Task 4 entry function that can lock or mutate a membership or session row
+derives this exact organization advisory key from its trusted bounded probe:
 
 ```sql
-SELECT pg_catalog.pg_advisory_xact_lock(
-  pg_catalog.hashtextextended(
-    'dasher:invitation-family:v1:'::text
-      || organization_id::text
-      || ':'::text
-      || normalized_email,
-    20260730::bigint
-  )
+v_organization_advisory_key := pg_catalog.hashtextextended(
+  'dasher:task4-organization:v1:'::text || v_organization_id::text,
+  20260730::bigint
 );
 ```
 
-The lock is acquired inside each entry function before any row lock.
-`accept_invitation` remains pre-authentication and uses its bounded ordinary
-token probe to derive the family key before locking.
+The closed set is `initialize_context`, `rotate_session`, `revoke_session`,
+`change_membership_role`, `revoke_membership`, `issue_session`,
+`accept_invitation`, `issue_invitation`, and `revoke_invitation`. No function in
+that set may reach a membership or session row lock without first acquiring its
+required canonical advisory-key set.
+
+`v_organization_id` in that expression is never a caller organization, a
+context GUC taken on trust, or an independently supplied key. Its required
+derivation is:
+
+- for `initialize_context` and every context-dependent entry, the exact
+  session-ID/key-version/digest-bound session probe and its revalidated
+  membership binding;
+- for `issue_session`, the exact immutable external identity plus supplied
+  active membership proof;
+- for `accept_invitation`, the bounded exact invitation-token probe;
+- for `issue_invitation` and `revoke_invitation`, the bounded exact explicit
+  current-session proof, with revoke's invitation probe additionally
+  constrained to that derived organization.
+
+The probe grants no authority; every row is still locked and revalidated as
+specified below. `initialize_context` acquires the organization key before its
+row locks and retains it through the pinned transaction. Each later
+context-dependent entry re-derives the organization from its exact session
+proof and idempotently acquires the same singleton key before expanding any row
+lock set. `issue_session` acquires its derived singleton organization key
+before its membership row. A caller-proposed new or successor session ID never
+selects an advisory key or row lock.
+
+Issue, revoke, and accept additionally derive this fixed invitation-family
+transaction key:
+
+```sql
+v_invitation_family_advisory_key := pg_catalog.hashtextextended(
+  'dasher:invitation-family:v1:'::text
+    || v_organization_id::text
+    || ':'::text
+    || v_normalized_email,
+  20260730::bigint
+);
+```
+
+Each invitation-family entry forms the set containing its organization and
+family keys, removes duplicates, orders the remaining values by ascending
+signed `bigint`, and acquires them inside the entry function before any row
+lock:
+
+```sql
+FOR v_advisory_key IN
+  SELECT DISTINCT key_set.advisory_key
+  FROM pg_catalog.unnest(
+    ARRAY[
+      v_organization_advisory_key,
+      v_invitation_family_advisory_key
+    ]::bigint[]
+  ) AS key_set(advisory_key)
+  ORDER BY key_set.advisory_key
+LOOP
+  PERFORM pg_catalog.pg_advisory_xact_lock(v_advisory_key);
+END LOOP;
+```
+
+All acquired advisory locks are retained to transaction completion. Numeric
+ordering and deduplication are mandatory: domain separation does not make
+64-bit collisions impossible, including a collision between an organization
+key and a family key. Equal keys are acquired once; distinct keys are acquired
+in the same global signed-`bigint` order by every routine.
+
+For issue, the family key uses the derived organization plus the fully
+validated normalized-email operation value. For revoke, both organization and
+normalized email come from the session-constrained invitation probe. For
+acceptance, both come from the bounded invitation-token probe.
+`accept_invitation` remains pre-authentication, but its probe-derived canonical
+advisory-key set is acquired before it claims the invitation row.
 
 `issue_invitation` and `revoke_invitation` are special authenticated entry
 functions that do not call or depend on `initialize_context`. Each follows this
@@ -803,10 +898,12 @@ exact protocol in one transaction:
    `invitation.organization_id = probed_session.organization_id AND
 invitation.invitation_id = input_invitation_id`, bounded to zero or one row,
    to discover normalized email. A missing or cross-organization target is
-   denied before deriving or acquiring any foreign organization's family lock.
-3. Derive the fixed organization/email family key and call
-   `pg_catalog.pg_advisory_xact_lock` before any row lock. No caller pre-held
-   lock, resolution transaction, or `pg_locks` inspection exists.
+   denied before deriving or acquiring any foreign organization's organization
+   or family key.
+3. Derive the organization and organization/email family keys, deduplicate and
+   signed-`bigint` sort the set, and acquire every key before any row lock. No
+   caller pre-held lock, resolution transaction, or `pg_locks` inspection
+   exists.
 4. Lock the derived actor membership, then one deduplicated canonical session
    set containing the probed current session and any other participating
    session row, then the pending invitation family for issue or exact target
@@ -820,17 +917,19 @@ invitation.invitation_id = input_invitation_id`, bounded to zero or one row,
    and every other function input. No probe result is authoritative until this
    revalidation.
 6. Capture the one database time, perform the fixed mutation and audit insert,
-   and return the minimal result; any failure rolls back the advisory lock,
+   and return the minimal result; any failure rolls back every advisory lock,
    mutation, and audit together.
 
 The explicit request ID is non-authoritative correlation, and neither explicit
 session proof nor any operation input selects organization, user, membership,
-or role; those are derived and revalidated from locked rows. The family lock
-serializes the zero-existing-row case as well as existing rows. Hash collisions
-are safe and only over-serialize unrelated families. Concurrent issue leaves
-exactly one pending winner, every predecessor has a deterministic accepted or
-revoked terminal state, and issue-versus-accept or issue-versus-revoke cannot
-invert invitation and membership row locks.
+or role; those are derived and revalidated from locked rows. The canonical
+organization-plus-family key set serializes the zero-existing-row case as well
+as existing rows and also orders the operation against every membership/session
+entry in that organization. Hash collisions are safe and only over-serialize
+unrelated organizations or families. Concurrent issue leaves exactly one
+pending winner, every predecessor has a deterministic accepted or revoked
+terminal state, and issue-versus-accept or issue-versus-revoke cannot invert
+advisory, invitation, membership, or session locks.
 
 Acceptance requires a server-verified external identity input with
 `email_verified = true` and an exactly normalized verified email. The
@@ -838,8 +937,9 @@ Gate 2-A normalizer applies the closed ASCII-only validation and explicit
 whole-address `A..Z` mapping above, including the local part, and acceptance
 compares that exact result. The acceptance function locks in this order:
 
-1. perform the bounded probe, acquire the invitation-family advisory lock, and
-   claim the re-read invitation by exact key version/digest `FOR UPDATE`;
+1. perform the bounded probe, derive and canonically acquire the deduplicated
+   organization-plus-family advisory-key set, and claim the re-read invitation
+   by exact key version/digest `FOR UPDATE`;
 2. capture one database `clock_timestamp()` and require not accepted, not
    revoked, and `now < expires_at`;
 3. require exact normalized-email equality;
@@ -850,9 +950,13 @@ compares that exact result. The acceptance function locks in this order:
    `granted_role`, using the fixed membership-race behavior below; if already
    active, leave its role/revision unchanged; a revoked membership denies and
    requires a separate admin operation;
-7. conditionally mark this invitation accepted, issue the initial session at
-   the effective current membership revision, write the fixed audit event, and
-   commit.
+7. revalidate the final invitation and effective membership authority, perform
+   the ordinary global proposed-new-session-ID existence probe without a row
+   lock, and reject an existing row as exact conflict;
+8. conditionally mark this invitation accepted, attempt the initial-session
+   insert at the effective current membership revision while normalizing a
+   concurrent global primary-key loser to exact conflict, write the fixed audit
+   event, and commit.
 
 The proposed new user ID is consumed only when the exact external identity is
 absent. If the identity already exists, its immutable user ID wins and the
@@ -924,12 +1028,31 @@ session/CSRF key versions and digests; `issued_at = last_seen_at = now`;
 interval '7 days'`; and `rotated_from_session_id = replaced_by_session_id =
 revoked_at = revocation_reason = NULL`. No session timestamp, lineage, or
 revocation default is used.
-`initialize_context` performs an unlocked digest probe only to discover row
-keys, then locks the membership followed by the canonical session set, re-reads
-both, and validates token, lineage, revocation, state, revision, and both
-expiries before setting local context. At most once per five minutes it
-conditionally advances `last_seen_at = now` and `idle_expires_at = least(now +
-interval '30 minutes', absolute_expires_at)`.
+`initialize_context` performs an unlocked exact digest probe only to discover
+the current session row keys and derived organization ID. The probe grants no
+authority. It derives the exact `dasher:task4-organization:v1:` key above from
+that probe, acquires the singleton advisory-key set, and only then locks the
+derived membership followed by the canonical session set. It re-reads both and
+validates token, lineage, revocation, state, revision, and both expiries before
+setting local context. No caller-supplied or context-GUC organization or key
+may select the advisory lock. The lock is authorization-neutral and is held
+until the pinned transaction commits or rolls back. All context-dependent
+authenticated operations therefore run while holding the same organization
+gate acquired before any actor membership or current-session row: two actors
+in one organization cannot prehold conflicting actor rows before either
+routine builds its full canonical membership/session lock set.
+
+Organizations whose derived signed-`bigint` key values are distinct proceed
+independently. A 64-bit hash collision is safe and only over-serializes the
+colliding organizations; no-delay or independence claims apply only after a
+test computes and asserts that its fixture organizations' derived keys are
+unequal.
+
+At most once per five minutes `initialize_context` conditionally advances
+`last_seen_at = now` and `idle_expires_at = least(now + interval '30 minutes',
+absolute_expires_at)`. A standalone autocommit call acquires the transaction
+advisory lock only for that statement; both its lock and transaction-local
+context evaporate when the statement completes.
 
 All authenticated state changes require the current CSRF version/digest and
 compare it to the locked session row. The service computes the domain-separated
@@ -938,22 +1061,79 @@ also requires exact byte equality. Exemptions are only read-only session
 resolution, server-verified external-identity login/session issue, invitation
 acceptance, and a future login callback. No HTTP route is added in this slice.
 
-The default authenticated non-invitation row-lock order is:
+The universal Task 4 lock phases for every entry that can lock or mutate a
+membership or session row are:
 
-1. all involved membership rows ordered by `(organization_id, user_id)`;
-2. one deduplicated set of all existing current, target, predecessor,
-   successor-ID-collision, and directly participating lineage session rows,
-   locked by one ordered query in `(organization_id, session_id)` order;
-3. the dashboard or other mutable non-invitation target;
-4. immutable inserts and audit.
+1. derive the complete advisory-key set only from the entry's trusted bounded
+   proof, deduplicate it, signed-`bigint` sort it, and acquire every key;
+2. lock the complete involved membership set in canonical
+   `(organization_id, user_id)` order;
+3. lock one deduplicated complete involved trusted-existing session resource
+   set in canonical `(organization_id, session_id)` order;
+4. lock mutable operation targets;
+5. perform final authority and resource revalidation;
+6. perform immutable or absent-row inserts and write audit last.
 
-The special authenticated invitation issue/revoke order is the family advisory
-lock, derived actor membership, canonical session set, invitation
-family/target, then inserts/audit, exactly as specified above. The explicit
-pre-authentication acceptance row-lock exception is: family advisory lock,
-invitation, identity-race protocol and derived membership, canonical session
-set, then the remaining fixed inserts and audit. The acceptance schedule never
-locks a session before its derived membership.
+Caller-proposed new/successor session IDs are an explicit exception to the
+session-row locking phase. `accept_invitation`, `issue_session`, and
+`rotate_session` must not derive an advisory key from, add to a canonical
+session set, or acquire `FOR UPDATE`/`FOR SHARE` on a row selected by,
+respectively, `p_new_session_id`, `p_session_id`, or
+`p_successor_session_id`. After the complete trusted advisory set, required
+authority/resource row locks, and final authority/resource revalidation, each
+function performs only this bounded ordinary global primary-key existence
+probe for its proposed ID:
+
+```sql
+SELECT 1
+INTO v_session_collision
+FROM dasher.sessions AS session_collision
+WHERE session_collision.session_id = v_proposed_session_id;
+```
+
+The probe has no row-lock clause and is not part of any canonical lock set.
+`FOUND` raises exact `P1002`/`dasher_conflict`. If absent, the function attempts
+the session insert; only a concurrent global-primary-key loser diagnosed as
+exact constraint `sessions_pkey` is normalized to that same exact conflict
+under the closed handler above. The transaction leaves no session, lineage
+mutation, invitation transition, or audit residue. Session rows are
+permanent—Task 4 grants no session `DELETE` or `TRUNCATE` path—so an existing
+collision observed by the ordinary probe cannot disappear; an absent-row race
+is resolved safely by the global primary key. No caller-proposed session ID may
+derive an organization/family advisory key or cause acquisition of a foreign
+organization gate.
+
+`initialize_context` establishes the singleton organization-key phase before
+its derived actor membership and current canonical session locks. A later
+context-dependent entry re-derives and idempotently reacquires that same key,
+then expands to its complete membership and session sets. The organization
+gate makes the actor-specific locks retained from initialization safe by
+preventing another same-organization Task 4 entry from retaining a membership
+or session row first. `issue_session` follows organization key → derived
+membership → final revalidation → ordinary global proposed-session-ID probe →
+insert/audit.
+
+`issue_invitation` and `revoke_invitation` follow canonical
+organization-plus-family advisory-key set → derived actor membership →
+canonical session set → invitation family/target → inserts/audit. They do not
+call `initialize_context`, but the shared organization key serializes their row
+phases with context-dependent and other explicit-proof entries in the same
+organization.
+
+Acceptance retains its necessary pre-authentication row exception. After its
+canonical organization-plus-family advisory-key set, it claims the re-read
+invitation by exact token `FOR UPDATE`, runs the immutable identity-race
+protocol, and locks the derived membership. After final invitation, identity,
+and membership revalidation, it performs the ordinary global proposed-session-
+ID probe, then the conditional invitation transition, remaining inserts, and
+audit. Thus its invitation claim remains before its post-advisory membership
+row, but it cannot hold that invitation or any membership row while waiting for
+an organization key. Acceptance never row-locks a session selected by its
+proposed new session ID.
+
+This advisory-key amendment changes no entry signature, return shape, owner,
+language, volatility, fixed search path, operation-specific table/column ACL,
+audit action, authority rule, timestamp rule, or `P1001`/`P1002` boundary.
 
 Every authenticated mutation revalidates the context's session digest and
 membership after acquiring those locks in the same transaction. Membership
@@ -980,11 +1160,19 @@ already locked session-ID order with reason `authority_changed`. Revision
 mismatch independently invalidates any session missed by that update.
 
 Rotation locks membership, then builds one deduplicated session set containing
-the context predecessor, any existing proposed-successor-ID row, and every
-existing row directly named by the predecessor's lineage columns. It locks
-that entire set in canonical organization/session-ID order, regardless of
-which UUID sorts first. It revalidates that the predecessor is current, live,
-and has no successor, then captures its one database time. To satisfy `0001`'s
+only the context predecessor and every same-organization existing row directly
+named by the predecessor's lineage columns. Membership in this set is strictly
+source-based: `p_successor_session_id` is never an advisory-key input,
+lock-query predicate, or reason to expand the canonical session set. Rotation
+still locks the current predecessor and every same-organization row
+independently selected from the trusted predecessor's direct-lineage columns.
+If the proposed UUID aliases the predecessor or one of those trusted lineage
+rows, that row remains locked for its predecessor/lineage source; rotation
+acquires no additional collision lock and performs no value-based filtering of
+the trusted set. Rotation locks that set in canonical
+organization/session-ID order, captures its one database time, revalidates that
+the predecessor is current, live, and has no successor, and performs the
+ordinary global proposed-successor-ID probe above. To satisfy `0001`'s
 immediate lineage foreign keys, writes occur in this exact order:
 
 1. Insert the successor first with every column explicit: supplied successor
@@ -1000,10 +1188,11 @@ revocation_reason = NULL`.
    successor predicates and require exactly one updated row.
 3. Insert the fixed audit row last.
 
-Any successor insert, zero-row predecessor update, or audit failure rolls back
-both lineage directions. Rotation is denied at the inclusive boundary `now >=
-predecessor.absolute_expires_at`. Concurrent rotations produce one successor
-and one `dasher_conflict` with no tenant audit.
+An already-existing proposed successor, concurrent successor primary-key loser,
+successor insert failure, zero-row predecessor update, or audit failure rolls
+back both lineage directions. Rotation is denied at the inclusive boundary
+`now >= predecessor.absolute_expires_at`. Concurrent rotations produce one
+successor and one `dasher_conflict` with no tenant audit.
 
 Session revocation locks the membership, then one deduplicated canonical set
 containing the current and target sessions; if either is a directly
@@ -1012,18 +1201,23 @@ It performs the same final revalidation, captures its one database time, and
 conditionally revokes only a session for the current user and organization
 with fixed reason `user_revoked`.
 
-`issue_session` locks and validates the derived membership, locks any existing
-new-session-ID collision row through its canonical session set, performs its
-final re-read, and only then captures its one database time and inserts.
-`initialize_context` locks its probed current session through the same
-canonical-set mechanism and captures its one database time only after the
+`issue_session` derives and acquires its organization advisory singleton from
+the immutable-identity/membership proof, locks and validates the derived
+membership, captures its one database time, performs its final re-read,
+performs the ordinary global proposed-session-ID probe without locking the
+collision row, and then inserts. `initialize_context` acquires its derived
+organization advisory singleton, locks its probed current session through the
+same canonical-set mechanism, and captures its one database time only after the
 membership and session locks and re-read.
 Invitation acceptance retains its explicit pre-authentication exception,
-captures its one database time immediately after locking the invitation, and,
-after the derived membership, canonically locks any existing new-session-ID
-collision row before session insert. Invitation issue and revoke acquire the
-family advisory lock internally, then lock current membership, canonical
-current-session set, and canonically ordered family/target invitation rows.
+acquires its canonical organization-plus-family advisory-key set, captures its
+one database time immediately after locking the invitation, and, after the
+derived membership and final revalidation, performs the ordinary global
+proposed-session-ID probe without locking the collision row before session
+insert. Invitation issue and revoke acquire their canonical
+organization-plus-family advisory-key sets internally, then lock current
+membership, canonical current-session set, and canonically ordered
+family/target invitation rows.
 Membership role/revoke use the canonical actor/target/all-live admin membership
 set, then the deduplicated current plus all-target-session set. Every other
 authenticated routine captures its one database time only after all
@@ -1033,8 +1227,11 @@ canonical set. Audit insertion remains last in every lock protocol.
 
 Tests cover revocation committed before authority locking, revocation waiting
 behind a mutation that already holds authority, and revocation winning before
-the mutation's final recheck. Reverse-sorted session UUID tests cover
-rotation-versus-revocation and lineage/current/target overlap without deadlock.
+the mutation's final recheck. Reverse-sorted trusted-existing session UUID
+tests cover rotation-versus-revocation and predecessor/direct-lineage/current/
+target overlap without deadlock. They classify lock membership by the trusted
+predecessor/lineage source, not by UUID equality with a proposed successor: an
+alias remains locked for its trusted source and causes no additional lock.
 Acceptance-versus-membership-role-change and
 acceptance-versus-membership-revocation barrier tests cover both lock-winner
 orders and prove final locked authority determines the result without deadlock.
@@ -1194,9 +1391,38 @@ Expected commit: `feat: add identity and audit schema`.
    while only valid `requested_role` and `new_role` operation enums are
    accepted. Prove a standalone autocommit `initialize_context` may return and
    refresh but its local context evaporates after that statement and authorizes
-   no subsequent statement; prove every successful context-bound operation uses
-   a connection-pinned serial `BEGIN` → initialize → operation →
-   `COMMIT`/`ROLLBACK` sequence.
+   no subsequent statement and its organization advisory transaction lock is
+   absent after the statement; prove every successful context-bound operation
+   uses a connection-pinned serial `BEGIN` → initialize → operation →
+   `COMMIT`/`ROLLBACK` sequence. With an exact organization gate deliberately
+   held by a separate connection, prove a same-organization
+   `initialize_context` waits on that advisory lock before acquiring any
+   membership or session row lock. Prove a different-organization context
+   initializes and completes before the first organization releases its gate,
+   using explicit lock/operation barriers rather than elapsed-time or
+   lock-timeout claims. The cross-organization fixture must compute both exact
+   signed-`bigint` organization keys and assert inequality before making that
+   no-delay claim. Reuse the pooled connection after both commit and rollback
+   and prove neither context GUCs nor advisory locks leak. Table-drive
+   `initialize_context`, every context-dependent entry, `issue_session`,
+   `accept_invitation`, `issue_invitation`, and `revoke_invitation` to prove
+   each trusted probe derives the expected organization key, no caller value
+   selects an organization or advisory key, and no membership/session row lock
+   precedes acquisition of the complete required advisory-key set. Exact
+   canonical-source/catalog assertions for `accept_invitation`,
+   `issue_session`, and `rotate_session` must additionally prove that no
+   caller-proposed new/successor session ID is an input to advisory-key
+   derivation, a canonical session-lock query, or any `FOR UPDATE`/`FOR SHARE`
+   predicate; each function instead contains the bounded ordinary global
+   primary-key probe and constraint-exact insert protocol above. For rotation,
+   prove the lock query expands only from the trusted predecessor's
+   same-organization direct-lineage columns and never from
+   `p_successor_session_id`; source assertions must not falsely reject a
+   predecessor/lineage row merely because its UUID equals the proposed value.
+   For all three functions, prove the insert exception source obtains
+   `CONSTRAINT_NAME` with `GET STACKED DIAGNOSTICS`, has explicit branches for
+   exactly `sessions_pkey`, `sessions_token_key`, and `sessions_csrf_key`, and
+   cannot normalize a null, empty, or unidentified `unique_violation`.
 7. Table-drive all eight audit-writing functions. For each, assert the exact
    action, target type/ID, actor, organization, authority revision, request ID,
    `occurred_at`, deployment revision, null optional audit fields, one-row
@@ -1212,47 +1438,141 @@ Expected commit: `feat: add identity and audit schema`.
    new/existing identity and membership acceptance; both external-identity
    unique constraints with different proposed UUIDs and zero orphan users;
    ignored proposed IDs without lookup; proposed user/membership/session UUID
-   collisions; replay; concurrent acceptance; zero-row and existing-row
-   concurrent invitation issue; issue-versus-accept; issue-versus-revoke; and
-   deterministic predecessor terminal states with exactly one pending
-   invitation winner. Prove issue/revoke invitation perform bounded explicit
-   session and target probes, acquire the family advisory transaction lock
-   internally before row locks, reject wrong/revoked/expired/replaced session
-   proof and wrong CSRF, and require no pre-resolution transaction or caller
-   lock. With two tenants, prove revoking a known foreign invitation UUID denies
-   with the same metadata-free response before deriving/acquiring the foreign
-   family lock or locking its row, and causes no measurable barrier delay to
-   the legitimate tenant's concurrent issue/accept/revoke.
+   collisions; for proposed session IDs, prove existing rows are detected only
+   by the bounded ordinary global probe, absent rows proceed to insert, and
+   concurrent global-primary-key losers diagnosed specifically as
+   `sessions_pkey` become exact `P1002` with no partial row, invitation
+   transition, lineage change, or audit; replay; concurrent acceptance;
+   zero-row and existing-row concurrent invitation issue; issue-versus-accept;
+   issue-versus-revoke; and deterministic predecessor terminal states with
+   exactly one pending invitation winner. Prove issue/revoke/accept derive
+   their organization and family keys from the exact bounded proofs specified
+   above, deduplicate equal values, sort distinct values as signed `bigint`,
+   and acquire the canonical set internally before any row lock. Exercise the
+   exact canonical key-set construction with synthetic signed-`bigint` fixtures
+   where organization key sorts below the family key, family sorts below
+   organization, and the two values are equal; pair that with exact
+   source/catalog assertions that every invitation entry uses that
+   construction. Prove identical acquisition order and exactly one acquisition
+   for the equal-key case. Prove issue/revoke reject
+   wrong/revoked/expired/replaced session proof and wrong CSRF and require no
+   pre-resolution transaction or caller lock. With two tenants, prove revoking
+   a known foreign invitation UUID denies with the same metadata-free response
+   before deriving/acquiring the foreign organization/family keys or locking
+   its row, and completes before the legitimate tenant releases its concurrent
+   issue/accept/revoke barrier.
    Make the no-delay assertion deterministic: while the legitimate tenant
-   deliberately holds its family advisory or invitation-row lock, the foreign
-   caller's revoke must finish with the generic denial before that barrier is
-   released; releasing the barrier then lets the legitimate operation finish.
+   deliberately holds its canonical advisory-key set or invitation-row lock,
+   the foreign caller's revoke must finish with the generic denial before that
+   barrier is released; releasing the barrier then lets the legitimate
+   operation finish. Before any cross-organization no-delay assertion, compute
+   every organization/family key used by both fixtures and assert all keys
+   whose independence is material are distinct; a hash collision proves only
+   safe over-serialization, not no-delay.
 9. Barrier-test concurrent last-admin demotion and revocation in both winner
    orders; self-membership targeting; revocation committed before authority
    lock, waiting behind held authority, and winning before final recheck.
+   Reproduce the former two-actor deadlock schedule deterministically in both
+   actor orders: actors A and B in one organization concurrently initialize
+   context and attempt cross-target demotion/revocation. Observe that the
+   second context waits at the organization advisory gate before holding its
+   actor membership or current-session row, release the first transaction only
+   through an explicit barrier, and require one committed winner plus one exact
+   `P1001`/`dasher_denied` loser with no `40P01`, no partial mutation, and no
+   audit from the loser.
+   Add exact two-advisory-winner-order regressions for context actor A
+   cross-targeting B versus (a) acceptance for B's existing active membership
+   and (b) `issue_session` for B. In both cases the explicit/pre-auth operation
+   proposes A's current session UUID as its new session ID. Run both
+   organization-key winner orders for role change and membership revocation.
+   When the explicit/pre-auth entry acquires the organization key first, it
+   must reach the ordinary global existing-session probe without locking A's
+   session or deriving a key from its UUID, return exact
+   `P1002`/`dasher_conflict`, roll back fully, and then permit A's mutation.
+   When A commits a role change first, the later entry must use B's locked final
+   active revision and return the same probe-derived session-ID conflict; when
+   A commits revocation first, the later entry must return exact
+   `P1001`/`dasher_denied` before the collision probe or session insertion.
+   Every schedule must prove no `40P01`, no successor/new session, no accepted
+   invitation or entry audit from the loser, exactly one committed context
+   mutation/audit, unchanged A session state, transaction-local advisory-lock
+   cleanup, and subsequent client/pool reuse.
    With two tenants, pause tenant B's legitimate membership operation after it
    deliberately holds its known membership row lock. Tenant A's role-change
    and revoke calls using that UUID must each finish with the same metadata-free
    denial before B releases its barrier; when resumed, B's operation completes
-   without having waited for A. Prove no global target probe, foreign row lock,
-   or foreign active-admin lock occurs.
-   Reverse-sort UUIDs for current/target and predecessor/successor/lineage
+   without having waited for A. Also hold tenant B's organization context gate
+   and prove tenant A context initialization and tenant A's foreign-UUID
+   denials complete before B releases it, after computing and asserting that
+   the fixture organization keys are distinct. Prove no global target probe,
+   foreign organization advisory lock, foreign row lock, or foreign
+   active-admin lock occurs.
+   Add the exact cross-organization reverse-collision regression: first compute
+   and assert unequal organization advisory keys, then concurrently initialize
+   actors A and B in different organizations so each transaction retains only
+   its own organization, membership, and current-session locks. Attach
+   fulfillment/rejection handlers immediately, then call `rotate_session` for A
+   with B's current session UUID as the proposed successor and for B with A's
+   current session UUID. Both ordinary global probes must return exact
+   `P1002`/`dasher_conflict` without `40P01`; both current sessions and all
+   predecessor lineage fields remain unchanged, no successor or audit exists,
+   every started promise is settled, rollback releases context GUCs and
+   advisory/row locks, and both clients are reusable. The initialized barrier
+   and observed settled outcomes are the proof; elapsed time and timeout are
+   watchdogs only.
+   Separately run a deterministic absent-probe race with distinct, asserted-
+   unequal organization keys: two valid session-creating operations in
+   different organizations propose the same fresh global session UUID. Let the
+   first operation insert and return while its transaction remains
+   uncommitted. The second ordinary `READ COMMITTED` probe cannot see that
+   uncommitted row, so it observes absence and reaches its insert. Observe the
+   second backend's transaction-ID/unique-index wait with an explicit database
+   barrier, commit the first transaction, and then settle the loser. Because
+   the organizations differ, `sessions_org_id_key` cannot conflict; exact
+   source plus the controlled schema prove `GET STACKED DIAGNOSTICS` selects
+   `sessions_pkey`. Require one success plus one exact
+   `P1002`/`dasher_conflict`, never `40P01`. The loser leaves no session,
+   invitation/lineage mutation, or audit; all promises settle, both
+   transactions clean up, and both clients are reusable. Exercise this closed
+   primary-key branch for `accept_invitation`, `issue_session`, and
+   `rotate_session` without using elapsed time as proof.
+   For rotation, add exact proposed-successor alias cases where the value
+   equals (a) the current predecessor UUID and (b) a same-organization direct-
+   lineage UUID independently selected from the trusted predecessor. Each
+   returns exact `P1002`/`dasher_conflict` from the ordinary probe with no
+   `40P01`, successor, predecessor/lineage mutation, or audit. Catalog/source
+   assertions prove `p_successor_session_id` appears in no advisory expression
+   or session-lock predicate and causes no lock-set expansion, while lock-state
+   assertions prove the aliased row remains locked for its trusted
+   predecessor/lineage source.
+   Reverse-sort UUIDs for trusted current/target and predecessor/direct-lineage
    session sets and prove rotation-versus-revocation and concurrent rotation
-   finish without deadlock. Test acceptance versus role change and membership
+   finish without deadlock. Proposed successor values are tested only through
+   the nonlocking probe/conflict protocol; session-set membership is asserted
+   solely from the trusted predecessor/direct-lineage source, including the
+   two alias cases. Test acceptance versus role change and membership
    revocation in both lock-winner orders. Cover just-before-absolute-expiry
    rotation, exact successor timestamps, the inclusive boundary, fixed
    revocation reasons, lock-timeout rollback, full row digests, and subsequent
    pool reuse.
-10. Add a three-connection acceptance regression in which one connection
-    creates the winning membership, the losing acceptance rolls back its
-    membership insert and waits to re-read that winner `FOR UPDATE`, and a third
-    connection attempts role change or revocation before the loser continues.
-    Cover both lock winners and prove the loser uses only the locked final
-    state/role/revision through session and audit. Assert every new
-    user/identity/membership/initial-session field is explicit and equals the
-    captured-clock/null protocol. Prove rotation inserts the successor before
-    its exactly-one-row predecessor update, satisfies immediate lineage FKs,
-    audits last, and rolls back both directions on injected insert/update/audit
+10. Keep membership-insertion and authority-interposition proofs executable
+    without a production test hook. In the insertion-race test, one acceptance
+    creates the winning membership and a concurrent losing acceptance rolls
+    back its proposed membership insert, re-reads the exact committed winner
+    `FOR UPDATE`, and holds that locked winner through its session and audit.
+    Separately, after the winner membership is committed and therefore visible,
+    barrier-test acceptance against role change and membership revocation in
+    both lock-winner orders; prove acceptance uses only the locked final
+    state/role/revision through session and audit. Do not claim or wait for a
+    third transaction to probe or lock an invisible uncommitted membership:
+    under `READ COMMITTED`, the ordinary target probe correctly sees no such
+    row and denies, and absent an authorized test hook there is no executable
+    barrier between the losing unique-insert wakeup and its winner re-read.
+    Assert every new user/identity/membership/initial-session field is explicit
+    and equals the captured-clock/null protocol. Prove rotation inserts the
+    successor only after its nonlocking global collision probe, before its
+    exactly-one-row predecessor update, satisfies immediate lineage FKs, audits
+    last, and rolls back both directions on injected insert/update/audit
     failure.
 11. Assert exact denial SQLSTATE/message `P1001`/`dasher_denied`, exact conflict
     SQLSTATE/message `P1002`/`dasher_conflict`, and absent
@@ -1263,6 +1583,36 @@ Expected commit: `feat: add identity and audit schema`.
     secrets, and forbidden fields. Task 4 records the future repository/HTTP
     mapping contract but adds no wrapper or route; the later wrapper tasks test
     code-only mapping and the exact status/body.
+    Table-drive session-token and CSRF collision inserts through
+    `accept_invitation`, `issue_session`, and `rotate_session`; require
+    `GET STACKED DIAGNOSTICS` to select only exact `sessions_token_key` or
+    `sessions_csrf_key`, respectively, and return metadata-free exact
+    `P1002` with zero mutation/audit residue. In isolated owner-seeded state,
+    first ensure no synthetic row duplicates the tuple, seed one dedicated
+    actor with exactly one session, then install and commit exact unexpected
+    constraint
+    `task4_unexpected_sessions_unique UNIQUE (organization_id, user_id,
+authority_revision)`. A valid rotation successor inherits that tuple and
+    deterministically reaches the unidentified-constraint branch. The app call
+    must produce an internal, non-`P1001`/non-`P1002` database fault; the
+    function must not construct a custom exception or log containing the
+    stacked constraint name or any detail/hint/schema/table/column/SQL text. On
+    the later public mapping seam, assert only a generic internal response and
+    no database metadata; that repository/HTTP sanitization belongs to the
+    later TypeScript boundary, not Task 4 SQL. Drop the injected constraint in
+    a committed owner `finally`, verify exact catalog restoration and zero
+    mutation/audit residue, and prove the client/pool remains usable.
+
+Every race test attaches fulfillment and rejection handlers synchronously when
+each database promise is created, before releasing any lock or transaction
+barrier that can settle it. Barrier helpers fail immediately if the observed
+operation settles before reaching its required database state. Every success,
+failure, and cleanup path awaits settlement of all started operations before
+issuing further queries on those clients or returning them to a pool. Expected
+race rejections therefore cannot surface as unhandled promise rejections.
+Lock ownership/waiter observations and explicit completion channels are the
+proof; elapsed duration and timeout expiry are watchdogs only, never evidence
+of ordering, isolation, or no-delay behavior.
 
 Expected commit: `feat: enforce session-bound tenant authority`.
 
