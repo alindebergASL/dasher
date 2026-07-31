@@ -79,13 +79,35 @@ export async function createTemporaryAppLogin(
         );
       }
       await client.query(sql);
+      const databaseIdentity = await client.query<{
+        readonly database_name: string;
+        readonly database_oid: string;
+      }>(`
+        SELECT
+          database_row.datname::text AS database_name,
+          database_row.oid::text AS database_oid
+        FROM pg_catalog.pg_database AS database_row
+        WHERE database_row.datname = pg_catalog.current_database()
+      `);
+      const databaseRow = databaseIdentity.rows[0];
+      if (
+        databaseIdentity.rows.length !== 1 ||
+        databaseRow === undefined ||
+        databaseRow.database_name !== new URL(appDsn).pathname.slice(1)
+      ) {
+        throw new Error(
+          "temporary PostgreSQL login database identity did not match preflight",
+        );
+      }
       await executeServerFormattedSql(client, "COMMENT ON ROLE %I IS %L", [
         appUsername,
-        "dasher:synthetic-task2-login",
+        `dasher:app-login:v1:database-oid:${databaseRow.database_oid}`,
       ]);
-      await executeServerFormattedSql(client, "GRANT dasher_app TO %I", [
-        appUsername,
-      ]);
+      await executeServerFormattedSql(
+        client,
+        "GRANT dasher_app TO %I WITH INHERIT FALSE, SET TRUE, ADMIN FALSE",
+        [appUsername],
+      );
       await executeServerFormattedSql(
         client,
         "GRANT CONNECT ON DATABASE %I TO %I",
