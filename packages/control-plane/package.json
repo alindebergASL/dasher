@@ -5,8 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./email": "./src/email.ts",
     "./migrator": "./src/migrator.ts",
-    "./preflight": "./src/preflight.ts"
+    "./preflight": "./src/preflight.ts",
+    "./secrets": "./src/secrets.ts",
+    "./session-cookie": "./src/session-cookie.ts"
   },
   "scripts": {
     "lint": "tsc --noEmit",

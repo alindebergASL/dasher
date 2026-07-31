@@ -4302,7 +4302,7 @@ describe.sequential(
       }
     });
 
-    it("exhaustively enforces the Task 4 SQL ASCII email subset for bytes 0x01..0x7f and records NUL as Task 5 pre-database input", async () => {
+    it("exhaustively enforces the Task 5 SQL ASCII email subset for bytes 0x01..0x7f, exact lengths, and pre-database NUL rejection", async () => {
       const client = await appPool!.connect();
       try {
         await client.query("SET ROLE dasher_app");
@@ -4362,11 +4362,35 @@ describe.sequential(
           }
         }
 
-        await expect(
-          issueTask4Invitation(client, actor, `${"a".repeat(318)}@x`),
-        ).resolves.toBeDefined();
+        const emailLengthCases = [
+          { accepted: false, email: "", length: 0 },
+          { accepted: false, email: "a", length: 1 },
+          { accepted: false, email: "ab", length: 2 },
+          { accepted: true, email: "a@b", length: 3 },
+          { accepted: true, email: "aa@b", length: 4 },
+          { accepted: true, email: `${"a".repeat(317)}@b`, length: 319 },
+          { accepted: true, email: `${"a".repeat(318)}@b`, length: 320 },
+          { accepted: false, email: `${"a".repeat(319)}@b`, length: 321 },
+        ] as const;
+        for (const lengthCase of emailLengthCases) {
+          expect(lengthCase.email).toHaveLength(lengthCase.length);
+          const operation = issueTask4Invitation(
+            client,
+            actor,
+            lengthCase.email,
+          );
+          if (lengthCase.accepted) {
+            await expect(operation).resolves.toBeDefined();
+          } else {
+            await expectDasherBoundaryError(
+              operation,
+              "P1001",
+              "dasher_denied",
+            );
+          }
+        }
+
         for (const rejectedEmail of [
-          `${"a".repeat(319)}@x`,
           "é@example.test",
           "local@例.example",
           "@example.test",
