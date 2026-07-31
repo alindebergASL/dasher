@@ -15,6 +15,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   MigrationContractError,
+  bootstrapManagedRoles,
   discoverMigrations,
   runMigrations,
   type MigrationClient,
@@ -40,6 +41,8 @@ interface FailureInjection {
   readonly transaction: 1 | 2;
 }
 
+type ManagedRoleName = "dasher_app" | "dasher_security_definer";
+
 interface ScriptedMigrationOptions {
   readonly dependencyMatches?: readonly boolean[];
   readonly destructiveReleaseThrows?: boolean;
@@ -52,9 +55,18 @@ interface ScriptedMigrationOptions {
     readonly sequence: number;
   }[];
   readonly membershipRows?: readonly Record<string, unknown>[];
+  readonly managedRoleCreateErrors?: Partial<Record<ManagedRoleName, unknown>>;
+  readonly managedRoleReads?: Partial<
+    Record<
+      ManagedRoleName,
+      readonly (Readonly<Record<string, unknown>> | undefined)[]
+    >
+  >;
   readonly normalReleaseThrows?: boolean;
   readonly operationError?: unknown;
   readonly rollbackFails?: boolean;
+  readonly savepointReleaseError?: unknown;
+  readonly savepointRollbackError?: unknown;
 }
 
 interface ScriptedMigrationClient {
@@ -62,6 +74,7 @@ interface ScriptedMigrationClient {
   readonly destructiveReleaseError: Error;
   readonly normalReleaseError: Error;
   readonly operationError: unknown;
+  readonly managedRoleEvents: readonly string[];
   readonly queryTexts: readonly string[];
   readonly releaseArguments: readonly (Error | boolean | undefined)[];
   readonly rollbackError: Error;
@@ -78,6 +91,31 @@ function result(rows: readonly unknown[]): { rows: readonly unknown[] } {
   return { rows };
 }
 
+function managedRoleRow(
+  roleName: ManagedRoleName,
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return {
+    bypass_rls: roleName === "dasher_security_definer",
+    can_create_database: false,
+    can_create_role: false,
+    can_login: false,
+    comment:
+      roleName === "dasher_security_definer"
+        ? "dasher:managed-role:v1:security-definer"
+        : "dasher:managed-role:v1:app",
+    connection_limit: -1,
+    has_settings: false,
+    inherit_privileges: false,
+    password_is_null: true,
+    replication: false,
+    role_count: "1",
+    superuser: false,
+    valid_until_is_null: true,
+    ...overrides,
+  };
+}
+
 function scriptedMigrationClient(
   options: ScriptedMigrationOptions = {},
 ): ScriptedMigrationClient {
@@ -91,12 +129,17 @@ function scriptedMigrationClient(
     "synthetic release failure with postgres://user:secret@host/database and raw server details",
   );
   const normalReleaseError = new Error("synthetic normal release failure");
+  const managedRoleEvents: string[] = [];
   const releaseArguments: (Error | boolean | undefined)[] = [];
   const queryTexts: string[] = [];
   const transactionCommands: string[] = [];
   const dependencyInventories: (readonly Record<string, unknown>[])[] = [];
   const dependencyRoleNames: (readonly string[])[] = [];
   const journalRows = [...(options.initialJournalRows ?? [])];
+  const managedRoleReadCounts: Record<ManagedRoleName, number> = {
+    dasher_app: 0,
+    dasher_security_definer: 0,
+  };
   let currentTransaction = 0;
   let dependencyCheck = 0;
   let rollbackQueries = 0;
@@ -137,6 +180,24 @@ function scriptedMigrationClient(
       failAt("advisory");
       return result([]);
     }
+    if (text === "SAVEPOINT dasher_managed_role_create") {
+      managedRoleEvents.push("SAVEPOINT");
+      return result([]);
+    }
+    if (text === "ROLLBACK TO SAVEPOINT dasher_managed_role_create") {
+      managedRoleEvents.push("ROLLBACK TO SAVEPOINT");
+      if (options.savepointRollbackError !== undefined) {
+        throw options.savepointRollbackError;
+      }
+      return result([]);
+    }
+    if (text === "RELEASE SAVEPOINT dasher_managed_role_create") {
+      managedRoleEvents.push("RELEASE SAVEPOINT");
+      if (options.savepointReleaseError !== undefined) {
+        throw options.savepointReleaseError;
+      }
+      return result([]);
+    }
     if (text === "COMMIT") {
       command("COMMIT");
       failAt("commit");
@@ -169,29 +230,50 @@ function scriptedMigrationClient(
       return result(options.expectedLoginRows ?? []);
     }
     if (text.includes("FROM pg_catalog.pg_authid AS role")) {
-      const roleName = values?.[0];
-      return result([
-        {
-          bypass_rls: roleName === "dasher_security_definer",
-          can_login: false,
-          comment:
-            roleName === "dasher_security_definer"
-              ? "dasher:managed-role:v1:security-definer"
-              : "dasher:managed-role:v1:app",
-          has_cluster_dependency: false,
-          has_membership: false,
-          has_settings: false,
-          inherit_privileges: false,
-          password_is_null: true,
-          connection_limit: -1,
-          valid_until_is_null: true,
-          role_count: "1",
-          superuser: false,
-          can_create_database: false,
-          can_create_role: false,
-          replication: false,
-        },
-      ]);
+      const roleName = values?.[0] as ManagedRoleName;
+      managedRoleEvents.push(`READ ${roleName}`);
+      const reads = options.managedRoleReads?.[roleName];
+      const readIndex = managedRoleReadCounts[roleName];
+      managedRoleReadCounts[roleName] += 1;
+      const row =
+        reads !== undefined && readIndex < reads.length
+          ? reads[readIndex]
+          : managedRoleRow(roleName);
+      return result(row === undefined ? [] : [row]);
+    }
+    if (text.startsWith("CREATE ROLE dasher_app")) {
+      managedRoleEvents.push("CREATE dasher_app");
+      if (
+        options.managedRoleCreateErrors !== undefined &&
+        Object.prototype.hasOwnProperty.call(
+          options.managedRoleCreateErrors,
+          "dasher_app",
+        )
+      ) {
+        throw options.managedRoleCreateErrors.dasher_app;
+      }
+      return result([]);
+    }
+    if (text.startsWith("CREATE ROLE dasher_security_definer")) {
+      managedRoleEvents.push("CREATE dasher_security_definer");
+      if (
+        options.managedRoleCreateErrors !== undefined &&
+        Object.prototype.hasOwnProperty.call(
+          options.managedRoleCreateErrors,
+          "dasher_security_definer",
+        )
+      ) {
+        throw options.managedRoleCreateErrors.dasher_security_definer;
+      }
+      return result([]);
+    }
+    if (text.startsWith("COMMENT ON ROLE ")) {
+      managedRoleEvents.push(
+        text.startsWith("COMMENT ON ROLE dasher_app ")
+          ? "COMMENT dasher_app"
+          : "COMMENT dasher_security_definer",
+      );
+      return result([]);
     }
     if (
       text.includes("database_row.oid::text AS database_oid") &&
@@ -415,6 +497,7 @@ function scriptedMigrationClient(
     destructiveReleaseError,
     normalReleaseError,
     operationError,
+    managedRoleEvents,
     queryTexts,
     releaseArguments,
     rollbackError,
@@ -443,6 +526,38 @@ async function capturedFailure(operation: Promise<unknown>): Promise<unknown> {
   }
 
   throw new Error("expected operation to fail");
+}
+
+function managedRoleCreateError(
+  properties: Readonly<Record<string, unknown>>,
+): Error {
+  const error = new Error(
+    "duplicate role with postgres://owner:secret@host/database and raw DETAIL",
+  );
+  for (const [property, value] of Object.entries(properties)) {
+    Object.defineProperty(error, property, { enumerable: true, value });
+  }
+  Object.defineProperty(error, "detail", {
+    enumerable: true,
+    value: "raw duplicate-role diagnostic",
+  });
+  return error;
+}
+
+function duplicateObjectError(): Error {
+  return managedRoleCreateError({ code: "42710" });
+}
+
+function pgAuthIdUniqueError(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Error {
+  return managedRoleCreateError({
+    code: "23505",
+    constraint: "pg_authid_rolname_index",
+    schema: "pg_catalog",
+    table: "pg_authid",
+    ...overrides,
+  });
 }
 
 const transactionFailureCases = [
@@ -620,6 +735,237 @@ afterAll(async () => {
     temporaryDirectories.map((directory) =>
       rm(directory, { recursive: true, force: true }),
     ),
+  );
+});
+
+describe("managed-role concurrent bootstrap savepoints", () => {
+  it("creates, releases, comments, and strictly reads back both missing roles in order", async () => {
+    const scripted = scriptedMigrationClient({
+      managedRoleReads: {
+        dasher_app: [undefined, managedRoleRow("dasher_app")],
+        dasher_security_definer: [
+          undefined,
+          managedRoleRow("dasher_security_definer"),
+        ],
+      },
+    });
+
+    await expect(bootstrapManagedRoles(scripted.client, [])).resolves.toBe(
+      undefined,
+    );
+    expect(scripted.managedRoleEvents).toEqual([
+      "READ dasher_app",
+      "SAVEPOINT",
+      "CREATE dasher_app",
+      "RELEASE SAVEPOINT",
+      "COMMENT dasher_app",
+      "READ dasher_app",
+      "READ dasher_security_definer",
+      "SAVEPOINT",
+      "CREATE dasher_security_definer",
+      "RELEASE SAVEPOINT",
+      "COMMENT dasher_security_definer",
+      "READ dasher_security_definer",
+    ]);
+  });
+
+  it.each([
+    { error: duplicateObjectError(), name: "exact 42710" },
+    { error: pgAuthIdUniqueError(), name: "exact pg_authid 23505" },
+  ])("recovers an $name loser and verifies the winner", async ({ error }) => {
+    const scripted = scriptedMigrationClient({
+      managedRoleCreateErrors: { dasher_app: error },
+      managedRoleReads: {
+        dasher_app: [undefined, managedRoleRow("dasher_app")],
+      },
+    });
+
+    await expect(bootstrapManagedRoles(scripted.client, [])).resolves.toBe(
+      undefined,
+    );
+    expect(scripted.managedRoleEvents).toEqual([
+      "READ dasher_app",
+      "SAVEPOINT",
+      "CREATE dasher_app",
+      "ROLLBACK TO SAVEPOINT",
+      "RELEASE SAVEPOINT",
+      "READ dasher_app",
+      "READ dasher_security_definer",
+      "READ dasher_security_definer",
+    ]);
+    expect(scripted.managedRoleEvents).not.toContain("COMMENT dasher_app");
+  });
+
+  it("preserves partial, mismatched, inherited, accessor, arbitrary, and hostile errors", async () => {
+    const otherPostgresError = new Error(
+      "synthetic non-duplicate CREATE failure",
+    );
+    Object.defineProperty(otherPostgresError, "code", { value: "42501" });
+
+    const accessorCodeError = new Error("accessor code raw diagnostic");
+    let accessorCodeReads = 0;
+    Object.defineProperty(accessorCodeError, "code", {
+      get() {
+        accessorCodeReads += 1;
+        throw new Error("secondary code accessor failure");
+      },
+    });
+    const accessorError = managedRoleCreateError({
+      code: "23505",
+      constraint: "pg_authid_rolname_index",
+      schema: "pg_catalog",
+    });
+    let accessorReads = 0;
+    Object.defineProperty(accessorError, "table", {
+      get() {
+        accessorReads += 1;
+        throw new Error("secondary accessor failure");
+      },
+    });
+
+    const inheritedTableError = managedRoleCreateError({
+      code: "23505",
+      constraint: "pg_authid_rolname_index",
+      schema: "pg_catalog",
+    });
+    const inheritedTablePrototype = Object.create(Error.prototype) as object;
+    Object.defineProperty(inheritedTablePrototype, "table", {
+      value: "pg_authid",
+    });
+    Object.setPrototypeOf(inheritedTableError, inheritedTablePrototype);
+
+    let proxyTrapCalls = 0;
+    const hostileProxy = new Proxy(pgAuthIdUniqueError(), {
+      get() {
+        proxyTrapCalls += 1;
+        throw new Error("secondary proxy get failure");
+      },
+      getOwnPropertyDescriptor() {
+        proxyTrapCalls += 1;
+        throw new Error("secondary proxy descriptor failure");
+      },
+      getPrototypeOf() {
+        proxyTrapCalls += 1;
+        throw new Error("secondary proxy failure");
+      },
+    });
+    const thrownValues: readonly unknown[] = [
+      otherPostgresError,
+      accessorCodeError,
+      managedRoleCreateError({ code: "23505" }),
+      pgAuthIdUniqueError({ constraint: "wrong_constraint" }),
+      pgAuthIdUniqueError({ schema: "public" }),
+      pgAuthIdUniqueError({ table: "wrong_table" }),
+      inheritedTableError,
+      accessorError,
+      {
+        code: "42710",
+      },
+      {
+        code: "23505",
+        constraint: "pg_authid_rolname_index",
+        schema: "pg_catalog",
+        table: "pg_authid",
+      },
+      hostileProxy,
+    ];
+
+    for (const thrownValue of thrownValues) {
+      const scripted = scriptedMigrationClient({
+        managedRoleCreateErrors: { dasher_app: thrownValue },
+        managedRoleReads: { dasher_app: [undefined] },
+      });
+      const captured: { failure?: unknown } = {};
+      try {
+        await bootstrapManagedRoles(scripted.client, []);
+      } catch (error) {
+        captured.failure = error;
+      }
+
+      expect(captured).toHaveProperty("failure");
+      expect(captured.failure).toBe(thrownValue);
+      expect(scripted.managedRoleEvents).toEqual([
+        "READ dasher_app",
+        "SAVEPOINT",
+        "CREATE dasher_app",
+      ]);
+      expect(transactionCommands(scripted, 1).at(-1)).toBe("T1 ROLLBACK");
+    }
+    expect(accessorCodeReads).toBe(0);
+    expect(accessorReads).toBe(0);
+    expect(proxyTrapCalls).toBe(0);
+  });
+
+  it.each([
+    { name: "still missing", winner: undefined },
+    {
+      name: "drifted",
+      winner: managedRoleRow("dasher_app", {
+        comment: "synthetic:wrong-marker with raw secret",
+      }),
+    },
+  ])(
+    "rejects a $name duplicate-object winner without leakage",
+    async ({ winner }) => {
+      const duplicate = duplicateObjectError();
+      const scripted = scriptedMigrationClient({
+        managedRoleCreateErrors: { dasher_app: duplicate },
+        managedRoleReads: { dasher_app: [undefined, winner] },
+      });
+
+      const failure = await capturedFailure(
+        bootstrapManagedRoles(scripted.client, []),
+      );
+      expect(failure).toBeInstanceOf(MigrationContractError);
+      expect(failure).toMatchObject({ code: "managed_role_drift" });
+      expect((failure as Error).cause).toBeUndefined();
+      const publicDiagnostic = `${String(failure)}\n${
+        (failure as Error).stack ?? ""
+      }`;
+      expect(publicDiagnostic).not.toContain("postgres://");
+      expect(publicDiagnostic).not.toContain("raw DETAIL");
+      expect(publicDiagnostic).not.toContain("raw secret");
+      expect(scripted.managedRoleEvents).toEqual([
+        "READ dasher_app",
+        "SAVEPOINT",
+        "CREATE dasher_app",
+        "ROLLBACK TO SAVEPOINT",
+        "RELEASE SAVEPOINT",
+        "READ dasher_app",
+      ]);
+      expect(transactionCommands(scripted, 1).at(-1)).toBe("T1 ROLLBACK");
+    },
+  );
+
+  it.each([
+    { failAt: "rollback", name: "loser rollback" },
+    { failAt: "release", name: "loser release" },
+    { failAt: "winning release", name: "winner release" },
+  ] as const)(
+    "preserves a $name failure for the outer rollback",
+    async ({ failAt }) => {
+      const savepointFailure = new Error(
+        `synthetic ${failAt} savepoint failure`,
+      );
+      const isWinner = failAt === "winning release";
+      const scripted = scriptedMigrationClient({
+        managedRoleCreateErrors: isWinner
+          ? undefined
+          : { dasher_app: duplicateObjectError() },
+        managedRoleReads: { dasher_app: [undefined] },
+        savepointReleaseError:
+          failAt === "release" || isWinner ? savepointFailure : undefined,
+        savepointRollbackError:
+          failAt === "rollback" ? savepointFailure : undefined,
+      });
+
+      const failure = await capturedFailure(
+        bootstrapManagedRoles(scripted.client, []),
+      );
+      expect(failure).toBe(savepointFailure);
+      expect(transactionCommands(scripted, 1).at(-1)).toBe("T1 ROLLBACK");
+      expect(scripted.managedRoleEvents).not.toContain("COMMENT dasher_app");
+    },
   );
 });
 

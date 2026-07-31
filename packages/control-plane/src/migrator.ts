@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { types as nodeTypes } from "node:util";
 
 import type { PoolClient } from "pg";
 
@@ -9,6 +10,11 @@ const migrationFilenamePattern =
 const journalFilenamePattern = "^[0-9]{4}_[a-z0-9]+(?:_[a-z0-9]+)*[.]sql$";
 const advisoryLockSql =
   "SELECT pg_catalog.pg_advisory_xact_lock(724372, 20260730)";
+const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
+const managedRoleCreateRollbackSql =
+  "ROLLBACK TO SAVEPOINT dasher_managed_role_create";
+const managedRoleCreateReleaseSql =
+  "RELEASE SAVEPOINT dasher_managed_role_create";
 const rollbackFailureMessage =
   "PostgreSQL transaction rollback failed; pooled client destroyed";
 const setLocalSearchPathSql = "SET LOCAL search_path = pg_catalog";
@@ -618,6 +624,32 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   );
 }
 
+function ownErrorDataProperty(error: Error, property: string): unknown {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, property);
+    return descriptor !== undefined && "value" in descriptor
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isConcurrentManagedRoleCreateError(error: unknown): boolean {
+  if (nodeTypes.isProxy(error) || !nodeTypes.isNativeError(error)) {
+    return false;
+  }
+
+  const code = ownErrorDataProperty(error, "code");
+  return (
+    code === "42710" ||
+    (code === "23505" &&
+      ownErrorDataProperty(error, "constraint") === "pg_authid_rolname_index" &&
+      ownErrorDataProperty(error, "schema") === "pg_catalog" &&
+      ownErrorDataProperty(error, "table") === "pg_authid")
+  );
+}
+
 function validateExpectedAppLoginRoleNames(
   roleNames: readonly string[],
 ): readonly string[] {
@@ -838,7 +870,24 @@ async function createOrVerifyManagedRole(
   const before = await readManagedRole(client, expected.name);
 
   if (before === undefined) {
-    await client.query(expected.createSql);
+    await client.query(managedRoleCreateSavepointSql);
+    try {
+      await client.query(expected.createSql);
+    } catch (error) {
+      if (!isConcurrentManagedRoleCreateError(error)) {
+        throw error;
+      }
+
+      await client.query(managedRoleCreateRollbackSql);
+      await client.query(managedRoleCreateReleaseSql);
+      const winner = await readManagedRole(client, expected.name);
+      if (winner === undefined || !roleMatches(winner, expected)) {
+        return reject("managed_role_drift");
+      }
+      return;
+    }
+
+    await client.query(managedRoleCreateReleaseSql);
     await client.query(expected.commentSql);
   } else if (!roleMatches(before, expected)) {
     return reject("managed_role_drift");

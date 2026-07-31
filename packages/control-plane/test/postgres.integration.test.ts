@@ -5,9 +5,11 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  bootstrapManagedRoles,
   discoverMigrations,
   parsePostgresIntegrationEnv,
   runMigrations,
+  type MigrationClient,
 } from "../src/index.js";
 import {
   borrowedClientPool,
@@ -450,6 +452,235 @@ afterAll(async () => {
 });
 
 describe.sequential("Task 2 PostgreSQL migration contract", () => {
+  it("bootstraps the same cluster roles concurrently from two disposable databases", async () => {
+    const databaseNames = [
+      `dasher_t2_${siblingDatabaseNonce}_bootstrap_a`,
+      `dasher_t2_${siblingDatabaseNonce}_bootstrap_b`,
+    ] as const;
+    const databases: {
+      readonly databaseName: string;
+      readonly databaseOid: string;
+      readonly pool: Pool;
+    }[] = [];
+    const bootstrapConnections: {
+      readonly client: PoolClient;
+      released: boolean;
+    }[] = [];
+    const cleanupFailures: unknown[] = [];
+    let createArrivals = 0;
+    let releaseCreateBarrier: (() => void) | undefined;
+    const createBarrier = new Promise<void>((resolve) => {
+      releaseCreateBarrier = resolve;
+    });
+    const releaseBarrier = (): void => {
+      releaseCreateBarrier?.();
+      releaseCreateBarrier = undefined;
+    };
+
+    try {
+      for (const databaseName of databaseNames) {
+        const sibling = await createSiblingDatabase(databaseName);
+        databases.push({ databaseName, ...sibling });
+      }
+
+      for (const database of databases) {
+        const client = await database.pool.connect();
+        const connection = { client, released: false };
+        bootstrapConnections.push(connection);
+        try {
+          await client.query("SET statement_timeout = '30s'");
+          await client.query("SET lock_timeout = '20s'");
+        } catch (error) {
+          client.release();
+          connection.released = true;
+          throw error;
+        }
+      }
+
+      const operations = bootstrapConnections.map((connection) => {
+        const query = (async (text: string, values?: readonly unknown[]) => {
+          if (text.trim().startsWith("CREATE ROLE dasher_app WITH")) {
+            createArrivals += 1;
+            if (createArrivals === bootstrapConnections.length) {
+              releaseBarrier();
+            }
+            await createBarrier;
+          }
+          return connection.client.query(text, values as unknown[] | undefined);
+        }) as MigrationClient["query"];
+        const operation = bootstrapManagedRoles(
+          {
+            query,
+            release() {
+              // The test releases the borrowed client after settlement.
+            },
+          },
+          [],
+        );
+        return operation
+          .catch((error) => {
+            releaseBarrier();
+            throw error;
+          })
+          .finally(() => {
+            connection.client.release();
+            connection.released = true;
+          });
+      });
+      const settlements = await Promise.allSettled(operations);
+      releaseBarrier();
+
+      for (const settlement of settlements) {
+        if (settlement.status === "rejected") {
+          expect(settlement.reason).not.toMatchObject({ code: "42710" });
+          expect(settlement.reason).not.toMatchObject({ code: "23505" });
+          expect(settlement.reason).not.toMatchObject({ code: "40P01" });
+          expect(String(settlement.reason)).not.toContain("deadlock detected");
+        }
+      }
+      expect(createArrivals).toBe(2);
+      expect(settlements).toHaveLength(2);
+      expect(
+        settlements.every((settlement) => settlement.status === "fulfilled"),
+      ).toBe(true);
+      expect(
+        settlements
+          .filter((settlement) => settlement.status === "fulfilled")
+          .map((settlement) => settlement.value),
+      ).toEqual([undefined, undefined]);
+
+      const roles = await ownerPool.query<{
+        readonly attributes_match: boolean;
+        readonly comment: string | null;
+        readonly has_settings: boolean;
+        readonly password_is_null: boolean;
+        readonly role_name: string;
+      }>(`
+        SELECT
+          role.rolname::text AS role_name,
+          NOT role.rolcanlogin
+            AND NOT role.rolinherit
+            AND NOT role.rolsuper
+            AND NOT role.rolcreatedb
+            AND NOT role.rolcreaterole
+            AND NOT role.rolreplication
+            AND role.rolbypassrls =
+              (role.rolname = 'dasher_security_definer')
+            AND role.rolconnlimit = -1
+            AND role.rolvaliduntil IS NULL AS attributes_match,
+          role.rolpassword IS NULL AS password_is_null,
+          pg_catalog.shobj_description(role.oid, 'pg_authid') AS comment,
+          EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_db_role_setting AS setting
+            WHERE setting.setrole = role.oid
+          ) AS has_settings
+        FROM pg_catalog.pg_authid AS role
+        WHERE role.rolname IN ('dasher_app', 'dasher_security_definer')
+        ORDER BY role.rolname
+      `);
+      expect(roles.rows).toEqual([
+        {
+          attributes_match: true,
+          comment: "dasher:managed-role:v1:app",
+          has_settings: false,
+          password_is_null: true,
+          role_name: "dasher_app",
+        },
+        {
+          attributes_match: true,
+          comment: "dasher:managed-role:v1:security-definer",
+          has_settings: false,
+          password_is_null: true,
+          role_name: "dasher_security_definer",
+        },
+      ]);
+      for (const database of databases) {
+        expect(await managedDependencyCount(database.databaseOid)).toBe("0");
+      }
+    } finally {
+      releaseBarrier();
+      for (const connection of bootstrapConnections) {
+        if (!connection.released) {
+          try {
+            connection.client.release();
+            connection.released = true;
+          } catch (error) {
+            cleanupFailures.push(error);
+          }
+        }
+      }
+      for (const database of [...databases].reverse()) {
+        try {
+          await database.pool.end();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+        try {
+          await dropSiblingDatabase(
+            database.databaseName,
+            database.databaseOid,
+          );
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      for (const databaseName of databaseNames) {
+        if (
+          databases.some((database) => database.databaseName === databaseName)
+        ) {
+          continue;
+        }
+        try {
+          const residualOid = await databaseOidByName(databaseName);
+          if (residualOid !== undefined) {
+            await dropSiblingDatabase(databaseName, residualOid);
+          }
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      try {
+        await ownerPool.query(
+          "DROP ROLE IF EXISTS dasher_security_definer, dasher_app",
+        );
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      try {
+        const residue = await ownerPool.query<{
+          readonly database_count: string;
+          readonly role_count: string;
+        }>(
+          `
+            SELECT
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM pg_catalog.pg_database AS database_row
+                WHERE database_row.datname = ANY($1::text[])
+              ) AS database_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM pg_catalog.pg_roles AS role
+                WHERE role.rolname IN (
+                  'dasher_app',
+                  'dasher_security_definer'
+                )
+              ) AS role_count
+          `,
+          [databaseNames],
+        );
+        expect(residue.rows[0]).toEqual({
+          database_count: "0",
+          role_count: "0",
+        });
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      expect(cleanupFailures).toEqual([]);
+    }
+  }, 120_000);
+
   it("applies a clean exact series and repeats as a database-clock no-op", async () => {
     try {
       const applied = await runMigrations(
@@ -1558,15 +1789,21 @@ async function expectDasherBoundaryError(
     await operation;
   } catch (error) {
     expect(error).toMatchObject({ code, message });
-    expect(error).not.toMatchObject({
-      detail: expect.anything(),
-      hint: expect.anything(),
-      schema: expect.anything(),
-      table: expect.anything(),
-      column: expect.anything(),
-      constraint: expect.anything(),
-      datatype: expect.anything(),
-    });
+    const sensitiveDiagnosticFields = [
+      "detail",
+      "hint",
+      "constraint",
+      "schema",
+      "table",
+      "column",
+      "dataType",
+      "internalQuery",
+    ] as const;
+    for (const field of sensitiveDiagnosticFields) {
+      expect(
+        (error as Readonly<Record<string, unknown>>)[field],
+      ).toBeUndefined();
+    }
     return;
   }
   throw new Error(`expected Task 4 boundary error ${code}`);
