@@ -17,6 +17,7 @@ import {
   MigrationContractError,
   bootstrapManagedRoles,
   discoverMigrations,
+  resetPreparedRetentionRoles,
   runMigrations,
   type MigrationClient,
   type MigrationPool,
@@ -24,6 +25,15 @@ import {
 
 const fixtureDirectory = fileURLToPath(
   new URL("../test/fixtures/migrations", import.meta.url),
+);
+const canonicalMigrationDirectory = fileURLToPath(
+  new URL("../migrations", import.meta.url),
+);
+const modeledSuccessorFixture = fileURLToPath(
+  new URL(
+    "../test/fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+    import.meta.url,
+  ),
 );
 const temporaryDirectories: string[] = [];
 
@@ -38,10 +48,14 @@ type FailureStage =
 
 interface FailureInjection {
   readonly stage: FailureStage;
-  readonly transaction: 1 | 2;
+  readonly transaction: 1 | 2 | 3;
 }
 
-type ManagedRoleName = "dasher_app" | "dasher_security_definer";
+type ManagedRoleName =
+  | "dasher_app"
+  | "dasher_retention_definer"
+  | "dasher_retention_operator"
+  | "dasher_security_definer";
 
 interface ScriptedMigrationOptions {
   readonly dependencyMatches?: readonly boolean[];
@@ -64,9 +78,15 @@ interface ScriptedMigrationOptions {
   >;
   readonly normalReleaseThrows?: boolean;
   readonly operationError?: unknown;
+  readonly prefixObjectMatches?: boolean;
+  readonly retentionRoleNames?: readonly string[];
   readonly rollbackFails?: boolean;
   readonly savepointReleaseError?: unknown;
   readonly savepointRollbackError?: unknown;
+  readonly sessionLockError?: unknown;
+  readonly sessionUnlockError?: unknown;
+  readonly sessionUnlockResult?: boolean;
+  readonly successorCatalogMatches?: boolean;
 }
 
 interface ScriptedMigrationClient {
@@ -91,6 +111,16 @@ function result(rows: readonly unknown[]): { rows: readonly unknown[] } {
   return { rows };
 }
 
+function arraysEqualForTest<T>(
+  left: readonly T[],
+  right: readonly T[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
 function managedRoleRow(
   roleName: ManagedRoleName,
   overrides: Readonly<Record<string, unknown>> = {},
@@ -103,7 +133,11 @@ function managedRoleRow(
     comment:
       roleName === "dasher_security_definer"
         ? "dasher:managed-role:v1:security-definer"
-        : "dasher:managed-role:v1:app",
+        : roleName === "dasher_retention_definer"
+          ? "dasher:managed-role:v1:retention-definer"
+          : roleName === "dasher_retention_operator"
+            ? "dasher:managed-role:v1:retention-operator"
+            : "dasher:managed-role:v1:app",
     connection_limit: -1,
     has_settings: false,
     inherit_privileges: false,
@@ -112,6 +146,7 @@ function managedRoleRow(
     role_count: "1",
     superuser: false,
     valid_until_is_null: true,
+    valid_until_is_infinity: roleName.startsWith("dasher_retention_"),
     ...overrides,
   };
 }
@@ -138,8 +173,12 @@ function scriptedMigrationClient(
   const journalRows = [...(options.initialJournalRows ?? [])];
   const managedRoleReadCounts: Record<ManagedRoleName, number> = {
     dasher_app: 0,
+    dasher_retention_definer: 0,
+    dasher_retention_operator: 0,
     dasher_security_definer: 0,
   };
+  const createdPreparedRoles = new Set<string>();
+  const droppedPreparedRoles = new Set<string>();
   let currentTransaction = 0;
   let dependencyCheck = 0;
   let rollbackQueries = 0;
@@ -164,6 +203,21 @@ function scriptedMigrationClient(
     const text = queryText.trim();
     queryTexts.push(text);
 
+    if (text.includes("pg_catalog.pg_advisory_lock(")) {
+      transactionCommands.push("SESSION ADVISORY LOCK");
+      if (options.sessionLockError !== undefined) {
+        throw options.sessionLockError;
+      }
+      return result([]);
+    }
+    if (text.includes("pg_catalog.pg_advisory_unlock(")) {
+      transactionCommands.push("SESSION ADVISORY UNLOCK");
+      if (options.sessionUnlockError !== undefined) {
+        throw options.sessionUnlockError;
+      }
+      return result([{ unlocked: options.sessionUnlockResult ?? true }]);
+    }
+
     if (text === "BEGIN") {
       currentTransaction += 1;
       command("BEGIN");
@@ -175,7 +229,7 @@ function scriptedMigrationClient(
       failAt("set-local");
       return result([]);
     }
-    if (text.includes("pg_catalog.pg_advisory_xact_lock")) {
+    if (text === "SELECT pg_catalog.pg_advisory_xact_lock(724372, 20260730)") {
       command("ADVISORY LOCK");
       failAt("advisory");
       return result([]);
@@ -211,6 +265,14 @@ function scriptedMigrationClient(
       }
       return result([]);
     }
+    if (
+      text.includes("CREATE TABLE dasher.users") ||
+      text.includes("CREATE FUNCTION dasher_api.rotate_session")
+    ) {
+      command("MIGRATION SQL");
+      failAt("migration");
+      return result([]);
+    }
     if (text.includes("WITH RECURSIVE inherited_roles")) {
       command("CATALOG VALIDATION");
       failAt("validation");
@@ -229,6 +291,17 @@ function scriptedMigrationClient(
     if (text.includes("WITH expected(role_name) AS")) {
       return result(options.expectedLoginRows ?? []);
     }
+    if (text.includes("role.rolname LIKE 'dasher\\_retention\\_%'")) {
+      const roleNames = [
+        ...(options.retentionRoleNames ?? []),
+        ...createdPreparedRoles,
+      ].filter((roleName) => !droppedPreparedRoles.has(roleName));
+      return result(
+        [...new Set(roleNames)]
+          .sort()
+          .map((roleName) => ({ role_name: roleName })),
+      );
+    }
     if (text.includes("FROM pg_catalog.pg_authid AS role")) {
       const roleName = values?.[0] as ManagedRoleName;
       managedRoleEvents.push(`READ ${roleName}`);
@@ -238,7 +311,12 @@ function scriptedMigrationClient(
       const row =
         reads !== undefined && readIndex < reads.length
           ? reads[readIndex]
-          : managedRoleRow(roleName);
+          : roleName.startsWith("dasher_retention_") &&
+              (droppedPreparedRoles.has(roleName) ||
+                (!createdPreparedRoles.has(roleName) &&
+                  !(options.retentionRoleNames ?? []).includes(roleName)))
+            ? undefined
+            : managedRoleRow(roleName);
       return result(row === undefined ? [] : [row]);
     }
     if (text.startsWith("CREATE ROLE dasher_app")) {
@@ -267,12 +345,36 @@ function scriptedMigrationClient(
       }
       return result([]);
     }
+    if (text.startsWith("CREATE ROLE dasher_retention_definer")) {
+      managedRoleEvents.push("CREATE dasher_retention_definer");
+      createdPreparedRoles.add("dasher_retention_definer");
+      return result([]);
+    }
+    if (text.startsWith("CREATE ROLE dasher_retention_operator")) {
+      managedRoleEvents.push("CREATE dasher_retention_operator");
+      createdPreparedRoles.add("dasher_retention_operator");
+      return result([]);
+    }
     if (text.startsWith("COMMENT ON ROLE ")) {
       managedRoleEvents.push(
         text.startsWith("COMMENT ON ROLE dasher_app ")
           ? "COMMENT dasher_app"
-          : "COMMENT dasher_security_definer",
+          : text.startsWith("COMMENT ON ROLE dasher_security_definer ")
+            ? "COMMENT dasher_security_definer"
+            : text.startsWith("COMMENT ON ROLE dasher_retention_definer ")
+              ? "COMMENT dasher_retention_definer"
+              : "COMMENT dasher_retention_operator",
       );
+      return result([]);
+    }
+    if (text === "DROP ROLE dasher_retention_operator") {
+      managedRoleEvents.push("DROP dasher_retention_operator");
+      droppedPreparedRoles.add("dasher_retention_operator");
+      return result([]);
+    }
+    if (text === "DROP ROLE dasher_retention_definer") {
+      managedRoleEvents.push("DROP dasher_retention_definer");
+      droppedPreparedRoles.add("dasher_retention_definer");
       return result([]);
     }
     if (
@@ -288,6 +390,12 @@ function scriptedMigrationClient(
     }
     if (text.includes("FROM pg_catalog.pg_auth_members AS membership")) {
       return result(options.membershipRows ?? []);
+    }
+    if (text.includes("actual_schemas AS")) {
+      return result([{ matches: options.prefixObjectMatches ?? true }]);
+    }
+    if (text.includes("modeled_initializer AS")) {
+      return result([{ matches: options.successorCatalogMatches ?? true }]);
     }
     if (text.includes("pg_catalog.jsonb_to_recordset")) {
       dependencyRoleNames.push([...(values?.[0] as readonly string[])]);
@@ -460,7 +568,8 @@ function scriptedMigrationClient(
       text.startsWith("CREATE SCHEMA dasher;") ||
       text.startsWith("CREATE TABLE dasher.fixture_extension") ||
       text.startsWith("SELECT 1;") ||
-      text.startsWith("SELECT 2;")
+      text.startsWith("SELECT 2;") ||
+      text.includes("modeled_successor_inventory_version")
     ) {
       command("MIGRATION SQL");
       failAt("migration");
@@ -561,14 +670,12 @@ function pgAuthIdUniqueError(
 }
 
 const transactionFailureCases = [
-  { name: "bootstrap BEGIN", stage: "begin", transaction: 1 },
-  { name: "bootstrap SET LOCAL", stage: "set-local", transaction: 1 },
-  { name: "bootstrap advisory lock", stage: "advisory", transaction: 1 },
-  { name: "bootstrap catalog validation", stage: "validation", transaction: 1 },
-  { name: "bootstrap COMMIT", stage: "commit", transaction: 1 },
+  { name: "prefix validation BEGIN", stage: "begin", transaction: 1 },
+  { name: "prefix validation SET LOCAL", stage: "set-local", transaction: 1 },
+  { name: "prefix catalog validation", stage: "validation", transaction: 1 },
+  { name: "prefix validation COMMIT", stage: "commit", transaction: 1 },
   { name: "migration BEGIN", stage: "begin", transaction: 2 },
   { name: "migration SET LOCAL", stage: "set-local", transaction: 2 },
-  { name: "migration advisory lock", stage: "advisory", transaction: 2 },
   { name: "migration catalog validation", stage: "validation", transaction: 2 },
   { name: "migration SQL", stage: "migration", transaction: 2 },
   { name: "journal insertion", stage: "journal", transaction: 2 },
@@ -577,7 +684,7 @@ const transactionFailureCases = [
 
 function transactionCommands(
   scripted: ScriptedMigrationClient,
-  transaction: 1 | 2,
+  transaction: 1 | 2 | 3,
 ): readonly string[] {
   const prefix = `T${String(transaction)} `;
   return scripted.transactionCommands.filter((entry) =>
@@ -593,7 +700,6 @@ function expectFailureCommandOrder(
     expect(transactionCommands(scripted, 1)).toEqual([
       "T1 BEGIN",
       "T1 SET LOCAL",
-      "T1 ADVISORY LOCK",
       "T1 CATALOG VALIDATION",
       "T1 COMMIT",
     ]);
@@ -609,7 +715,7 @@ function expectFailureCommandOrder(
     expect(commands.slice(0, 3)).toEqual([
       `T${String(failure.transaction)} BEGIN`,
       `T${String(failure.transaction)} SET LOCAL`,
-      `T${String(failure.transaction)} ADVISORY LOCK`,
+      `T${String(failure.transaction)} CATALOG VALIDATION`,
     ]);
   }
   if (
@@ -618,7 +724,7 @@ function expectFailureCommandOrder(
     failure.stage === "journal" ||
     failure.stage === "commit"
   ) {
-    expect(commands[3]).toBe(
+    expect(commands[2]).toBe(
       `T${String(failure.transaction)} CATALOG VALIDATION`,
     );
   }
@@ -677,8 +783,81 @@ async function securityBoundarySeries(): Promise<{
   }[];
 }> {
   const directory = await temporaryDirectory();
-  await writeFile(join(directory, "0001_identity_audit.sql"), "SELECT 1;\n");
-  await writeFile(join(directory, "0002_security_boundary.sql"), "SELECT 2;\n");
+  for (const filename of [
+    "0001_identity_audit.sql",
+    "0002_security_boundary.sql",
+  ] as const) {
+    await writeFile(
+      join(directory, filename),
+      await readFile(join(canonicalMigrationDirectory, filename)),
+    );
+  }
+  const migrations = await discoverMigrations(directory);
+  return {
+    directory,
+    journalRows: migrations.map((migration) => ({
+      applied_by: "migration_owner",
+      checksum_sha256: migration.checksumSha256,
+      filename: migration.filename,
+      sequence: migration.sequence,
+    })),
+  };
+}
+
+async function modeledSuccessorSeries(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const directory = await temporaryDirectory();
+  for (const filename of [
+    "0001_identity_audit.sql",
+    "0002_security_boundary.sql",
+  ] as const) {
+    await writeFile(
+      join(directory, filename),
+      await readFile(join(canonicalMigrationDirectory, filename)),
+    );
+  }
+  await writeFile(
+    join(directory, "0003_immutable_content.sql"),
+    await readFile(modeledSuccessorFixture),
+  );
+  const migrations = await discoverMigrations(directory);
+  return {
+    directory,
+    journalRows: migrations.slice(0, 2).map((migration) => ({
+      applied_by: "migration_owner",
+      checksum_sha256: migration.checksumSha256,
+      filename: migration.filename,
+      sequence: migration.sequence,
+    })),
+  };
+}
+
+async function canonical0002Series(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const directory = await temporaryDirectory();
+  for (const filename of [
+    "0001_identity_audit.sql",
+    "0002_security_boundary.sql",
+  ] as const) {
+    await writeFile(
+      join(directory, filename),
+      await readFile(join(canonicalMigrationDirectory, filename)),
+    );
+  }
   const migrations = await discoverMigrations(directory);
   return {
     directory,
@@ -729,6 +908,12 @@ function expectedMembershipRowFor(
 const expectedMembershipRow = expectedMembershipRowFor(
   "dasher_test_00000000000000000000000000000000",
 );
+const expectedManagedDependencyRoleNames = [
+  "dasher_app",
+  "dasher_security_definer",
+  "dasher_retention_definer",
+  "dasher_retention_operator",
+] as const;
 
 afterAll(async () => {
   await Promise.all(
@@ -1058,9 +1243,420 @@ describe("discoverMigrations", () => {
 
     await expectContractError(directory, "invalid_utf8");
   });
+
+  it("bounds each migration file before UTF-8 parsing", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      join(directory, "0001_oversized.sql"),
+      new Uint8Array(16 * 1024 * 1024 + 1),
+    );
+
+    await expectContractError(directory, "file_too_large");
+  });
 });
 
 describe("prefix-aware managed roles and expected app logins", () => {
+  it("holds one session gate and prepares both retention roles only after validating exact 0002", async () => {
+    const series = await modeledSuccessorSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toMatchObject({
+      appliedCount: 1,
+      previouslyAppliedCount: 2,
+    });
+
+    const sessionLockIndex = scripted.queryTexts.findIndex((text) =>
+      text.includes("pg_catalog.pg_advisory_lock("),
+    );
+    const firstCatalogIndex = scripted.queryTexts.findIndex((text) =>
+      text.includes("WITH RECURSIVE inherited_roles"),
+    );
+    const firstPreparedCreateIndex = scripted.queryTexts.findIndex((text) =>
+      text.startsWith("CREATE ROLE dasher_retention_definer WITH"),
+    );
+    const journalReadIndex = scripted.queryTexts.findIndex((text) =>
+      text.startsWith("SELECT sequence, filename, checksum_sha256"),
+    );
+    const unlockIndex = scripted.queryTexts.findIndex((text) =>
+      text.includes("pg_catalog.pg_advisory_unlock("),
+    );
+
+    expect(sessionLockIndex).toBeGreaterThanOrEqual(0);
+    expect(sessionLockIndex).toBeLessThan(firstCatalogIndex);
+    expect(journalReadIndex).toBeLessThan(firstPreparedCreateIndex);
+    expect(firstPreparedCreateIndex).toBeGreaterThanOrEqual(0);
+    expect(unlockIndex).toBeGreaterThan(firstPreparedCreateIndex);
+    expect(scripted.queryTexts).toContain(
+      "CREATE ROLE dasher_retention_definer WITH NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 PASSWORD NULL VALID UNTIL 'infinity'",
+    );
+    expect(scripted.queryTexts).toContain(
+      "COMMENT ON ROLE dasher_retention_definer IS 'dasher:managed-role:v1:retention-definer'",
+    );
+    expect(scripted.queryTexts).toContain(
+      "CREATE ROLE dasher_retention_operator WITH NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 PASSWORD NULL VALID UNTIL 'infinity'",
+    );
+    expect(scripted.queryTexts).toContain(
+      "COMMENT ON ROLE dasher_retention_operator IS 'dasher:managed-role:v1:retention-operator'",
+    );
+    expect(transactionCommands(scripted, 2)).toEqual([
+      "T2 BEGIN",
+      "T2 SET LOCAL",
+      "T2 CATALOG VALIDATION",
+      "T2 COMMIT",
+    ]);
+    const successorCatalogQuery = scripted.queryTexts.find((text) =>
+      text.includes("modeled_initializer AS"),
+    );
+    expect(successorCatalogQuery).toContain(
+      "pg_catalog.pg_get_function_result",
+    );
+    expect(successorCatalogQuery).toContain("routine.provolatile");
+    expect(successorCatalogQuery).toContain("routine.prosecdef");
+    expect(successorCatalogQuery).toContain("routine.proconfig");
+    expect(successorCatalogQuery).toContain(
+      "retention_service_principal_self_binding_select",
+    );
+    expect(successorCatalogQuery).toContain(
+      "dashboards_retention_target_discovery_select",
+    );
+    expect(successorCatalogQuery).toContain(
+      "prosrc !~* 'FOR[[:space:]]+(UPDATE|SHARE)'",
+    );
+    const successorDependencies = scripted.dependencyInventories.at(-1) ?? [];
+    expect(
+      successorDependencies.filter(
+        (entry) =>
+          entry.dependency_type === "o" &&
+          entry.role_name === "dasher_retention_definer",
+      ),
+    ).toHaveLength(7);
+    expect(
+      successorDependencies.filter(
+        (entry) =>
+          entry.privilege_type === "EXECUTE" &&
+          entry.role_name === "dasher_retention_operator",
+      ),
+    ).toHaveLength(7);
+  });
+
+  it("accepts the exact dependency-free prepared residue and retries the same modeled file without adoption", async () => {
+    const series = await modeledSuccessorSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toMatchObject({ appliedCount: 1, previouslyAppliedCount: 2 });
+    expect(scripted.managedRoleEvents).not.toContain(
+      "CREATE dasher_retention_definer",
+    );
+    expect(scripted.queryTexts).toContainEqual(
+      expect.stringContaining("modeled_successor_inventory_version"),
+    );
+  });
+
+  it.each([
+    {
+      name: "one missing role",
+      roleNames: ["dasher_retention_definer"],
+    },
+    {
+      name: "unexpected extra role",
+      roleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+        "dasher_retention_unexpected",
+      ],
+    },
+  ])("rejects $name before modeled SQL", async ({ roleNames }) => {
+    const series = await modeledSuccessorSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      retentionRoleNames: roleNames,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(scripted.queryTexts).not.toContainEqual(
+      expect.stringContaining("modeled_successor_inventory_version"),
+    );
+    expect(scripted.managedRoleEvents).not.toContain(
+      "CREATE dasher_retention_operator",
+    );
+  });
+
+  it.each([
+    { name: "LOGIN", overrides: { can_login: true } },
+    { name: "INHERIT", overrides: { inherit_privileges: true } },
+    { name: "SUPERUSER", overrides: { superuser: true } },
+    { name: "CREATEDB", overrides: { can_create_database: true } },
+    { name: "CREATEROLE", overrides: { can_create_role: true } },
+    { name: "REPLICATION", overrides: { replication: true } },
+    { name: "BYPASSRLS", overrides: { bypass_rls: true } },
+    { name: "password", overrides: { password_is_null: false } },
+    { name: "connection limit", overrides: { connection_limit: 4 } },
+    {
+      name: "valid-until",
+      overrides: { valid_until_is_infinity: false },
+    },
+    { name: "settings", overrides: { has_settings: true } },
+    { name: "comment", overrides: { comment: "synthetic:wrong" } },
+  ])(
+    "rejects prepared definer $name drift before SQL",
+    async ({ overrides }) => {
+      const series = await modeledSuccessorSeries();
+      const scripted = scriptedMigrationClient({
+        initialJournalRows: series.journalRows,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+        managedRoleReads: {
+          dasher_retention_definer: [
+            managedRoleRow("dasher_retention_definer", overrides),
+          ],
+        },
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(scripted.queryTexts).not.toContainEqual(
+        expect.stringContaining("modeled_successor_inventory_version"),
+      );
+    },
+  );
+
+  it("rejects prepared-role membership, dependency, and premature-object drift before SQL", async () => {
+    const series = await modeledSuccessorSeries();
+    for (const options of [
+      {
+        membershipRows: [
+          {
+            admin_option: false,
+            granted_role_name: "synthetic_parent",
+            inherit_option: false,
+            member_role_name: "dasher_retention_definer",
+            set_option: true,
+          },
+        ],
+      },
+      { dependencyMatches: [false] },
+      { prefixObjectMatches: false },
+    ] as const) {
+      const scripted = scriptedMigrationClient({
+        ...options,
+        initialJournalRows: series.journalRows,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(scripted.queryTexts).not.toContainEqual(
+        expect.stringContaining("modeled_successor_inventory_version"),
+      );
+    }
+  });
+
+  it("rejects prepared roles when modeled 0003 is absent", async () => {
+    const series = await canonical0002Series();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(scripted.managedRoleEvents).not.toContain(
+      "DROP dasher_retention_operator",
+    );
+  });
+
+  it("rejects a different modeled-0003 checksum before catalog validation or role creation", async () => {
+    const series = await canonical0002Series();
+    await writeFile(
+      join(series.directory, "0003_immutable_content.sql"),
+      "SELECT 3003;\n",
+    );
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(scripted.queryTexts).not.toContainEqual(
+      expect.stringContaining("WITH RECURSIVE inherited_roles"),
+    );
+    expect(scripted.managedRoleEvents).not.toContain(
+      "CREATE dasher_retention_definer",
+    );
+  });
+
+  it("rejects immutable canonical 0002 byte drift before catalog validation or role creation", async () => {
+    const series = await canonical0002Series();
+    await writeFile(
+      join(series.directory, "0002_security_boundary.sql"),
+      `${String(
+        await readFile(
+          join(canonicalMigrationDirectory, "0002_security_boundary.sql"),
+        ),
+      )}\n-- drift\n`,
+    );
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(scripted.queryTexts).not.toContainEqual(
+      expect.stringContaining("WITH RECURSIVE inherited_roles"),
+    );
+  });
+
+  it("leaves the exact committed pair after modeled SQL failure and accepts a same-file retry", async () => {
+    const series = await modeledSuccessorSeries();
+    const scripted = scriptedMigrationClient({
+      failure: { stage: "migration", transaction: 3 },
+      initialJournalRows: series.journalRows,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toBe(scripted.operationError);
+    expect(scripted.managedRoleEvents).toContain(
+      "CREATE dasher_retention_definer",
+    );
+    expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 COMMIT");
+    expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toMatchObject({ appliedCount: 1, previouslyAppliedCount: 2 });
+    expect(
+      scripted.managedRoleEvents.filter(
+        (event) => event === "CREATE dasher_retention_definer",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("rolls back modeled SQL and journal when the successor catalog matrix drifts", async () => {
+    const series = await modeledSuccessorSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      successorCatalogMatches: false,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 COMMIT");
+    expect(transactionCommands(scripted, 3)).toContain("T3 MIGRATION SQL");
+    expect(transactionCommands(scripted, 3)).toContain("T3 JOURNAL INSERT");
+    expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+    expect(scripted.managedRoleEvents).not.toContain(
+      "DROP dasher_retention_operator",
+    );
+  });
+
+  it("explicitly resets only the exact owner-validated dependency-free pair in safe order", async () => {
+    const series = await canonical0002Series();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      resetPreparedRetentionRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      scripted.managedRoleEvents.filter((event) => event.startsWith("DROP ")),
+    ).toEqual([
+      "DROP dasher_retention_operator",
+      "DROP dasher_retention_definer",
+    ]);
+  });
+
+  it("refuses reset for partial roles, dependencies, or a pending different 0003 without dropping anything", async () => {
+    const series = await canonical0002Series();
+    const cases: readonly ScriptedMigrationOptions[] = [
+      {
+        initialJournalRows: series.journalRows,
+        retentionRoleNames: ["dasher_retention_definer"],
+      },
+      {
+        dependencyMatches: [false],
+        initialJournalRows: series.journalRows,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      },
+    ];
+
+    for (const options of cases) {
+      const scripted = scriptedMigrationClient(options);
+      await expect(
+        resetPreparedRetentionRoles(
+          singleClientPool(scripted.client),
+          series.directory,
+          [],
+        ),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(
+        scripted.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+      ).toBe(false);
+    }
+
+    await writeFile(
+      join(series.directory, "0003_immutable_content.sql"),
+      "SELECT 3003;\n",
+    );
+    const different = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+    await expect(
+      resetPreparedRetentionRoles(
+        singleClientPool(different.client),
+        series.directory,
+        [],
+      ),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(
+      different.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+    ).toBe(false);
+  });
+
   it.each([
     {
       name: "duplicate",
@@ -1099,11 +1695,13 @@ describe("prefix-aware managed roles and expected app logins", () => {
       [],
     );
 
-    expect(scripted.dependencyRoleNames).toEqual([
-      ["dasher_app", "dasher_security_definer"],
-      ["dasher_app", "dasher_security_definer"],
-    ]);
-    expect(scripted.dependencyInventories).toEqual([[], []]);
+    expect(scripted.dependencyRoleNames).toHaveLength(3);
+    expect(
+      scripted.dependencyRoleNames.every((roleNames) =>
+        arraysEqualForTest(roleNames, expectedManagedDependencyRoleNames),
+      ),
+    ).toBe(true);
+    expect(scripted.dependencyInventories).toEqual([[], [], []]);
   });
 
   it("accepts one exact expected login and carries only its role name into validation", async () => {
@@ -1117,10 +1715,15 @@ describe("prefix-aware managed roles and expected app logins", () => {
       loginName,
     ]);
 
-    expect(scripted.dependencyRoleNames).toEqual([
-      ["dasher_app", "dasher_security_definer", loginName],
-      ["dasher_app", "dasher_security_definer", loginName],
-    ]);
+    expect(scripted.dependencyRoleNames).toHaveLength(3);
+    expect(
+      scripted.dependencyRoleNames.every((roleNames) =>
+        arraysEqualForTest(roleNames, [
+          ...expectedManagedDependencyRoleNames,
+          loginName,
+        ]),
+      ),
+    ).toBe(true);
     for (const inventory of scripted.dependencyInventories) {
       expect(inventory).toEqual([
         expect.objectContaining({
@@ -1171,7 +1774,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
       discoveredCount: 2,
       previouslyAppliedCount: 0,
     });
-    expect(scripted.dependencyInventories).toHaveLength(2);
+    expect(scripted.dependencyInventories).toHaveLength(3);
     expect(
       scripted.dependencyInventories.every(
         (inventory) =>
@@ -1369,9 +1972,11 @@ describe("prefix-aware managed roles and expected app logins", () => {
       previouslyAppliedCount: 2,
     });
 
-    expect(scripted.dependencyInventories).toHaveLength(2);
-    const dependencyQuery = scripted.queryTexts.find((text) =>
-      text.includes("pg_catalog.jsonb_to_recordset"),
+    expect(scripted.dependencyInventories).toHaveLength(3);
+    const dependencyQuery = scripted.queryTexts.find(
+      (text) =>
+        text.includes("pg_catalog.jsonb_to_recordset") &&
+        text.includes("FROM pg_catalog.pg_shdepend AS dependency"),
     );
     expect(dependencyQuery).toContain(
       "FROM pg_catalog.pg_shdepend AS dependency",
@@ -1471,9 +2076,10 @@ describe("prefix-aware managed roles and expected app logins", () => {
       previouslyAppliedCount: 1,
     });
 
-    expect(scripted.dependencyInventories).toHaveLength(2);
+    expect(scripted.dependencyInventories).toHaveLength(3);
     expect(scripted.dependencyInventories[0]).toEqual([]);
-    expect(scripted.dependencyInventories[1]).toHaveLength(217);
+    expect(scripted.dependencyInventories[1]).toEqual([]);
+    expect(scripted.dependencyInventories[2]).toHaveLength(217);
     expect(transactionCommands(scripted, 2)).toContain("T2 MIGRATION SQL");
     expect(transactionCommands(scripted, 2)).toContain("T2 JOURNAL INSERT");
   });
@@ -1505,7 +2111,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
   it("rejects a mismatched successor inventory after applying and journaling pending SQL", async () => {
     const series = await securityBoundarySeries();
     const scripted = scriptedMigrationClient({
-      dependencyMatches: [true, false],
+      dependencyMatches: [true, true, false],
       initialJournalRows: [series.journalRows[0]!],
     });
 
@@ -1519,6 +2125,53 @@ describe("prefix-aware managed roles and expected app logins", () => {
 });
 
 describe("migration transaction rollback and release", () => {
+  it("normally releases when the session gate cannot be acquired", async () => {
+    const lockError = new Error("synthetic session gate acquisition failure");
+    const scripted = scriptedMigrationClient({ sessionLockError: lockError });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), fixtureDirectory, []),
+    ).rejects.toBe(lockError);
+    expect(scripted.transactionCommands).toEqual(["SESSION ADVISORY LOCK"]);
+    expect(scripted.releaseArguments).toEqual([undefined]);
+  });
+
+  it("destroys the client with a sanitized diagnostic when session unlock returns false", async () => {
+    const scripted = scriptedMigrationClient({ sessionUnlockResult: false });
+
+    const failure = await capturedFailure(
+      runMigrations(singleClientPool(scripted.client), fixtureDirectory, []),
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe("MigrationGateReleaseError");
+    expect((failure as Error).message).toBe(
+      "PostgreSQL migrator advisory gate release failed; pooled client destroyed",
+    );
+    expect(scripted.releaseArguments).toEqual([failure]);
+    expect(scripted.releaseArguments).not.toContain(undefined);
+  });
+
+  it("preserves the operation error and destroys the client if unlock then fails", async () => {
+    const unlockError = new Error(
+      "synthetic unlock failure with postgres://user:secret@host/database",
+    );
+    const scripted = scriptedMigrationClient({
+      failure: { stage: "validation", transaction: 1 },
+      sessionUnlockError: unlockError,
+    });
+
+    const failure = await capturedFailure(
+      runMigrations(singleClientPool(scripted.client), fixtureDirectory, []),
+    );
+    expect(failure).toBe(scripted.operationError);
+    expect(scripted.releaseArguments).toHaveLength(1);
+    const releaseError = scripted.releaseArguments[0];
+    expect(releaseError).toBeInstanceOf(Error);
+    expect((releaseError as Error).name).toBe("MigrationGateReleaseError");
+    expect(String(releaseError)).not.toContain("postgres://");
+    expect(scripted.releaseArguments).not.toContain(undefined);
+  });
+
   it.each(transactionFailureCases)(
     "normally releases after $name failure and successful rollback",
     async (failureInjection) => {
@@ -1572,21 +2225,22 @@ describe("migration transaction rollback and release", () => {
     expect(transactionCommands(scripted, 1)).toEqual([
       "T1 BEGIN",
       "T1 SET LOCAL",
-      "T1 ADVISORY LOCK",
       "T1 CATALOG VALIDATION",
       "T1 COMMIT",
     ]);
     expect(transactionCommands(scripted, 2)).toEqual([
       "T2 BEGIN",
       "T2 SET LOCAL",
-      "T2 ADVISORY LOCK",
       "T2 CATALOG VALIDATION",
       "T2 MIGRATION SQL",
       "T2 JOURNAL INSERT",
       "T2 MIGRATION SQL",
       "T2 JOURNAL INSERT",
+      "T2 CATALOG VALIDATION",
       "T2 COMMIT",
     ]);
+    expect(scripted.transactionCommands[0]).toBe("SESSION ADVISORY LOCK");
+    expect(scripted.transactionCommands.at(-1)).toBe("SESSION ADVISORY UNLOCK");
   });
 
   it("does not retry normal release when destructive release throws", async () => {
@@ -1647,12 +2301,12 @@ describe("migration transaction rollback and release", () => {
     expect(transactionCommands(scripted, 1).slice(0, 3)).toEqual([
       "T1 BEGIN",
       "T1 SET LOCAL",
-      "T1 ADVISORY LOCK",
+      "T1 CATALOG VALIDATION",
     ]);
     expect(transactionCommands(scripted, 2).slice(0, 3)).toEqual([
       "T2 BEGIN",
       "T2 SET LOCAL",
-      "T2 ADVISORY LOCK",
+      "T2 CATALOG VALIDATION",
     ]);
     expect(transactionCommands(scripted, 1).at(-1)).toBe("T1 COMMIT");
     expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 COMMIT");

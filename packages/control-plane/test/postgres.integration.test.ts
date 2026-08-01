@@ -1,5 +1,8 @@
 import { Buffer } from "node:buffer";
 import { randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -18,6 +21,7 @@ import {
   type MigrationClient,
   type PgCompatiblePool,
 } from "../src/index.js";
+import { resetPreparedRetentionRoles } from "../src/migrator.js";
 import {
   borrowedClientPool,
   canonicalMigrationDirectory,
@@ -99,13 +103,28 @@ async function closeAppPoolBeforeLoginTeardown(): Promise<void> {
 }
 
 async function resetManagedSchemas(): Promise<void> {
-  await ownerPool.query(`
-    DROP SCHEMA IF EXISTS fixture_role_owned CASCADE;
-    DROP SCHEMA IF EXISTS dasher_api CASCADE;
-    DROP SCHEMA IF EXISTS dasher_private CASCADE;
-    DROP SCHEMA IF EXISTS dasher CASCADE;
-    DROP SCHEMA IF EXISTS dasher_meta CASCADE
-  `);
+  const client = await ownerPool.connect();
+  try {
+    await client.query(`
+      DROP SCHEMA IF EXISTS fixture_role_owned CASCADE;
+      DROP SCHEMA IF EXISTS dasher_api CASCADE;
+      DROP SCHEMA IF EXISTS dasher_private CASCADE;
+      DROP SCHEMA IF EXISTS dasher CASCADE;
+      DROP SCHEMA IF EXISTS dasher_meta CASCADE
+    `);
+    const managedAppRole = await client.query<{ readonly exists: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'dasher_app') AS exists",
+    );
+    if (managedAppRole.rows[0]?.exists === true) {
+      await executeServerFormattedSql(
+        client,
+        "REVOKE CONNECT ON DATABASE %I FROM dasher_app",
+        [config.ownerDatabase],
+      );
+    }
+  } finally {
+    client.release();
+  }
 }
 
 async function prepareAppliedJournal(): Promise<void> {
@@ -814,6 +833,153 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       await resetManagedSchemas();
     }
   });
+
+  it("keeps only the exact prepared pair after modeled-0003 catalog failure, retries, and explicitly resets", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-pg-"));
+    const modeledFixture = new URL(
+      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+      import.meta.url,
+    );
+    let modeledSqlExecutions = 0;
+    const instrumentedPool = {
+      async connect(): Promise<MigrationClient> {
+        const client = await ownerPool.connect();
+        const query = (async (text: string, values?: readonly unknown[]) => {
+          if (text.includes("modeled_successor_inventory_version")) {
+            modeledSqlExecutions += 1;
+          }
+          return client.query(text, values as unknown[] | undefined);
+        }) as MigrationClient["query"];
+        return {
+          query,
+          release(error) {
+            client.release(error);
+          },
+        };
+      },
+    };
+
+    try {
+      await resetManagedSchemas();
+      await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+      ] as const) {
+        await writeFile(
+          join(directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await writeFile(
+        join(directory, "0003_immutable_content.sql"),
+        await readFile(modeledFixture),
+      );
+
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        await expectMigrationRejection(
+          runMigrations(instrumentedPool, directory, []),
+          "managed_role_drift",
+        );
+        expect(modeledSqlExecutions).toBe(attempt);
+      }
+
+      const prepared = await ownerPool.query<{
+        readonly attributes_match: boolean;
+        readonly comment: string | null;
+        readonly dependency_count: string;
+        readonly membership_count: string;
+        readonly role_name: string;
+      }>(`
+        SELECT
+          role.rolname::text AS role_name,
+          NOT role.rolcanlogin
+            AND NOT role.rolinherit
+            AND NOT role.rolsuper
+            AND NOT role.rolcreatedb
+            AND NOT role.rolcreaterole
+            AND NOT role.rolreplication
+            AND NOT role.rolbypassrls
+            AND role.rolpassword IS NULL
+            AND role.rolconnlimit = -1
+            AND role.rolvaliduntil = 'infinity'::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_db_role_setting AS setting
+              WHERE setting.setrole = role.oid
+            ) AS attributes_match,
+          pg_catalog.shobj_description(role.oid, 'pg_authid') AS comment,
+          (
+            SELECT pg_catalog.count(*)::text
+            FROM pg_catalog.pg_auth_members AS membership
+            WHERE membership.roleid = role.oid
+               OR membership.member = role.oid
+          ) AS membership_count,
+          (
+            SELECT pg_catalog.count(*)::text
+            FROM pg_catalog.pg_shdepend AS dependency
+            WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass
+              AND dependency.refobjid = role.oid
+              AND dependency.deptype IN ('a', 'o')
+          ) AS dependency_count
+        FROM pg_catalog.pg_authid AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+        ORDER BY role.rolname
+      `);
+      expect(prepared.rows).toEqual([
+        {
+          attributes_match: true,
+          comment: "dasher:managed-role:v1:retention-definer",
+          dependency_count: "0",
+          membership_count: "0",
+          role_name: "dasher_retention_definer",
+        },
+        {
+          attributes_match: true,
+          comment: "dasher:managed-role:v1:retention-operator",
+          dependency_count: "0",
+          membership_count: "0",
+          role_name: "dasher_retention_operator",
+        },
+      ]);
+
+      await resetPreparedRetentionRoles(
+        ownerPool,
+        canonicalMigrationDirectory,
+        [],
+      );
+      const residue = await ownerPool.query<{ readonly count: string }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      expect(residue.rows[0]?.count).toBe("0");
+    } finally {
+      const preparedCount = await ownerPool.query<{ readonly count: string }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      if (preparedCount.rows[0]?.count === "2") {
+        await resetPreparedRetentionRoles(
+          ownerPool,
+          canonicalMigrationDirectory,
+          [],
+        );
+      }
+      await rm(directory, { recursive: true, force: true });
+      await resetManagedSchemas();
+    }
+  }, 120_000);
 
   it("serializes concurrent runners into exactly one apply and one skip", async () => {
     try {
