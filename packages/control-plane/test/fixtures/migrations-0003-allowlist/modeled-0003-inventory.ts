@@ -428,165 +428,371 @@ export const modeled0003Relations = {
   ),
 } as const satisfies Readonly<Record<string, RelationInventory>>;
 
-const booleanColumns = new Set([
-  "can_claim_cleanup",
-  "can_initialize",
-  "can_materialize_expiry",
-  "can_place_hold",
-  "can_purge",
-  "can_record_attempt",
-  "can_release_hold",
-  "enabled",
-]);
-const integerColumns = new Set([
-  "default_disposable_ttl_seconds",
-  "deferred_claim_count",
-  "deleted_resource_count",
-  "released_claim_count",
-]);
-const bigintColumns = new Set([
-  "cache_epoch",
-  "capability_epoch",
-  "ledger_sequence",
-  "policy_revision",
-  "principal_revision",
-  "registry_revision",
-  "retention_policy_revision",
-  "lifecycle_revision",
-  "requested_lifecycle_revision",
-  "dashboard_lifecycle_revision",
-  "expected_lifecycle_revision",
-  "placed_authority_revision",
-  "released_authority_revision",
-  "authority_revision",
-  "predecessor_revision",
-  "access_revoked_lifecycle_revision",
-  "purged_lifecycle_revision",
-]);
-const byteaColumns = new Set([
-  "canonical_bytes",
-  "canonical_spec_bytes",
-  "access_revoked_proof_sha256",
-  "calculation_graph_sha256",
-  "canonical_spec_sha256",
-  "completion_proof_sha256",
-  "content_sha256",
-  "expected_claim_set_sha256",
-  "metadata_sha256",
-  "placed_reason_sha256",
-  "planner_provenance_sha256",
-  "predecessor_sha256",
-  "proof_sha256",
-  "provenance_sha256",
-  "purged_proof_sha256",
-  "rationale_sha256",
-  "reason_sha256",
-  "released_reason_sha256",
-  "revision_sha256",
-  "validation_sha256",
-]);
-const timestampColumns = new Set([
-  "absolute_expires_at",
-  "access_revoked_at",
-  "archived_at",
-  "bytes_deleted_at",
-  "created_at",
-  "decided_at",
-  "effective_expires_at",
-  "event_occurred_at",
-  "finished_at",
-  "inserted_at",
-  "intent_at",
-  "lease_expires_at",
-  "next_attempt_at",
-  "observed_at",
-  "occurred_at",
-  "original_expires_at",
-  "placed_at",
-  "promoted_at",
-  "purge_after",
-  "purge_started_at",
-  "purged_at",
-  "released_at",
-  "requested_at",
-  "retrieved_at",
-  "started_at",
-]);
-const nameColumns = new Set(["binding_subject", "lease_owner"]);
-const nullableColumns = new Set([
-  "access_revoked_at",
-  "access_revoked_lifecycle_revision",
-  "access_revoked_proof_sha256",
-  "actor_service",
-  "actor_user_id",
-  "archived_at",
-  "bytes_deleted_at",
-  "calculation_graph_sha256",
-  "completion_proof_sha256",
-  "effective_expires_at",
-  "failure_code",
-  "finished_at",
-  "from_kind",
-  "from_state",
-  "head_version_id",
-  "hold_id",
-  "job_id",
-  "lease_expires_at",
-  "lease_owner",
-  "next_attempt_at",
-  "original_expires_at",
-  "parent_version_id",
-  "predecessor_revision",
-  "predecessor_sha256",
-  "promoted_at",
-  "proof_sha256",
-  "purge_after",
-  "purge_started_at",
-  "purged_at",
-  "purged_lifecycle_revision",
-  "purged_proof_sha256",
-  "released_actor",
-  "released_at",
-  "released_authority_revision",
-  "released_by_principal_id",
-  "released_reason_sha256",
-  "restored_from_tombstone_lineage_id",
-  "scope_organization_id",
-  "to_kind",
-  "to_state",
-]);
-const nullableRelationColumns = new Set([
+type ModeledColumnIdentity = `${keyof typeof modeled0003Relations}.${string}`;
+
+const modeled0003ColumnIdentitiesByType = {
+  boolean: [
+    "retention_service_principal_allowlist.can_initialize",
+    "retention_service_principal_allowlist.can_materialize_expiry",
+    "retention_service_principal_allowlist.can_place_hold",
+    "retention_service_principal_allowlist.can_release_hold",
+    "retention_service_principal_allowlist.can_claim_cleanup",
+    "retention_service_principal_allowlist.can_record_attempt",
+    "retention_service_principal_allowlist.can_purge",
+    "retention_service_principal_allowlist.enabled",
+  ],
+  integer: [
+    "dashboard_lifecycle_policies.default_disposable_ttl_seconds",
+    "dashboard_cleanup_attempts.released_claim_count",
+    "dashboard_cleanup_attempts.deleted_resource_count",
+    "dashboard_cleanup_attempts.deferred_claim_count",
+  ],
+  bigint: [
+    "dashboard_lifecycle_policies.policy_revision",
+    "dashboard_lifecycle_policies.retention_policy_revision",
+    "dashboards.lifecycle_revision",
+    "dashboards.capability_epoch",
+    "dashboards.cache_epoch",
+    "dashboards.retention_policy_revision",
+    "dashboard_lifecycle_events.lifecycle_revision",
+    "dashboard_lifecycle_events.authority_revision",
+    "dashboard_lifecycle_events.retention_policy_revision",
+    "dashboard_promotion_requests.requested_lifecycle_revision",
+    "dashboard_promotion_decisions.dashboard_lifecycle_revision",
+    "dashboard_promotion_decisions.retention_policy_revision",
+    "dashboard_cleanup_coordination.expected_lifecycle_revision",
+    "dashboard_legal_holds.placed_authority_revision",
+    "dashboard_legal_holds.retention_policy_revision",
+    "dashboard_legal_holds.released_authority_revision",
+    "dashboard_tombstones.retention_policy_revision",
+    "dashboard_tombstones.access_revoked_lifecycle_revision",
+    "dashboard_tombstones.purged_lifecycle_revision",
+    "dashboard_restore_lineage.retention_policy_revision",
+    "dashboard_restore_lineage.authority_revision",
+    "backup_deletion_ledger.ledger_sequence",
+    "backup_deletion_ledger.lifecycle_revision",
+    "backup_deletion_ledger.retention_policy_revision",
+    "retention_service_principal_allowlist.principal_revision",
+    "retention_service_principal_allowlist.predecessor_revision",
+    "dashboard_versions.policy_revision",
+    "dashboard_versions.registry_revision",
+  ],
+  bytea: [
+    "dashboard_lifecycle_events.reason_sha256",
+    "dashboard_promotion_requests.rationale_sha256",
+    "dashboard_cleanup_coordination.completion_proof_sha256",
+    "dashboard_cleanup_attempts.proof_sha256",
+    "dashboard_legal_holds.placed_reason_sha256",
+    "dashboard_legal_holds.released_reason_sha256",
+    "dashboard_tombstones.access_revoked_proof_sha256",
+    "dashboard_tombstones.purged_proof_sha256",
+    "dashboard_restore_lineage.provenance_sha256",
+    "backup_deletion_ledger.proof_sha256",
+    "retention_service_principal_allowlist.predecessor_sha256",
+    "retention_service_principal_allowlist.revision_sha256",
+    "source_snapshots.canonical_bytes",
+    "source_snapshots.content_sha256",
+    "evidence_records.content_sha256",
+    "dashboard_versions.canonical_spec_bytes",
+    "dashboard_versions.canonical_spec_sha256",
+    "dashboard_versions.validation_sha256",
+    "dashboard_versions.planner_provenance_sha256",
+    "dashboard_versions.calculation_graph_sha256",
+    "dashboard_artifacts.metadata_sha256",
+    "dashboard_artifacts.content_sha256",
+    "snapshot_deletion_finalizers.expected_claim_set_sha256",
+    "snapshot_deletion_finalizers.proof_sha256",
+    "evidence_deletion_finalizers.expected_claim_set_sha256",
+    "evidence_deletion_finalizers.proof_sha256",
+    "artifact_deletion_finalizers.expected_claim_set_sha256",
+    "artifact_deletion_finalizers.proof_sha256",
+  ],
+  name: [
+    "dashboard_cleanup_coordination.lease_owner",
+    "retention_service_principal_allowlist.binding_subject",
+    "snapshot_deletion_finalizers.lease_owner",
+    "evidence_deletion_finalizers.lease_owner",
+    "artifact_deletion_finalizers.lease_owner",
+  ],
+  text: [
+    "dashboard_lifecycle_policies.provenance",
+    "dashboards.title",
+    "dashboards.created_kind",
+    "dashboards.current_kind",
+    "dashboards.lifecycle_state",
+    "dashboards.revocation_reason",
+    "dashboard_lifecycle_events.event_kind",
+    "dashboard_lifecycle_events.from_kind",
+    "dashboard_lifecycle_events.to_kind",
+    "dashboard_lifecycle_events.from_state",
+    "dashboard_lifecycle_events.to_state",
+    "dashboard_lifecycle_events.actor_service",
+    "dashboard_promotion_decisions.decision",
+    "dashboard_cleanup_coordination.current_step",
+    "dashboard_cleanup_attempts.step",
+    "dashboard_cleanup_attempts.result",
+    "dashboard_cleanup_attempts.failure_code",
+    "dashboard_legal_holds.case_matter_reference",
+    "dashboard_legal_holds.placed_actor",
+    "dashboard_legal_holds.released_actor",
+    "backup_deletion_ledger.event_kind",
+    "retention_service_principal_allowlist.binding_kind",
+    "retention_service_principal_allowlist.authority_scope",
+    "retention_service_principal_allowlist.migration_provenance",
+    "source_snapshots.source_kind",
+    "evidence_records.evidence_kind",
+    "evidence_records.coordinates",
+    "evidence_records.transformation",
+    "dashboard_versions.validation_state",
+    "dashboard_artifacts.ownership_class",
+    "dashboard_artifacts.artifact_kind",
+    "snapshot_reference_claims.claim_kind",
+    "evidence_reference_claims.claim_kind",
+    "artifact_reference_claims.claim_kind",
+    "snapshot_deletion_finalizers.state",
+    "evidence_deletion_finalizers.state",
+    "artifact_deletion_finalizers.state",
+  ],
+  "timestamp with time zone": [
+    "dashboard_lifecycle_policies.created_at",
+    "dashboards.created_at",
+    "dashboards.original_expires_at",
+    "dashboards.effective_expires_at",
+    "dashboards.access_revoked_at",
+    "dashboards.purge_after",
+    "dashboards.purge_started_at",
+    "dashboards.purged_at",
+    "dashboards.promoted_at",
+    "dashboards.archived_at",
+    "dashboard_lifecycle_events.occurred_at",
+    "dashboard_promotion_requests.requested_at",
+    "dashboard_promotion_decisions.decided_at",
+    "dashboard_cleanup_coordination.lease_expires_at",
+    "dashboard_cleanup_coordination.next_attempt_at",
+    "dashboard_cleanup_attempts.started_at",
+    "dashboard_cleanup_attempts.finished_at",
+    "dashboard_legal_holds.placed_at",
+    "dashboard_legal_holds.released_at",
+    "dashboard_tombstones.access_revoked_at",
+    "dashboard_tombstones.purged_at",
+    "dashboard_restore_lineage.occurred_at",
+    "backup_deletion_ledger.event_occurred_at",
+    "backup_deletion_ledger.inserted_at",
+    "retention_service_principal_allowlist.created_at",
+    "source_snapshots.observed_at",
+    "source_snapshots.retrieved_at",
+    "source_snapshots.created_at",
+    "evidence_records.observed_at",
+    "evidence_records.retrieved_at",
+    "evidence_records.created_at",
+    "dashboard_versions.created_at",
+    "dashboard_artifacts.created_at",
+    "snapshot_reference_claims.created_at",
+    "evidence_reference_claims.created_at",
+    "artifact_reference_claims.created_at",
+    "snapshot_deletion_finalizers.intent_at",
+    "snapshot_deletion_finalizers.lease_expires_at",
+    "snapshot_deletion_finalizers.bytes_deleted_at",
+    "evidence_deletion_finalizers.intent_at",
+    "evidence_deletion_finalizers.lease_expires_at",
+    "evidence_deletion_finalizers.bytes_deleted_at",
+    "artifact_deletion_finalizers.intent_at",
+    "artifact_deletion_finalizers.lease_expires_at",
+    "artifact_deletion_finalizers.bytes_deleted_at",
+  ],
+  uuid: [
+    "dashboard_lifecycle_policies.organization_id",
+    "dashboard_lifecycle_policies.created_by_user_id",
+    "dashboards.organization_id",
+    "dashboards.dashboard_id",
+    "dashboards.created_by_user_id",
+    "dashboards.head_version_id",
+    "dashboards.tombstone_lineage_id",
+    "dashboards.restored_from_tombstone_lineage_id",
+    "dashboard_lifecycle_events.lifecycle_event_id",
+    "dashboard_lifecycle_events.organization_id",
+    "dashboard_lifecycle_events.dashboard_id",
+    "dashboard_lifecycle_events.actor_user_id",
+    "dashboard_lifecycle_events.request_id",
+    "dashboard_lifecycle_events.job_id",
+    "dashboard_promotion_requests.organization_id",
+    "dashboard_promotion_requests.promotion_request_id",
+    "dashboard_promotion_requests.dashboard_id",
+    "dashboard_promotion_requests.requested_by_user_id",
+    "dashboard_promotion_decisions.organization_id",
+    "dashboard_promotion_decisions.promotion_request_id",
+    "dashboard_promotion_decisions.decided_by_user_id",
+    "dashboard_cleanup_coordination.organization_id",
+    "dashboard_cleanup_coordination.dashboard_id",
+    "dashboard_cleanup_attempts.organization_id",
+    "dashboard_cleanup_attempts.dashboard_id",
+    "dashboard_cleanup_attempts.cleanup_attempt_id",
+    "dashboard_legal_holds.organization_id",
+    "dashboard_legal_holds.dashboard_id",
+    "dashboard_legal_holds.hold_id",
+    "dashboard_legal_holds.placed_by_principal_id",
+    "dashboard_legal_holds.released_by_principal_id",
+    "dashboard_tombstones.organization_id",
+    "dashboard_tombstones.tombstone_lineage_id",
+    "dashboard_restore_lineage.organization_id",
+    "dashboard_restore_lineage.dashboard_id",
+    "dashboard_restore_lineage.version_id",
+    "dashboard_restore_lineage.source_tombstone_lineage_id",
+    "dashboard_restore_lineage.source_version_id",
+    "dashboard_restore_lineage.actor_user_id",
+    "backup_deletion_ledger.organization_id",
+    "backup_deletion_ledger.tombstone_lineage_id",
+    "retention_service_principal_allowlist.retention_service_principal_id",
+    "retention_service_principal_allowlist.scope_organization_id",
+    "source_snapshots.organization_id",
+    "source_snapshots.snapshot_id",
+    "evidence_records.organization_id",
+    "evidence_records.evidence_id",
+    "evidence_records.snapshot_id",
+    "dashboard_versions.organization_id",
+    "dashboard_versions.dashboard_id",
+    "dashboard_versions.version_id",
+    "dashboard_versions.parent_version_id",
+    "dashboard_versions.created_by_user_id",
+    "dashboard_version_snapshots.organization_id",
+    "dashboard_version_snapshots.dashboard_id",
+    "dashboard_version_snapshots.version_id",
+    "dashboard_version_snapshots.snapshot_id",
+    "dashboard_version_evidence.organization_id",
+    "dashboard_version_evidence.dashboard_id",
+    "dashboard_version_evidence.version_id",
+    "dashboard_version_evidence.evidence_id",
+    "dashboard_artifacts.organization_id",
+    "dashboard_artifacts.artifact_id",
+    "dashboard_artifacts.dashboard_id",
+    "dashboard_artifacts.version_id",
+    "snapshot_reference_claims.organization_id",
+    "snapshot_reference_claims.snapshot_id",
+    "snapshot_reference_claims.reference_claim_id",
+    "snapshot_reference_claims.dashboard_id",
+    "snapshot_reference_claims.version_id",
+    "snapshot_reference_claims.hold_id",
+    "evidence_reference_claims.organization_id",
+    "evidence_reference_claims.evidence_id",
+    "evidence_reference_claims.reference_claim_id",
+    "evidence_reference_claims.dashboard_id",
+    "evidence_reference_claims.version_id",
+    "evidence_reference_claims.hold_id",
+    "artifact_reference_claims.organization_id",
+    "artifact_reference_claims.artifact_id",
+    "artifact_reference_claims.reference_claim_id",
+    "artifact_reference_claims.dashboard_id",
+    "artifact_reference_claims.version_id",
+    "artifact_reference_claims.hold_id",
+    "snapshot_deletion_finalizers.organization_id",
+    "snapshot_deletion_finalizers.snapshot_id",
+    "evidence_deletion_finalizers.organization_id",
+    "evidence_deletion_finalizers.evidence_id",
+    "artifact_deletion_finalizers.organization_id",
+    "artifact_deletion_finalizers.artifact_id",
+  ],
+} as const satisfies Readonly<Record<string, readonly ModeledColumnIdentity[]>>;
+
+const modeled0003NullableColumnIdentities = new Set<ModeledColumnIdentity>([
+  "dashboards.original_expires_at",
+  "dashboards.effective_expires_at",
+  "dashboards.access_revoked_at",
+  "dashboards.revocation_reason",
+  "dashboards.purge_after",
+  "dashboards.purge_started_at",
+  "dashboards.purged_at",
+  "dashboards.promoted_at",
+  "dashboards.archived_at",
+  "dashboards.head_version_id",
+  "dashboards.restored_from_tombstone_lineage_id",
+  "dashboard_lifecycle_events.from_kind",
+  "dashboard_lifecycle_events.to_kind",
+  "dashboard_lifecycle_events.from_state",
+  "dashboard_lifecycle_events.to_state",
+  "dashboard_lifecycle_events.actor_user_id",
+  "dashboard_lifecycle_events.actor_service",
+  "dashboard_lifecycle_events.job_id",
+  "dashboard_cleanup_coordination.lease_owner",
+  "dashboard_cleanup_coordination.lease_expires_at",
+  "dashboard_cleanup_coordination.next_attempt_at",
+  "dashboard_cleanup_coordination.completion_proof_sha256",
+  "dashboard_cleanup_attempts.finished_at",
+  "dashboard_cleanup_attempts.failure_code",
+  "dashboard_cleanup_attempts.proof_sha256",
+  "dashboard_legal_holds.released_at",
+  "dashboard_legal_holds.released_by_principal_id",
+  "dashboard_legal_holds.released_authority_revision",
+  "dashboard_legal_holds.released_actor",
+  "dashboard_legal_holds.released_reason_sha256",
+  "dashboard_tombstones.purged_at",
+  "dashboard_tombstones.purged_lifecycle_revision",
+  "dashboard_tombstones.purged_proof_sha256",
+  "dashboard_restore_lineage.actor_user_id",
+  "backup_deletion_ledger.proof_sha256",
+  "retention_service_principal_allowlist.scope_organization_id",
+  "retention_service_principal_allowlist.predecessor_revision",
+  "retention_service_principal_allowlist.predecessor_sha256",
+  "dashboard_versions.parent_version_id",
+  "dashboard_versions.calculation_graph_sha256",
   "dashboard_artifacts.dashboard_id",
   "dashboard_artifacts.version_id",
+  "snapshot_reference_claims.hold_id",
+  "evidence_reference_claims.hold_id",
+  "artifact_reference_claims.hold_id",
+  "snapshot_deletion_finalizers.lease_owner",
+  "snapshot_deletion_finalizers.lease_expires_at",
+  "snapshot_deletion_finalizers.proof_sha256",
+  "snapshot_deletion_finalizers.bytes_deleted_at",
+  "evidence_deletion_finalizers.lease_owner",
+  "evidence_deletion_finalizers.lease_expires_at",
+  "evidence_deletion_finalizers.proof_sha256",
+  "evidence_deletion_finalizers.bytes_deleted_at",
+  "artifact_deletion_finalizers.lease_owner",
+  "artifact_deletion_finalizers.lease_expires_at",
+  "artifact_deletion_finalizers.proof_sha256",
+  "artifact_deletion_finalizers.bytes_deleted_at",
 ]);
 
-function modeledColumnType(columnName: string): string {
-  if (booleanColumns.has(columnName)) return "boolean";
-  if (integerColumns.has(columnName)) return "integer";
-  if (bigintColumns.has(columnName)) return "bigint";
-  if (byteaColumns.has(columnName)) return "bytea";
-  if (timestampColumns.has(columnName)) return "timestamp with time zone";
-  if (nameColumns.has(columnName)) return "name";
-  if (columnName === "canonical_spec_bytes") return "bytea";
-  if (columnName.endsWith("_id")) return "uuid";
-  return "text";
+const modeled0003ColumnTypeByIdentity = new Map<
+  ModeledColumnIdentity,
+  string
+>();
+for (const [type, identities] of Object.entries(
+  modeled0003ColumnIdentitiesByType,
+)) {
+  for (const identity of identities) {
+    if (modeled0003ColumnTypeByIdentity.has(identity)) {
+      throw new Error(`duplicate modeled column type identity: ${identity}`);
+    }
+    modeled0003ColumnTypeByIdentity.set(identity, type);
+  }
 }
 
 export const modeled0003ColumnCatalog = Object.entries(
   modeled0003Relations,
 ).flatMap(([relationName, inventory]) =>
-  inventory.columns.map((columnName) => ({
-    relationName,
-    columnName,
-    type: modeledColumnType(columnName),
-    nullable:
-      nullableColumns.has(columnName) ||
-      nullableRelationColumns.has(`${relationName}.${columnName}`),
-    defaultExpression: null,
-    generated: false,
-    identity: false,
-  })),
+  inventory.columns.map((columnName, ordinal) => {
+    const identity = `${relationName}.${columnName}` as ModeledColumnIdentity;
+    const type = modeled0003ColumnTypeByIdentity.get(identity);
+    if (type === undefined) {
+      throw new Error(`missing modeled column type identity: ${identity}`);
+    }
+    return {
+      relationName,
+      columnName,
+      ordinal: ordinal + 1,
+      type,
+      nullable: modeled0003NullableColumnIdentities.has(identity),
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    };
+  }),
 );
+
+if (modeled0003ColumnTypeByIdentity.size !== modeled0003ColumnCatalog.length) {
+  throw new Error("modeled column type inventory is not an exact closure");
+}
 
 const appFunctions = [
   ["list_dashboards", "integer", "SETOF dasher.dashboard_summary"],
@@ -838,24 +1044,28 @@ export const modeled0003Policies = [
     name: "retention_service_principal_self_binding_select",
     relation: "retention_service_principal_allowlist",
     command: "SELECT",
+    catalogCommand: "r",
+    permissive: true,
     roles: ["dasher_retention_definer"],
     bootstrap: true,
     columns: modeled0003Relations.retention_service_principal_allowlist.columns,
     shutsOffWhenPhase: null,
     using:
-      "current_user = 'dasher_retention_definer' AND binding_kind = 'postgres_session_user' AND binding_subject = session_user",
+      "((CURRENT_USER = 'dasher_retention_definer'::name) AND (binding_kind = 'postgres_session_user'::text) AND (binding_subject = SESSION_USER))",
     withCheck: null,
   },
   {
     name: "dashboards_retention_target_discovery_select",
     relation: "dashboards",
     command: "SELECT",
+    catalogCommand: "r",
+    permissive: true,
     roles: ["dasher_retention_definer"],
     bootstrap: true,
     columns: ["organization_id"],
     shutsOffWhenPhase: "authorized",
     using:
-      "exact current_user, target_discovery phase, locked principal revision/scope/capability, and target_dashboard_id",
+      "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'target_discovery'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) = 'initialize'::text) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
     withCheck: null,
   },
   ...Object.keys(modeled0003Relations)
@@ -867,15 +1077,27 @@ export const modeled0003Policies = [
       name: `${relationName}_authorized_context`,
       relation: relationName,
       command: "ALL",
-      roles: ["dasher_security_definer", "dasher_retention_definer"],
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
       bootstrap: false,
       columns:
         modeled0003Relations[relationName as ModeledRelationName].columns,
       shutsOffWhenPhase: null,
-      using:
-        "full authorized principal/revision/capability/organization/dashboard context",
-      withCheck:
-        "full authorized principal/revision/capability/organization/dashboard context",
+      using: `((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid)${
+        modeled0003Relations[
+          relationName as ModeledRelationName
+        ].columns.includes("dashboard_id")
+          ? " AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)"
+          : ""
+      })`,
+      withCheck: `((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid)${
+        modeled0003Relations[
+          relationName as ModeledRelationName
+        ].columns.includes("dashboard_id")
+          ? " AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)"
+          : ""
+      })`,
     })),
 ] as const;
 
@@ -895,7 +1117,13 @@ function foreignKey(
     targetRelation,
     targetColumns,
     deferred,
-    expression: null,
+    deferrable: deferred,
+    initiallyDeferred: deferred,
+    validated: true,
+    matchType: "s",
+    updateAction: "a",
+    deleteAction: "a",
+    definition: `FOREIGN KEY (${columns.join(", ")}) REFERENCES dasher.${targetRelation}(${targetColumns.join(", ")})${deferred ? " DEFERRABLE INITIALLY DEFERRED" : ""}`,
   } as const;
 }
 
@@ -1374,6 +1602,8 @@ function triggerContract(
     timing: "BEFORE",
     level: "ROW",
     events,
+    enabled: "O",
+    definition: `CREATE TRIGGER ${name} BEFORE ${events.join(" OR ")} ON dasher.${relationName} FOR EACH ROW EXECUTE FUNCTION dasher_private.${functionName}()`,
     requiredProofs,
     callStackInspection: false,
     dynamicSql: false,
@@ -1527,18 +1757,300 @@ export const modeled0003Triggers = [
   ),
 ] as const;
 
+function checkConstraint(
+  name: string,
+  relation: ModeledRelationName | "audit_events",
+  definition: string,
+  columns: readonly string[],
+) {
+  return {
+    name,
+    relation,
+    type: "CHECK",
+    columns,
+    definition,
+    deferrable: false,
+    initiallyDeferred: false,
+    validated: true,
+  } as const;
+}
+
+const expandedAuditActions = [
+  "membership.role_changed",
+  "membership.revoked",
+  "invitation.issued",
+  "invitation.revoked",
+  "invitation.accepted",
+  "invitation.accepted_existing_membership",
+  "session.issued",
+  "session.rotated",
+  "session.revoked",
+  "source_snapshot.created",
+  "evidence_record.created",
+  "dashboard.created",
+  "dashboard_version.created",
+  "dashboard_head.promoted",
+  "dashboard.promotion_requested",
+  "dashboard.promotion_approved",
+  "dashboard.promotion_denied",
+  "dashboard.expired",
+  "dashboard.archived",
+  "dashboard.unarchived",
+  "dashboard.deleted",
+  "dashboard.restored_as_new",
+  "dashboard.cleanup_started",
+  "dashboard.purge_eligible",
+  "dashboard.legal_hold_placed",
+  "dashboard.legal_hold_released",
+  "dashboard.purged",
+  "dashboard.artifact_created",
+] as const;
+
+export const modeled0003CheckConstraints = [
+  checkConstraint(
+    "audit_events_action_check",
+    "audit_events",
+    `CHECK (((action)::text = ANY ((ARRAY[${expandedAuditActions
+      .map((action) => `'${action}'::character varying`)
+      .join(", ")}])::text[])))`,
+    ["action"],
+  ),
+  checkConstraint(
+    "dashboard_lifecycle_policies_default_ttl_check",
+    "dashboard_lifecycle_policies",
+    "CHECK (((default_disposable_ttl_seconds >= 3600) AND (default_disposable_ttl_seconds <= 604800)))",
+    ["default_disposable_ttl_seconds"],
+  ),
+  checkConstraint(
+    "dashboards_kind_check",
+    "dashboards",
+    "CHECK (((created_kind = ANY (ARRAY['disposable'::text, 'durable'::text])) AND (current_kind = ANY (ARRAY['disposable'::text, 'durable'::text]))))",
+    ["created_kind", "current_kind"],
+  ),
+  checkConstraint(
+    "dashboards_lifecycle_state_check",
+    "dashboards",
+    "CHECK ((lifecycle_state = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text, 'access_revoked'::text, 'quarantined'::text, 'purge_eligible'::text, 'cleaned'::text])))",
+    ["lifecycle_state"],
+  ),
+  checkConstraint(
+    "dashboards_lifecycle_fences_check",
+    "dashboards",
+    "CHECK (((lifecycle_revision >= 0) AND (capability_epoch >= 0) AND (cache_epoch >= 0) AND (retention_policy_revision >= 1)))",
+    [
+      "lifecycle_revision",
+      "capability_epoch",
+      "cache_epoch",
+      "retention_policy_revision",
+    ],
+  ),
+  checkConstraint(
+    "dashboards_expiry_kind_check",
+    "dashboards",
+    "CHECK (((created_kind = 'durable'::text) AND (current_kind = 'durable'::text) AND (original_expires_at IS NULL) AND (effective_expires_at IS NULL) OR ((created_kind = 'disposable'::text) AND (original_expires_at IS NOT NULL) AND (((current_kind = 'disposable'::text) AND (effective_expires_at = original_expires_at)) OR ((current_kind = 'durable'::text) AND (effective_expires_at IS NULL))))))",
+    [
+      "created_kind",
+      "current_kind",
+      "original_expires_at",
+      "effective_expires_at",
+    ],
+  ),
+  checkConstraint(
+    "dashboards_revocation_fields_check",
+    "dashboards",
+    "CHECK (((access_revoked_at IS NULL) = (revocation_reason IS NULL)))",
+    ["access_revoked_at", "revocation_reason"],
+  ),
+  checkConstraint(
+    "dashboard_lifecycle_events_kind_check",
+    "dashboard_lifecycle_events",
+    "CHECK ((event_kind = ANY (ARRAY['head_activated'::text, 'head_advanced'::text, 'promotion_approved'::text, 'archived'::text, 'unarchived'::text, 'expired'::text, 'deleted'::text, 'cleanup_started'::text, 'purge_eligible'::text, 'legal_hold_placed'::text, 'legal_hold_released'::text, 'purged'::text])))",
+    ["event_kind"],
+  ),
+  checkConstraint(
+    "dashboard_promotion_decisions_decision_check",
+    "dashboard_promotion_decisions",
+    "CHECK ((decision = ANY (ARRAY['approved'::text, 'denied'::text])))",
+    ["decision"],
+  ),
+  checkConstraint(
+    "retention_allowlist_binding_kind_check",
+    "retention_service_principal_allowlist",
+    "CHECK ((binding_kind = 'postgres_session_user'::text))",
+    ["binding_kind"],
+  ),
+  checkConstraint(
+    "retention_allowlist_authority_scope_check",
+    "retention_service_principal_allowlist",
+    "CHECK ((authority_scope = ANY (ARRAY['platform_operator'::text, 'tenant_legal_admin'::text])))",
+    ["authority_scope"],
+  ),
+  checkConstraint(
+    "retention_allowlist_scope_check",
+    "retention_service_principal_allowlist",
+    "CHECK ((((authority_scope = 'platform_operator'::text) AND (scope_organization_id IS NULL)) OR ((authority_scope = 'tenant_legal_admin'::text) AND (scope_organization_id IS NOT NULL))))",
+    ["authority_scope", "scope_organization_id"],
+  ),
+  checkConstraint(
+    "retention_allowlist_predecessor_check",
+    "retention_service_principal_allowlist",
+    "CHECK (((principal_revision = 1) = ((predecessor_revision IS NULL) AND (predecessor_sha256 IS NULL))))",
+    ["principal_revision", "predecessor_revision", "predecessor_sha256"],
+  ),
+  checkConstraint(
+    "source_snapshots_source_kind_check",
+    "source_snapshots",
+    "CHECK ((source_kind = ANY (ARRAY['synthetic_fixture'::text, 'public_usgs_fixture'::text])))",
+    ["source_kind"],
+  ),
+  checkConstraint(
+    "source_snapshots_canonical_bytes_length_check",
+    "source_snapshots",
+    "CHECK (((octet_length(canonical_bytes) >= 1) AND (octet_length(canonical_bytes) <= 1048576)))",
+    ["canonical_bytes"],
+  ),
+  checkConstraint(
+    "evidence_records_evidence_kind_check",
+    "evidence_records",
+    "CHECK ((evidence_kind = ANY (ARRAY['source_record'::text, 'typed_value'::text, 'calculation_result'::text, 'event_record'::text])))",
+    ["evidence_kind"],
+  ),
+  checkConstraint(
+    "dashboard_versions_validation_state_check",
+    "dashboard_versions",
+    "CHECK ((validation_state = 'validated'::text))",
+    ["validation_state"],
+  ),
+  checkConstraint(
+    "dashboard_artifacts_ownership_class_check",
+    "dashboard_artifacts",
+    "CHECK ((ownership_class = ANY (ARRAY['dashboard_owned'::text, 'shared'::text])))",
+    ["ownership_class"],
+  ),
+  ...(
+    [
+      "snapshot_reference_claims",
+      "evidence_reference_claims",
+      "artifact_reference_claims",
+    ] as const
+  ).flatMap((relationName) => [
+    checkConstraint(
+      `${relationName}_claim_kind_check`,
+      relationName,
+      "CHECK ((claim_kind = ANY (ARRAY['access_bearing'::text, 'retention_only'::text])))",
+      ["claim_kind"],
+    ),
+    checkConstraint(
+      `${relationName}_hold_check`,
+      relationName,
+      "CHECK ((((claim_kind = 'access_bearing'::text) AND (hold_id IS NULL)) OR ((claim_kind = 'retention_only'::text) AND (hold_id IS NOT NULL))))",
+      ["claim_kind", "hold_id"],
+    ),
+  ]),
+  ...(
+    [
+      "snapshot_deletion_finalizers",
+      "evidence_deletion_finalizers",
+      "artifact_deletion_finalizers",
+    ] as const
+  ).map((relationName) =>
+    checkConstraint(
+      `${relationName}_state_check`,
+      relationName,
+      "CHECK ((state = ANY (ARRAY['intent'::text, 'eligible'::text, 'deleted'::text])))",
+      ["state"],
+    ),
+  ),
+] as const;
+
 export const modeled0003CatalogMatrix = {
-  schemas: [{ name: "dasher_retention_api", owner, acl: [owner] }],
+  schemas: [
+    {
+      name: "dasher_retention_api",
+      owner,
+      acl: [
+        {
+          grantor: owner,
+          grantee: owner,
+          privilege: "CREATE",
+          isGrantable: false,
+        },
+        {
+          grantor: owner,
+          grantee: owner,
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+        {
+          grantor: owner,
+          grantee: "dasher_retention_operator",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+  ],
   relations: modeled0003Relations,
+  relationCatalog: Object.keys(modeled0003Relations).map((name) => ({
+    schema: "dasher",
+    name,
+    kind: "r",
+    owner,
+    persistence: "p",
+    rowSecurity: true,
+    forceRowSecurity: true,
+    replicaIdentity: "d",
+    options: [] as readonly string[],
+  })),
   columns: modeled0003ColumnCatalog,
   types: [
-    "dasher.dashboard_summary",
-    "dasher.dashboard_version_projection",
-    "dasher.dashboard_evidence_projection",
-    "dasher.dashboard_lineage_projection",
-    "dasher.dashboard_admin_projection",
-    ...Object.keys(modeled0003Relations).map(
-      (relationName) => `dasher.${relationName}`,
+    ...Object.entries(modeled0003ReturnColumns).map(([name, definition]) => ({
+      schema: "dasher",
+      name: name.slice("dasher.".length),
+      kind: "c",
+      category: "C",
+      owner,
+      relation: name.slice("dasher.".length),
+      definition,
+      acl: [
+        {
+          grantor: owner,
+          grantee: owner,
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    })),
+    ...Object.entries(modeled0003Relations).map(
+      ([relationName, relationInventory]) => ({
+        schema: "dasher",
+        name: relationName,
+        kind: "c",
+        category: "C",
+        owner,
+        relation: relationName,
+        definition: relationInventory.columns.map((columnName) => {
+          const column = modeled0003ColumnCatalog.find(
+            (candidate) =>
+              candidate.relationName === relationName &&
+              candidate.columnName === columnName,
+          );
+          if (column === undefined) {
+            throw new Error(
+              `missing modeled composite column: ${relationName}.${columnName}`,
+            );
+          }
+          return `${columnName} ${column.type}`;
+        }),
+        acl: [
+          {
+            grantor: owner,
+            grantee: owner,
+            privilege: "USAGE",
+            isGrantable: false,
+          },
+        ],
+      }),
     ),
   ],
   sequences: [],
@@ -1549,8 +2061,34 @@ export const modeled0003CatalogMatrix = {
       method: "btree",
       unique: true,
       primary: true,
-      columns: value.primaryKey,
+      keyExpressions: value.primaryKey,
+      opclasses: value.primaryKey.map((columnName) => {
+        const column = modeled0003ColumnCatalog.find(
+          (candidate) =>
+            candidate.relationName === name &&
+            candidate.columnName === columnName,
+        );
+        if (column === undefined) {
+          throw new Error(
+            `missing modeled index column: ${name}.${columnName}`,
+          );
+        }
+        return column.type === "uuid"
+          ? "uuid_ops"
+          : column.type === "bigint"
+            ? "int8_ops"
+            : column.type === "integer"
+              ? "int4_ops"
+              : column.type === "name"
+                ? "name_ops"
+                : "text_ops";
+      }),
       predicate: null as string | null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: value.primaryKey.map(() => 0),
     })),
     ...modeled0003ForeignKeys.map((constraint) => ({
       name: `${constraint.name}_idx`,
@@ -1558,8 +2096,14 @@ export const modeled0003CatalogMatrix = {
       method: "btree",
       unique: false,
       primary: false,
-      columns: constraint.columns,
+      keyExpressions: constraint.columns,
+      opclasses: constraint.columns.map(() => "uuid_ops"),
       predicate: null as string | null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: constraint.columns.map(() => 0),
     })),
     {
       name: "dashboards_effective_expiry_idx",
@@ -1567,9 +2111,19 @@ export const modeled0003CatalogMatrix = {
       method: "btree",
       unique: false,
       primary: false,
-      columns: ["effective_expires_at", "organization_id", "dashboard_id"],
+      keyExpressions: [
+        "effective_expires_at",
+        "organization_id",
+        "dashboard_id",
+      ],
+      opclasses: ["timestamptz_ops", "uuid_ops", "uuid_ops"],
       predicate:
-        "current_kind = 'disposable' AND access_revoked_at IS NULL AND purged_at IS NULL",
+        "((current_kind = 'disposable'::text) AND (access_revoked_at IS NULL) AND (purged_at IS NULL))",
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
     },
     {
       name: "dashboards_purge_after_idx",
@@ -1577,8 +2131,14 @@ export const modeled0003CatalogMatrix = {
       method: "btree",
       unique: false,
       primary: false,
-      columns: ["purge_after", "organization_id", "dashboard_id"],
-      predicate: "purged_at IS NULL AND purge_after IS NOT NULL",
+      keyExpressions: ["purge_after", "organization_id", "dashboard_id"],
+      opclasses: ["timestamptz_ops", "uuid_ops", "uuid_ops"],
+      predicate: "((purged_at IS NULL) AND (purge_after IS NOT NULL))",
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
     },
     {
       name: "dashboard_cleanup_coordination_next_attempt_idx",
@@ -1586,8 +2146,14 @@ export const modeled0003CatalogMatrix = {
       method: "btree",
       unique: false,
       primary: false,
-      columns: ["next_attempt_at", "organization_id", "dashboard_id"],
+      keyExpressions: ["next_attempt_at", "organization_id", "dashboard_id"],
+      opclasses: ["timestamptz_ops", "uuid_ops", "uuid_ops"],
       predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
     },
     {
       name: "dashboard_legal_holds_active_idx",
@@ -1595,8 +2161,14 @@ export const modeled0003CatalogMatrix = {
       method: "btree",
       unique: false,
       primary: false,
-      columns: ["organization_id", "dashboard_id", "hold_id"],
+      keyExpressions: ["organization_id", "dashboard_id", "hold_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
       predicate: "released_at IS NULL",
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
     },
   ],
   constraints: [
@@ -1605,36 +2177,27 @@ export const modeled0003CatalogMatrix = {
       relation: name,
       type: "PRIMARY KEY",
       columns: value.primaryKey,
-      expression: null as string | null,
+      definition: `PRIMARY KEY (${value.primaryKey.join(", ")})`,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
     })),
     ...modeled0003ForeignKeys,
-    {
-      name: "dashboard_lifecycle_policies_default_ttl_check",
-      relation: "dashboard_lifecycle_policies",
-      type: "CHECK",
-      columns: ["default_disposable_ttl_seconds"],
-      expression: "default_disposable_ttl_seconds BETWEEN 3600 AND 604800",
-    },
-    {
-      name: "source_snapshots_canonical_bytes_length_check",
-      relation: "source_snapshots",
-      type: "CHECK",
-      columns: ["canonical_bytes"],
-      expression: "octet_length(canonical_bytes) BETWEEN 1 AND 1048576",
-    },
-    {
-      name: "retention_service_principal_allowlist_binding_kind_check",
-      relation: "retention_service_principal_allowlist",
-      type: "CHECK",
-      columns: ["binding_kind"],
-      expression: "binding_kind = 'postgres_session_user'",
-    },
+    ...modeled0003CheckConstraints,
   ],
   triggers: modeled0003Triggers,
   policies: modeled0003Policies,
   functions: modeled0003Functions,
   returnColumns: modeled0003ReturnColumns,
   relationAcls: modeled0003RelationAcls,
+  catalogRelationAcls: modeled0003RelationAcls.map((acl) => ({
+    schema: "dasher",
+    relationName: acl.relationName,
+    grantor: owner,
+    grantee: acl.role,
+    privilege: acl.privilege,
+    isGrantable: false,
+  })),
   effectiveColumnPrivileges: modeled0003EffectiveColumnPrivileges,
   aclClosure: {
     public: [],
@@ -1648,8 +2211,20 @@ export const modeled0003CatalogMatrix = {
     identity: `${routine.schema}.${routine.name}(${routine.identityArguments})`,
     grantor: routine.owner,
     grantees: routine.execute,
+    isGrantable: false,
   })),
   columnAcls: modeled0003ColumnAcls,
+  catalogColumnAcls: modeled0003ColumnAcls.flatMap((acl) =>
+    acl.columns.map((columnName) => ({
+      schema: "dasher",
+      relationName: acl.relationName,
+      columnName,
+      grantor: owner,
+      grantee: acl.role,
+      privilege: acl.privilege,
+      isGrantable: false,
+    })),
+  ),
   dependencyInventory: {
     preparedPrefix: [],
     successorOwners: [
@@ -1686,3 +2261,148 @@ export const modeled0003SafetyMatrix = {
   initializerSecurityDefiner: true,
   initializerProconfig: ["search_path=pg_catalog"],
 } as const;
+
+function assertUniqueIdentities(
+  category: string,
+  identities: readonly string[],
+): void {
+  if (new Set(identities).size !== identities.length) {
+    throw new Error(`duplicate modeled ${category} catalog identity`);
+  }
+}
+
+function assertModeled0003InventoryInvariants(): void {
+  const predecessorColumns: Readonly<Record<string, readonly string[]>> = {
+    audit_events: ["action"],
+    organizations: ["organization_id"],
+    users: ["user_id"],
+  };
+  const relationEntries = Object.entries(modeled0003Relations);
+  const relationNames = new Set(relationEntries.map(([name]) => name));
+
+  assertUniqueIdentities(
+    "relation",
+    modeled0003CatalogMatrix.relationCatalog.map(
+      (relationRow) => `${relationRow.schema}.${relationRow.name}`,
+    ),
+  );
+  assertUniqueIdentities(
+    "column",
+    modeled0003ColumnCatalog.map(
+      (column) => `${column.relationName}.${column.columnName}`,
+    ),
+  );
+
+  for (const [relationName, inventory] of relationEntries) {
+    assertUniqueIdentities(
+      `${relationName} column`,
+      inventory.columns.map((columnName) => `${relationName}.${columnName}`),
+    );
+    for (const primaryKeyColumn of inventory.primaryKey) {
+      const matchingColumns = modeled0003ColumnCatalog.filter(
+        (column) =>
+          column.relationName === relationName &&
+          column.columnName === primaryKeyColumn,
+      );
+      if (matchingColumns.length !== 1 || matchingColumns[0]?.nullable) {
+        throw new Error(
+          `modeled primary key column must exist once and be non-null: ${relationName}.${primaryKeyColumn}`,
+        );
+      }
+    }
+  }
+
+  for (const foreignKeyRow of modeled0003ForeignKeys) {
+    const source = modeled0003Relations[foreignKeyRow.relation];
+    const target = relationNames.has(foreignKeyRow.targetRelation)
+      ? modeled0003Relations[
+          foreignKeyRow.targetRelation as ModeledRelationName
+        ].columns
+      : predecessorColumns[foreignKeyRow.targetRelation];
+    if (
+      foreignKeyRow.columns.length !== foreignKeyRow.targetColumns.length ||
+      foreignKeyRow.columns.some(
+        (column) => !source.columns.includes(column),
+      ) ||
+      target === undefined ||
+      foreignKeyRow.targetColumns.some((column) => !target.includes(column))
+    ) {
+      throw new Error(`unresolved modeled foreign key: ${foreignKeyRow.name}`);
+    }
+  }
+
+  for (const checkRow of modeled0003CheckConstraints) {
+    const columns = relationNames.has(checkRow.relation)
+      ? modeled0003Relations[checkRow.relation as ModeledRelationName].columns
+      : predecessorColumns[checkRow.relation];
+    if (
+      columns === undefined ||
+      checkRow.columns.some((column) => !columns.includes(column))
+    ) {
+      throw new Error(`unresolved modeled check: ${checkRow.name}`);
+    }
+  }
+
+  for (const indexRow of modeled0003CatalogMatrix.indexes) {
+    const columns =
+      modeled0003Relations[indexRow.relation as ModeledRelationName].columns;
+    if (
+      indexRow.keyExpressions.some(
+        (expression) => !columns.includes(expression),
+      )
+    ) {
+      throw new Error(`unresolved modeled index: ${indexRow.name}`);
+    }
+  }
+  for (const triggerRow of modeled0003Triggers) {
+    if (!relationNames.has(triggerRow.relationName)) {
+      throw new Error(`unresolved modeled trigger: ${triggerRow.name}`);
+    }
+  }
+  for (const policyRow of modeled0003Policies) {
+    if (!relationNames.has(policyRow.relation)) {
+      throw new Error(`unresolved modeled policy: ${policyRow.name}`);
+    }
+  }
+
+  assertUniqueIdentities(
+    "index",
+    modeled0003CatalogMatrix.indexes.map(
+      (indexRow) => `dasher.${indexRow.name}`,
+    ),
+  );
+  assertUniqueIdentities(
+    "constraint",
+    modeled0003CatalogMatrix.constraints.map(
+      (constraintRow) =>
+        `dasher.${constraintRow.relation}.${constraintRow.name}`,
+    ),
+  );
+  assertUniqueIdentities(
+    "trigger",
+    modeled0003Triggers.map(
+      (triggerRow) => `dasher.${triggerRow.relationName}.${triggerRow.name}`,
+    ),
+  );
+  assertUniqueIdentities(
+    "policy",
+    modeled0003Policies.map(
+      (policyRow) => `dasher.${policyRow.relation}.${policyRow.name}`,
+    ),
+  );
+  assertUniqueIdentities(
+    "function",
+    modeled0003Functions.map(
+      (routine) =>
+        `${routine.schema}.${routine.name}(${routine.identityArguments})`,
+    ),
+  );
+  assertUniqueIdentities(
+    "type",
+    modeled0003CatalogMatrix.types.map(
+      (typeRow) => `${typeRow.schema}.${typeRow.name}`,
+    ),
+  );
+}
+
+assertModeled0003InventoryInvariants();

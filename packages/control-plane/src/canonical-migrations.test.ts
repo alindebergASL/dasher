@@ -1,10 +1,13 @@
 import { Buffer } from "node:buffer";
+import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
 import { discoverMigrations } from "./migrator.js";
 import {
   modeled0003CatalogMatrix,
+  modeled0003CheckConstraints,
+  modeled0003ColumnCatalog,
   modeled0003FixtureIds,
   modeled0003Functions,
   modeled0003InitializerBodyContract,
@@ -15,6 +18,10 @@ import {
 
 const canonicalMigrationDirectory = new URL("../migrations", import.meta.url)
   .pathname;
+const initializerBarrierHarness = new URL(
+  "../test/fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+  import.meta.url,
+);
 
 const identityAuditMigration = {
   sequence: 1,
@@ -230,13 +237,80 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
   });
 
   it("freezes every modeled catalog category and the closed function owners", () => {
-    expect(Object.keys(modeled0003CatalogMatrix.relations)).toHaveLength(24);
+    expect(Object.keys(modeled0003CatalogMatrix.relations)).toEqual([
+      "dashboard_lifecycle_policies",
+      "dashboards",
+      "dashboard_lifecycle_events",
+      "dashboard_promotion_requests",
+      "dashboard_promotion_decisions",
+      "dashboard_cleanup_coordination",
+      "dashboard_cleanup_attempts",
+      "dashboard_legal_holds",
+      "dashboard_tombstones",
+      "dashboard_restore_lineage",
+      "backup_deletion_ledger",
+      "retention_service_principal_allowlist",
+      "source_snapshots",
+      "evidence_records",
+      "dashboard_versions",
+      "dashboard_version_snapshots",
+      "dashboard_version_evidence",
+      "dashboard_artifacts",
+      "snapshot_reference_claims",
+      "evidence_reference_claims",
+      "artifact_reference_claims",
+      "snapshot_deletion_finalizers",
+      "evidence_deletion_finalizers",
+      "artifact_deletion_finalizers",
+    ]);
     expect(modeled0003CatalogMatrix.schemas).toEqual([
       expect.objectContaining({ name: "dasher_retention_api" }),
     ]);
-    expect(modeled0003CatalogMatrix.indexes).toHaveLength(64);
-    expect(modeled0003CatalogMatrix.constraints).toHaveLength(63);
-    expect(modeled0003CatalogMatrix.types).toHaveLength(29);
+    expect(
+      modeled0003CatalogMatrix.indexes.every(
+        (index) =>
+          index.method === "btree" &&
+          index.valid &&
+          index.ready &&
+          index.live &&
+          !index.nullsNotDistinct &&
+          index.keyExpressions.length === index.opclasses.length &&
+          index.keyExpressions.length === index.options.length,
+      ),
+    ).toBe(true);
+    expect(
+      modeled0003CatalogMatrix.constraints.map(
+        (constraint) => `${constraint.relation}.${constraint.name}`,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "audit_events.audit_events_action_check",
+        "dashboards.dashboards_kind_check",
+        "dashboards.dashboards_lifecycle_state_check",
+        "dashboards.dashboards_lifecycle_fences_check",
+        "dashboards.dashboards_expiry_kind_check",
+        "source_snapshots.source_snapshots_source_kind_check",
+        "evidence_records.evidence_records_evidence_kind_check",
+        "dashboard_artifacts.dashboard_artifacts_ownership_class_check",
+        "snapshot_reference_claims.snapshot_reference_claims_claim_kind_check",
+        "evidence_reference_claims.evidence_reference_claims_claim_kind_check",
+        "artifact_reference_claims.artifact_reference_claims_claim_kind_check",
+        "snapshot_deletion_finalizers.snapshot_deletion_finalizers_state_check",
+        "evidence_deletion_finalizers.evidence_deletion_finalizers_state_check",
+        "artifact_deletion_finalizers.artifact_deletion_finalizers_state_check",
+        "dashboard_lifecycle_events.dashboard_lifecycle_events_kind_check",
+      ]),
+    );
+    expect(modeled0003CatalogMatrix.types.map((type) => type.name)).toEqual(
+      expect.arrayContaining([
+        "dashboard_summary",
+        "dashboard_version_projection",
+        "dashboard_evidence_projection",
+        "dashboard_lineage_projection",
+        "dashboard_admin_projection",
+        ...Object.keys(modeled0003CatalogMatrix.relations),
+      ]),
+    );
     expect(modeled0003CatalogMatrix.sequences).toEqual([]);
     expect(modeled0003CatalogMatrix.columns.length).toBeGreaterThan(200);
     expect(
@@ -244,8 +318,8 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
         (column) =>
           column.type.length > 0 &&
           column.defaultExpression === null &&
-          !column.generated &&
-          !column.identity,
+          column.generated === "" &&
+          column.identity === "",
       ),
     ).toBe(true);
     expect(
@@ -255,6 +329,43 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
           column.columnName === "canonical_bytes",
       ),
     ).toMatchObject({ nullable: false, type: "bytea" });
+    expect(
+      modeled0003ColumnCatalog.find(
+        (column) =>
+          column.relationName === "dashboard_legal_holds" &&
+          column.columnName === "hold_id",
+      ),
+    ).toMatchObject({ nullable: false, type: "uuid" });
+    expect(
+      modeled0003ColumnCatalog
+        .filter((column) => column.columnName === "hold_id" && column.nullable)
+        .map((column) => `${column.relationName}.${column.columnName}`),
+    ).toEqual([
+      "snapshot_reference_claims.hold_id",
+      "evidence_reference_claims.hold_id",
+      "artifact_reference_claims.hold_id",
+    ]);
+    for (const [relationName, relation] of Object.entries(
+      modeled0003CatalogMatrix.relations,
+    )) {
+      for (const primaryKeyColumn of relation.primaryKey) {
+        expect(
+          modeled0003ColumnCatalog.filter(
+            (column) =>
+              column.relationName === relationName &&
+              column.columnName === primaryKeyColumn &&
+              !column.nullable,
+          ),
+        ).toHaveLength(1);
+      }
+    }
+    expect(
+      modeled0003CheckConstraints.every(
+        (constraint) =>
+          constraint.definition.startsWith("CHECK (") &&
+          !/closed|exact|context|allowlist|proof/iu.test(constraint.definition),
+      ),
+    ).toBe(true);
     expect(modeled0003CatalogMatrix.triggers).toHaveLength(19);
     for (const trigger of modeled0003CatalogMatrix.triggers) {
       expect(trigger).toMatchObject({
@@ -379,6 +490,36 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       "append synthetic revision or remove synthetic fixture",
       "commit before gate release",
     ]);
+  });
+
+  it("binds the initializer ordering contract to an executable same-gate PostgreSQL harness", async () => {
+    const sql = await readFile(initializerBarrierHarness, "utf8");
+    const initializer =
+      /CREATE FUNCTION task8a_retention_barrier[.]initialize[\s\S]*?AS \$function\$([\s\S]*?)\$function\$;/u.exec(
+        sql,
+      )?.[1] ?? "";
+    const order = [
+      "transaction_isolation",
+      "task8a.bound_revision",
+      "PERFORM 1",
+      "pg_advisory_xact_lock",
+      "FROM task8a_retention_barrier.authority_revisions",
+      "ORDER BY authority.principal_revision DESC",
+      "NOT v_enabled",
+      "set_config",
+    ].map((fragment) => initializer.indexOf(fragment));
+    expect(order.every((position) => position >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+    expect(initializer).not.toMatch(/FOR\s+(?:UPDATE|SHARE)|\bEXECUTE\b/iu);
+    expect(
+      sql.match(/task8a_retention_barrier[.]binding_gate\(/gu),
+    ).toHaveLength(5);
+    expect(sql).toContain(
+      "CREATE FUNCTION task8a_retention_barrier.append_revision",
+    );
+    expect(sql).toContain(
+      "CREATE FUNCTION task8a_retention_barrier.cleanup_subject",
+    );
   });
 
   it("uses only deterministic synthetic bounded fixture material", () => {

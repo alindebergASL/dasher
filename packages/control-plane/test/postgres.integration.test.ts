@@ -198,7 +198,7 @@ async function managedDependencyCount(databaseOid: string): Promise<string> {
         ON referenced_role.oid = dependency.refobjid
       WHERE dependency.dbid = $1::oid
         AND dependency.refclassid = 'pg_catalog.pg_authid'::regclass
-        AND dependency.deptype IN ('a', 'o')
+        AND dependency.deptype IN ('a', 'o', 'r')
         AND referenced_role.rolname IN (
           'dasher_app',
           'dasher_security_definer'
@@ -884,6 +884,24 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         expect(modeledSqlExecutions).toBe(attempt);
       }
 
+      const rolledBackModeledState = await ownerPool.query<{
+        readonly journal_count: string;
+        readonly probe_relation: string | null;
+      }>(`
+        SELECT
+          pg_catalog.to_regclass(
+            'dasher.modeled_successor_inventory_probe'
+          )::text AS probe_relation,
+          (
+            SELECT pg_catalog.count(*)::text
+            FROM dasher_meta.schema_migrations
+          ) AS journal_count
+      `);
+      expect(rolledBackModeledState.rows[0]).toEqual({
+        journal_count: "2",
+        probe_relation: null,
+      });
+
       const prepared = await ownerPool.query<{
         readonly attributes_match: boolean;
         readonly comment: string | null;
@@ -920,7 +938,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             FROM pg_catalog.pg_shdepend AS dependency
             WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass
               AND dependency.refobjid = role.oid
-              AND dependency.deptype IN ('a', 'o')
+              AND dependency.deptype IN ('a', 'o', 'r')
           ) AS dependency_count
         FROM pg_catalog.pg_authid AS role
         WHERE role.rolname IN (
@@ -945,6 +963,92 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           role_name: "dasher_retention_operator",
         },
       ]);
+
+      const contaminationCases = [
+        {
+          name: "membership",
+          contaminate: () =>
+            ownerPool.query(
+              "GRANT dasher_retention_definer TO dasher_retention_operator",
+            ),
+          cleanup: () =>
+            ownerPool.query(
+              "REVOKE dasher_retention_definer FROM dasher_retention_operator",
+            ),
+        },
+        {
+          name: "ownership",
+          contaminate: () =>
+            ownerPool.query(
+              "CREATE SCHEMA fixture_role_owned AUTHORIZATION dasher_retention_definer",
+            ),
+          cleanup: () => ownerPool.query("DROP SCHEMA fixture_role_owned"),
+        },
+        {
+          name: "ACL",
+          contaminate: () =>
+            ownerPool.query(
+              "GRANT SELECT ON dasher.organizations TO dasher_retention_definer",
+            ),
+          cleanup: () =>
+            ownerPool.query(
+              "REVOKE SELECT ON dasher.organizations FROM dasher_retention_definer",
+            ),
+        },
+        {
+          name: "policy",
+          contaminate: () =>
+            ownerPool.query(`
+              CREATE POLICY task8a_prepared_dependency_policy
+              ON dasher.organizations
+              FOR SELECT
+              TO dasher_retention_definer
+              USING (false)
+            `),
+          cleanup: () =>
+            ownerPool.query(
+              "DROP POLICY task8a_prepared_dependency_policy ON dasher.organizations",
+            ),
+        },
+      ] as const;
+
+      for (const contamination of contaminationCases) {
+        await contamination.contaminate();
+        let dropRoleStatements = 0;
+        const resetProbePool = {
+          async connect(): Promise<MigrationClient> {
+            const client = await ownerPool.connect();
+            const query = (async (
+              text: string,
+              values?: readonly unknown[],
+            ) => {
+              if (text.trim().startsWith("DROP ROLE ")) {
+                dropRoleStatements += 1;
+              }
+              return client.query(text, values as unknown[] | undefined);
+            }) as MigrationClient["query"];
+            return {
+              query,
+              release(error) {
+                client.release(error);
+              },
+            };
+          },
+        };
+        try {
+          await expectMigrationRejection(
+            resetPreparedRetentionRoles(
+              resetProbePool,
+              canonicalMigrationDirectory,
+              [],
+            ),
+            "managed_role_drift",
+          );
+          expect(dropRoleStatements, contamination.name).toBe(0);
+        } finally {
+          await contamination.cleanup();
+        }
+      }
 
       await resetPreparedRetentionRoles(
         ownerPool,
@@ -981,12 +1085,232 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   }, 120_000);
 
-  it("serializes concurrent runners into exactly one apply and one skip", async () => {
+  it("rejects representative catalog and grantability drift before prepared-role or modeled SQL side effects", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-drift-"));
+    const modeledFixture = new URL(
+      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+      import.meta.url,
+    );
+    const driftCases = [
+      {
+        name: "extra index",
+        sql: "CREATE INDEX task8a_extra_index ON dasher.users (created_at)",
+      },
+      {
+        name: "extra constraint",
+        sql: "ALTER TABLE dasher.users ADD CONSTRAINT task8a_extra_check CHECK (user_id IS NOT NULL)",
+      },
+      {
+        name: "extra trigger",
+        sql: "CREATE TRIGGER task8a_extra_trigger BEFORE UPDATE ON dasher.users FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()",
+      },
+      {
+        name: "third policy",
+        sql: "CREATE POLICY task8a_extra_policy ON dasher.organizations FOR SELECT TO dasher_app USING (true)",
+      },
+      {
+        name: "extra type",
+        sql: "CREATE TYPE dasher.task8a_extra_type AS ENUM ('extra')",
+      },
+      {
+        name: "extra procedure",
+        sql: "CREATE PROCEDURE dasher_private.task8a_extra_procedure() LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN NULL; END'",
+      },
+      {
+        name: "security invoker",
+        sql: "ALTER FUNCTION dasher_private.context_user_id() SECURITY INVOKER",
+      },
+      {
+        name: "immutable volatility",
+        sql: "ALTER FUNCTION dasher_private.context_user_id() IMMUTABLE",
+      },
+      {
+        name: "missing proconfig",
+        sql: "ALTER FUNCTION dasher_private.context_user_id() RESET ALL",
+      },
+      {
+        name: "altered body",
+        sql: `
+          CREATE OR REPLACE FUNCTION dasher_private.context_user_id()
+          RETURNS uuid
+          LANGUAGE plpgsql
+          STABLE
+          SECURITY DEFINER
+          SET search_path = pg_catalog
+          AS 'BEGIN RETURN NULL; END'
+        `,
+      },
+      {
+        name: "grant option",
+        sql: "GRANT EXECUTE ON FUNCTION dasher_private.context_user_id() TO dasher_app WITH GRANT OPTION",
+      },
+      {
+        name: "altered result",
+        sql: `
+          DROP FUNCTION dasher_private.context_user_id() CASCADE;
+          CREATE FUNCTION dasher_private.context_user_id()
+          RETURNS text
+          LANGUAGE plpgsql
+          STABLE
+          SECURITY DEFINER
+          SET search_path = pg_catalog
+          AS 'BEGIN RETURN NULL; END';
+          ALTER FUNCTION dasher_private.context_user_id()
+            OWNER TO dasher_security_definer;
+          REVOKE ALL ON FUNCTION dasher_private.context_user_id()
+            FROM PUBLIC, dasher_app;
+          GRANT EXECUTE ON FUNCTION dasher_private.context_user_id()
+            TO dasher_app
+        `,
+      },
+    ] as const;
+
     try {
-      const results = await Promise.all([
-        runMigrations(ownerPool, fixtureMigrationDirectory, []),
-        runMigrations(ownerPool, fixtureMigrationDirectory, []),
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+      ] as const) {
+        await writeFile(
+          join(directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await writeFile(
+        join(directory, "0003_immutable_content.sql"),
+        await readFile(modeledFixture),
+      );
+
+      for (const drift of driftCases) {
+        await resetManagedSchemas();
+        await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+        await ownerPool.query(drift.sql);
+        let preparedRoleDdlCount = 0;
+        let modeledSqlCount = 0;
+        const instrumentedPool = {
+          async connect(): Promise<MigrationClient> {
+            const client = await ownerPool.connect();
+            const query = (async (
+              text: string,
+              values?: readonly unknown[],
+            ) => {
+              if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
+                preparedRoleDdlCount += 1;
+              }
+              if (text.includes("modeled_successor_inventory_version")) {
+                modeledSqlCount += 1;
+              }
+              return client.query(text, values as unknown[] | undefined);
+            }) as MigrationClient["query"];
+            return {
+              query,
+              release(error) {
+                client.release(error);
+              },
+            };
+          },
+        };
+
+        await expectMigrationRejection(
+          runMigrations(instrumentedPool, directory, []),
+          "managed_role_drift",
+        );
+        expect(preparedRoleDdlCount, drift.name).toBe(0);
+        expect(modeledSqlCount, drift.name).toBe(0);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+      await resetManagedSchemas();
+    }
+  }, 120_000);
+
+  it("serializes concurrent runners into exactly one apply and one skip", async () => {
+    const runnerAPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_runner_a",
+      max: 1,
+    });
+    const runnerBPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_runner_b",
+      max: 1,
+    });
+    let markRunnerAAcquired!: () => void;
+    let releaseRunnerA!: () => void;
+    const runnerAAcquired = new Promise<void>((resolve) => {
+      markRunnerAAcquired = resolve;
+    });
+    const runnerARelease = new Promise<void>((resolve) => {
+      releaseRunnerA = resolve;
+    });
+    const gatedRunnerAPool = {
+      async connect(): Promise<MigrationClient> {
+        const client = await runnerAPool.connect();
+        const query = (async (text: string, values?: readonly unknown[]) => {
+          const result = await client.query(
+            text,
+            values as unknown[] | undefined,
+          );
+          if (text.includes("pg_catalog.pg_advisory_lock(")) {
+            markRunnerAAcquired();
+            await runnerARelease;
+          }
+          return result;
+        }) as MigrationClient["query"];
+        return {
+          query,
+          release(error) {
+            client.release(error);
+          },
+        };
+      },
+    };
+
+    try {
+      const runnerA = runMigrations(
+        gatedRunnerAPool,
+        fixtureMigrationDirectory,
+        [],
+      );
+      const runnerASettled = runnerA.then(
+        (value) => ({ value, error: undefined }),
+        (error: unknown) => ({ value: undefined, error }),
+      );
+      await runnerAAcquired;
+
+      const runnerB = runMigrations(runnerBPool, fixtureMigrationDirectory, []);
+      const runnerBSettled = runnerB.then(
+        (value) => ({ value, error: undefined }),
+        (error: unknown) => ({ value: undefined, error }),
+      );
+
+      let observedWaiter = false;
+      for (let attempt = 0; attempt < 1_000; attempt += 1) {
+        const state = await ownerPool.query<{ readonly waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_stat_activity AS activity
+            JOIN pg_catalog.pg_locks AS lock_row ON lock_row.pid = activity.pid
+            WHERE activity.application_name = 'dasher_task8a_runner_b'
+              AND lock_row.locktype = 'advisory'
+              AND NOT lock_row.granted
+              AND activity.wait_event_type = 'Lock'
+          ) AS waiting
+        `);
+        if (state.rows[0]?.waiting === true) {
+          observedWaiter = true;
+          break;
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(observedWaiter).toBe(true);
+      releaseRunnerA();
+
+      const settled = await Promise.all([runnerASettled, runnerBSettled]);
+      expect(settled.map((entry) => entry.error)).toEqual([
+        undefined,
+        undefined,
       ]);
+      const results = settled.map((entry) => entry.value!);
 
       expect(results.map((result) => result.appliedCount).sort()).toEqual([
         0, 2,
@@ -1000,9 +1324,152 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(journal.rows[0]?.count).toBe("2");
     } finally {
+      releaseRunnerA();
+      await Promise.allSettled([runnerAPool.end(), runnerBPool.end()]);
       await resetManagedSchemas();
     }
   });
+
+  it("executes both retention initializer/writer gate winner orders and gated cleanup", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const initializerPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_initializer",
+      max: 1,
+    });
+    const writerPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_writer",
+      max: 1,
+    });
+    const subject = "task8a_synthetic_operator";
+    const observeWaiter = async (applicationName: string): Promise<void> => {
+      for (let attempt = 0; attempt < 1_000; attempt += 1) {
+        const state = await ownerPool.query<{ readonly waiting: boolean }>(
+          `
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS lock_row
+                ON lock_row.pid = activity.pid
+              WHERE activity.application_name = $1
+                AND lock_row.locktype = 'advisory'
+                AND NOT lock_row.granted
+                AND activity.wait_event_type = 'Lock'
+            ) AS waiting
+          `,
+          [applicationName],
+        );
+        if (state.rows[0]?.waiting === true) return;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      throw new Error("Task 8A barrier waiter was not observed");
+    };
+
+    try {
+      await ownerPool.query(harnessSql);
+      await ownerPool.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [subject],
+      );
+
+      const initializer = await initializerPool.connect();
+      const writer = await writerPool.connect();
+      try {
+        await initializer.query("BEGIN");
+        const initialized = await initializer.query<{
+          readonly revision: string;
+        }>("SELECT task8a_retention_barrier.initialize($1) AS revision", [
+          subject,
+        ]);
+        expect(initialized.rows[0]?.revision).toBe("1");
+
+        await writer.query("BEGIN");
+        const disableAfterInitializer = writer
+          .query(
+            "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
+            [subject],
+          )
+          .then(
+            () => ({ error: undefined }),
+            (error: unknown) => ({ error }),
+          );
+        await observeWaiter("dasher_task8a_writer");
+        const revalidated = await initializer.query<{
+          readonly revision: string;
+        }>("SELECT task8a_retention_barrier.revalidate($1) AS revision", [
+          subject,
+        ]);
+        expect(revalidated.rows[0]?.revision).toBe("1");
+        await initializer.query("COMMIT");
+        expect((await disableAfterInitializer).error).toBeUndefined();
+        await writer.query("COMMIT");
+
+        await initializer.query("BEGIN");
+        await expect(
+          initializer.query("SELECT task8a_retention_barrier.initialize($1)", [
+            subject,
+          ]),
+        ).rejects.toMatchObject({ code: "55000" });
+        await initializer.query("ROLLBACK");
+
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [subject],
+        );
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+          [subject],
+        );
+
+        await writer.query("BEGIN");
+        await writer.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
+          [subject],
+        );
+        await initializer.query("BEGIN");
+        const initializeAfterWriter = initializer
+          .query("SELECT task8a_retention_barrier.initialize($1)", [subject])
+          .then(
+            () => ({ error: undefined }),
+            (error: unknown) => ({ error }),
+          );
+        await observeWaiter("dasher_task8a_initializer");
+        await writer.query("COMMIT");
+        expect((await initializeAfterWriter).error).toMatchObject({
+          code: "55000",
+        });
+        await initializer.query("ROLLBACK");
+
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [subject],
+        );
+        const residue = await ownerPool.query<{ readonly count: string }>(
+          "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
+        );
+        expect(residue.rows[0]?.count).toBe("0");
+      } finally {
+        await Promise.allSettled([
+          initializer.query("ROLLBACK"),
+          writer.query("ROLLBACK"),
+        ]);
+        initializer.release();
+        writer.release();
+      }
+    } finally {
+      await Promise.allSettled([initializerPool.end(), writerPool.end()]);
+      await ownerPool.query(
+        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
+      );
+    }
+  }, 120_000);
 
   it("rejects either managed namespace as an adoption conflict", async () => {
     for (const schemaName of ["dasher", "dasher_meta"] as const) {

@@ -22,6 +22,7 @@ import {
   type MigrationClient,
   type MigrationPool,
 } from "./migrator.js";
+import { modeled0003CatalogMatrix } from "../test/fixtures/migrations-0003-allowlist/modeled-0003-inventory.js";
 
 const fixtureDirectory = fileURLToPath(
   new URL("../test/fixtures/migrations", import.meta.url),
@@ -105,6 +106,10 @@ interface ScriptedMigrationClient {
     unknown
   >[])[];
   readonly dependencyRoleNames: readonly (readonly string[])[];
+  readonly catalogContracts: readonly Record<string, readonly string[]>[];
+  readonly modeledCatalogContracts: readonly Record<string, unknown>[];
+  readonly journalRows: readonly Record<string, unknown>[];
+  readonly modeledSuccessorSideEffectPresent: boolean;
 }
 
 function result(rows: readonly unknown[]): { rows: readonly unknown[] } {
@@ -170,6 +175,8 @@ function scriptedMigrationClient(
   const transactionCommands: string[] = [];
   const dependencyInventories: (readonly Record<string, unknown>[])[] = [];
   const dependencyRoleNames: (readonly string[])[] = [];
+  const catalogContracts: Record<string, readonly string[]>[] = [];
+  const modeledCatalogContracts: Record<string, unknown>[] = [];
   const journalRows = [...(options.initialJournalRows ?? [])];
   const managedRoleReadCounts: Record<ManagedRoleName, number> = {
     dasher_app: 0,
@@ -179,6 +186,15 @@ function scriptedMigrationClient(
   };
   const createdPreparedRoles = new Set<string>();
   const droppedPreparedRoles = new Set<string>();
+  let modeledSuccessorSideEffectPresent = false;
+  let transactionSnapshot:
+    | {
+        readonly createdPreparedRoles: readonly string[];
+        readonly droppedPreparedRoles: readonly string[];
+        readonly journalRows: readonly (typeof journalRows)[number][];
+        readonly modeledSuccessorSideEffectPresent: boolean;
+      }
+    | undefined;
   let currentTransaction = 0;
   let dependencyCheck = 0;
   let rollbackQueries = 0;
@@ -220,6 +236,12 @@ function scriptedMigrationClient(
 
     if (text === "BEGIN") {
       currentTransaction += 1;
+      transactionSnapshot = {
+        createdPreparedRoles: [...createdPreparedRoles],
+        droppedPreparedRoles: [...droppedPreparedRoles],
+        journalRows: journalRows.map((row) => ({ ...row })),
+        modeledSuccessorSideEffectPresent,
+      };
       command("BEGIN");
       failAt("begin");
       return result([]);
@@ -255,6 +277,7 @@ function scriptedMigrationClient(
     if (text === "COMMIT") {
       command("COMMIT");
       failAt("commit");
+      transactionSnapshot = undefined;
       return result([]);
     }
     if (text === "ROLLBACK") {
@@ -262,6 +285,24 @@ function scriptedMigrationClient(
       rollbackQueries += 1;
       if (options.rollbackFails === true) {
         throw rollbackError;
+      }
+      if (transactionSnapshot !== undefined) {
+        journalRows.splice(
+          0,
+          journalRows.length,
+          ...transactionSnapshot.journalRows.map((row) => ({ ...row })),
+        );
+        createdPreparedRoles.clear();
+        for (const roleName of transactionSnapshot.createdPreparedRoles) {
+          createdPreparedRoles.add(roleName);
+        }
+        droppedPreparedRoles.clear();
+        for (const roleName of transactionSnapshot.droppedPreparedRoles) {
+          droppedPreparedRoles.add(roleName);
+        }
+        modeledSuccessorSideEffectPresent =
+          transactionSnapshot.modeledSuccessorSideEffectPresent;
+        transactionSnapshot = undefined;
       }
       return result([]);
     }
@@ -391,11 +432,29 @@ function scriptedMigrationClient(
     if (text.includes("FROM pg_catalog.pg_auth_members AS membership")) {
       return result(options.membershipRows ?? []);
     }
-    if (text.includes("actual_schemas AS")) {
-      return result([{ matches: options.prefixObjectMatches ?? true }]);
-    }
-    if (text.includes("modeled_initializer AS")) {
-      return result([{ matches: options.successorCatalogMatches ?? true }]);
+    if (text.includes("signature_catalog AS")) {
+      const contract = JSON.parse(values?.[0] as string) as Record<
+        string,
+        readonly string[]
+      >;
+      catalogContracts.push(contract);
+      if (typeof values?.[2] === "string") {
+        modeledCatalogContracts.push(
+          JSON.parse(values[2]) as Record<string, unknown>,
+        );
+      }
+      const isSuccessor = (contract.relations ?? []).some((signature) =>
+        signature.includes("|dashboards|"),
+      );
+      return result([
+        {
+          matches: isSuccessor
+            ? (options.successorCatalogMatches ??
+              options.prefixObjectMatches ??
+              true)
+            : (options.prefixObjectMatches ?? true),
+        },
+      ]);
     }
     if (text.includes("pg_catalog.jsonb_to_recordset")) {
       dependencyRoleNames.push([...(values?.[0] as readonly string[])]);
@@ -572,6 +631,9 @@ function scriptedMigrationClient(
       text.includes("modeled_successor_inventory_version")
     ) {
       command("MIGRATION SQL");
+      if (text.includes("modeled_successor_inventory_version")) {
+        modeledSuccessorSideEffectPresent = true;
+      }
       failAt("migration");
       return result([]);
     }
@@ -612,6 +674,14 @@ function scriptedMigrationClient(
     rollbackError,
     dependencyInventories,
     dependencyRoleNames,
+    catalogContracts,
+    modeledCatalogContracts,
+    get journalRows() {
+      return journalRows;
+    },
+    get modeledSuccessorSideEffectPresent() {
+      return modeledSuccessorSideEffectPresent;
+    },
     get rollbackQueries() {
       return rollbackQueries;
     },
@@ -625,6 +695,21 @@ function singleClientPool(client: MigrationClient): MigrationPool {
       return client;
     },
   };
+}
+
+function expectExactlyOneSuccessfulSessionGate(
+  scripted: ScriptedMigrationClient,
+): void {
+  expect(
+    scripted.queryTexts.filter((text) =>
+      text.includes("pg_catalog.pg_advisory_lock("),
+    ),
+  ).toHaveLength(1);
+  expect(
+    scripted.queryTexts.filter((text) =>
+      text.includes("pg_catalog.pg_advisory_unlock("),
+    ),
+  ).toHaveLength(1);
 }
 
 async function capturedFailure(operation: Promise<unknown>): Promise<unknown> {
@@ -1290,6 +1375,17 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(journalReadIndex).toBeLessThan(firstPreparedCreateIndex);
     expect(firstPreparedCreateIndex).toBeGreaterThanOrEqual(0);
     expect(unlockIndex).toBeGreaterThan(firstPreparedCreateIndex);
+    expect(
+      scripted.queryTexts.filter((text) =>
+        text.includes("pg_catalog.pg_advisory_lock("),
+      ),
+    ).toHaveLength(1);
+    expect(
+      scripted.queryTexts.filter((text) =>
+        text.includes("pg_catalog.pg_advisory_unlock("),
+      ),
+    ).toHaveLength(1);
+    expectExactlyOneSuccessfulSessionGate(scripted);
     expect(scripted.queryTexts).toContain(
       "CREATE ROLE dasher_retention_definer WITH NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 PASSWORD NULL VALID UNTIL 'infinity'",
     );
@@ -1309,7 +1405,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
       "T2 COMMIT",
     ]);
     const successorCatalogQuery = scripted.queryTexts.find((text) =>
-      text.includes("modeled_initializer AS"),
+      text.includes("signature_catalog AS"),
     );
     expect(successorCatalogQuery).toContain(
       "pg_catalog.pg_get_function_result",
@@ -1317,15 +1413,60 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(successorCatalogQuery).toContain("routine.provolatile");
     expect(successorCatalogQuery).toContain("routine.prosecdef");
     expect(successorCatalogQuery).toContain("routine.proconfig");
-    expect(successorCatalogQuery).toContain(
-      "retention_service_principal_self_binding_select",
+    expect(successorCatalogQuery).toContain("pg_catalog.pg_get_constraintdef");
+    expect(successorCatalogQuery).toContain("pg_catalog.pg_get_triggerdef");
+    expect(successorCatalogQuery).toContain("privilege.is_grantable");
+    const successorContract = scripted.catalogContracts.at(-1);
+    expect(successorContract).toBeDefined();
+    for (const category of [
+      "schemas",
+      "relations",
+      "columns",
+      "types",
+      "indexes",
+      "constraints",
+      "foreignKeys",
+      "triggers",
+      "policies",
+      "functions",
+      "acls",
+      "defaultAcls",
+    ]) {
+      expect(successorContract?.[category]).not.toEqual([]);
+    }
+    expect(
+      (successorContract?.policies ?? []).filter(
+        (signature) =>
+          signature.includes(
+            "retention_service_principal_self_binding_select",
+          ) ||
+          signature.includes("dashboards_retention_target_discovery_select"),
+      ),
+    ).toHaveLength(2);
+    const runtimeModeledContract = scripted.modeledCatalogContracts.at(-1);
+    const independentFixtureContract = {
+      schemas: modeled0003CatalogMatrix.schemas,
+      relations: modeled0003CatalogMatrix.relationCatalog,
+      columns: modeled0003CatalogMatrix.columns,
+      types: modeled0003CatalogMatrix.types,
+      sequences: modeled0003CatalogMatrix.sequences,
+      indexes: modeled0003CatalogMatrix.indexes,
+      constraints: modeled0003CatalogMatrix.constraints,
+      triggers: modeled0003CatalogMatrix.triggers,
+      policies: modeled0003CatalogMatrix.policies,
+      functions: modeled0003CatalogMatrix.functions,
+      relationAcls: modeled0003CatalogMatrix.catalogRelationAcls,
+      columnAcls: modeled0003CatalogMatrix.catalogColumnAcls,
+      functionExecuteGrants: modeled0003CatalogMatrix.functionExecuteGrants,
+    };
+    expect(Object.keys(runtimeModeledContract ?? {})).toEqual(
+      Object.keys(independentFixtureContract),
     );
-    expect(successorCatalogQuery).toContain(
-      "dashboards_retention_target_discovery_select",
-    );
-    expect(successorCatalogQuery).toContain(
-      "prosrc !~* 'FOR[[:space:]]+(UPDATE|SHARE)'",
-    );
+    for (const [category, expectedRows] of Object.entries(
+      independentFixtureContract,
+    )) {
+      expect(runtimeModeledContract?.[category]).toEqual(expectedRows);
+    }
     const successorDependencies = scripted.dependencyInventories.at(-1) ?? [];
     expect(
       successorDependencies.filter(
@@ -1334,6 +1475,24 @@ describe("prefix-aware managed roles and expected app logins", () => {
           entry.role_name === "dasher_retention_definer",
       ),
     ).toHaveLength(7);
+    const successorPolicyDependencies = successorDependencies.filter(
+      (entry) =>
+        entry.dependency_type === "r" &&
+        entry.role_name === "dasher_retention_definer",
+    );
+    expect(successorPolicyDependencies).toHaveLength(
+      modeled0003CatalogMatrix.policies.length,
+    );
+    expect(
+      successorPolicyDependencies.every(
+        (entry) =>
+          entry.object_kind === "policy" &&
+          entry.policy_permissive === true &&
+          Array.isArray(entry.policy_roles) &&
+          entry.policy_roles.includes("dasher_retention_definer") &&
+          typeof entry.policy_using_expression === "string",
+      ),
+    ).toBe(true);
     expect(
       successorDependencies.filter(
         (entry) =>
@@ -1533,6 +1692,40 @@ describe("prefix-aware managed roles and expected app logins", () => {
     );
   });
 
+  it("rejects both immutable canonical files renamed before any catalog or SQL query", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      join(directory, "0001_renamed_identity.sql"),
+      await readFile(
+        join(canonicalMigrationDirectory, "0001_identity_audit.sql"),
+      ),
+    );
+    await writeFile(
+      join(directory, "0002_renamed_security.sql"),
+      await readFile(
+        join(canonicalMigrationDirectory, "0002_security_boundary.sql"),
+      ),
+    );
+    const scripted = scriptedMigrationClient();
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), directory, []),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(scripted.queryTexts).toHaveLength(2);
+    expect(
+      scripted.queryTexts.filter((text) =>
+        text.includes("pg_catalog.pg_advisory_lock("),
+      ),
+    ).toHaveLength(1);
+    expect(
+      scripted.queryTexts.filter((text) =>
+        text.includes("pg_catalog.pg_advisory_unlock("),
+      ),
+    ).toHaveLength(1);
+    expect(scripted.releaseArguments).toEqual([undefined]);
+    expect(scripted.managedRoleEvents).toEqual([]);
+  });
+
   it("leaves the exact committed pair after modeled SQL failure and accepts a same-file retry", async () => {
     const series = await modeledSuccessorSeries();
     const scripted = scriptedMigrationClient({
@@ -1557,6 +1750,16 @@ describe("prefix-aware managed roles and expected app logins", () => {
         (event) => event === "CREATE dasher_retention_definer",
       ),
     ).toHaveLength(1);
+    expect(
+      scripted.queryTexts.filter((text) =>
+        text.includes("pg_catalog.pg_advisory_lock("),
+      ),
+    ).toHaveLength(2);
+    expect(
+      scripted.queryTexts.filter((text) =>
+        text.includes("pg_catalog.pg_advisory_unlock("),
+      ),
+    ).toHaveLength(2);
   });
 
   it("rolls back modeled SQL and journal when the successor catalog matrix drifts", async () => {
@@ -1573,6 +1776,8 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(transactionCommands(scripted, 3)).toContain("T3 MIGRATION SQL");
     expect(transactionCommands(scripted, 3)).toContain("T3 JOURNAL INSERT");
     expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+    expect(scripted.journalRows).toEqual(series.journalRows);
+    expect(scripted.modeledSuccessorSideEffectPresent).toBe(false);
     expect(scripted.managedRoleEvents).not.toContain(
       "DROP dasher_retention_operator",
     );
@@ -1601,6 +1806,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
       "DROP dasher_retention_operator",
       "DROP dasher_retention_definer",
     ]);
+    expectExactlyOneSuccessfulSessionGate(scripted);
   });
 
   it("refuses reset for partial roles, dependencies, or a pending different 0003 without dropping anything", async () => {
@@ -1973,6 +2179,49 @@ describe("prefix-aware managed roles and expected app logins", () => {
     });
 
     expect(scripted.dependencyInventories).toHaveLength(3);
+    const catalogContract = scripted.catalogContracts.at(-1);
+    expect(catalogContract).toBeDefined();
+    expect(
+      (catalogContract?.acls ?? []).filter(
+        (signature) =>
+          signature.startsWith("type|dasher.") &&
+          signature.endsWith("|migration_owner|PUBLIC|USAGE|false"),
+      ),
+    ).toEqual(
+      [
+        "audit_events",
+        "external_identities",
+        "invitations",
+        "memberships",
+        "organizations",
+        "sessions",
+        "users",
+      ].map(
+        (relationName) =>
+          `type|dasher.${relationName}|migration_owner|PUBLIC|USAGE|false`,
+      ),
+    );
+    for (const signature of catalogContract?.constraints ?? []) {
+      const constraintType = signature.split("|")[3];
+      expect(["c", "p", "u"]).toContain(constraintType);
+      const expectedNoInherit =
+        constraintType === "p" || constraintType === "u";
+      expect(signature.endsWith(`|${String(expectedNoInherit)}`)).toBe(true);
+    }
+    expect(catalogContract?.triggers).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "CREATE TRIGGER audit_events_immutable BEFORE DELETE OR UPDATE ON dasher.audit_events",
+        ),
+      ]),
+    );
+    expect(catalogContract?.triggers).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "CREATE TRIGGER audit_events_immutable BEFORE UPDATE OR DELETE ON dasher.audit_events",
+        ),
+      ]),
+    );
     const dependencyQuery = scripted.queryTexts.find(
       (text) =>
         text.includes("pg_catalog.jsonb_to_recordset") &&
@@ -1996,7 +2245,34 @@ describe("prefix-aware managed roles and expected app logins", () => {
       "pg_catalog.pg_get_function_identity_arguments",
     );
     for (const inventory of scripted.dependencyInventories) {
-      expect(inventory).toHaveLength(217);
+      expect(
+        inventory.filter((entry) => entry.object_kind === "policy"),
+      ).toEqual(
+        expect.arrayContaining(
+          [
+            "audit_events_select",
+            "invitations_select",
+            "memberships_select",
+            "organizations_select",
+            "sessions_select",
+          ].map((policyName) =>
+            expect.objectContaining({
+              dependency_type: "r",
+              is_grantable: null,
+              policy_name: policyName,
+              policy_command: "r",
+              policy_permissive: true,
+              policy_roles: ["dasher_app"],
+              role_name: "dasher_app",
+            }),
+          ),
+        ),
+      );
+      expect(
+        inventory
+          .filter((entry) => entry.dependency_type === "a")
+          .every((entry) => entry.is_grantable === false),
+      ).toBe(true);
       const ownedFunctions = inventory.filter(
         (entry) =>
           entry.object_kind === "function" && entry.dependency_type === "o",
@@ -2079,7 +2355,11 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(scripted.dependencyInventories).toHaveLength(3);
     expect(scripted.dependencyInventories[0]).toEqual([]);
     expect(scripted.dependencyInventories[1]).toEqual([]);
-    expect(scripted.dependencyInventories[2]).toHaveLength(217);
+    expect(
+      scripted.dependencyInventories[2]?.filter(
+        (entry) => entry.dependency_type === "r",
+      ),
+    ).toHaveLength(5);
     expect(transactionCommands(scripted, 2)).toContain("T2 MIGRATION SQL");
     expect(transactionCommands(scripted, 2)).toContain("T2 JOURNAL INSERT");
   });
@@ -2125,7 +2405,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
 });
 
 describe("migration transaction rollback and release", () => {
-  it("normally releases when the session gate cannot be acquired", async () => {
+  it("destructively releases when run lock acquisition is ownership-ambiguous", async () => {
     const lockError = new Error("synthetic session gate acquisition failure");
     const scripted = scriptedMigrationClient({ sessionLockError: lockError });
 
@@ -2133,7 +2413,38 @@ describe("migration transaction rollback and release", () => {
       runMigrations(singleClientPool(scripted.client), fixtureDirectory, []),
     ).rejects.toBe(lockError);
     expect(scripted.transactionCommands).toEqual(["SESSION ADVISORY LOCK"]);
-    expect(scripted.releaseArguments).toEqual([undefined]);
+    expect(scripted.releaseArguments).toHaveLength(1);
+    expect(scripted.releaseArguments[0]).toMatchObject({
+      name: "MigrationGateAcquisitionError",
+      message:
+        "PostgreSQL migrator advisory gate acquisition was ambiguous; pooled client destroyed",
+    });
+    expect(scripted.releaseArguments).not.toContain(undefined);
+    expect(scripted.queryTexts).toHaveLength(1);
+  });
+
+  it("destructively releases when reset lock acquisition is ownership-ambiguous", async () => {
+    const lockError = new Error(
+      "synthetic reset session gate acquisition failure",
+    );
+    const scripted = scriptedMigrationClient({ sessionLockError: lockError });
+
+    await expect(
+      resetPreparedRetentionRoles(
+        singleClientPool(scripted.client),
+        canonicalMigrationDirectory,
+        [],
+      ),
+    ).rejects.toBe(lockError);
+    expect(scripted.transactionCommands).toEqual(["SESSION ADVISORY LOCK"]);
+    expect(scripted.releaseArguments).toHaveLength(1);
+    expect(scripted.releaseArguments[0]).toMatchObject({
+      name: "MigrationGateAcquisitionError",
+      message:
+        "PostgreSQL migrator advisory gate acquisition was ambiguous; pooled client destroyed",
+    });
+    expect(scripted.releaseArguments).not.toContain(undefined);
+    expect(scripted.queryTexts).toHaveLength(1);
   });
 
   it("destroys the client with a sanitized diagnostic when session unlock returns false", async () => {
@@ -2241,6 +2552,7 @@ describe("migration transaction rollback and release", () => {
     ]);
     expect(scripted.transactionCommands[0]).toBe("SESSION ADVISORY LOCK");
     expect(scripted.transactionCommands.at(-1)).toBe("SESSION ADVISORY UNLOCK");
+    expectExactlyOneSuccessfulSessionGate(scripted);
   });
 
   it("does not retry normal release when destructive release throws", async () => {

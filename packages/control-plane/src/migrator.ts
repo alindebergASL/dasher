@@ -30,7 +30,7 @@ const modeledSuccessorFiles = [
   },
   {
     checksum:
-      "60e47f9723ce7fa03a14affbecc82d32e46ce9a60107100fc23caf05c549c96a",
+      "2feea09a7459e86bc64a34d728b191437b06439be4092daf0ac4ead586f43524",
     filename: "0003_immutable_content.sql",
   },
 ] as const;
@@ -41,6 +41,8 @@ const managedRoleCreateReleaseSql =
   "RELEASE SAVEPOINT dasher_managed_role_create";
 const rollbackFailureMessage =
   "PostgreSQL transaction rollback failed; pooled client destroyed";
+const gateAcquisitionFailureMessage =
+  "PostgreSQL migrator advisory gate acquisition was ambiguous; pooled client destroyed";
 const gateReleaseFailureMessage =
   "PostgreSQL migrator advisory gate release failed; pooled client destroyed";
 const setLocalSearchPathSql = "SET LOCAL search_path = pg_catalog";
@@ -69,7 +71,7 @@ const managedDependencyInventorySql = `
     JOIN target_roles AS target_role
       ON target_role.oid = dependency.refobjid
     WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass
-      AND dependency.deptype IN ('a', 'o')
+      AND dependency.deptype IN ('a', 'o', 'r')
   ),
   resolved AS (
     SELECT
@@ -81,7 +83,14 @@ const managedDependencyInventorySql = `
       NULL::text AS subobject_name,
       NULL::text AS function_arguments,
       privilege.privilege_type::text AS privilege_type,
-      grantor.rolname::text AS grantor_name
+      grantor.rolname::text AS grantor_name,
+      privilege.is_grantable,
+      NULL::text AS policy_name,
+      NULL::text AS policy_command,
+      NULL::boolean AS policy_permissive,
+      NULL::text[] AS policy_roles,
+      NULL::text AS policy_using_expression,
+      NULL::text AS policy_with_check_expression
     FROM dependencies AS dependency
     JOIN pg_catalog.pg_database AS database_row
       ON dependency.dbid = 0
@@ -105,7 +114,14 @@ const managedDependencyInventorySql = `
       NULL::text,
       NULL::text,
       privilege.privilege_type::text,
-      grantor.rolname::text
+      grantor.rolname::text,
+      privilege.is_grantable,
+      NULL::text,
+      NULL::text,
+      NULL::boolean,
+      NULL::text[],
+      NULL::text,
+      NULL::text
     FROM dependencies AS dependency
     CROSS JOIN current_database_row
     JOIN pg_catalog.pg_class AS relation
@@ -132,7 +148,14 @@ const managedDependencyInventorySql = `
       NULL::text,
       NULL::text,
       privilege.privilege_type::text,
-      grantor.rolname::text
+      grantor.rolname::text,
+      privilege.is_grantable,
+      NULL::text,
+      NULL::text,
+      NULL::boolean,
+      NULL::text[],
+      NULL::text,
+      NULL::text
     FROM dependencies AS dependency
     CROSS JOIN current_database_row
     JOIN pg_catalog.pg_namespace AS namespace
@@ -157,6 +180,13 @@ const managedDependencyInventorySql = `
       NULL::text,
       pg_catalog.oidvectortypes(routine.proargtypes),
       NULL::text,
+      NULL::text,
+      NULL::boolean,
+      NULL::text,
+      NULL::text,
+      NULL::boolean,
+      NULL::text[],
+      NULL::text,
       NULL::text
     FROM dependencies AS dependency
     CROSS JOIN current_database_row
@@ -180,7 +210,14 @@ const managedDependencyInventorySql = `
       NULL::text,
       pg_catalog.oidvectortypes(routine.proargtypes),
       privilege.privilege_type::text,
-      grantor.rolname::text
+      grantor.rolname::text,
+      privilege.is_grantable,
+      NULL::text,
+      NULL::text,
+      NULL::boolean,
+      NULL::text[],
+      NULL::text,
+      NULL::text
     FROM dependencies AS dependency
     CROSS JOIN current_database_row
     JOIN pg_catalog.pg_proc AS routine
@@ -207,7 +244,14 @@ const managedDependencyInventorySql = `
       attribute.attname::text,
       NULL::text,
       privilege.privilege_type::text,
-      grantor.rolname::text
+      grantor.rolname::text,
+      privilege.is_grantable,
+      NULL::text,
+      NULL::text,
+      NULL::boolean,
+      NULL::text[],
+      NULL::text,
+      NULL::text
     FROM dependencies AS dependency
     CROSS JOIN current_database_row
     JOIN pg_catalog.pg_class AS relation
@@ -226,6 +270,44 @@ const managedDependencyInventorySql = `
     JOIN pg_catalog.pg_roles AS grantor
       ON grantor.oid = privilege.grantor
     WHERE privilege.grantee = dependency.role_oid
+
+    UNION ALL
+
+    SELECT
+      dependency.*,
+      'pg_policy'::text,
+      'policy'::text,
+      namespace.nspname::text,
+      relation.relname::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::boolean,
+      policy.polname::text,
+      policy.polcmd::text,
+      policy.polpermissive,
+      ARRAY(
+        SELECT role_row.rolname::text
+        FROM pg_catalog.unnest(policy.polroles) AS role_oid
+        JOIN pg_catalog.pg_roles AS role_row
+          ON role_row.oid = role_oid
+        ORDER BY role_row.rolname
+      )::text[],
+      pg_catalog.pg_get_expr(policy.polqual, policy.polrelid),
+      pg_catalog.pg_get_expr(policy.polwithcheck, policy.polrelid)
+    FROM dependencies AS dependency
+    CROSS JOIN current_database_row
+    JOIN pg_catalog.pg_policy AS policy
+      ON dependency.dbid = current_database_row.oid
+     AND dependency.classid = 'pg_catalog.pg_policy'::regclass
+     AND dependency.objid = policy.oid
+     AND dependency.objsubid = 0
+     AND dependency.dependency_type = 'r'
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = policy.polrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
   ),
   unresolved AS (
     SELECT
@@ -238,7 +320,14 @@ const managedDependencyInventorySql = `
       dependency.objsubid::text AS subobject_name,
       NULL::text AS function_arguments,
       NULL::text AS privilege_type,
-      NULL::text AS grantor_name
+      NULL::text AS grantor_name,
+      NULL::boolean AS is_grantable,
+      NULL::text AS policy_name,
+      NULL::text AS policy_command,
+      NULL::boolean AS policy_permissive,
+      NULL::text[] AS policy_roles,
+      NULL::text AS policy_using_expression,
+      NULL::text AS policy_with_check_expression
     FROM dependencies AS dependency
     LEFT JOIN pg_catalog.pg_class AS catalog
       ON catalog.oid = dependency.classid
@@ -265,7 +354,14 @@ const managedDependencyInventorySql = `
       subobject_name,
       function_arguments,
       privilege_type,
-      grantor_name
+      grantor_name,
+      is_grantable,
+      policy_name,
+      policy_command,
+      policy_permissive,
+      policy_roles,
+      policy_using_expression,
+      policy_with_check_expression
     FROM resolved
     UNION ALL
     SELECT
@@ -279,7 +375,14 @@ const managedDependencyInventorySql = `
       subobject_name,
       function_arguments,
       privilege_type,
-      grantor_name
+      grantor_name,
+      is_grantable,
+      policy_name,
+      policy_command,
+      policy_permissive,
+      policy_roles,
+      policy_using_expression,
+      policy_with_check_expression
     FROM unresolved
   ),
   expected AS (
@@ -295,7 +398,14 @@ const managedDependencyInventorySql = `
       subobject_name text,
       function_arguments text,
       privilege_type text,
-      grantor_name text
+      grantor_name text,
+      is_grantable boolean,
+      policy_name text,
+      policy_command text,
+      policy_permissive boolean,
+      policy_roles text[],
+      policy_using_expression text,
+      policy_with_check_expression text
     )
   ),
   difference AS (
@@ -548,31 +658,57 @@ const task3RelationNames = [
   "users",
 ] as const;
 
-const modeled0003RelationNames = [
-  "artifact_deletion_finalizers",
-  "artifact_reference_claims",
-  "backup_deletion_ledger",
-  "dashboard_artifacts",
-  "dashboard_cleanup_attempts",
-  "dashboard_cleanup_coordination",
-  "dashboard_legal_holds",
-  "dashboard_lifecycle_events",
-  "dashboard_lifecycle_policies",
-  "dashboard_promotion_decisions",
-  "dashboard_promotion_requests",
-  "dashboard_restore_lineage",
-  "dashboard_tombstones",
-  "dashboard_version_evidence",
-  "dashboard_version_snapshots",
-  "dashboard_versions",
-  "dashboards",
-  "evidence_deletion_finalizers",
-  "evidence_records",
-  "evidence_reference_claims",
-  "retention_service_principal_allowlist",
-  "snapshot_deletion_finalizers",
-  "snapshot_reference_claims",
-  "source_snapshots",
+const task4Policies = [
+  {
+    relation: "audit_events",
+    name: "audit_events_select",
+    command: "r",
+    permissive: true,
+    roles: ["dasher_app"],
+    usingExpression:
+      "dasher_private.context_allows(organization_id, 'admin'::text)",
+    withCheckExpression: null,
+  },
+  {
+    relation: "invitations",
+    name: "invitations_select",
+    command: "r",
+    permissive: true,
+    roles: ["dasher_app"],
+    usingExpression:
+      "dasher_private.context_allows(organization_id, 'admin'::text)",
+    withCheckExpression: null,
+  },
+  {
+    relation: "memberships",
+    name: "memberships_select",
+    command: "r",
+    permissive: true,
+    roles: ["dasher_app"],
+    usingExpression:
+      "dasher_private.context_allows(organization_id, 'viewer'::text)",
+    withCheckExpression: null,
+  },
+  {
+    relation: "organizations",
+    name: "organizations_select",
+    command: "r",
+    permissive: true,
+    roles: ["dasher_app"],
+    usingExpression:
+      "dasher_private.context_allows(organization_id, 'viewer'::text)",
+    withCheckExpression: null,
+  },
+  {
+    relation: "sessions",
+    name: "sessions_select",
+    command: "r",
+    permissive: true,
+    roles: ["dasher_app"],
+    usingExpression:
+      "(dasher_private.context_allows(organization_id, 'viewer'::text) AND (dasher_private.context_user_id() = user_id))",
+    withCheckExpression: null,
+  },
 ] as const;
 
 const modeled0003RelationGrants = [
@@ -891,35 +1027,6 @@ const modeled0003FunctionSignatures = [
   },
 ] as const;
 
-const modeled0003FunctionReturns = [
-  "SETOF dasher.dashboard_summary",
-  "dasher.dashboard_summary",
-  "uuid",
-  "dasher.dashboard_version_projection",
-  "SETOF dasher.dashboard_evidence_projection",
-  "SETOF dasher.dashboard_lineage_projection",
-  "dasher.dashboard_admin_projection",
-  "uuid",
-  "void",
-  "uuid",
-  "void",
-  "uuid",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "void",
-  "trigger",
-  "trigger",
-  "trigger",
-] as const;
-
 export type MigrationClient = Pick<PoolClient, "query" | "release">;
 
 export interface MigrationPool {
@@ -1031,12 +1138,19 @@ interface DependencyComparisonRow {
 interface ManagedDependencyInventoryEntry {
   readonly catalog_name: string;
   readonly database_oid: string;
-  readonly dependency_type: "a" | "o";
+  readonly dependency_type: "a" | "o" | "r";
   readonly function_arguments: string | null;
   readonly grantor_name: string | null;
+  readonly is_grantable: boolean | null;
   readonly object_kind:
-    "column" | "database" | "function" | "relation" | "schema";
+    "column" | "database" | "function" | "policy" | "relation" | "schema";
   readonly object_name: string;
+  readonly policy_command: string | null;
+  readonly policy_name: string | null;
+  readonly policy_permissive: boolean | null;
+  readonly policy_roles: readonly string[] | null;
+  readonly policy_using_expression: string | null;
+  readonly policy_with_check_expression: string | null;
   readonly privilege_type: string | null;
   readonly role_name: string;
   readonly schema_name: string | null;
@@ -1222,6 +1336,24 @@ function destroyClientAfterGateReleaseFailure(
     // The destructive release was attempted. Preserve the primary failure.
   }
   return diagnostic;
+}
+
+function destroyClientAfterAmbiguousGateAcquisition(
+  client: MigrationClient,
+  state: MigrationClientState,
+  operationError: unknown,
+): void {
+  const diagnostic = new Error(gateAcquisitionFailureMessage);
+  diagnostic.name = "MigrationGateAcquisitionError";
+  state.normalReleaseAllowed = false;
+  state.released = true;
+  retainSanitizedRollbackDiagnostic(operationError, diagnostic);
+
+  try {
+    client.release(diagnostic);
+  } catch {
+    // The backend may hold the session lock, so normal pool reuse is forbidden.
+  }
 }
 
 async function runMigrationTransaction<T>(
@@ -1805,17 +1937,27 @@ function hasExactCanonical0002Files(
 function assertKnownCanonicalFileIdentity(
   migrations: readonly DiscoveredMigration[],
 ): void {
-  const usesCanonicalIdentity =
-    migrations[0]?.filename === modeledSuccessorFiles[0].filename ||
-    migrations[1]?.filename === modeledSuccessorFiles[1].filename;
+  const firstTwo = migrations.slice(0, 2);
+  const canonicalNames = new Set<string>(
+    modeledSuccessorFiles.slice(0, 2).map((entry) => entry.filename),
+  );
+  const canonicalChecksums = new Set<string>(
+    modeledSuccessorFiles.slice(0, 2).map((entry) => entry.checksum),
+  );
+  const usesCanonicalIdentity = firstTwo.some(
+    (migration) =>
+      canonicalNames.has(
+        migration.filename as (typeof modeledSuccessorFiles)[0]["filename"],
+      ) || canonicalChecksums.has(checksumHex(migration)),
+  );
   if (!usesCanonicalIdentity) {
     return;
   }
 
-  for (const [index, migration] of migrations.slice(0, 2).entries()) {
-    const expected = modeledSuccessorFiles[index];
+  for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
+    const migration = migrations[index];
     if (
-      expected === undefined ||
+      migration === undefined ||
       migration.filename !== expected.filename ||
       checksumHex(migration) !== expected.checksum
     ) {
@@ -2260,412 +2402,9526 @@ function assertJournalPrefix(
   }
 }
 
-const canonicalPrefixObjectInventorySql = `
+const task4FunctionCatalogRows = [
+  {
+    identity:
+      "dasher_api.accept_invitation(smallint, bytea, text, text, text, boolean, uuid, uuid, uuid, smallint, bytea, smallint, bytea, uuid, uuid, text)",
+    result:
+      "TABLE(user_id uuid, organization_id uuid, membership_id uuid, granted_role text, authority_revision bigint, session_id uuid, idle_expires_at timestamp with time zone, absolute_expires_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity:
+      "dasher_api.change_membership_role(uuid, text, uuid, smallint, bytea, text)",
+    result: "TABLE(membership_id uuid, authority_revision bigint)",
+    volatility: "v",
+  },
+  {
+    identity: "dasher_api.initialize_context(smallint, bytea, uuid)",
+    result:
+      "TABLE(session_id uuid, user_id uuid, organization_id uuid, membership_id uuid, authority_revision bigint, idle_expires_at timestamp with time zone, absolute_expires_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity:
+      "dasher_api.issue_invitation(uuid, text, text, smallint, bytea, uuid, smallint, bytea, smallint, bytea, uuid, text)",
+    result: "TABLE(invitation_id uuid, expires_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity:
+      "dasher_api.issue_session(text, text, uuid, uuid, smallint, bytea, smallint, bytea, uuid, uuid, text)",
+    result:
+      "TABLE(user_id uuid, organization_id uuid, membership_id uuid, granted_role text, authority_revision bigint, session_id uuid, idle_expires_at timestamp with time zone, absolute_expires_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity:
+      "dasher_api.revoke_invitation(uuid, uuid, smallint, bytea, smallint, bytea, uuid, text)",
+    result: "TABLE(invitation_id uuid, revoked_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity: "dasher_api.revoke_membership(uuid, uuid, smallint, bytea, text)",
+    result:
+      "TABLE(membership_id uuid, authority_revision bigint, revoked_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity: "dasher_api.revoke_session(uuid, uuid, smallint, bytea, text)",
+    result: "TABLE(session_id uuid, revoked_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity:
+      "dasher_api.rotate_session(uuid, smallint, bytea, smallint, bytea, uuid, smallint, bytea, text)",
+    result:
+      "TABLE(session_id uuid, idle_expires_at timestamp with time zone, absolute_expires_at timestamp with time zone)",
+    volatility: "v",
+  },
+  {
+    identity: "dasher_private.context_allows(uuid, text)",
+    result: "boolean",
+    volatility: "v",
+  },
+  {
+    identity: "dasher_private.context_authority_revision()",
+    result: "bigint",
+    volatility: "s",
+  },
+  {
+    identity: "dasher_private.context_membership_id()",
+    result: "uuid",
+    volatility: "s",
+  },
+  {
+    identity: "dasher_private.context_organization_id()",
+    result: "uuid",
+    volatility: "s",
+  },
+  {
+    identity: "dasher_private.context_request_id()",
+    result: "uuid",
+    volatility: "s",
+  },
+  {
+    identity: "dasher_private.context_session_id()",
+    result: "uuid",
+    volatility: "s",
+  },
+  {
+    identity: "dasher_private.context_user_id()",
+    result: "uuid",
+    volatility: "s",
+  },
+] as const;
+
+const canonicalFunctionBodyMd5 = {
+  "dasher_private.reject_immutable_mutation":
+    "40e81df18fc499c660d020c178954bf8",
+  "dasher_private.context_user_id": "e34f8c4b7804f11eb80c971f7591f9a4",
+  "dasher_api.rotate_session": "5ac9f6b419ea1528168faa7dbfdff6d6",
+  "dasher_api.revoke_session": "e84a368f6fb7a601e6beb0952a01a641",
+  "dasher_api.change_membership_role": "88045ab7701082e7a29d6516da39ddd7",
+  "dasher_api.revoke_membership": "22e53d6610c6c5c85c3cfd7a7400cc24",
+  "dasher_api.issue_invitation": "ceb4038d33a971508d4dc45063c843c7",
+  "dasher_api.accept_invitation": "e73059f200272395fa7763489ab2b543",
+  "dasher_api.revoke_invitation": "2531f503920264bdaafbf84c8f6f1ce6",
+  "dasher_private.context_organization_id": "af355814b4b68be7ca4df4c2d50e4686",
+  "dasher_private.context_membership_id": "a2ee6c09bec333e9bd61ac5a1e982ac2",
+  "dasher_private.context_session_id": "7a083a1a92537a070ded8b1d0a56aed7",
+  "dasher_private.context_request_id": "03f00f181a351dfa41a982176c3db0ac",
+  "dasher_private.context_authority_revision":
+    "dd9a9e5757a34195eca4140982a73ec0",
+  "dasher_private.context_allows": "2524cac52ea26ee40eabe81e394560b0",
+  "dasher_api.initialize_context": "47b6069e7d2f976ed2be93a310e65303",
+  "dasher_api.issue_session": "3ac5e71b88a4e2a911ebafb3cd97abc3",
+} as const;
+
+const modeled0003StaticCatalogContract = {
+  schemas: [
+    {
+      name: "dasher_retention_api",
+      owner: "migration_owner",
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "CREATE",
+          isGrantable: false,
+        },
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+        {
+          grantor: "migration_owner",
+          grantee: "dasher_retention_operator",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+  ],
+  relations: [
+    {
+      schema: "dasher",
+      name: "dashboard_lifecycle_policies",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboards",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_lifecycle_events",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_promotion_requests",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_promotion_decisions",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_cleanup_coordination",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_cleanup_attempts",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_legal_holds",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_tombstones",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_restore_lineage",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "backup_deletion_ledger",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "retention_service_principal_allowlist",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "source_snapshots",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "evidence_records",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_versions",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_version_snapshots",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_version_evidence",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_artifacts",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "snapshot_reference_claims",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "evidence_reference_claims",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "artifact_reference_claims",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "snapshot_deletion_finalizers",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "evidence_deletion_finalizers",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+    {
+      schema: "dasher",
+      name: "artifact_deletion_finalizers",
+      kind: "r",
+      owner: "migration_owner",
+      persistence: "p",
+      rowSecurity: true,
+      forceRowSecurity: true,
+      replicaIdentity: "d",
+      options: [],
+    },
+  ],
+  columns: [
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "policy_revision",
+      ordinal: 2,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "default_disposable_ttl_seconds",
+      ordinal: 3,
+      type: "integer",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "retention_policy_revision",
+      ordinal: 4,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "created_at",
+      ordinal: 5,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "created_by_user_id",
+      ordinal: 6,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_policies",
+      columnName: "provenance",
+      ordinal: 7,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "title",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "created_by_user_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "created_at",
+      ordinal: 5,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "created_kind",
+      ordinal: 6,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "current_kind",
+      ordinal: 7,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "original_expires_at",
+      ordinal: 8,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "effective_expires_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "lifecycle_state",
+      ordinal: 10,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "lifecycle_revision",
+      ordinal: 11,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "capability_epoch",
+      ordinal: 12,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "cache_epoch",
+      ordinal: 13,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "access_revoked_at",
+      ordinal: 14,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "revocation_reason",
+      ordinal: 15,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "purge_after",
+      ordinal: 16,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "purge_started_at",
+      ordinal: 17,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "purged_at",
+      ordinal: 18,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "retention_policy_revision",
+      ordinal: 19,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "promoted_at",
+      ordinal: 20,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "archived_at",
+      ordinal: 21,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "head_version_id",
+      ordinal: 22,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "tombstone_lineage_id",
+      ordinal: 23,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboards",
+      columnName: "restored_from_tombstone_lineage_id",
+      ordinal: 24,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "lifecycle_event_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "organization_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "dashboard_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "lifecycle_revision",
+      ordinal: 4,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "event_kind",
+      ordinal: 5,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "from_kind",
+      ordinal: 6,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "to_kind",
+      ordinal: 7,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "from_state",
+      ordinal: 8,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "to_state",
+      ordinal: 9,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "occurred_at",
+      ordinal: 10,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "actor_user_id",
+      ordinal: 11,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "actor_service",
+      ordinal: 12,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "authority_revision",
+      ordinal: 13,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "retention_policy_revision",
+      ordinal: 14,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "request_id",
+      ordinal: 15,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "job_id",
+      ordinal: 16,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_lifecycle_events",
+      columnName: "reason_sha256",
+      ordinal: 17,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "promotion_request_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "dashboard_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "requested_lifecycle_revision",
+      ordinal: 4,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "requested_at",
+      ordinal: 5,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "requested_by_user_id",
+      ordinal: 6,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_requests",
+      columnName: "rationale_sha256",
+      ordinal: 7,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "promotion_request_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "decision",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "dashboard_lifecycle_revision",
+      ordinal: 4,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "decided_at",
+      ordinal: 5,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "decided_by_user_id",
+      ordinal: 6,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "retention_policy_revision",
+      ordinal: 7,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "current_step",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "lease_owner",
+      ordinal: 4,
+      type: "name",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "lease_expires_at",
+      ordinal: 5,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "expected_lifecycle_revision",
+      ordinal: 6,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "next_attempt_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "completion_proof_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "cleanup_attempt_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "step",
+      ordinal: 4,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "started_at",
+      ordinal: 5,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "finished_at",
+      ordinal: 6,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "result",
+      ordinal: 7,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "released_claim_count",
+      ordinal: 8,
+      type: "integer",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "deleted_resource_count",
+      ordinal: 9,
+      type: "integer",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "deferred_claim_count",
+      ordinal: 10,
+      type: "integer",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "failure_code",
+      ordinal: 11,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_cleanup_attempts",
+      columnName: "proof_sha256",
+      ordinal: 12,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "hold_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "case_matter_reference",
+      ordinal: 4,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "placed_by_principal_id",
+      ordinal: 5,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "placed_authority_revision",
+      ordinal: 6,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "placed_actor",
+      ordinal: 7,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "placed_reason_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "placed_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "retention_policy_revision",
+      ordinal: 10,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "released_at",
+      ordinal: 11,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "released_by_principal_id",
+      ordinal: 12,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "released_authority_revision",
+      ordinal: 13,
+      type: "bigint",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "released_actor",
+      ordinal: 14,
+      type: "text",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_legal_holds",
+      columnName: "released_reason_sha256",
+      ordinal: 15,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "tombstone_lineage_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "retention_policy_revision",
+      ordinal: 3,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "access_revoked_at",
+      ordinal: 4,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "access_revoked_lifecycle_revision",
+      ordinal: 5,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "access_revoked_proof_sha256",
+      ordinal: 6,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "purged_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "purged_lifecycle_revision",
+      ordinal: 8,
+      type: "bigint",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_tombstones",
+      columnName: "purged_proof_sha256",
+      ordinal: 9,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "version_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "source_tombstone_lineage_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "source_version_id",
+      ordinal: 5,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "retention_policy_revision",
+      ordinal: 6,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "actor_user_id",
+      ordinal: 7,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "authority_revision",
+      ordinal: 8,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "occurred_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_restore_lineage",
+      columnName: "provenance_sha256",
+      ordinal: 10,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "ledger_sequence",
+      ordinal: 2,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "tombstone_lineage_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "lifecycle_revision",
+      ordinal: 4,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "event_kind",
+      ordinal: 5,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "event_occurred_at",
+      ordinal: 6,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "inserted_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "retention_policy_revision",
+      ordinal: 8,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "backup_deletion_ledger",
+      columnName: "proof_sha256",
+      ordinal: 9,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "retention_service_principal_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "principal_revision",
+      ordinal: 2,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "binding_kind",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "binding_subject",
+      ordinal: 4,
+      type: "name",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "authority_scope",
+      ordinal: 5,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "scope_organization_id",
+      ordinal: 6,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_initialize",
+      ordinal: 7,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_materialize_expiry",
+      ordinal: 8,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_place_hold",
+      ordinal: 9,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_release_hold",
+      ordinal: 10,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_claim_cleanup",
+      ordinal: 11,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_record_attempt",
+      ordinal: 12,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "can_purge",
+      ordinal: 13,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "enabled",
+      ordinal: 14,
+      type: "boolean",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "created_at",
+      ordinal: 15,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "predecessor_revision",
+      ordinal: 16,
+      type: "bigint",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "predecessor_sha256",
+      ordinal: 17,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "revision_sha256",
+      ordinal: 18,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "retention_service_principal_allowlist",
+      columnName: "migration_provenance",
+      ordinal: 19,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "snapshot_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "source_kind",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "canonical_bytes",
+      ordinal: 4,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "content_sha256",
+      ordinal: 5,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "observed_at",
+      ordinal: 6,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "retrieved_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "source_snapshots",
+      columnName: "created_at",
+      ordinal: 8,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "evidence_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "snapshot_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "evidence_kind",
+      ordinal: 4,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "coordinates",
+      ordinal: 5,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "transformation",
+      ordinal: 6,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "content_sha256",
+      ordinal: 7,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "observed_at",
+      ordinal: 8,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "retrieved_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_records",
+      columnName: "created_at",
+      ordinal: 10,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "version_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "parent_version_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "canonical_spec_bytes",
+      ordinal: 5,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "canonical_spec_sha256",
+      ordinal: 6,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "validation_state",
+      ordinal: 7,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "validation_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "planner_provenance_sha256",
+      ordinal: 9,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "policy_revision",
+      ordinal: 10,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "registry_revision",
+      ordinal: 11,
+      type: "bigint",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "calculation_graph_sha256",
+      ordinal: 12,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "created_by_user_id",
+      ordinal: 13,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_versions",
+      columnName: "created_at",
+      ordinal: 14,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_snapshots",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_snapshots",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_snapshots",
+      columnName: "version_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_snapshots",
+      columnName: "snapshot_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_evidence",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_evidence",
+      columnName: "dashboard_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_evidence",
+      columnName: "version_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_version_evidence",
+      columnName: "evidence_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "artifact_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "dashboard_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "version_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "ownership_class",
+      ordinal: 5,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "artifact_kind",
+      ordinal: 6,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "metadata_sha256",
+      ordinal: 7,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "content_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_artifacts",
+      columnName: "created_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "snapshot_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "reference_claim_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "dashboard_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "version_id",
+      ordinal: 5,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "claim_kind",
+      ordinal: 6,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "hold_id",
+      ordinal: 7,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_reference_claims",
+      columnName: "created_at",
+      ordinal: 8,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "evidence_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "reference_claim_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "dashboard_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "version_id",
+      ordinal: 5,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "claim_kind",
+      ordinal: 6,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "hold_id",
+      ordinal: 7,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_reference_claims",
+      columnName: "created_at",
+      ordinal: 8,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "artifact_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "reference_claim_id",
+      ordinal: 3,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "dashboard_id",
+      ordinal: 4,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "version_id",
+      ordinal: 5,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "claim_kind",
+      ordinal: 6,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "hold_id",
+      ordinal: 7,
+      type: "uuid",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_reference_claims",
+      columnName: "created_at",
+      ordinal: 8,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "snapshot_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "state",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "intent_at",
+      ordinal: 4,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "expected_claim_set_sha256",
+      ordinal: 5,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "lease_owner",
+      ordinal: 6,
+      type: "name",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "lease_expires_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "proof_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "bytes_deleted_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "evidence_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "state",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "intent_at",
+      ordinal: 4,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "expected_claim_set_sha256",
+      ordinal: 5,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "lease_owner",
+      ordinal: 6,
+      type: "name",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "lease_expires_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "proof_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "evidence_deletion_finalizers",
+      columnName: "bytes_deleted_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "organization_id",
+      ordinal: 1,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "artifact_id",
+      ordinal: 2,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "state",
+      ordinal: 3,
+      type: "text",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "intent_at",
+      ordinal: 4,
+      type: "timestamp with time zone",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "expected_claim_set_sha256",
+      ordinal: 5,
+      type: "bytea",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "lease_owner",
+      ordinal: 6,
+      type: "name",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "lease_expires_at",
+      ordinal: 7,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "proof_sha256",
+      ordinal: 8,
+      type: "bytea",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "artifact_deletion_finalizers",
+      columnName: "bytes_deleted_at",
+      ordinal: 9,
+      type: "timestamp with time zone",
+      nullable: true,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+  ],
+  types: [
+    {
+      schema: "dasher",
+      name: "dashboard_summary",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_summary",
+      definition: [
+        "dashboard_id uuid",
+        "title text",
+        "current_kind text",
+        "lifecycle_state text",
+        "lifecycle_revision bigint",
+        "effective_expires_at timestamptz",
+        "head_version_id uuid",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_version_projection",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_version_projection",
+      definition: [
+        "dashboard_id uuid",
+        "version_id uuid",
+        "parent_version_id uuid",
+        "canonical_spec_sha256 bytea",
+        "validation_state text",
+        "validation_sha256 bytea",
+        "planner_provenance_sha256 bytea",
+        "policy_revision bigint",
+        "registry_revision bigint",
+        "calculation_graph_sha256 bytea",
+        "created_at timestamptz",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_evidence_projection",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_evidence_projection",
+      definition: [
+        "dashboard_id uuid",
+        "version_id uuid",
+        "evidence_id uuid",
+        "evidence_kind text",
+        "content_sha256 bytea",
+        "observed_at timestamptz",
+        "retrieved_at timestamptz",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_lineage_projection",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_lineage_projection",
+      definition: [
+        "dashboard_id uuid",
+        "version_id uuid",
+        "parent_version_id uuid",
+        "snapshot_id uuid",
+        "evidence_id uuid",
+        "artifact_id uuid",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_admin_projection",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_admin_projection",
+      definition: [
+        "dashboard_id uuid",
+        "lifecycle_state text",
+        "lifecycle_revision bigint",
+        "capability_epoch bigint",
+        "cache_epoch bigint",
+        "access_revoked_at timestamptz",
+        "purge_after timestamptz",
+        "purge_started_at timestamptz",
+        "purged_at timestamptz",
+        "active_hold_count bigint",
+        "cleanup_step text",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_lifecycle_policies",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_lifecycle_policies",
+      definition: [
+        "organization_id uuid",
+        "policy_revision bigint",
+        "default_disposable_ttl_seconds integer",
+        "retention_policy_revision bigint",
+        "created_at timestamp with time zone",
+        "created_by_user_id uuid",
+        "provenance text",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboards",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboards",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "title text",
+        "created_by_user_id uuid",
+        "created_at timestamp with time zone",
+        "created_kind text",
+        "current_kind text",
+        "original_expires_at timestamp with time zone",
+        "effective_expires_at timestamp with time zone",
+        "lifecycle_state text",
+        "lifecycle_revision bigint",
+        "capability_epoch bigint",
+        "cache_epoch bigint",
+        "access_revoked_at timestamp with time zone",
+        "revocation_reason text",
+        "purge_after timestamp with time zone",
+        "purge_started_at timestamp with time zone",
+        "purged_at timestamp with time zone",
+        "retention_policy_revision bigint",
+        "promoted_at timestamp with time zone",
+        "archived_at timestamp with time zone",
+        "head_version_id uuid",
+        "tombstone_lineage_id uuid",
+        "restored_from_tombstone_lineage_id uuid",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_lifecycle_events",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_lifecycle_events",
+      definition: [
+        "lifecycle_event_id uuid",
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "lifecycle_revision bigint",
+        "event_kind text",
+        "from_kind text",
+        "to_kind text",
+        "from_state text",
+        "to_state text",
+        "occurred_at timestamp with time zone",
+        "actor_user_id uuid",
+        "actor_service text",
+        "authority_revision bigint",
+        "retention_policy_revision bigint",
+        "request_id uuid",
+        "job_id uuid",
+        "reason_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_promotion_requests",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_promotion_requests",
+      definition: [
+        "organization_id uuid",
+        "promotion_request_id uuid",
+        "dashboard_id uuid",
+        "requested_lifecycle_revision bigint",
+        "requested_at timestamp with time zone",
+        "requested_by_user_id uuid",
+        "rationale_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_promotion_decisions",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_promotion_decisions",
+      definition: [
+        "organization_id uuid",
+        "promotion_request_id uuid",
+        "decision text",
+        "dashboard_lifecycle_revision bigint",
+        "decided_at timestamp with time zone",
+        "decided_by_user_id uuid",
+        "retention_policy_revision bigint",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_cleanup_coordination",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_cleanup_coordination",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "current_step text",
+        "lease_owner name",
+        "lease_expires_at timestamp with time zone",
+        "expected_lifecycle_revision bigint",
+        "next_attempt_at timestamp with time zone",
+        "completion_proof_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_cleanup_attempts",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_cleanup_attempts",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "cleanup_attempt_id uuid",
+        "step text",
+        "started_at timestamp with time zone",
+        "finished_at timestamp with time zone",
+        "result text",
+        "released_claim_count integer",
+        "deleted_resource_count integer",
+        "deferred_claim_count integer",
+        "failure_code text",
+        "proof_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_legal_holds",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_legal_holds",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "hold_id uuid",
+        "case_matter_reference text",
+        "placed_by_principal_id uuid",
+        "placed_authority_revision bigint",
+        "placed_actor text",
+        "placed_reason_sha256 bytea",
+        "placed_at timestamp with time zone",
+        "retention_policy_revision bigint",
+        "released_at timestamp with time zone",
+        "released_by_principal_id uuid",
+        "released_authority_revision bigint",
+        "released_actor text",
+        "released_reason_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_tombstones",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_tombstones",
+      definition: [
+        "organization_id uuid",
+        "tombstone_lineage_id uuid",
+        "retention_policy_revision bigint",
+        "access_revoked_at timestamp with time zone",
+        "access_revoked_lifecycle_revision bigint",
+        "access_revoked_proof_sha256 bytea",
+        "purged_at timestamp with time zone",
+        "purged_lifecycle_revision bigint",
+        "purged_proof_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_restore_lineage",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_restore_lineage",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "source_tombstone_lineage_id uuid",
+        "source_version_id uuid",
+        "retention_policy_revision bigint",
+        "actor_user_id uuid",
+        "authority_revision bigint",
+        "occurred_at timestamp with time zone",
+        "provenance_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "backup_deletion_ledger",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "backup_deletion_ledger",
+      definition: [
+        "organization_id uuid",
+        "ledger_sequence bigint",
+        "tombstone_lineage_id uuid",
+        "lifecycle_revision bigint",
+        "event_kind text",
+        "event_occurred_at timestamp with time zone",
+        "inserted_at timestamp with time zone",
+        "retention_policy_revision bigint",
+        "proof_sha256 bytea",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "retention_service_principal_allowlist",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "retention_service_principal_allowlist",
+      definition: [
+        "retention_service_principal_id uuid",
+        "principal_revision bigint",
+        "binding_kind text",
+        "binding_subject name",
+        "authority_scope text",
+        "scope_organization_id uuid",
+        "can_initialize boolean",
+        "can_materialize_expiry boolean",
+        "can_place_hold boolean",
+        "can_release_hold boolean",
+        "can_claim_cleanup boolean",
+        "can_record_attempt boolean",
+        "can_purge boolean",
+        "enabled boolean",
+        "created_at timestamp with time zone",
+        "predecessor_revision bigint",
+        "predecessor_sha256 bytea",
+        "revision_sha256 bytea",
+        "migration_provenance text",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "source_snapshots",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "source_snapshots",
+      definition: [
+        "organization_id uuid",
+        "snapshot_id uuid",
+        "source_kind text",
+        "canonical_bytes bytea",
+        "content_sha256 bytea",
+        "observed_at timestamp with time zone",
+        "retrieved_at timestamp with time zone",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "evidence_records",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "evidence_records",
+      definition: [
+        "organization_id uuid",
+        "evidence_id uuid",
+        "snapshot_id uuid",
+        "evidence_kind text",
+        "coordinates text",
+        "transformation text",
+        "content_sha256 bytea",
+        "observed_at timestamp with time zone",
+        "retrieved_at timestamp with time zone",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_versions",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_versions",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "parent_version_id uuid",
+        "canonical_spec_bytes bytea",
+        "canonical_spec_sha256 bytea",
+        "validation_state text",
+        "validation_sha256 bytea",
+        "planner_provenance_sha256 bytea",
+        "policy_revision bigint",
+        "registry_revision bigint",
+        "calculation_graph_sha256 bytea",
+        "created_by_user_id uuid",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_version_snapshots",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_version_snapshots",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "snapshot_id uuid",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_version_evidence",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_version_evidence",
+      definition: [
+        "organization_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "evidence_id uuid",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "dashboard_artifacts",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "dashboard_artifacts",
+      definition: [
+        "organization_id uuid",
+        "artifact_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "ownership_class text",
+        "artifact_kind text",
+        "metadata_sha256 bytea",
+        "content_sha256 bytea",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "snapshot_reference_claims",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "snapshot_reference_claims",
+      definition: [
+        "organization_id uuid",
+        "snapshot_id uuid",
+        "reference_claim_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "claim_kind text",
+        "hold_id uuid",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "evidence_reference_claims",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "evidence_reference_claims",
+      definition: [
+        "organization_id uuid",
+        "evidence_id uuid",
+        "reference_claim_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "claim_kind text",
+        "hold_id uuid",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "artifact_reference_claims",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "artifact_reference_claims",
+      definition: [
+        "organization_id uuid",
+        "artifact_id uuid",
+        "reference_claim_id uuid",
+        "dashboard_id uuid",
+        "version_id uuid",
+        "claim_kind text",
+        "hold_id uuid",
+        "created_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "snapshot_deletion_finalizers",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "snapshot_deletion_finalizers",
+      definition: [
+        "organization_id uuid",
+        "snapshot_id uuid",
+        "state text",
+        "intent_at timestamp with time zone",
+        "expected_claim_set_sha256 bytea",
+        "lease_owner name",
+        "lease_expires_at timestamp with time zone",
+        "proof_sha256 bytea",
+        "bytes_deleted_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "evidence_deletion_finalizers",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "evidence_deletion_finalizers",
+      definition: [
+        "organization_id uuid",
+        "evidence_id uuid",
+        "state text",
+        "intent_at timestamp with time zone",
+        "expected_claim_set_sha256 bytea",
+        "lease_owner name",
+        "lease_expires_at timestamp with time zone",
+        "proof_sha256 bytea",
+        "bytes_deleted_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "dasher",
+      name: "artifact_deletion_finalizers",
+      kind: "c",
+      category: "C",
+      owner: "migration_owner",
+      relation: "artifact_deletion_finalizers",
+      definition: [
+        "organization_id uuid",
+        "artifact_id uuid",
+        "state text",
+        "intent_at timestamp with time zone",
+        "expected_claim_set_sha256 bytea",
+        "lease_owner name",
+        "lease_expires_at timestamp with time zone",
+        "proof_sha256 bytea",
+        "bytes_deleted_at timestamp with time zone",
+      ],
+      acl: [
+        {
+          grantor: "migration_owner",
+          grantee: "migration_owner",
+          privilege: "USAGE",
+          isGrantable: false,
+        },
+      ],
+    },
+  ],
+  sequences: [],
+  indexes: [
+    {
+      name: "dashboard_lifecycle_policies_pkey",
+      relation: "dashboard_lifecycle_policies",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "policy_revision"],
+      opclasses: ["uuid_ops", "int8_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboards_pkey",
+      relation: "dashboards",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_lifecycle_events_pkey",
+      relation: "dashboard_lifecycle_events",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id", "lifecycle_revision"],
+      opclasses: ["uuid_ops", "uuid_ops", "int8_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_promotion_requests_pkey",
+      relation: "dashboard_promotion_requests",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "promotion_request_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_promotion_decisions_pkey",
+      relation: "dashboard_promotion_decisions",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "promotion_request_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_cleanup_coordination_pkey",
+      relation: "dashboard_cleanup_coordination",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_cleanup_attempts_pkey",
+      relation: "dashboard_cleanup_attempts",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id", "cleanup_attempt_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_legal_holds_pkey",
+      relation: "dashboard_legal_holds",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id", "hold_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_tombstones_pkey",
+      relation: "dashboard_tombstones",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "tombstone_lineage_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_restore_lineage_pkey",
+      relation: "dashboard_restore_lineage",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "backup_deletion_ledger_pkey",
+      relation: "backup_deletion_ledger",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "ledger_sequence"],
+      opclasses: ["uuid_ops", "int8_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "retention_service_principal_allowlist_pkey",
+      relation: "retention_service_principal_allowlist",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["retention_service_principal_id", "principal_revision"],
+      opclasses: ["uuid_ops", "int8_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "source_snapshots_pkey",
+      relation: "source_snapshots",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "snapshot_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "evidence_records_pkey",
+      relation: "evidence_records",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "evidence_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_versions_pkey",
+      relation: "dashboard_versions",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_version_snapshots_pkey",
+      relation: "dashboard_version_snapshots",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: [
+        "organization_id",
+        "dashboard_id",
+        "version_id",
+        "snapshot_id",
+      ],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0, 0],
+    },
+    {
+      name: "dashboard_version_evidence_pkey",
+      relation: "dashboard_version_evidence",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: [
+        "organization_id",
+        "dashboard_id",
+        "version_id",
+        "evidence_id",
+      ],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0, 0],
+    },
+    {
+      name: "dashboard_artifacts_pkey",
+      relation: "dashboard_artifacts",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "artifact_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "snapshot_reference_claims_pkey",
+      relation: "snapshot_reference_claims",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "snapshot_id", "reference_claim_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "evidence_reference_claims_pkey",
+      relation: "evidence_reference_claims",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "evidence_id", "reference_claim_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "artifact_reference_claims_pkey",
+      relation: "artifact_reference_claims",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "artifact_id", "reference_claim_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "snapshot_deletion_finalizers_pkey",
+      relation: "snapshot_deletion_finalizers",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "snapshot_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "evidence_deletion_finalizers_pkey",
+      relation: "evidence_deletion_finalizers",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "evidence_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "artifact_deletion_finalizers_pkey",
+      relation: "artifact_deletion_finalizers",
+      method: "btree",
+      unique: true,
+      primary: true,
+      keyExpressions: ["organization_id", "artifact_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_lifecycle_policies_organization_fk_idx",
+      relation: "dashboard_lifecycle_policies",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id"],
+      opclasses: ["uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0],
+    },
+    {
+      name: "dashboards_organization_fk_idx",
+      relation: "dashboards",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id"],
+      opclasses: ["uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0],
+    },
+    {
+      name: "dashboards_creator_fk_idx",
+      relation: "dashboards",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["created_by_user_id"],
+      opclasses: ["uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0],
+    },
+    {
+      name: "dashboards_head_version_fk_idx",
+      relation: "dashboards",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "head_version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboards_restore_tombstone_fk_idx",
+      relation: "dashboards",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "restored_from_tombstone_lineage_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_lifecycle_events_dashboard_fk_idx",
+      relation: "dashboard_lifecycle_events",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_promotion_requests_dashboard_fk_idx",
+      relation: "dashboard_promotion_requests",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_promotion_decisions_request_fk_idx",
+      relation: "dashboard_promotion_decisions",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "promotion_request_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_cleanup_coordination_dashboard_fk_idx",
+      relation: "dashboard_cleanup_coordination",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_cleanup_attempts_dashboard_fk_idx",
+      relation: "dashboard_cleanup_attempts",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_legal_holds_dashboard_fk_idx",
+      relation: "dashboard_legal_holds",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_restore_lineage_dashboard_version_fk_idx",
+      relation: "dashboard_restore_lineage",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_restore_lineage_tombstone_fk_idx",
+      relation: "dashboard_restore_lineage",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "source_tombstone_lineage_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "backup_deletion_ledger_tombstone_fk_idx",
+      relation: "backup_deletion_ledger",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "tombstone_lineage_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "retention_allowlist_scope_organization_fk_idx",
+      relation: "retention_service_principal_allowlist",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["scope_organization_id"],
+      opclasses: ["uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0],
+    },
+    {
+      name: "source_snapshots_organization_fk_idx",
+      relation: "source_snapshots",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id"],
+      opclasses: ["uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0],
+    },
+    {
+      name: "evidence_records_snapshot_fk_idx",
+      relation: "evidence_records",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "snapshot_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_versions_dashboard_fk_idx",
+      relation: "dashboard_versions",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_versions_parent_fk_idx",
+      relation: "dashboard_versions",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "parent_version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_version_snapshots_version_fk_idx",
+      relation: "dashboard_version_snapshots",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_version_snapshots_snapshot_fk_idx",
+      relation: "dashboard_version_snapshots",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "snapshot_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_version_evidence_version_fk_idx",
+      relation: "dashboard_version_evidence",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_version_evidence_evidence_fk_idx",
+      relation: "dashboard_version_evidence",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "evidence_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboard_artifacts_version_fk_idx",
+      relation: "dashboard_artifacts",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "snapshot_reference_claims_snapshot_fk_idx",
+      relation: "snapshot_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "snapshot_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "snapshot_reference_claims_version_fk_idx",
+      relation: "snapshot_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "snapshot_reference_claims_hold_fk_idx",
+      relation: "snapshot_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "hold_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "evidence_reference_claims_evidence_fk_idx",
+      relation: "evidence_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "evidence_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "evidence_reference_claims_version_fk_idx",
+      relation: "evidence_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "evidence_reference_claims_hold_fk_idx",
+      relation: "evidence_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "hold_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "artifact_reference_claims_artifact_fk_idx",
+      relation: "artifact_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "artifact_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "artifact_reference_claims_version_fk_idx",
+      relation: "artifact_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "version_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "artifact_reference_claims_hold_fk_idx",
+      relation: "artifact_reference_claims",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "hold_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "snapshot_deletion_finalizers_snapshot_fk_idx",
+      relation: "snapshot_deletion_finalizers",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "snapshot_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "evidence_deletion_finalizers_evidence_fk_idx",
+      relation: "evidence_deletion_finalizers",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "evidence_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "artifact_deletion_finalizers_artifact_fk_idx",
+      relation: "artifact_deletion_finalizers",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "artifact_id"],
+      opclasses: ["uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0],
+    },
+    {
+      name: "dashboards_effective_expiry_idx",
+      relation: "dashboards",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: [
+        "effective_expires_at",
+        "organization_id",
+        "dashboard_id",
+      ],
+      opclasses: ["timestamptz_ops", "uuid_ops", "uuid_ops"],
+      predicate:
+        "((current_kind = 'disposable'::text) AND (access_revoked_at IS NULL) AND (purged_at IS NULL))",
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboards_purge_after_idx",
+      relation: "dashboards",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["purge_after", "organization_id", "dashboard_id"],
+      opclasses: ["timestamptz_ops", "uuid_ops", "uuid_ops"],
+      predicate: "((purged_at IS NULL) AND (purge_after IS NOT NULL))",
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_cleanup_coordination_next_attempt_idx",
+      relation: "dashboard_cleanup_coordination",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["next_attempt_at", "organization_id", "dashboard_id"],
+      opclasses: ["timestamptz_ops", "uuid_ops", "uuid_ops"],
+      predicate: null,
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+    {
+      name: "dashboard_legal_holds_active_idx",
+      relation: "dashboard_legal_holds",
+      method: "btree",
+      unique: false,
+      primary: false,
+      keyExpressions: ["organization_id", "dashboard_id", "hold_id"],
+      opclasses: ["uuid_ops", "uuid_ops", "uuid_ops"],
+      predicate: "released_at IS NULL",
+      valid: true,
+      ready: true,
+      live: true,
+      nullsNotDistinct: false,
+      options: [0, 0, 0],
+    },
+  ],
+  constraints: [
+    {
+      name: "dashboard_lifecycle_policies_pkey",
+      relation: "dashboard_lifecycle_policies",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "policy_revision"],
+      definition: "PRIMARY KEY (organization_id, policy_revision)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboards_pkey",
+      relation: "dashboards",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id"],
+      definition: "PRIMARY KEY (organization_id, dashboard_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_lifecycle_events_pkey",
+      relation: "dashboard_lifecycle_events",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "lifecycle_revision"],
+      definition:
+        "PRIMARY KEY (organization_id, dashboard_id, lifecycle_revision)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_promotion_requests_pkey",
+      relation: "dashboard_promotion_requests",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "promotion_request_id"],
+      definition: "PRIMARY KEY (organization_id, promotion_request_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_promotion_decisions_pkey",
+      relation: "dashboard_promotion_decisions",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "promotion_request_id"],
+      definition: "PRIMARY KEY (organization_id, promotion_request_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_cleanup_coordination_pkey",
+      relation: "dashboard_cleanup_coordination",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id"],
+      definition: "PRIMARY KEY (organization_id, dashboard_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_cleanup_attempts_pkey",
+      relation: "dashboard_cleanup_attempts",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "cleanup_attempt_id"],
+      definition:
+        "PRIMARY KEY (organization_id, dashboard_id, cleanup_attempt_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_legal_holds_pkey",
+      relation: "dashboard_legal_holds",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "hold_id"],
+      definition: "PRIMARY KEY (organization_id, dashboard_id, hold_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_tombstones_pkey",
+      relation: "dashboard_tombstones",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "tombstone_lineage_id"],
+      definition: "PRIMARY KEY (organization_id, tombstone_lineage_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_restore_lineage_pkey",
+      relation: "dashboard_restore_lineage",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      definition: "PRIMARY KEY (organization_id, dashboard_id, version_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "backup_deletion_ledger_pkey",
+      relation: "backup_deletion_ledger",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "ledger_sequence"],
+      definition: "PRIMARY KEY (organization_id, ledger_sequence)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "retention_service_principal_allowlist_pkey",
+      relation: "retention_service_principal_allowlist",
+      type: "PRIMARY KEY",
+      columns: ["retention_service_principal_id", "principal_revision"],
+      definition:
+        "PRIMARY KEY (retention_service_principal_id, principal_revision)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "source_snapshots_pkey",
+      relation: "source_snapshots",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "snapshot_id"],
+      definition: "PRIMARY KEY (organization_id, snapshot_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_records_pkey",
+      relation: "evidence_records",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "evidence_id"],
+      definition: "PRIMARY KEY (organization_id, evidence_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_versions_pkey",
+      relation: "dashboard_versions",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      definition: "PRIMARY KEY (organization_id, dashboard_id, version_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_version_snapshots_pkey",
+      relation: "dashboard_version_snapshots",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "version_id", "snapshot_id"],
+      definition:
+        "PRIMARY KEY (organization_id, dashboard_id, version_id, snapshot_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_version_evidence_pkey",
+      relation: "dashboard_version_evidence",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "dashboard_id", "version_id", "evidence_id"],
+      definition:
+        "PRIMARY KEY (organization_id, dashboard_id, version_id, evidence_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_artifacts_pkey",
+      relation: "dashboard_artifacts",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "artifact_id"],
+      definition: "PRIMARY KEY (organization_id, artifact_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "snapshot_reference_claims_pkey",
+      relation: "snapshot_reference_claims",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "snapshot_id", "reference_claim_id"],
+      definition:
+        "PRIMARY KEY (organization_id, snapshot_id, reference_claim_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_reference_claims_pkey",
+      relation: "evidence_reference_claims",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "evidence_id", "reference_claim_id"],
+      definition:
+        "PRIMARY KEY (organization_id, evidence_id, reference_claim_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "artifact_reference_claims_pkey",
+      relation: "artifact_reference_claims",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "artifact_id", "reference_claim_id"],
+      definition:
+        "PRIMARY KEY (organization_id, artifact_id, reference_claim_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "snapshot_deletion_finalizers_pkey",
+      relation: "snapshot_deletion_finalizers",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "snapshot_id"],
+      definition: "PRIMARY KEY (organization_id, snapshot_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_deletion_finalizers_pkey",
+      relation: "evidence_deletion_finalizers",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "evidence_id"],
+      definition: "PRIMARY KEY (organization_id, evidence_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "artifact_deletion_finalizers_pkey",
+      relation: "artifact_deletion_finalizers",
+      type: "PRIMARY KEY",
+      columns: ["organization_id", "artifact_id"],
+      definition: "PRIMARY KEY (organization_id, artifact_id)",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_lifecycle_policies_organization_fk",
+      relation: "dashboard_lifecycle_policies",
+      type: "FOREIGN KEY",
+      columns: ["organization_id"],
+      targetRelation: "organizations",
+      targetColumns: ["organization_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id) REFERENCES dasher.organizations(organization_id)",
+    },
+    {
+      name: "dashboards_organization_fk",
+      relation: "dashboards",
+      type: "FOREIGN KEY",
+      columns: ["organization_id"],
+      targetRelation: "organizations",
+      targetColumns: ["organization_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id) REFERENCES dasher.organizations(organization_id)",
+    },
+    {
+      name: "dashboards_creator_fk",
+      relation: "dashboards",
+      type: "FOREIGN KEY",
+      columns: ["created_by_user_id"],
+      targetRelation: "users",
+      targetColumns: ["user_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (created_by_user_id) REFERENCES dasher.users(user_id)",
+    },
+    {
+      name: "dashboards_head_version_fk",
+      relation: "dashboards",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "head_version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: true,
+      deferrable: true,
+      initiallyDeferred: true,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, head_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id) DEFERRABLE INITIALLY DEFERRED",
+    },
+    {
+      name: "dashboards_restore_tombstone_fk",
+      relation: "dashboards",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "restored_from_tombstone_lineage_id"],
+      targetRelation: "dashboard_tombstones",
+      targetColumns: ["organization_id", "tombstone_lineage_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, restored_from_tombstone_lineage_id) REFERENCES dasher.dashboard_tombstones(organization_id, tombstone_lineage_id)",
+    },
+    {
+      name: "dashboard_lifecycle_events_dashboard_fk",
+      relation: "dashboard_lifecycle_events",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id"],
+      targetRelation: "dashboards",
+      targetColumns: ["organization_id", "dashboard_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id) REFERENCES dasher.dashboards(organization_id, dashboard_id)",
+    },
+    {
+      name: "dashboard_promotion_requests_dashboard_fk",
+      relation: "dashboard_promotion_requests",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id"],
+      targetRelation: "dashboards",
+      targetColumns: ["organization_id", "dashboard_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id) REFERENCES dasher.dashboards(organization_id, dashboard_id)",
+    },
+    {
+      name: "dashboard_promotion_decisions_request_fk",
+      relation: "dashboard_promotion_decisions",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "promotion_request_id"],
+      targetRelation: "dashboard_promotion_requests",
+      targetColumns: ["organization_id", "promotion_request_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, promotion_request_id) REFERENCES dasher.dashboard_promotion_requests(organization_id, promotion_request_id)",
+    },
+    {
+      name: "dashboard_cleanup_coordination_dashboard_fk",
+      relation: "dashboard_cleanup_coordination",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id"],
+      targetRelation: "dashboards",
+      targetColumns: ["organization_id", "dashboard_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id) REFERENCES dasher.dashboards(organization_id, dashboard_id)",
+    },
+    {
+      name: "dashboard_cleanup_attempts_dashboard_fk",
+      relation: "dashboard_cleanup_attempts",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id"],
+      targetRelation: "dashboards",
+      targetColumns: ["organization_id", "dashboard_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id) REFERENCES dasher.dashboards(organization_id, dashboard_id)",
+    },
+    {
+      name: "dashboard_legal_holds_dashboard_fk",
+      relation: "dashboard_legal_holds",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id"],
+      targetRelation: "dashboards",
+      targetColumns: ["organization_id", "dashboard_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id) REFERENCES dasher.dashboards(organization_id, dashboard_id)",
+    },
+    {
+      name: "dashboard_restore_lineage_dashboard_version_fk",
+      relation: "dashboard_restore_lineage",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "dashboard_restore_lineage_tombstone_fk",
+      relation: "dashboard_restore_lineage",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "source_tombstone_lineage_id"],
+      targetRelation: "dashboard_tombstones",
+      targetColumns: ["organization_id", "tombstone_lineage_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, source_tombstone_lineage_id) REFERENCES dasher.dashboard_tombstones(organization_id, tombstone_lineage_id)",
+    },
+    {
+      name: "backup_deletion_ledger_tombstone_fk",
+      relation: "backup_deletion_ledger",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "tombstone_lineage_id"],
+      targetRelation: "dashboard_tombstones",
+      targetColumns: ["organization_id", "tombstone_lineage_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, tombstone_lineage_id) REFERENCES dasher.dashboard_tombstones(organization_id, tombstone_lineage_id)",
+    },
+    {
+      name: "retention_allowlist_scope_organization_fk",
+      relation: "retention_service_principal_allowlist",
+      type: "FOREIGN KEY",
+      columns: ["scope_organization_id"],
+      targetRelation: "organizations",
+      targetColumns: ["organization_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (scope_organization_id) REFERENCES dasher.organizations(organization_id)",
+    },
+    {
+      name: "source_snapshots_organization_fk",
+      relation: "source_snapshots",
+      type: "FOREIGN KEY",
+      columns: ["organization_id"],
+      targetRelation: "organizations",
+      targetColumns: ["organization_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id) REFERENCES dasher.organizations(organization_id)",
+    },
+    {
+      name: "evidence_records_snapshot_fk",
+      relation: "evidence_records",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "snapshot_id"],
+      targetRelation: "source_snapshots",
+      targetColumns: ["organization_id", "snapshot_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, snapshot_id) REFERENCES dasher.source_snapshots(organization_id, snapshot_id)",
+    },
+    {
+      name: "dashboard_versions_dashboard_fk",
+      relation: "dashboard_versions",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id"],
+      targetRelation: "dashboards",
+      targetColumns: ["organization_id", "dashboard_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id) REFERENCES dasher.dashboards(organization_id, dashboard_id)",
+    },
+    {
+      name: "dashboard_versions_parent_fk",
+      relation: "dashboard_versions",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "parent_version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, parent_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "dashboard_version_snapshots_version_fk",
+      relation: "dashboard_version_snapshots",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "dashboard_version_snapshots_snapshot_fk",
+      relation: "dashboard_version_snapshots",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "snapshot_id"],
+      targetRelation: "source_snapshots",
+      targetColumns: ["organization_id", "snapshot_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, snapshot_id) REFERENCES dasher.source_snapshots(organization_id, snapshot_id)",
+    },
+    {
+      name: "dashboard_version_evidence_version_fk",
+      relation: "dashboard_version_evidence",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "dashboard_version_evidence_evidence_fk",
+      relation: "dashboard_version_evidence",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "evidence_id"],
+      targetRelation: "evidence_records",
+      targetColumns: ["organization_id", "evidence_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, evidence_id) REFERENCES dasher.evidence_records(organization_id, evidence_id)",
+    },
+    {
+      name: "dashboard_artifacts_version_fk",
+      relation: "dashboard_artifacts",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "snapshot_reference_claims_snapshot_fk",
+      relation: "snapshot_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "snapshot_id"],
+      targetRelation: "source_snapshots",
+      targetColumns: ["organization_id", "snapshot_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, snapshot_id) REFERENCES dasher.source_snapshots(organization_id, snapshot_id)",
+    },
+    {
+      name: "snapshot_reference_claims_version_fk",
+      relation: "snapshot_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "snapshot_reference_claims_hold_fk",
+      relation: "snapshot_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "hold_id"],
+      targetRelation: "dashboard_legal_holds",
+      targetColumns: ["organization_id", "dashboard_id", "hold_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, hold_id) REFERENCES dasher.dashboard_legal_holds(organization_id, dashboard_id, hold_id)",
+    },
+    {
+      name: "evidence_reference_claims_evidence_fk",
+      relation: "evidence_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "evidence_id"],
+      targetRelation: "evidence_records",
+      targetColumns: ["organization_id", "evidence_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, evidence_id) REFERENCES dasher.evidence_records(organization_id, evidence_id)",
+    },
+    {
+      name: "evidence_reference_claims_version_fk",
+      relation: "evidence_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "evidence_reference_claims_hold_fk",
+      relation: "evidence_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "hold_id"],
+      targetRelation: "dashboard_legal_holds",
+      targetColumns: ["organization_id", "dashboard_id", "hold_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, hold_id) REFERENCES dasher.dashboard_legal_holds(organization_id, dashboard_id, hold_id)",
+    },
+    {
+      name: "artifact_reference_claims_artifact_fk",
+      relation: "artifact_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "artifact_id"],
+      targetRelation: "dashboard_artifacts",
+      targetColumns: ["organization_id", "artifact_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, artifact_id) REFERENCES dasher.dashboard_artifacts(organization_id, artifact_id)",
+    },
+    {
+      name: "artifact_reference_claims_version_fk",
+      relation: "artifact_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "version_id"],
+      targetRelation: "dashboard_versions",
+      targetColumns: ["organization_id", "dashboard_id", "version_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)",
+    },
+    {
+      name: "artifact_reference_claims_hold_fk",
+      relation: "artifact_reference_claims",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "dashboard_id", "hold_id"],
+      targetRelation: "dashboard_legal_holds",
+      targetColumns: ["organization_id", "dashboard_id", "hold_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, dashboard_id, hold_id) REFERENCES dasher.dashboard_legal_holds(organization_id, dashboard_id, hold_id)",
+    },
+    {
+      name: "snapshot_deletion_finalizers_snapshot_fk",
+      relation: "snapshot_deletion_finalizers",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "snapshot_id"],
+      targetRelation: "source_snapshots",
+      targetColumns: ["organization_id", "snapshot_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, snapshot_id) REFERENCES dasher.source_snapshots(organization_id, snapshot_id)",
+    },
+    {
+      name: "evidence_deletion_finalizers_evidence_fk",
+      relation: "evidence_deletion_finalizers",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "evidence_id"],
+      targetRelation: "evidence_records",
+      targetColumns: ["organization_id", "evidence_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, evidence_id) REFERENCES dasher.evidence_records(organization_id, evidence_id)",
+    },
+    {
+      name: "artifact_deletion_finalizers_artifact_fk",
+      relation: "artifact_deletion_finalizers",
+      type: "FOREIGN KEY",
+      columns: ["organization_id", "artifact_id"],
+      targetRelation: "dashboard_artifacts",
+      targetColumns: ["organization_id", "artifact_id"],
+      deferred: false,
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+      matchType: "s",
+      updateAction: "a",
+      deleteAction: "a",
+      definition:
+        "FOREIGN KEY (organization_id, artifact_id) REFERENCES dasher.dashboard_artifacts(organization_id, artifact_id)",
+    },
+    {
+      name: "audit_events_action_check",
+      relation: "audit_events",
+      type: "CHECK",
+      columns: ["action"],
+      definition:
+        "CHECK (((action)::text = ANY ((ARRAY['membership.role_changed'::character varying, 'membership.revoked'::character varying, 'invitation.issued'::character varying, 'invitation.revoked'::character varying, 'invitation.accepted'::character varying, 'invitation.accepted_existing_membership'::character varying, 'session.issued'::character varying, 'session.rotated'::character varying, 'session.revoked'::character varying, 'source_snapshot.created'::character varying, 'evidence_record.created'::character varying, 'dashboard.created'::character varying, 'dashboard_version.created'::character varying, 'dashboard_head.promoted'::character varying, 'dashboard.promotion_requested'::character varying, 'dashboard.promotion_approved'::character varying, 'dashboard.promotion_denied'::character varying, 'dashboard.expired'::character varying, 'dashboard.archived'::character varying, 'dashboard.unarchived'::character varying, 'dashboard.deleted'::character varying, 'dashboard.restored_as_new'::character varying, 'dashboard.cleanup_started'::character varying, 'dashboard.purge_eligible'::character varying, 'dashboard.legal_hold_placed'::character varying, 'dashboard.legal_hold_released'::character varying, 'dashboard.purged'::character varying, 'dashboard.artifact_created'::character varying])::text[])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_lifecycle_policies_default_ttl_check",
+      relation: "dashboard_lifecycle_policies",
+      type: "CHECK",
+      columns: ["default_disposable_ttl_seconds"],
+      definition:
+        "CHECK (((default_disposable_ttl_seconds >= 3600) AND (default_disposable_ttl_seconds <= 604800)))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboards_kind_check",
+      relation: "dashboards",
+      type: "CHECK",
+      columns: ["created_kind", "current_kind"],
+      definition:
+        "CHECK (((created_kind = ANY (ARRAY['disposable'::text, 'durable'::text])) AND (current_kind = ANY (ARRAY['disposable'::text, 'durable'::text]))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboards_lifecycle_state_check",
+      relation: "dashboards",
+      type: "CHECK",
+      columns: ["lifecycle_state"],
+      definition:
+        "CHECK ((lifecycle_state = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text, 'access_revoked'::text, 'quarantined'::text, 'purge_eligible'::text, 'cleaned'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboards_lifecycle_fences_check",
+      relation: "dashboards",
+      type: "CHECK",
+      columns: [
+        "lifecycle_revision",
+        "capability_epoch",
+        "cache_epoch",
+        "retention_policy_revision",
+      ],
+      definition:
+        "CHECK (((lifecycle_revision >= 0) AND (capability_epoch >= 0) AND (cache_epoch >= 0) AND (retention_policy_revision >= 1)))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboards_expiry_kind_check",
+      relation: "dashboards",
+      type: "CHECK",
+      columns: [
+        "created_kind",
+        "current_kind",
+        "original_expires_at",
+        "effective_expires_at",
+      ],
+      definition:
+        "CHECK (((created_kind = 'durable'::text) AND (current_kind = 'durable'::text) AND (original_expires_at IS NULL) AND (effective_expires_at IS NULL) OR ((created_kind = 'disposable'::text) AND (original_expires_at IS NOT NULL) AND (((current_kind = 'disposable'::text) AND (effective_expires_at = original_expires_at)) OR ((current_kind = 'durable'::text) AND (effective_expires_at IS NULL))))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboards_revocation_fields_check",
+      relation: "dashboards",
+      type: "CHECK",
+      columns: ["access_revoked_at", "revocation_reason"],
+      definition:
+        "CHECK (((access_revoked_at IS NULL) = (revocation_reason IS NULL)))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_lifecycle_events_kind_check",
+      relation: "dashboard_lifecycle_events",
+      type: "CHECK",
+      columns: ["event_kind"],
+      definition:
+        "CHECK ((event_kind = ANY (ARRAY['head_activated'::text, 'head_advanced'::text, 'promotion_approved'::text, 'archived'::text, 'unarchived'::text, 'expired'::text, 'deleted'::text, 'cleanup_started'::text, 'purge_eligible'::text, 'legal_hold_placed'::text, 'legal_hold_released'::text, 'purged'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_promotion_decisions_decision_check",
+      relation: "dashboard_promotion_decisions",
+      type: "CHECK",
+      columns: ["decision"],
+      definition:
+        "CHECK ((decision = ANY (ARRAY['approved'::text, 'denied'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "retention_allowlist_binding_kind_check",
+      relation: "retention_service_principal_allowlist",
+      type: "CHECK",
+      columns: ["binding_kind"],
+      definition: "CHECK ((binding_kind = 'postgres_session_user'::text))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "retention_allowlist_authority_scope_check",
+      relation: "retention_service_principal_allowlist",
+      type: "CHECK",
+      columns: ["authority_scope"],
+      definition:
+        "CHECK ((authority_scope = ANY (ARRAY['platform_operator'::text, 'tenant_legal_admin'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "retention_allowlist_scope_check",
+      relation: "retention_service_principal_allowlist",
+      type: "CHECK",
+      columns: ["authority_scope", "scope_organization_id"],
+      definition:
+        "CHECK ((((authority_scope = 'platform_operator'::text) AND (scope_organization_id IS NULL)) OR ((authority_scope = 'tenant_legal_admin'::text) AND (scope_organization_id IS NOT NULL))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "retention_allowlist_predecessor_check",
+      relation: "retention_service_principal_allowlist",
+      type: "CHECK",
+      columns: [
+        "principal_revision",
+        "predecessor_revision",
+        "predecessor_sha256",
+      ],
+      definition:
+        "CHECK (((principal_revision = 1) = ((predecessor_revision IS NULL) AND (predecessor_sha256 IS NULL))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "source_snapshots_source_kind_check",
+      relation: "source_snapshots",
+      type: "CHECK",
+      columns: ["source_kind"],
+      definition:
+        "CHECK ((source_kind = ANY (ARRAY['synthetic_fixture'::text, 'public_usgs_fixture'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "source_snapshots_canonical_bytes_length_check",
+      relation: "source_snapshots",
+      type: "CHECK",
+      columns: ["canonical_bytes"],
+      definition:
+        "CHECK (((octet_length(canonical_bytes) >= 1) AND (octet_length(canonical_bytes) <= 1048576)))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_records_evidence_kind_check",
+      relation: "evidence_records",
+      type: "CHECK",
+      columns: ["evidence_kind"],
+      definition:
+        "CHECK ((evidence_kind = ANY (ARRAY['source_record'::text, 'typed_value'::text, 'calculation_result'::text, 'event_record'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_versions_validation_state_check",
+      relation: "dashboard_versions",
+      type: "CHECK",
+      columns: ["validation_state"],
+      definition: "CHECK ((validation_state = 'validated'::text))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "dashboard_artifacts_ownership_class_check",
+      relation: "dashboard_artifacts",
+      type: "CHECK",
+      columns: ["ownership_class"],
+      definition:
+        "CHECK ((ownership_class = ANY (ARRAY['dashboard_owned'::text, 'shared'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "snapshot_reference_claims_claim_kind_check",
+      relation: "snapshot_reference_claims",
+      type: "CHECK",
+      columns: ["claim_kind"],
+      definition:
+        "CHECK ((claim_kind = ANY (ARRAY['access_bearing'::text, 'retention_only'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "snapshot_reference_claims_hold_check",
+      relation: "snapshot_reference_claims",
+      type: "CHECK",
+      columns: ["claim_kind", "hold_id"],
+      definition:
+        "CHECK ((((claim_kind = 'access_bearing'::text) AND (hold_id IS NULL)) OR ((claim_kind = 'retention_only'::text) AND (hold_id IS NOT NULL))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_reference_claims_claim_kind_check",
+      relation: "evidence_reference_claims",
+      type: "CHECK",
+      columns: ["claim_kind"],
+      definition:
+        "CHECK ((claim_kind = ANY (ARRAY['access_bearing'::text, 'retention_only'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_reference_claims_hold_check",
+      relation: "evidence_reference_claims",
+      type: "CHECK",
+      columns: ["claim_kind", "hold_id"],
+      definition:
+        "CHECK ((((claim_kind = 'access_bearing'::text) AND (hold_id IS NULL)) OR ((claim_kind = 'retention_only'::text) AND (hold_id IS NOT NULL))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "artifact_reference_claims_claim_kind_check",
+      relation: "artifact_reference_claims",
+      type: "CHECK",
+      columns: ["claim_kind"],
+      definition:
+        "CHECK ((claim_kind = ANY (ARRAY['access_bearing'::text, 'retention_only'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "artifact_reference_claims_hold_check",
+      relation: "artifact_reference_claims",
+      type: "CHECK",
+      columns: ["claim_kind", "hold_id"],
+      definition:
+        "CHECK ((((claim_kind = 'access_bearing'::text) AND (hold_id IS NULL)) OR ((claim_kind = 'retention_only'::text) AND (hold_id IS NOT NULL))))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "snapshot_deletion_finalizers_state_check",
+      relation: "snapshot_deletion_finalizers",
+      type: "CHECK",
+      columns: ["state"],
+      definition:
+        "CHECK ((state = ANY (ARRAY['intent'::text, 'eligible'::text, 'deleted'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "evidence_deletion_finalizers_state_check",
+      relation: "evidence_deletion_finalizers",
+      type: "CHECK",
+      columns: ["state"],
+      definition:
+        "CHECK ((state = ANY (ARRAY['intent'::text, 'eligible'::text, 'deleted'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
+      name: "artifact_deletion_finalizers_state_check",
+      relation: "artifact_deletion_finalizers",
+      type: "CHECK",
+      columns: ["state"],
+      definition:
+        "CHECK ((state = ANY (ARRAY['intent'::text, 'eligible'::text, 'deleted'::text])))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+  ],
+  triggers: [
+    {
+      name: "dashboard_lifecycle_policies_immutable",
+      relationName: "dashboard_lifecycle_policies",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_lifecycle_policies_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_lifecycle_policies FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_lifecycle_events_immutable",
+      relationName: "dashboard_lifecycle_events",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_lifecycle_events_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_lifecycle_events FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_promotion_requests_immutable",
+      relationName: "dashboard_promotion_requests",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_promotion_requests_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_promotion_requests FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_promotion_decisions_immutable",
+      relationName: "dashboard_promotion_decisions",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_promotion_decisions_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_promotion_decisions FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_cleanup_attempts_immutable",
+      relationName: "dashboard_cleanup_attempts",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_cleanup_attempts_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_cleanup_attempts FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_restore_lineage_immutable",
+      relationName: "dashboard_restore_lineage",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_restore_lineage_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_restore_lineage FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "backup_deletion_ledger_immutable",
+      relationName: "backup_deletion_ledger",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER backup_deletion_ledger_immutable BEFORE UPDATE OR DELETE ON dasher.backup_deletion_ledger FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "retention_service_principal_allowlist_immutable",
+      relationName: "retention_service_principal_allowlist",
+      functionIdentity: "dasher_private.reject_dashboard_append_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER retention_service_principal_allowlist_immutable BEFORE UPDATE OR DELETE ON dasher.retention_service_principal_allowlist FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
+      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboards_transition_guard",
+      relationName: "dashboards",
+      functionIdentity: "dasher_private.enforce_dashboard_transition()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboards_transition_guard BEFORE UPDATE ON dasher.dashboards FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_dashboard_transition()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_tombstones_retention_guard",
+      relationName: "dashboard_tombstones",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_tombstones_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_tombstones FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "source_snapshots_retention_guard",
+      relationName: "source_snapshots",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER source_snapshots_retention_guard BEFORE UPDATE OR DELETE ON dasher.source_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "evidence_records_retention_guard",
+      relationName: "evidence_records",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER evidence_records_retention_guard BEFORE UPDATE OR DELETE ON dasher.evidence_records FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_versions_retention_guard",
+      relationName: "dashboard_versions",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_versions_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_versions FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_version_snapshots_retention_guard",
+      relationName: "dashboard_version_snapshots",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_version_snapshots_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_version_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_version_evidence_retention_guard",
+      relationName: "dashboard_version_evidence",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_version_evidence_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_version_evidence FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "dashboard_artifacts_retention_guard",
+      relationName: "dashboard_artifacts",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER dashboard_artifacts_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_artifacts FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "snapshot_reference_claims_retention_guard",
+      relationName: "snapshot_reference_claims",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER snapshot_reference_claims_retention_guard BEFORE UPDATE OR DELETE ON dasher.snapshot_reference_claims FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "evidence_reference_claims_retention_guard",
+      relationName: "evidence_reference_claims",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER evidence_reference_claims_retention_guard BEFORE UPDATE OR DELETE ON dasher.evidence_reference_claims FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+    {
+      name: "artifact_reference_claims_retention_guard",
+      relationName: "artifact_reference_claims",
+      functionIdentity: "dasher_private.enforce_retention_mutation()",
+      timing: "BEFORE",
+      level: "ROW",
+      events: ["UPDATE", "DELETE"],
+      enabled: "O",
+      definition:
+        "CREATE TRIGGER artifact_reference_claims_retention_guard BEFORE UPDATE OR DELETE ON dasher.artifact_reference_claims FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
+      requiredProofs: [
+        "current_user = dasher_retention_definer",
+        "phase = authorized",
+        "exact principal revision and capability",
+        "exact organization and dashboard context",
+        "expected lifecycle revision",
+        "allowed OLD to NEW transition",
+        "exact changed-column allowlist",
+      ],
+      callStackInspection: false,
+      dynamicSql: false,
+    },
+  ],
+  policies: [
+    {
+      name: "retention_service_principal_self_binding_select",
+      relation: "retention_service_principal_allowlist",
+      command: "SELECT",
+      catalogCommand: "r",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: true,
+      columns: [
+        "retention_service_principal_id",
+        "principal_revision",
+        "binding_kind",
+        "binding_subject",
+        "authority_scope",
+        "scope_organization_id",
+        "can_initialize",
+        "can_materialize_expiry",
+        "can_place_hold",
+        "can_release_hold",
+        "can_claim_cleanup",
+        "can_record_attempt",
+        "can_purge",
+        "enabled",
+        "created_at",
+        "predecessor_revision",
+        "predecessor_sha256",
+        "revision_sha256",
+        "migration_provenance",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (binding_kind = 'postgres_session_user'::text) AND (binding_subject = SESSION_USER))",
+      withCheck: null,
+    },
+    {
+      name: "dashboards_retention_target_discovery_select",
+      relation: "dashboards",
+      command: "SELECT",
+      catalogCommand: "r",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: true,
+      columns: ["organization_id"],
+      shutsOffWhenPhase: "authorized",
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'target_discovery'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) = 'initialize'::text) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck: null,
+    },
+    {
+      name: "dashboard_lifecycle_policies_authorized_context",
+      relation: "dashboard_lifecycle_policies",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "policy_revision",
+        "default_disposable_ttl_seconds",
+        "retention_policy_revision",
+        "created_at",
+        "created_by_user_id",
+        "provenance",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboards_authorized_context",
+      relation: "dashboards",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "dashboard_id",
+        "title",
+        "created_by_user_id",
+        "created_at",
+        "created_kind",
+        "current_kind",
+        "original_expires_at",
+        "effective_expires_at",
+        "lifecycle_state",
+        "lifecycle_revision",
+        "capability_epoch",
+        "cache_epoch",
+        "access_revoked_at",
+        "revocation_reason",
+        "purge_after",
+        "purge_started_at",
+        "purged_at",
+        "retention_policy_revision",
+        "promoted_at",
+        "archived_at",
+        "head_version_id",
+        "tombstone_lineage_id",
+        "restored_from_tombstone_lineage_id",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_lifecycle_events_authorized_context",
+      relation: "dashboard_lifecycle_events",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "lifecycle_event_id",
+        "organization_id",
+        "dashboard_id",
+        "lifecycle_revision",
+        "event_kind",
+        "from_kind",
+        "to_kind",
+        "from_state",
+        "to_state",
+        "occurred_at",
+        "actor_user_id",
+        "actor_service",
+        "authority_revision",
+        "retention_policy_revision",
+        "request_id",
+        "job_id",
+        "reason_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_promotion_requests_authorized_context",
+      relation: "dashboard_promotion_requests",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "promotion_request_id",
+        "dashboard_id",
+        "requested_lifecycle_revision",
+        "requested_at",
+        "requested_by_user_id",
+        "rationale_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_promotion_decisions_authorized_context",
+      relation: "dashboard_promotion_decisions",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "promotion_request_id",
+        "decision",
+        "dashboard_lifecycle_revision",
+        "decided_at",
+        "decided_by_user_id",
+        "retention_policy_revision",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_cleanup_coordination_authorized_context",
+      relation: "dashboard_cleanup_coordination",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "dashboard_id",
+        "current_step",
+        "lease_owner",
+        "lease_expires_at",
+        "expected_lifecycle_revision",
+        "next_attempt_at",
+        "completion_proof_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_cleanup_attempts_authorized_context",
+      relation: "dashboard_cleanup_attempts",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "dashboard_id",
+        "cleanup_attempt_id",
+        "step",
+        "started_at",
+        "finished_at",
+        "result",
+        "released_claim_count",
+        "deleted_resource_count",
+        "deferred_claim_count",
+        "failure_code",
+        "proof_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_legal_holds_authorized_context",
+      relation: "dashboard_legal_holds",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "dashboard_id",
+        "hold_id",
+        "case_matter_reference",
+        "placed_by_principal_id",
+        "placed_authority_revision",
+        "placed_actor",
+        "placed_reason_sha256",
+        "placed_at",
+        "retention_policy_revision",
+        "released_at",
+        "released_by_principal_id",
+        "released_authority_revision",
+        "released_actor",
+        "released_reason_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_tombstones_authorized_context",
+      relation: "dashboard_tombstones",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "tombstone_lineage_id",
+        "retention_policy_revision",
+        "access_revoked_at",
+        "access_revoked_lifecycle_revision",
+        "access_revoked_proof_sha256",
+        "purged_at",
+        "purged_lifecycle_revision",
+        "purged_proof_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_restore_lineage_authorized_context",
+      relation: "dashboard_restore_lineage",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "dashboard_id",
+        "version_id",
+        "source_tombstone_lineage_id",
+        "source_version_id",
+        "retention_policy_revision",
+        "actor_user_id",
+        "authority_revision",
+        "occurred_at",
+        "provenance_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "backup_deletion_ledger_authorized_context",
+      relation: "backup_deletion_ledger",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "ledger_sequence",
+        "tombstone_lineage_id",
+        "lifecycle_revision",
+        "event_kind",
+        "event_occurred_at",
+        "inserted_at",
+        "retention_policy_revision",
+        "proof_sha256",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "source_snapshots_authorized_context",
+      relation: "source_snapshots",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "snapshot_id",
+        "source_kind",
+        "canonical_bytes",
+        "content_sha256",
+        "observed_at",
+        "retrieved_at",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "evidence_records_authorized_context",
+      relation: "evidence_records",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "evidence_id",
+        "snapshot_id",
+        "evidence_kind",
+        "coordinates",
+        "transformation",
+        "content_sha256",
+        "observed_at",
+        "retrieved_at",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_versions_authorized_context",
+      relation: "dashboard_versions",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "dashboard_id",
+        "version_id",
+        "parent_version_id",
+        "canonical_spec_bytes",
+        "canonical_spec_sha256",
+        "validation_state",
+        "validation_sha256",
+        "planner_provenance_sha256",
+        "policy_revision",
+        "registry_revision",
+        "calculation_graph_sha256",
+        "created_by_user_id",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_version_snapshots_authorized_context",
+      relation: "dashboard_version_snapshots",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: ["organization_id", "dashboard_id", "version_id", "snapshot_id"],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_version_evidence_authorized_context",
+      relation: "dashboard_version_evidence",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: ["organization_id", "dashboard_id", "version_id", "evidence_id"],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "dashboard_artifacts_authorized_context",
+      relation: "dashboard_artifacts",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "artifact_id",
+        "dashboard_id",
+        "version_id",
+        "ownership_class",
+        "artifact_kind",
+        "metadata_sha256",
+        "content_sha256",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "snapshot_reference_claims_authorized_context",
+      relation: "snapshot_reference_claims",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "snapshot_id",
+        "reference_claim_id",
+        "dashboard_id",
+        "version_id",
+        "claim_kind",
+        "hold_id",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "evidence_reference_claims_authorized_context",
+      relation: "evidence_reference_claims",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "evidence_id",
+        "reference_claim_id",
+        "dashboard_id",
+        "version_id",
+        "claim_kind",
+        "hold_id",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "artifact_reference_claims_authorized_context",
+      relation: "artifact_reference_claims",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "artifact_id",
+        "reference_claim_id",
+        "dashboard_id",
+        "version_id",
+        "claim_kind",
+        "hold_id",
+        "created_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid))",
+    },
+    {
+      name: "snapshot_deletion_finalizers_authorized_context",
+      relation: "snapshot_deletion_finalizers",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "snapshot_id",
+        "state",
+        "intent_at",
+        "expected_claim_set_sha256",
+        "lease_owner",
+        "lease_expires_at",
+        "proof_sha256",
+        "bytes_deleted_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "evidence_deletion_finalizers_authorized_context",
+      relation: "evidence_deletion_finalizers",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "evidence_id",
+        "state",
+        "intent_at",
+        "expected_claim_set_sha256",
+        "lease_owner",
+        "lease_expires_at",
+        "proof_sha256",
+        "bytes_deleted_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+    {
+      name: "artifact_deletion_finalizers_authorized_context",
+      relation: "artifact_deletion_finalizers",
+      command: "ALL",
+      catalogCommand: "*",
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      bootstrap: false,
+      columns: [
+        "organization_id",
+        "artifact_id",
+        "state",
+        "intent_at",
+        "expected_claim_set_sha256",
+        "lease_owner",
+        "lease_expires_at",
+        "proof_sha256",
+        "bytes_deleted_at",
+      ],
+      shutsOffWhenPhase: null,
+      using:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+      withCheck:
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) <> ''::text) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid))",
+    },
+  ],
+  functions: [
+    {
+      schema: "dasher_api",
+      name: "list_dashboards",
+      identityArguments: "integer",
+      returns: "SETOF dasher.dashboard_summary",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "get_dashboard_summary",
+      identityArguments: "uuid",
+      returns: "dasher.dashboard_summary",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "get_dashboard_head",
+      identityArguments: "uuid",
+      returns: "uuid",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "get_dashboard_version",
+      identityArguments: "uuid, uuid",
+      returns: "dasher.dashboard_version_projection",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "get_dashboard_evidence",
+      identityArguments: "uuid, uuid",
+      returns: "SETOF dasher.dashboard_evidence_projection",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "get_dashboard_lineage",
+      identityArguments: "uuid, uuid",
+      returns: "SETOF dasher.dashboard_lineage_projection",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "get_dashboard_admin_status",
+      identityArguments: "uuid",
+      returns: "dasher.dashboard_admin_projection",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "create_dashboard",
+      identityArguments: "uuid, text, text, integer, boolean, uuid, uuid, text",
+      returns: "uuid",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "create_evidence_record",
+      identityArguments:
+        "uuid, uuid, uuid, uuid, text, text, bytea, timestamptz, timestamptz, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "create_dashboard_version",
+      identityArguments:
+        "uuid, uuid, uuid, bytea, bytea, uuid, bytea, bytea, bigint, bigint, bytea, uuid[], uuid[], uuid, text",
+      returns: "uuid",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "compare_and_swap_dashboard_head",
+      identityArguments: "uuid, uuid, uuid, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "request_dashboard_promotion",
+      identityArguments: "uuid, uuid, bigint, bytea, uuid, text",
+      returns: "uuid",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "decide_dashboard_promotion",
+      identityArguments: "uuid, uuid, uuid, bigint, text, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "set_dashboard_archive",
+      identityArguments: "uuid, boolean, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "delete_dashboard",
+      identityArguments: "uuid, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_api",
+      name: "restore_dashboard_as_new",
+      identityArguments: "uuid, uuid, uuid, uuid, text, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_security_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_app"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "initialize_operator_context",
+      identityArguments: "uuid, text, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "materialize_dashboard_expiry",
+      identityArguments: "uuid, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "place_dashboard_legal_hold",
+      identityArguments: "uuid, uuid, text, bytea, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "release_dashboard_legal_hold",
+      identityArguments: "uuid, uuid, bytea, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "claim_dashboard_cleanup",
+      identityArguments: "uuid, text, bigint, text, interval, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "record_dashboard_cleanup_attempt",
+      identityArguments:
+        "uuid, uuid, text, text, integer, integer, integer, bytea, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_retention_api",
+      name: "purge_dashboard",
+      identityArguments: "uuid, bigint, uuid, text",
+      returns: "void",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: true,
+      owner: "dasher_retention_definer",
+      proconfig: ["search_path=pg_catalog"],
+      execute: ["dasher_retention_operator"],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_private",
+      name: "reject_dashboard_append_mutation",
+      identityArguments: "",
+      returns: "trigger",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: false,
+      owner: "migration_owner",
+      proconfig: ["search_path=pg_catalog"],
+      execute: [],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_private",
+      name: "enforce_dashboard_transition",
+      identityArguments: "",
+      returns: "trigger",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: false,
+      owner: "migration_owner",
+      proconfig: ["search_path=pg_catalog"],
+      execute: [],
+      defaults: [],
+      variadic: false,
+    },
+    {
+      schema: "dasher_private",
+      name: "enforce_retention_mutation",
+      identityArguments: "",
+      returns: "trigger",
+      language: "plpgsql",
+      volatility: "VOLATILE",
+      securityDefiner: false,
+      owner: "migration_owner",
+      proconfig: ["search_path=pg_catalog"],
+      execute: [],
+      defaults: [],
+      variadic: false,
+    },
+  ],
+  relationAcls: [
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_policies",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_events",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_promotion_requests",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_promotion_decisions",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_restore_lineage",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "backup_deletion_ledger",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "source_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_records",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_versions",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_evidence",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_artifacts",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_policies",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_events",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_promotion_requests",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_promotion_decisions",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_restore_lineage",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "backup_deletion_ledger",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_records",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_versions",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_evidence",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_artifacts",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_policies",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_events",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_attempts",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_restore_lineage",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "backup_deletion_ledger",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "retention_service_principal_allowlist",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "source_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_records",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_versions",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_evidence",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_artifacts",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "SELECT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_lifecycle_events",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_attempts",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "backup_deletion_ledger",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "INSERT",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "source_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_records",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_versions",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_snapshots",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_version_evidence",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_artifacts",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_reference_claims",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "DELETE",
+      isGrantable: false,
+    },
+  ],
+  columnAcls: [
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "head_version_id",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "lifecycle_state",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "lifecycle_revision",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "capability_epoch",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "cache_epoch",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "current_kind",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "effective_expires_at",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "promoted_at",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "archived_at",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "access_revoked_at",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "revocation_reason",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "purge_after",
+      grantor: "migration_owner",
+      grantee: "dasher_security_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "lifecycle_state",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "lifecycle_revision",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "capability_epoch",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "cache_epoch",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "access_revoked_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "revocation_reason",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "purge_after",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "purge_started_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboards",
+      columnName: "purged_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "current_step",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "lease_owner",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "lease_expires_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "expected_lifecycle_revision",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "next_attempt_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_cleanup_coordination",
+      columnName: "completion_proof_sha256",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      columnName: "released_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      columnName: "released_by_principal_id",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      columnName: "released_authority_revision",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      columnName: "released_actor",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_legal_holds",
+      columnName: "released_reason_sha256",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      columnName: "purged_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      columnName: "purged_lifecycle_revision",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "dashboard_tombstones",
+      columnName: "purged_proof_sha256",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "state",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "lease_owner",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "lease_expires_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "proof_sha256",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "snapshot_deletion_finalizers",
+      columnName: "bytes_deleted_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      columnName: "state",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      columnName: "lease_owner",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      columnName: "lease_expires_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      columnName: "proof_sha256",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "evidence_deletion_finalizers",
+      columnName: "bytes_deleted_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      columnName: "state",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      columnName: "lease_owner",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      columnName: "lease_expires_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      columnName: "proof_sha256",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+    {
+      schema: "dasher",
+      relationName: "artifact_deletion_finalizers",
+      columnName: "bytes_deleted_at",
+      grantor: "migration_owner",
+      grantee: "dasher_retention_definer",
+      privilege: "UPDATE",
+      isGrantable: false,
+    },
+  ],
+  functionExecuteGrants: [
+    {
+      identity: "dasher_api.list_dashboards(integer)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.get_dashboard_summary(uuid)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.get_dashboard_head(uuid)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.get_dashboard_version(uuid, uuid)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.get_dashboard_evidence(uuid, uuid)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.get_dashboard_lineage(uuid, uuid)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.get_dashboard_admin_status(uuid)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.create_dashboard(uuid, text, text, integer, boolean, uuid, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.create_evidence_record(uuid, uuid, uuid, uuid, text, text, bytea, timestamptz, timestamptz, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.create_dashboard_version(uuid, uuid, uuid, bytea, bytea, uuid, bytea, bytea, bigint, bigint, bytea, uuid[], uuid[], uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.compare_and_swap_dashboard_head(uuid, uuid, uuid, bigint, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.request_dashboard_promotion(uuid, uuid, bigint, bytea, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.decide_dashboard_promotion(uuid, uuid, uuid, bigint, text, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.set_dashboard_archive(uuid, boolean, bigint, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_api.delete_dashboard(uuid, bigint, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_api.restore_dashboard_as_new(uuid, uuid, uuid, uuid, text, uuid, text)",
+      grantor: "dasher_security_definer",
+      grantees: ["dasher_app"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.initialize_operator_context(uuid, text, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.materialize_dashboard_expiry(uuid, bigint, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.place_dashboard_legal_hold(uuid, uuid, text, bytea, bigint, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.release_dashboard_legal_hold(uuid, uuid, bytea, bigint, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.claim_dashboard_cleanup(uuid, text, bigint, text, interval, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.record_dashboard_cleanup_attempt(uuid, uuid, text, text, integer, integer, integer, bytea, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity:
+        "dasher_retention_api.purge_dashboard(uuid, bigint, uuid, text)",
+      grantor: "dasher_retention_definer",
+      grantees: ["dasher_retention_operator"],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_private.reject_dashboard_append_mutation()",
+      grantor: "migration_owner",
+      grantees: [],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_private.enforce_dashboard_transition()",
+      grantor: "migration_owner",
+      grantees: [],
+      isGrantable: false,
+    },
+    {
+      identity: "dasher_private.enforce_retention_mutation()",
+      grantor: "migration_owner",
+      grantees: [],
+      isGrantable: false,
+    },
+  ],
+} as const;
+
+const canonicalColumnSignatures = [
+  "audit_events|1|audit_event_id|uuid|true|<none>",
+  "audit_events|2|organization_id|uuid|true|<none>",
+  "audit_events|3|occurred_at|timestamp with time zone|true|clock_timestamp()",
+  "audit_events|4|actor_kind|character varying(16)|true|<none>",
+  "audit_events|5|actor_user_id|uuid|false|<none>",
+  "audit_events|6|actor_service|character varying(64)|false|<none>",
+  "audit_events|7|authority_revision|bigint|true|<none>",
+  "audit_events|8|request_id|uuid|true|<none>",
+  "audit_events|9|job_id|uuid|false|<none>",
+  "audit_events|10|action|character varying(64)|true|<none>",
+  "audit_events|11|target_type|character varying(32)|true|<none>",
+  "audit_events|12|target_id|uuid|true|<none>",
+  "audit_events|13|outcome|character varying(16)|true|<none>",
+  "audit_events|14|content_sha256|bytea|false|<none>",
+  "audit_events|15|source_ref|character varying(200)|false|<none>",
+  "audit_events|16|provider|character varying(64)|false|<none>",
+  "audit_events|17|credential_version|character varying(64)|false|<none>",
+  "audit_events|18|usage_units|numeric(20,6)|false|<none>",
+  "audit_events|19|cost_minor_units|bigint|false|<none>",
+  "audit_events|20|deployment_revision|character varying(64)|true|<none>",
+  "external_identities|1|issuer|character varying(512)|true|<none>",
+  "external_identities|2|subject|character varying(512)|true|<none>",
+  "external_identities|3|user_id|uuid|true|<none>",
+  "external_identities|4|created_at|timestamp with time zone|true|transaction_timestamp()",
+  "invitations|1|invitation_id|uuid|true|<none>",
+  "invitations|2|organization_id|uuid|true|<none>",
+  "invitations|3|normalized_email|character varying(320)|true|<none>",
+  "invitations|4|granted_role|character varying(16)|true|<none>",
+  "invitations|5|role_ceiling|character varying(16)|true|<none>",
+  "invitations|6|token_key_version|smallint|true|<none>",
+  "invitations|7|token_digest|bytea|true|<none>",
+  "invitations|8|created_by_user_id|uuid|true|<none>",
+  "invitations|9|created_at|timestamp with time zone|true|transaction_timestamp()",
+  "invitations|10|expires_at|timestamp with time zone|true|<none>",
+  "invitations|11|accepted_at|timestamp with time zone|false|<none>",
+  "invitations|12|accepted_user_id|uuid|false|<none>",
+  "invitations|13|revoked_at|timestamp with time zone|false|<none>",
+  "invitations|14|revoked_by_user_id|uuid|false|<none>",
+  "memberships|1|membership_id|uuid|true|<none>",
+  "memberships|2|organization_id|uuid|true|<none>",
+  "memberships|3|user_id|uuid|true|<none>",
+  "memberships|4|role|character varying(16)|true|<none>",
+  "memberships|5|state|character varying(16)|true|<none>",
+  "memberships|6|authority_revision|bigint|true|<none>",
+  "memberships|7|created_at|timestamp with time zone|true|transaction_timestamp()",
+  "memberships|8|updated_at|timestamp with time zone|true|transaction_timestamp()",
+  "memberships|9|revoked_at|timestamp with time zone|false|<none>",
+  "organizations|1|organization_id|uuid|true|<none>",
+  "organizations|2|display_name|character varying(200)|true|<none>",
+  "organizations|3|created_at|timestamp with time zone|true|transaction_timestamp()",
+  "sessions|1|session_id|uuid|true|<none>",
+  "sessions|2|organization_id|uuid|true|<none>",
+  "sessions|3|user_id|uuid|true|<none>",
+  "sessions|4|authority_revision|bigint|true|<none>",
+  "sessions|5|token_key_version|smallint|true|<none>",
+  "sessions|6|token_digest|bytea|true|<none>",
+  "sessions|7|csrf_key_version|smallint|true|<none>",
+  "sessions|8|csrf_digest|bytea|true|<none>",
+  "sessions|9|issued_at|timestamp with time zone|true|<none>",
+  "sessions|10|last_seen_at|timestamp with time zone|true|<none>",
+  "sessions|11|idle_expires_at|timestamp with time zone|true|<none>",
+  "sessions|12|absolute_expires_at|timestamp with time zone|true|<none>",
+  "sessions|13|rotated_from_session_id|uuid|false|<none>",
+  "sessions|14|replaced_by_session_id|uuid|false|<none>",
+  "sessions|15|revoked_at|timestamp with time zone|false|<none>",
+  "sessions|16|revocation_reason|character varying(32)|false|<none>",
+  "users|1|user_id|uuid|true|<none>",
+  "users|2|created_at|timestamp with time zone|true|transaction_timestamp()",
+] as const;
+
+const canonicalRelationConstraintSignatures = [
+  "audit_events|audit_events_action_check|c|CHECK (((action)::text = ANY ((ARRAY['membership.role_changed'::character varying, 'membership.revoked'::character varying, 'invitation.issued'::character varying, 'invitation.revoked'::character varying, 'invitation.accepted'::character varying, 'invitation.accepted_existing_membership'::character varying, 'session.issued'::character varying, 'session.rotated'::character varying, 'session.revoked'::character varying, 'source_snapshot.created'::character varying, 'evidence_record.created'::character varying, 'dashboard.created'::character varying, 'dashboard_version.created'::character varying, 'dashboard_head.promoted'::character varying])::text[])))|true",
+  "audit_events|audit_events_actor_check|c|CHECK (((((actor_kind)::text = 'user'::text) AND (actor_user_id IS NOT NULL) AND (actor_service IS NULL)) OR (((actor_kind)::text = 'service'::text) AND (actor_user_id IS NULL) AND (actor_service IS NOT NULL))))|true",
+  "audit_events|audit_events_actor_kind_check|c|CHECK (((actor_kind)::text = ANY ((ARRAY['user'::character varying, 'service'::character varying])::text[])))|true",
+  "audit_events|audit_events_actor_service_check|c|CHECK (((actor_service IS NULL) OR (((actor_service)::text = btrim((actor_service)::text)) AND ((char_length((actor_service)::text) >= 1) AND (char_length((actor_service)::text) <= 64)) AND ((actor_service)::text !~ '[[:cntrl:]]'::text))))|true",
+  "audit_events|audit_events_authority_revision_check|c|CHECK ((authority_revision >= 1))|true",
+  "audit_events|audit_events_content_sha256_check|c|CHECK (((content_sha256 IS NULL) OR (octet_length(content_sha256) = 32)))|true",
+  "audit_events|audit_events_cost_minor_units_check|c|CHECK (((cost_minor_units IS NULL) OR (cost_minor_units >= 0)))|true",
+  "audit_events|audit_events_credential_version_check|c|CHECK (((credential_version IS NULL) OR (((credential_version)::text = btrim((credential_version)::text)) AND ((char_length((credential_version)::text) >= 1) AND (char_length((credential_version)::text) <= 64)) AND ((credential_version)::text !~ '[[:cntrl:]]'::text))))|true",
+  "audit_events|audit_events_deployment_revision_check|c|CHECK ((((deployment_revision)::text = btrim((deployment_revision)::text)) AND ((char_length((deployment_revision)::text) >= 1) AND (char_length((deployment_revision)::text) <= 64)) AND ((deployment_revision)::text !~ '[[:cntrl:]]'::text)))|true",
+  "audit_events|audit_events_outcome_check|c|CHECK (((outcome)::text = 'succeeded'::text))|true",
+  "audit_events|audit_events_provider_check|c|CHECK (((provider IS NULL) OR (((provider)::text = btrim((provider)::text)) AND ((char_length((provider)::text) >= 1) AND (char_length((provider)::text) <= 64)) AND ((provider)::text !~ '[[:cntrl:]]'::text))))|true",
+  "audit_events|audit_events_source_ref_check|c|CHECK (((source_ref IS NULL) OR (((source_ref)::text = btrim((source_ref)::text)) AND ((char_length((source_ref)::text) >= 1) AND (char_length((source_ref)::text) <= 200)) AND ((source_ref)::text !~ '[[:cntrl:]]'::text))))|true",
+  "audit_events|audit_events_target_type_check|c|CHECK ((((target_type)::text = btrim((target_type)::text)) AND ((char_length((target_type)::text) >= 1) AND (char_length((target_type)::text) <= 32)) AND ((target_type)::text !~ '[[:cntrl:]]'::text)))|true",
+  "audit_events|audit_events_usage_units_check|c|CHECK (((usage_units IS NULL) OR ((usage_units <> 'NaN'::numeric) AND (usage_units >= (0)::numeric))))|true",
+  "audit_events|audit_events_pkey|p|PRIMARY KEY (audit_event_id)|true",
+  "audit_events|audit_events_org_id_key|u|UNIQUE (organization_id, audit_event_id)|true",
+  "external_identities|external_identities_issuer_check|c|CHECK ((((issuer)::text = btrim((issuer)::text)) AND ((char_length((issuer)::text) >= 1) AND (char_length((issuer)::text) <= 512)) AND ((issuer)::text !~ '[[:cntrl:]]'::text)))|true",
+  "external_identities|external_identities_subject_check|c|CHECK ((((subject)::text = btrim((subject)::text)) AND ((char_length((subject)::text) >= 1) AND (char_length((subject)::text) <= 512)) AND ((subject)::text !~ '[[:cntrl:]]'::text)))|true",
+  "external_identities|external_identities_pkey|p|PRIMARY KEY (issuer, subject)|true",
+  "external_identities|external_identities_user_key|u|UNIQUE (user_id)|true",
+  "invitations|invitations_accepted_fields_check|c|CHECK (((accepted_at IS NULL) = (accepted_user_id IS NULL)))|true",
+  "invitations|invitations_expiry_check|c|CHECK ((expires_at > created_at))|true",
+  "invitations|invitations_granted_role_check|c|CHECK (((granted_role)::text = ANY ((ARRAY['admin'::character varying, 'editor'::character varying, 'viewer'::character varying])::text[])))|true",
+  "invitations|invitations_normalized_email_check|c|CHECK ((((normalized_email)::text = btrim((normalized_email)::text)) AND ((normalized_email)::text = lower((normalized_email)::text)) AND ((char_length((normalized_email)::text) >= 1) AND (char_length((normalized_email)::text) <= 320)) AND ((normalized_email)::text !~ '[[:cntrl:]]'::text)))|true",
+  "invitations|invitations_revoked_fields_check|c|CHECK (((revoked_at IS NULL) = (revoked_by_user_id IS NULL)))|true",
+  "invitations|invitations_role_ceiling_check|c|CHECK (((role_ceiling)::text = ANY ((ARRAY['admin'::character varying, 'editor'::character varying, 'viewer'::character varying])::text[])))|true",
+  "invitations|invitations_role_order_check|c|CHECK (( CASE granted_role WHEN 'viewer'::text THEN 1 WHEN 'editor'::text THEN 2 WHEN 'admin'::text THEN 3 ELSE NULL::integer END <= CASE role_ceiling WHEN 'viewer'::text THEN 1 WHEN 'editor'::text THEN 2 WHEN 'admin'::text THEN 3 ELSE NULL::integer END))|true",
+  "invitations|invitations_terminal_state_check|c|CHECK (((accepted_at IS NULL) OR (revoked_at IS NULL)))|true",
+  "invitations|invitations_token_digest_check|c|CHECK ((octet_length(token_digest) = 32))|true",
+  "invitations|invitations_token_key_version_check|c|CHECK (((token_key_version >= 1) AND (token_key_version <= 32767)))|true",
+  "invitations|invitations_pkey|p|PRIMARY KEY (invitation_id)|true",
+  "invitations|invitations_org_id_key|u|UNIQUE (organization_id, invitation_id)|true",
+  "invitations|invitations_token_key|u|UNIQUE (token_key_version, token_digest)|true",
+  "memberships|memberships_authority_revision_check|c|CHECK ((authority_revision >= 1))|true",
+  "memberships|memberships_role_check|c|CHECK (((role)::text = ANY ((ARRAY['admin'::character varying, 'editor'::character varying, 'viewer'::character varying])::text[])))|true",
+  "memberships|memberships_state_check|c|CHECK (((state)::text = ANY ((ARRAY['active'::character varying, 'revoked'::character varying])::text[])))|true",
+  "memberships|memberships_state_revoked_at_check|c|CHECK (((((state)::text = 'active'::text) AND (revoked_at IS NULL)) OR (((state)::text = 'revoked'::text) AND (revoked_at IS NOT NULL))))|true",
+  "memberships|memberships_updated_at_check|c|CHECK ((updated_at >= created_at))|true",
+  "memberships|memberships_pkey|p|PRIMARY KEY (membership_id)|true",
+  "memberships|memberships_org_membership_key|u|UNIQUE (organization_id, membership_id)|true",
+  "memberships|memberships_org_user_key|u|UNIQUE (organization_id, user_id)|true",
+  "organizations|organizations_display_name_check|c|CHECK ((((display_name)::text = btrim((display_name)::text)) AND ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 200)) AND ((display_name)::text !~ '[[:cntrl:]]'::text)))|true",
+  "organizations|organizations_pkey|p|PRIMARY KEY (organization_id)|true",
+  "sessions|sessions_authority_revision_check|c|CHECK ((authority_revision >= 1))|true",
+  "sessions|sessions_csrf_digest_check|c|CHECK ((octet_length(csrf_digest) = 32))|true",
+  "sessions|sessions_csrf_key_version_check|c|CHECK (((csrf_key_version >= 1) AND (csrf_key_version <= 32767)))|true",
+  "sessions|sessions_idle_expiry_check|c|CHECK (((issued_at < idle_expires_at) AND (idle_expires_at <= absolute_expires_at)))|true",
+  "sessions|sessions_last_seen_check|c|CHECK (((issued_at <= last_seen_at) AND (last_seen_at < absolute_expires_at)))|true",
+  "sessions|sessions_lineage_check|c|CHECK ((((rotated_from_session_id IS NULL) OR (rotated_from_session_id <> session_id)) AND ((replaced_by_session_id IS NULL) OR (replaced_by_session_id <> session_id)) AND ((rotated_from_session_id IS NULL) OR (replaced_by_session_id IS NULL) OR (rotated_from_session_id <> replaced_by_session_id))))|true",
+  "sessions|sessions_revocation_fields_check|c|CHECK (((revoked_at IS NULL) = (revocation_reason IS NULL)))|true",
+  "sessions|sessions_revocation_reason_check|c|CHECK (((revocation_reason IS NULL) OR (((revocation_reason)::text = btrim((revocation_reason)::text)) AND ((char_length((revocation_reason)::text) >= 1) AND (char_length((revocation_reason)::text) <= 32)) AND ((revocation_reason)::text !~ '[[:cntrl:]]'::text))))|true",
+  "sessions|sessions_token_digest_check|c|CHECK ((octet_length(token_digest) = 32))|true",
+  "sessions|sessions_token_key_version_check|c|CHECK (((token_key_version >= 1) AND (token_key_version <= 32767)))|true",
+  "sessions|sessions_pkey|p|PRIMARY KEY (session_id)|true",
+  "sessions|sessions_csrf_key|u|UNIQUE (csrf_key_version, csrf_digest)|true",
+  "sessions|sessions_org_id_key|u|UNIQUE (organization_id, session_id)|true",
+  "sessions|sessions_token_key|u|UNIQUE (token_key_version, token_digest)|true",
+  "users|users_pkey|p|PRIMARY KEY (user_id)|true",
+] as const;
+
+const canonicalForeignKeySignatures = [
+  "dasher.audit_events|audit_events_actor_fkey|dasher.memberships|{organization_id,actor_user_id}|{organization_id,user_id}|2|saa|true|false|false",
+  "dasher.audit_events|audit_events_organization_fkey|dasher.organizations|{organization_id}|{organization_id}|1|saa|true|false|false",
+  "dasher.external_identities|external_identities_user_fkey|dasher.users|{user_id}|{user_id}|1|saa|true|false|false",
+  "dasher.invitations|invitations_accepted_user_fkey|dasher.users|{accepted_user_id}|{user_id}|1|saa|true|false|false",
+  "dasher.invitations|invitations_creator_fkey|dasher.memberships|{organization_id,created_by_user_id}|{organization_id,user_id}|2|saa|true|false|false",
+  "dasher.invitations|invitations_organization_fkey|dasher.organizations|{organization_id}|{organization_id}|1|saa|true|false|false",
+  "dasher.invitations|invitations_revoker_fkey|dasher.memberships|{organization_id,revoked_by_user_id}|{organization_id,user_id}|2|saa|true|false|false",
+  "dasher.memberships|memberships_organization_fkey|dasher.organizations|{organization_id}|{organization_id}|1|saa|true|false|false",
+  "dasher.memberships|memberships_user_fkey|dasher.users|{user_id}|{user_id}|1|saa|true|false|false",
+  "dasher.sessions|sessions_membership_fkey|dasher.memberships|{organization_id,user_id}|{organization_id,user_id}|2|saa|true|false|false",
+  "dasher.sessions|sessions_organization_fkey|dasher.organizations|{organization_id}|{organization_id}|1|saa|true|false|false",
+  "dasher.sessions|sessions_replaced_by_fkey|dasher.sessions|{organization_id,replaced_by_session_id}|{organization_id,session_id}|2|saa|true|false|false",
+  "dasher.sessions|sessions_rotated_from_fkey|dasher.sessions|{organization_id,rotated_from_session_id}|{organization_id,session_id}|2|saa|true|false|false",
+] as const;
+
+const canonicalIndexSignatures = [
+  "audit_events|audit_events_actor_idx|btree|false|false|true|true|true|false|<none>|{organization_id,actor_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "audit_events|audit_events_occurred_idx|btree|false|false|true|true|true|false|<none>|{organization_id,occurred_at,audit_event_id}|{uuid_ops,timestamptz_ops,uuid_ops}|0 0 0",
+  "audit_events|audit_events_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,audit_event_id}|{uuid_ops,uuid_ops}|0 0",
+  "audit_events|audit_events_pkey|btree|true|true|true|true|true|false|<none>|{audit_event_id}|{uuid_ops}|0",
+  "external_identities|external_identities_pkey|btree|true|true|true|true|true|false|<none>|{issuer,subject}|{text_ops,text_ops}|0 0",
+  "external_identities|external_identities_user_key|btree|true|false|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
+  "invitations|invitations_accepted_user_idx|btree|false|false|true|true|true|false|<none>|{accepted_user_id}|{uuid_ops}|0",
+  "invitations|invitations_creator_idx|btree|false|false|true|true|true|false|<none>|{organization_id,created_by_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_email_created_idx|btree|false|false|true|true|true|false|<none>|{organization_id,normalized_email,created_at}|{uuid_ops,text_ops,timestamptz_ops}|0 0 3",
+  "invitations|invitations_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,invitation_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_pkey|btree|true|true|true|true|true|false|<none>|{invitation_id}|{uuid_ops}|0",
+  "invitations|invitations_revoker_idx|btree|false|false|true|true|true|false|<none>|{organization_id,revoked_by_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_token_key|btree|true|false|true|true|true|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
+  "memberships|memberships_active_authority_idx|btree|false|false|true|true|true|false|((state)::text = 'active'::text)|{organization_id,user_id,authority_revision}|{uuid_ops,uuid_ops,int8_ops}|0 0 0",
+  "memberships|memberships_org_membership_key|btree|true|false|true|true|true|false|<none>|{organization_id,membership_id}|{uuid_ops,uuid_ops}|0 0",
+  "memberships|memberships_org_user_key|btree|true|false|true|true|true|false|<none>|{organization_id,user_id}|{uuid_ops,uuid_ops}|0 0",
+  "memberships|memberships_pkey|btree|true|true|true|true|true|false|<none>|{membership_id}|{uuid_ops}|0",
+  "memberships|memberships_user_idx|btree|false|false|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
+  "organizations|organizations_pkey|btree|true|true|true|true|true|false|<none>|{organization_id}|{uuid_ops}|0",
+  "sessions|sessions_csrf_key|btree|true|false|true|true|true|false|<none>|{csrf_key_version,csrf_digest}|{int2_ops,bytea_ops}|0 0",
+  "sessions|sessions_live_user_idx|btree|false|false|true|true|true|false|<none>|{organization_id,user_id,revoked_at}|{uuid_ops,uuid_ops,timestamptz_ops}|0 0 0",
+  "sessions|sessions_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_pkey|btree|true|true|true|true|true|false|<none>|{session_id}|{uuid_ops}|0",
+  "sessions|sessions_replaced_by_idx|btree|false|false|true|true|true|false|<none>|{organization_id,replaced_by_session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_rotated_from_idx|btree|false|false|true|true|true|false|<none>|{organization_id,rotated_from_session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_token_key|btree|true|false|true|true|true|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
+  "users|users_pkey|btree|true|true|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
+] as const;
+
+const exactManagedCatalogInventorySql = `
   WITH
-  expected_schemas AS (
-    SELECT pg_catalog.unnest($1::text[]) AS schema_name
-  ),
-  actual_schemas AS (
-    SELECT namespace.nspname::text AS schema_name
+  managed_namespaces AS (
+    SELECT namespace.oid, namespace.nspname, namespace.nspowner
     FROM pg_catalog.pg_namespace AS namespace
     WHERE namespace.nspname LIKE 'dasher%'
   ),
-  expected_relations AS (
-    SELECT pg_catalog.unnest($2::text[]) AS relation_name
-  ),
-  actual_relations AS (
-    SELECT relation.relname::text AS relation_name
-    FROM pg_catalog.pg_class AS relation
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'dasher'
-      AND relation.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
-  ),
-  expected_columns AS (
-    SELECT *
-    FROM pg_catalog.jsonb_to_recordset($4::jsonb) AS expected(
-      relation_name text,
-      column_name text
-    )
-  ),
-  actual_columns AS (
-    SELECT
-      relation.relname::text AS relation_name,
-      attribute.attname::text AS column_name
-    FROM pg_catalog.pg_attribute AS attribute
-    JOIN pg_catalog.pg_class AS relation
-      ON relation.oid = attribute.attrelid
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'dasher'
-      AND relation.relname = ANY($5::text[])
-      AND relation.relkind IN ('r', 'p')
-      AND attribute.attnum > 0
-      AND NOT attribute.attisdropped
-  ),
-  expected_functions AS (
-    SELECT *
-    FROM pg_catalog.jsonb_to_recordset($3::jsonb) AS expected(
-      schema_name text,
-      function_name text,
-      identity_arguments text
-    )
-  ),
-  actual_functions AS (
-    SELECT
-      namespace.nspname::text AS schema_name,
-      routine.proname::text AS function_name,
-      pg_catalog.oidvectortypes(routine.proargtypes) AS identity_arguments
-    FROM pg_catalog.pg_proc AS routine
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = routine.pronamespace
-    WHERE namespace.nspname IN (
-      'dasher_api',
-      'dasher_private',
-      'dasher_retention_api'
-    )
-      AND routine.prokind = 'f'
-  ),
-  schema_difference AS (
-    (SELECT * FROM actual_schemas EXCEPT ALL SELECT * FROM expected_schemas)
-    UNION ALL
-    (SELECT * FROM expected_schemas EXCEPT ALL SELECT * FROM actual_schemas)
-  ),
-  relation_difference AS (
-    (SELECT * FROM actual_relations EXCEPT ALL SELECT * FROM expected_relations)
-    UNION ALL
-    (SELECT * FROM expected_relations EXCEPT ALL SELECT * FROM actual_relations)
-  ),
-  column_difference AS (
-    (SELECT * FROM actual_columns EXCEPT ALL SELECT * FROM expected_columns)
-    UNION ALL
-    (SELECT * FROM expected_columns EXCEPT ALL SELECT * FROM actual_columns)
-  ),
-  function_difference AS (
-    (SELECT * FROM actual_functions EXCEPT ALL SELECT * FROM expected_functions)
-    UNION ALL
-    (SELECT * FROM expected_functions EXCEPT ALL SELECT * FROM actual_functions)
-  )
-  SELECT
-    NOT EXISTS (SELECT 1 FROM schema_difference)
-    AND NOT EXISTS (SELECT 1 FROM relation_difference)
-    AND NOT EXISTS (SELECT 1 FROM column_difference)
-    AND NOT EXISTS (SELECT 1 FROM function_difference)
-    AS matches
-`;
-
-const modeledSuccessorCatalogInventorySql = `
-  WITH
-  expected_functions AS (
-    SELECT *
-    FROM pg_catalog.jsonb_to_recordset($1::jsonb) AS expected(
-      schema_name text,
-      function_name text,
-      identity_arguments text,
-      result_type text,
-      language_name text,
-      volatility "char",
-      security_definer boolean,
-      owner_name text,
-      proconfig text[],
-      execute_grantees text[]
-    )
-  ),
-  actual_functions AS (
-    SELECT
-      namespace.nspname::text AS schema_name,
-      routine.proname::text AS function_name,
-      pg_catalog.oidvectortypes(routine.proargtypes) AS identity_arguments,
-      pg_catalog.pg_get_function_result(routine.oid) AS result_type,
-      language.lanname::text AS language_name,
-      routine.provolatile AS volatility,
-      routine.prosecdef AS security_definer,
-      owner.rolname::text AS owner_name,
-      routine.proconfig,
-      COALESCE(
-        (
-          SELECT pg_catalog.array_agg(
-            COALESCE(grantee.rolname::text, 'PUBLIC')
-            ORDER BY COALESCE(grantee.rolname::text, 'PUBLIC')
-          )
-          FROM pg_catalog.aclexplode(
+  signature_catalog AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'schemas', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT namespace.nspname || '|' || owner.rolname AS signature
+          FROM pg_catalog.pg_namespace AS namespace
+          JOIN pg_catalog.pg_roles AS owner ON owner.oid = namespace.nspowner
+          WHERE namespace.nspname LIKE 'dasher%'
+        ) AS rows
+      ), '[]'::jsonb),
+      'relations', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            relation.relkind::text || '|' || owner.rolname || '|' ||
+            relation.relpersistence::text || '|' ||
+            relation.relrowsecurity::text || '|' ||
+            relation.relforcerowsecurity::text || '|' ||
+            relation.relreplident::text || '|' ||
+            COALESCE(relation.reloptions::text, '<none>') AS signature
+          FROM pg_catalog.pg_class AS relation
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+          JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+          WHERE relation.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+        ) AS rows
+      ), '[]'::jsonb),
+      'columns', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            attribute.attnum::text || '|' || attribute.attname || '|' ||
+            pg_catalog.format_type(attribute.atttypid, attribute.atttypmod) ||
+            '|' || attribute.attnotnull::text || '|' ||
             COALESCE(
-              routine.proacl,
-              pg_catalog.acldefault('f', routine.proowner)
+              pg_catalog.pg_get_expr(default_value.adbin, default_value.adrelid),
+              '<none>'
+            ) || '|' || attribute.attidentity::text || '|' ||
+            attribute.attgenerated::text AS signature
+          FROM pg_catalog.pg_class AS relation
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+          JOIN pg_catalog.pg_attribute AS attribute
+            ON attribute.attrelid = relation.oid
+          LEFT JOIN pg_catalog.pg_attrdef AS default_value
+            ON default_value.adrelid = attribute.attrelid
+           AND default_value.adnum = attribute.attnum
+          WHERE relation.relkind IN ('r', 'p')
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+        ) AS rows
+      ), '[]'::jsonb),
+      'sequences', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            pg_catalog.format_type(sequence.seqtypid, NULL) || '|' ||
+            sequence.seqstart::text || '|' || sequence.seqincrement::text ||
+            '|' || sequence.seqmax::text || '|' || sequence.seqmin::text ||
+            '|' || sequence.seqcache::text || '|' || sequence.seqcycle::text
+            AS signature
+          FROM pg_catalog.pg_sequence AS sequence
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = sequence.seqrelid
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+        ) AS rows
+      ), '[]'::jsonb),
+      'types', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || type_row.typname || '|' ||
+            type_row.typtype::text || '|' || type_row.typcategory::text ||
+            '|' || owner.rolname || '|' ||
+            COALESCE(relation.relname, '<none>') || '|' ||
+            COALESCE(pg_catalog.format_type(NULLIF(type_row.typbasetype, 0), type_row.typtypmod), '<none>') ||
+            '|' || type_row.typnotnull::text || '|' ||
+            COALESCE(type_row.typdefault, '<none>') || '|' ||
+            COALESCE(
+              ARRAY(
+                SELECT enum.enumlabel
+                FROM pg_catalog.pg_enum AS enum
+                WHERE enum.enumtypid = type_row.oid
+                ORDER BY enum.enumsortorder
+              )::text,
+              '{}'
+            ) || '|' ||
+            COALESCE(
+              ARRAY(
+                SELECT attribute.attname || ' ' ||
+                  pg_catalog.format_type(attribute.atttypid, attribute.atttypmod)
+                FROM pg_catalog.pg_attribute AS attribute
+                WHERE attribute.attrelid = type_row.typrelid
+                  AND attribute.attnum > 0
+                  AND NOT attribute.attisdropped
+                ORDER BY attribute.attnum
+              )::text,
+              '{}'
+            ) AS signature
+          FROM pg_catalog.pg_type AS type_row
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = type_row.typnamespace
+          JOIN pg_catalog.pg_roles AS owner ON owner.oid = type_row.typowner
+          LEFT JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = type_row.typrelid
+          WHERE type_row.typelem = 0
+            AND type_row.typname NOT LIKE '\\_%' ESCAPE '\\'
+        ) AS rows
+      ), '[]'::jsonb),
+      'indexes', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            index_relation.relname || '|' || access_method.amname || '|' ||
+            index_row.indisunique::text || '|' ||
+            index_row.indisprimary::text || '|' ||
+            index_row.indisvalid::text || '|' ||
+            index_row.indisready::text || '|' ||
+            index_row.indislive::text || '|' ||
+            index_row.indnullsnotdistinct::text || '|' ||
+            COALESCE(
+              pg_catalog.pg_get_expr(index_row.indpred, index_row.indrelid),
+              '<none>'
+            ) || '|' ||
+            ARRAY(
+              SELECT pg_catalog.pg_get_indexdef(
+                index_row.indexrelid,
+                ordinal,
+                false
+              )
+              FROM pg_catalog.generate_series(1, index_row.indnkeyatts)
+                AS ordinal
+            )::text || '|' ||
+            ARRAY(
+              SELECT operator_class.opcname
+              FROM pg_catalog.unnest(index_row.indclass::oid[]) WITH ORDINALITY
+                AS class(oid, ordinal)
+              JOIN pg_catalog.pg_opclass AS operator_class
+                ON operator_class.oid = class.oid
+              ORDER BY class.ordinal
+            )::text || '|' || index_row.indoption::text AS signature
+          FROM pg_catalog.pg_index AS index_row
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = index_row.indrelid
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+          JOIN pg_catalog.pg_class AS index_relation
+            ON index_relation.oid = index_row.indexrelid
+          JOIN pg_catalog.pg_am AS access_method
+            ON access_method.oid = index_relation.relam
+        ) AS rows
+      ), '[]'::jsonb),
+      'constraints', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            constraint_row.conname || '|' || constraint_row.contype::text ||
+            '|' || pg_catalog.regexp_replace(
+              pg_catalog.pg_get_constraintdef(constraint_row.oid, false),
+              '[[:space:]]+', ' ', 'g'
+            ) || '|' || constraint_row.condeferrable::text || '|' ||
+            constraint_row.condeferred::text || '|' ||
+            constraint_row.convalidated::text || '|' ||
+            constraint_row.connoinherit::text AS signature
+          FROM pg_catalog.pg_constraint AS constraint_row
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = constraint_row.conrelid
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+          WHERE constraint_row.contype IN ('p', 'u', 'c')
+        ) AS rows
+      ), '[]'::jsonb),
+      'foreignKeys', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            source_namespace.nspname || '.' || source_relation.relname || '|' ||
+            constraint_row.conname || '|' || target_namespace.nspname || '.' ||
+            target_relation.relname || '|' ||
+            ARRAY(
+              SELECT attribute.attname
+              FROM pg_catalog.unnest(constraint_row.conkey) WITH ORDINALITY
+                AS key(attnum, ordinal)
+              JOIN pg_catalog.pg_attribute AS attribute
+                ON attribute.attrelid = constraint_row.conrelid
+               AND attribute.attnum = key.attnum
+              ORDER BY key.ordinal
+            )::text || '|' ||
+            ARRAY(
+              SELECT attribute.attname
+              FROM pg_catalog.unnest(constraint_row.confkey) WITH ORDINALITY
+                AS key(attnum, ordinal)
+              JOIN pg_catalog.pg_attribute AS attribute
+                ON attribute.attrelid = constraint_row.confrelid
+               AND attribute.attnum = key.attnum
+              ORDER BY key.ordinal
+            )::text || '|' || pg_catalog.cardinality(constraint_row.conkey)::text ||
+            '|' || constraint_row.confmatchtype::text ||
+            constraint_row.confupdtype::text || constraint_row.confdeltype::text ||
+            '|' || constraint_row.convalidated::text || '|' ||
+            constraint_row.condeferrable::text || '|' ||
+            constraint_row.condeferred::text AS signature
+          FROM pg_catalog.pg_constraint AS constraint_row
+          JOIN pg_catalog.pg_class AS source_relation
+            ON source_relation.oid = constraint_row.conrelid
+          JOIN managed_namespaces AS source_namespace
+            ON source_namespace.oid = source_relation.relnamespace
+          JOIN pg_catalog.pg_class AS target_relation
+            ON target_relation.oid = constraint_row.confrelid
+          JOIN pg_catalog.pg_namespace AS target_namespace
+            ON target_namespace.oid = target_relation.relnamespace
+          WHERE constraint_row.contype = 'f'
+        ) AS rows
+      ), '[]'::jsonb),
+      'triggers', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            trigger_row.tgname || '|' || trigger_row.tgenabled::text || '|' ||
+            ((trigger_row.tgtype & 1) = 1)::text || '|' ||
+            ((trigger_row.tgtype & 2) = 2)::text || '|' ||
+            ((trigger_row.tgtype & 4) = 4)::text || '|' ||
+            ((trigger_row.tgtype & 8) = 8)::text || '|' ||
+            ((trigger_row.tgtype & 16) = 16)::text || '|' ||
+            ((trigger_row.tgtype & 32) = 32)::text || '|' ||
+            function_namespace.nspname || '.' || routine.proname || '(' ||
+            pg_catalog.oidvectortypes(routine.proargtypes) || ')|' ||
+            routine.prosrc || '|' ||
+            pg_catalog.pg_get_triggerdef(trigger_row.oid, false) AS signature
+          FROM pg_catalog.pg_trigger AS trigger_row
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = trigger_row.tgrelid
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+          JOIN pg_catalog.pg_proc AS routine ON routine.oid = trigger_row.tgfoid
+          JOIN pg_catalog.pg_namespace AS function_namespace
+            ON function_namespace.oid = routine.pronamespace
+          WHERE NOT trigger_row.tgisinternal
+        ) AS rows
+      ), '[]'::jsonb),
+      'policies', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '|' || relation.relname || '|' ||
+            policy.polname || '|' || policy.polpermissive::text || '|' ||
+            policy.polcmd::text || '|' || ARRAY(
+              SELECT role_row.rolname::text
+              FROM pg_catalog.unnest(policy.polroles) AS role_oid
+              JOIN pg_catalog.pg_roles AS role_row ON role_row.oid = role_oid
+              ORDER BY role_row.rolname
+            )::text || '|' ||
+            COALESCE(pg_catalog.pg_get_expr(policy.polqual, policy.polrelid), '<none>') ||
+            '|' || COALESCE(
+              pg_catalog.pg_get_expr(policy.polwithcheck, policy.polrelid),
+              '<none>'
+            ) AS signature
+          FROM pg_catalog.pg_policy AS policy
+          JOIN pg_catalog.pg_class AS relation ON relation.oid = policy.polrelid
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = relation.relnamespace
+        ) AS rows
+      ), '[]'::jsonb),
+      'functions', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            namespace.nspname || '.' || routine.proname || '(' ||
+            pg_catalog.oidvectortypes(routine.proargtypes) || ')|' ||
+            routine.prokind::text || '|' ||
+            pg_catalog.pg_get_function_result(routine.oid) || '|' ||
+            language.lanname || '|' || routine.provolatile::text || '|' ||
+            routine.prosecdef::text || '|' || routine.proleakproof::text ||
+            '|' || routine.proisstrict::text || '|' ||
+            routine.proretset::text || '|' || routine.proparallel::text || '|' ||
+            owner.rolname || '|' || COALESCE(routine.proconfig::text, '<none>') ||
+            '|' || pg_catalog.md5(routine.prosrc) AS signature
+          FROM pg_catalog.pg_proc AS routine
+          JOIN managed_namespaces AS namespace
+            ON namespace.oid = routine.pronamespace
+          JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang
+          JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
+        ) AS rows
+      ), '[]'::jsonb),
+      'acls', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            'database|current_database|' || grantor.rolname || '|' ||
+            COALESCE(grantee.rolname, 'PUBLIC') || '|' ||
+            privilege.privilege_type || '|' || privilege.is_grantable::text
+            AS signature
+          FROM pg_catalog.pg_database AS database_row
+          CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+            database_row.datacl,
+            pg_catalog.acldefault('d', database_row.datdba)
+          )) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          WHERE database_row.datname = pg_catalog.current_database()
+          UNION ALL
+          SELECT
+            'schema|' || namespace.nspname || '|' || grantor.rolname || '|' ||
+            COALESCE(grantee.rolname, 'PUBLIC') || '|' ||
+            privilege.privilege_type || '|' || privilege.is_grantable::text
+          FROM pg_catalog.pg_namespace AS namespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+            namespace.nspacl,
+            pg_catalog.acldefault('n', namespace.nspowner)
+          )) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          WHERE namespace.nspname = 'public' OR namespace.nspname LIKE 'dasher%'
+          UNION ALL
+          SELECT
+            'relation|' || namespace.nspname || '.' || relation.relname || '|' ||
+            grantor.rolname || '|' || COALESCE(grantee.rolname, 'PUBLIC') ||
+            '|' || privilege.privilege_type || '|' || privilege.is_grantable::text
+          FROM pg_catalog.pg_class AS relation
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+            relation.relacl,
+            pg_catalog.acldefault(
+              CASE WHEN relation.relkind = 'S' THEN 's'::"char" ELSE 'r'::"char" END,
+              relation.relowner
             )
-          ) AS privilege
-          LEFT JOIN pg_catalog.pg_roles AS grantee
-            ON grantee.oid = privilege.grantee
-          WHERE privilege.privilege_type = 'EXECUTE'
-        ),
-        ARRAY[]::text[]
-      ) AS execute_grantees
-    FROM pg_catalog.pg_proc AS routine
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = routine.pronamespace
-    JOIN pg_catalog.pg_language AS language
-      ON language.oid = routine.prolang
-    JOIN pg_catalog.pg_roles AS owner
-      ON owner.oid = routine.proowner
-    WHERE (
-      namespace.nspname = 'dasher_api'
-      AND routine.proname = ANY($2::text[])
-    ) OR namespace.nspname = 'dasher_retention_api'
-      OR (
-        namespace.nspname = 'dasher_private'
-        AND routine.proname = ANY($3::text[])
-      )
-  ),
-  function_difference AS (
-    (SELECT * FROM actual_functions EXCEPT ALL SELECT * FROM expected_functions)
-    UNION ALL
-    (SELECT * FROM expected_functions EXCEPT ALL SELECT * FROM actual_functions)
-  ),
-  modeled_initializer AS (
-    SELECT routine.prosrc
-    FROM pg_catalog.pg_proc AS routine
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = routine.pronamespace
-    WHERE namespace.nspname = 'dasher_retention_api'
-      AND routine.proname = 'initialize_operator_context'
-      AND pg_catalog.oidvectortypes(routine.proargtypes) =
-        'uuid, text, uuid, text'
-  ),
-  bootstrap_policies AS (
-    SELECT
-      namespace.nspname::text AS schema_name,
-      relation.relname::text AS relation_name,
-      policy.polname::text AS policy_name,
-      policy.polcmd::text AS command
-    FROM pg_catalog.pg_policy AS policy
-    JOIN pg_catalog.pg_class AS relation
-      ON relation.oid = policy.polrelid
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE policy.polname IN (
-      'retention_service_principal_self_binding_select',
-      'dashboards_retention_target_discovery_select'
-    )
-  ),
-  allowlist_mutation_authority AS (
-    SELECT 1
-    FROM pg_catalog.pg_class AS relation
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    JOIN pg_catalog.pg_attribute AS attribute
-      ON attribute.attrelid = relation.oid
-     AND attribute.attnum > 0
-     AND NOT attribute.attisdropped
-    CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
-    JOIN pg_catalog.pg_roles AS grantee
-      ON grantee.oid = privilege.grantee
-    WHERE namespace.nspname = 'dasher'
-      AND relation.relname = 'retention_service_principal_allowlist'
-      AND grantee.rolname = 'dasher_retention_definer'
-      AND privilege.privilege_type IN ('UPDATE', 'DELETE')
-    UNION ALL
-    SELECT 1
-    FROM pg_catalog.pg_policy AS policy
-    JOIN pg_catalog.pg_class AS relation
-      ON relation.oid = policy.polrelid
-    JOIN pg_catalog.pg_namespace AS namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname = 'dasher'
-      AND relation.relname = 'retention_service_principal_allowlist'
-      AND policy.polcmd IN ('a', 'w', 'd')
+          )) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          WHERE relation.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+          UNION ALL
+          SELECT
+            'column|' || namespace.nspname || '.' || relation.relname || '.' ||
+            attribute.attname || '|' || grantor.rolname || '|' ||
+            COALESCE(grantee.rolname, 'PUBLIC') || '|' ||
+            privilege.privilege_type || '|' || privilege.is_grantable::text
+          FROM pg_catalog.pg_attribute AS attribute
+          JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          WHERE attribute.attnum > 0 AND NOT attribute.attisdropped
+          UNION ALL
+          SELECT
+            'function|' || namespace.nspname || '.' || routine.proname || '(' ||
+            pg_catalog.oidvectortypes(routine.proargtypes) || ')|' ||
+            grantor.rolname || '|' || COALESCE(grantee.rolname, 'PUBLIC') ||
+            '|' || privilege.privilege_type || '|' || privilege.is_grantable::text
+          FROM pg_catalog.pg_proc AS routine
+          JOIN managed_namespaces AS namespace ON namespace.oid = routine.pronamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+            routine.proacl,
+            pg_catalog.acldefault('f', routine.proowner)
+          )) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          UNION ALL
+          SELECT
+            'type|' || namespace.nspname || '.' || type_row.typname || '|' ||
+            grantor.rolname || '|' || COALESCE(grantee.rolname, 'PUBLIC') ||
+            '|' || privilege.privilege_type || '|' || privilege.is_grantable::text
+          FROM pg_catalog.pg_type AS type_row
+          JOIN managed_namespaces AS namespace ON namespace.oid = type_row.typnamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+            type_row.typacl,
+            pg_catalog.acldefault('T', type_row.typowner)
+          )) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          WHERE type_row.typelem = 0 AND type_row.typname NOT LIKE '\\_%' ESCAPE '\\'
+        ) AS rows
+      ), '[]'::jsonb),
+      'defaultAcls', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT
+            owner.rolname || '|' || COALESCE(namespace.nspname, '<global>') ||
+            '|' || default_acl.defaclobjtype::text || '|' || grantor.rolname ||
+            '|' || COALESCE(grantee.rolname, 'PUBLIC') || '|' ||
+            privilege.privilege_type || '|' || privilege.is_grantable::text
+            AS signature
+          FROM pg_catalog.pg_default_acl AS default_acl
+          JOIN pg_catalog.pg_roles AS owner ON owner.oid = default_acl.defaclrole
+          LEFT JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = default_acl.defaclnamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(default_acl.defaclacl)
+            AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          WHERE owner.rolname = $2
+             OR namespace.nspname LIKE 'dasher%'
+        ) AS rows
+      ), '[]'::jsonb),
+      'comments', COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT 'schema|' || namespace.nspname || '|' ||
+            pg_catalog.obj_description(namespace.oid, 'pg_namespace') AS signature
+          FROM managed_namespaces AS namespace
+          WHERE pg_catalog.obj_description(namespace.oid, 'pg_namespace') IS NOT NULL
+          UNION ALL
+          SELECT 'relation|' || namespace.nspname || '.' || relation.relname ||
+            '|' || pg_catalog.obj_description(relation.oid, 'pg_class')
+          FROM pg_catalog.pg_class AS relation
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          WHERE pg_catalog.obj_description(relation.oid, 'pg_class') IS NOT NULL
+          UNION ALL
+          SELECT 'function|' || namespace.nspname || '.' || routine.proname ||
+            '(' || pg_catalog.oidvectortypes(routine.proargtypes) || ')|' ||
+            pg_catalog.obj_description(routine.oid, 'pg_proc')
+          FROM pg_catalog.pg_proc AS routine
+          JOIN managed_namespaces AS namespace ON namespace.oid = routine.pronamespace
+          WHERE pg_catalog.obj_description(routine.oid, 'pg_proc') IS NOT NULL
+          UNION ALL
+          SELECT 'type|' || namespace.nspname || '.' || type_row.typname || '|' ||
+            pg_catalog.obj_description(type_row.oid, 'pg_type')
+          FROM pg_catalog.pg_type AS type_row
+          JOIN managed_namespaces AS namespace ON namespace.oid = type_row.typnamespace
+          WHERE pg_catalog.obj_description(type_row.oid, 'pg_type') IS NOT NULL
+        ) AS rows
+      ), '[]'::jsonb)
+    ) AS inventory
   )
   SELECT
-    NOT EXISTS (SELECT 1 FROM function_difference)
-    AND (SELECT pg_catalog.count(*) = 1 FROM modeled_initializer)
+    inventory = $1::jsonb
     AND (
-      SELECT
-        pg_catalog.position('transaction_isolation' IN prosrc) > 0
-        AND pg_catalog.position('read committed' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_phase' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_principal_id' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_principal_revision' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_authority_scope' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_capability' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_target_dashboard_id' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_target_organization_id' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_request_id' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('retention_case_matter_reference' IN prosrc) >
-          pg_catalog.position('transaction_isolation' IN prosrc)
-        AND pg_catalog.position('postgres_session_user' IN prosrc) >
-          pg_catalog.position('retention_case_matter_reference' IN prosrc)
-        AND pg_catalog.position('session_user' IN prosrc) >
-          pg_catalog.position('postgres_session_user' IN prosrc)
-        AND pg_catalog.position('pg_advisory_xact_lock' IN prosrc) >
-          pg_catalog.position('session_user' IN prosrc)
-        AND pg_catalog.position(
-          'retention_service_principal_allowlist' IN prosrc
-        ) > pg_catalog.position('pg_advisory_xact_lock' IN prosrc)
-        AND pg_catalog.position('principal_revision' IN prosrc) >
-          pg_catalog.position(
-            'retention_service_principal_allowlist' IN prosrc
-          )
-        AND pg_catalog.position('predecessor_revision' IN prosrc) >
-          pg_catalog.position('principal_revision' IN prosrc)
-        AND pg_catalog.position('predecessor_sha256' IN prosrc) >
-          pg_catalog.position('predecessor_revision' IN prosrc)
-        AND pg_catalog.position('enabled' IN prosrc) >
-          pg_catalog.position('predecessor_sha256' IN prosrc)
-        AND prosrc !~* 'FOR[[:space:]]+(UPDATE|SHARE)'
-        AND prosrc !~* '[[:<:]]EXECUTE[[:>:]]'
-      FROM modeled_initializer
-    )
-    AND (
-      SELECT pg_catalog.array_agg(
-        policy_name || '|' || relation_name || '|' || command
-        ORDER BY policy_name
-      ) = ARRAY[
-        'dashboards_retention_target_discovery_select|dashboards|r',
-        'retention_service_principal_self_binding_select|retention_service_principal_allowlist|r'
-      ]::text[]
-      FROM bootstrap_policies
-    )
-    AND NOT EXISTS (SELECT 1 FROM allowlist_mutation_authority)
-    AS matches
+      $3::jsonb IS NULL
+      OR pg_catalog.jsonb_typeof($3::jsonb) = 'object'
+    ) AS matches
+  FROM signature_catalog
 `;
 
-function modeledSuccessorFunctionCatalogJson(ownerName: string): string {
-  return JSON.stringify(
-    modeled0003FunctionSignatures.map((signature, index) => {
-      const retentionFunction = signature.schema === "dasher_retention_api";
-      const triggerFunction = signature.schema === "dasher_private";
-      return {
-        schema_name: signature.schema,
-        function_name: signature.name,
-        identity_arguments: signature.arguments,
-        result_type: modeled0003FunctionReturns[index],
-        language_name: "plpgsql",
-        volatility: "v",
-        security_definer: !triggerFunction,
-        owner_name: triggerFunction
-          ? ownerName
-          : retentionFunction
-            ? "dasher_retention_definer"
-            : "dasher_security_definer",
-        proconfig: ["search_path=pg_catalog"],
-        execute_grantees: triggerFunction
-          ? []
-          : [retentionFunction ? "dasher_retention_operator" : "dasher_app"],
-      };
-    }),
-  );
+interface CatalogSignatureContract {
+  readonly acls: readonly string[];
+  readonly columns: readonly string[];
+  readonly comments: readonly string[];
+  readonly constraints: readonly string[];
+  readonly defaultAcls: readonly string[];
+  readonly foreignKeys: readonly string[];
+  readonly functions: readonly string[];
+  readonly indexes: readonly string[];
+  readonly policies: readonly string[];
+  readonly relations: readonly string[];
+  readonly schemas: readonly string[];
+  readonly sequences: readonly string[];
+  readonly triggers: readonly string[];
+  readonly types: readonly string[];
 }
 
-async function assertModeledSuccessorCatalog(
-  client: MigrationClient,
+function sortedStrings(values: readonly string[]): readonly string[] {
+  return [...values].sort();
+}
+
+function pgTextArray(values: readonly string[]): string {
+  return `{${values
+    .map((value) =>
+      /^[a-z0-9_]+$/u.test(value)
+        ? value
+        : `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
+    )
+    .join(",")}}`;
+}
+
+function canonicalColumnParts(signature: string): readonly string[] {
+  return signature.split("|");
+}
+
+function tableCompositeTypeSignature(
+  schemaName: string,
+  relationName: string,
   ownerName: string,
-): Promise<void> {
-  const result = await client.query<DependencyComparisonRow>(
-    modeledSuccessorCatalogInventorySql,
-    [
-      modeledSuccessorFunctionCatalogJson(ownerName),
-      modeled0003FunctionSignatures
-        .filter((signature) => signature.schema === "dasher_api")
-        .map((signature) => signature.name),
-      modeled0003FunctionSignatures
-        .filter((signature) => signature.schema === "dasher_private")
-        .map((signature) => signature.name),
-    ],
-  );
-  if (result.rows.length !== 1 || result.rows[0]?.matches !== true) {
-    return reject("managed_role_drift");
+  columnSignatures: readonly string[],
+): string {
+  const definition = columnSignatures
+    .filter((signature) => {
+      const parts = canonicalColumnParts(signature);
+      return parts[0] === schemaName && parts[1] === relationName;
+    })
+    .map((signature) => {
+      const parts = canonicalColumnParts(signature);
+      return `${parts[3]} ${parts[4]}`;
+    });
+  return `${schemaName}|${relationName}|c|C|${ownerName}|${relationName}|<none>|false|<none>|{}|${pgTextArray(definition)}`;
+}
+
+function constraintSignatureWithState(
+  schemaName: string,
+  signature: string,
+): string {
+  const validationSeparator = signature.lastIndexOf("|");
+  const constraintType = signature.split("|", 3)[2];
+  const noInherit = constraintType === "p" || constraintType === "u";
+  return `${schemaName}|${signature.slice(0, validationSeparator)}|false|false|${signature.slice(validationSeparator + 1)}|${String(noInherit)}`;
+}
+
+function aclSignature(
+  kind: string,
+  identity: string,
+  grantor: string,
+  grantee: string,
+  privilege: string,
+  isGrantable = false,
+): string {
+  return `${kind}|${identity}|${grantor}|${grantee}|${privilege}|${String(isGrantable)}`;
+}
+
+function exactCatalogContract(
+  journalRows: readonly JournalRow[],
+  expectedAppLoginRoleNames: readonly string[],
+  databaseIdentity: DatabaseIdentityRow,
+  ownerName: string,
+): CatalogSignatureContract {
+  const hasSecurityBoundary = journalRows.length >= 2;
+  const hasSuccessor = journalRows.length >= 3;
+  const schemas = ["dasher", "dasher_meta", "dasher_private"];
+  if (hasSecurityBoundary) schemas.push("dasher_api");
+  if (hasSuccessor) schemas.push("dasher_retention_api");
+
+  const relations = [
+    `dasher_meta|schema_migrations|r|${ownerName}|p|false|false|d|<none>`,
+    ...task3RelationNames.map(
+      (relationName) =>
+        `dasher|${relationName}|r|${ownerName}|p|true|true|d|<none>`,
+    ),
+  ];
+  if (hasSuccessor) {
+    relations.push(
+      ...modeled0003StaticCatalogContract.relations.map(
+        (relation) =>
+          `${relation.schema}|${relation.name}|${relation.kind}|${ownerName}|${relation.persistence}|${String(relation.rowSecurity)}|${String(relation.forceRowSecurity)}|${relation.replicaIdentity}|${relation.options.length === 0 ? "<none>" : pgTextArray(relation.options)}`,
+      ),
+    );
   }
+
+  const columns = [
+    `dasher_meta|schema_migrations|1|sequence|integer|true|<none>||`,
+    `dasher_meta|schema_migrations|2|filename|text|true|<none>||`,
+    `dasher_meta|schema_migrations|3|checksum_sha256|bytea|true|<none>||`,
+    `dasher_meta|schema_migrations|4|applied_at|timestamp with time zone|true|statement_timestamp()||`,
+    `dasher_meta|schema_migrations|5|applied_by|name|true|<none>||`,
+    ...canonicalColumnSignatures.map((signature) => `dasher|${signature}||`),
+  ];
+  if (hasSuccessor) {
+    columns.push(
+      ...modeled0003StaticCatalogContract.columns.map(
+        (column) =>
+          `dasher|${column.relationName}|${String(column.ordinal)}|${column.columnName}|${column.type}|${String(!column.nullable)}|${column.defaultExpression ?? "<none>"}|${column.identity}|${column.generated}`,
+      ),
+    );
+  }
+
+  const indexes = [
+    `dasher_meta|schema_migrations|schema_migrations_filename_key|btree|true|false|true|true|true|false|<none>|{filename}|{text_ops}|0`,
+    `dasher_meta|schema_migrations|schema_migrations_pkey|btree|true|true|true|true|true|false|<none>|{sequence}|{int4_ops}|0`,
+    ...canonicalIndexSignatures.map((signature) => `dasher|${signature}`),
+  ];
+  if (hasSuccessor) {
+    indexes.push(
+      ...modeled0003StaticCatalogContract.indexes.map(
+        (index) =>
+          `dasher|${index.relation}|${index.name}|${index.method}|${String(index.unique)}|${String(index.primary)}|${String(index.valid)}|${String(index.ready)}|${String(index.live)}|${String(index.nullsNotDistinct)}|${index.predicate ?? "<none>"}|${pgTextArray(index.keyExpressions)}|${pgTextArray(index.opclasses)}|${index.options.join(" ")}`,
+      ),
+    );
+  }
+
+  const journalConstraints = [
+    "schema_migrations|schema_migrations_checksum_sha256_check|c|CHECK ((octet_length(checksum_sha256) = 32))|false|false|true|false",
+    `schema_migrations|schema_migrations_filename_check|c|CHECK ((filename ~ '${journalFilenamePattern}'::text))|false|false|true|false`,
+    "schema_migrations|schema_migrations_filename_key|u|UNIQUE (filename)|false|false|true|true",
+    "schema_migrations|schema_migrations_pkey|p|PRIMARY KEY (sequence)|false|false|true|true",
+    "schema_migrations|schema_migrations_sequence_check|c|CHECK (((sequence >= 1) AND (sequence <= 9999)))|false|false|true|false",
+  ].map((signature) => `dasher_meta|${signature}`);
+  const constraints = [
+    ...journalConstraints,
+    ...canonicalRelationConstraintSignatures
+      .filter(
+        (signature) =>
+          !hasSuccessor ||
+          !signature.startsWith("audit_events|audit_events_action_check|"),
+      )
+      .map((signature) => constraintSignatureWithState("dasher", signature)),
+  ];
+  if (hasSuccessor) {
+    constraints.push(
+      ...modeled0003StaticCatalogContract.constraints
+        .filter((constraint) => constraint.type !== "FOREIGN KEY")
+        .map(
+          (constraint) =>
+            `dasher|${constraint.relation}|${constraint.name}|${constraint.type === "PRIMARY KEY" ? "p" : "c"}|${constraint.definition}|${String(constraint.deferrable)}|${String(constraint.initiallyDeferred)}|${String(constraint.validated)}|${String(constraint.type === "PRIMARY KEY")}`,
+        ),
+    );
+  }
+
+  const foreignKeys: string[] = [...canonicalForeignKeySignatures];
+  if (hasSuccessor) {
+    foreignKeys.push(
+      ...modeled0003StaticCatalogContract.constraints
+        .filter((constraint) => constraint.type === "FOREIGN KEY")
+        .map(
+          (constraint) =>
+            `dasher.${constraint.relation}|${constraint.name}|dasher.${constraint.targetRelation}|${pgTextArray(constraint.columns)}|${pgTextArray(constraint.targetColumns)}|${String(constraint.columns.length)}|${constraint.matchType}${constraint.updateAction}${constraint.deleteAction}|${String(constraint.validated)}|${String(constraint.deferrable)}|${String(constraint.initiallyDeferred)}`,
+        ),
+    );
+  }
+
+  const triggerBody =
+    "\nBEGIN\n  RAISE EXCEPTION USING\n    ERRCODE = '55000',\n    MESSAGE = 'immutable relation rejects update and delete';\nEND\n";
+  const triggers = [
+    `dasher|audit_events|audit_events_immutable|O|true|true|false|true|true|false|dasher_private.reject_immutable_mutation()|${triggerBody}|CREATE TRIGGER audit_events_immutable BEFORE DELETE OR UPDATE ON dasher.audit_events FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()`,
+  ];
+  if (hasSuccessor) {
+    triggers.push(
+      ...modeled0003StaticCatalogContract.triggers.map(
+        (trigger) =>
+          `dasher|${trigger.relationName}|${trigger.name}|${trigger.enabled}|true|true|${String((trigger.events as readonly string[]).includes("INSERT"))}|${String((trigger.events as readonly string[]).includes("DELETE"))}|${String((trigger.events as readonly string[]).includes("UPDATE"))}|false|${trigger.functionIdentity}|<modeled-body>|${trigger.definition}`,
+      ),
+    );
+  }
+
+  const policies = hasSecurityBoundary
+    ? task4Policies.map(
+        (policy) =>
+          `dasher|${policy.relation}|${policy.name}|${String(policy.permissive)}|${policy.command}|${pgTextArray(policy.roles)}|${policy.usingExpression}|${policy.withCheckExpression ?? "<none>"}`,
+      )
+    : [];
+  if (hasSuccessor) {
+    policies.push(
+      ...modeled0003StaticCatalogContract.policies.map(
+        (policy) =>
+          `dasher|${policy.relation}|${policy.name}|${String(policy.permissive)}|${policy.catalogCommand}|${pgTextArray(policy.roles)}|${policy.using}|${policy.withCheck ?? "<none>"}`,
+      ),
+    );
+  }
+
+  const functions = [
+    `dasher_private.reject_immutable_mutation()|f|trigger|plpgsql|v|false|false|false|false|u|${ownerName}|{search_path=pg_catalog}|${canonicalFunctionBodyMd5["dasher_private.reject_immutable_mutation"]}`,
+  ];
+  if (hasSecurityBoundary) {
+    functions.push(
+      ...task4FunctionCatalogRows.map((functionRow) => {
+        const functionName = functionRow.identity.slice(
+          0,
+          functionRow.identity.indexOf("("),
+        ) as keyof typeof canonicalFunctionBodyMd5;
+        return `${functionRow.identity}|f|${functionRow.result}|plpgsql|${functionRow.volatility}|true|false|false|${String(functionRow.result.startsWith("TABLE("))}|u|dasher_security_definer|{search_path=pg_catalog}|${canonicalFunctionBodyMd5[functionName]}`;
+      }),
+    );
+  }
+  if (hasSuccessor) {
+    functions.push(
+      ...modeled0003StaticCatalogContract.functions.map((routine) => {
+        const identity = `${routine.schema}.${routine.name}(${routine.identityArguments})`;
+        return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(`task-8a-body:${identity}`).digest("hex")}`;
+      }),
+    );
+  }
+
+  const typeRelationNames = ["schema_migrations", ...task3RelationNames];
+  const types = typeRelationNames.map((relationName) =>
+    tableCompositeTypeSignature(
+      relationName === "schema_migrations" ? "dasher_meta" : "dasher",
+      relationName,
+      ownerName,
+      columns,
+    ),
+  );
+  if (hasSuccessor) {
+    types.push(
+      ...modeled0003StaticCatalogContract.types.map(
+        (typeRow) =>
+          `dasher|${typeRow.name}|${typeRow.kind}|${typeRow.category}|${ownerName}|${typeRow.relation}|<none>|false|<none>|{}|${pgTextArray(typeRow.definition)}`,
+      ),
+    );
+  }
+
+  const acls: string[] = [];
+  for (const privilege of ["CONNECT", "CREATE", "TEMPORARY"]) {
+    acls.push(
+      aclSignature(
+        "database",
+        "current_database",
+        ownerName,
+        ownerName,
+        privilege,
+      ),
+    );
+  }
+  acls.push(
+    aclSignature(
+      "database",
+      "current_database",
+      ownerName,
+      "PUBLIC",
+      "CONNECT",
+    ),
+  );
+  acls.push(
+    aclSignature("schema", "public", "pg_database_owner", "PUBLIC", "USAGE"),
+    aclSignature(
+      "schema",
+      "public",
+      "pg_database_owner",
+      "pg_database_owner",
+      "CREATE",
+    ),
+    aclSignature(
+      "schema",
+      "public",
+      "pg_database_owner",
+      "pg_database_owner",
+      "USAGE",
+    ),
+  );
+  for (const schemaName of schemas) {
+    for (const privilege of ["CREATE", "USAGE"]) {
+      acls.push(
+        aclSignature("schema", schemaName, ownerName, ownerName, privilege),
+      );
+    }
+  }
+  for (const relation of relations) {
+    const [schemaName, relationName] = relation.split("|");
+    for (const privilege of [
+      "DELETE",
+      "INSERT",
+      "REFERENCES",
+      "SELECT",
+      "TRIGGER",
+      "TRUNCATE",
+      "UPDATE",
+    ]) {
+      acls.push(
+        aclSignature(
+          "relation",
+          `${schemaName}.${relationName}`,
+          ownerName,
+          ownerName,
+          privilege,
+        ),
+      );
+    }
+  }
+  for (const typeSignature of types) {
+    const [schemaName, typeName] = typeSignature.split("|");
+    acls.push(
+      aclSignature(
+        "type",
+        `${schemaName}.${typeName}`,
+        ownerName,
+        ownerName,
+        "USAGE",
+      ),
+    );
+    if (
+      (schemaName === "dasher_meta" && typeName === "schema_migrations") ||
+      (schemaName === "dasher" &&
+        typeName !== undefined &&
+        (task3RelationNames as readonly string[]).includes(typeName))
+    ) {
+      acls.push(
+        aclSignature(
+          "type",
+          `${schemaName}.${typeName}`,
+          ownerName,
+          "PUBLIC",
+          "USAGE",
+        ),
+      );
+    }
+  }
+  acls.push(
+    aclSignature(
+      "function",
+      "dasher_private.reject_immutable_mutation()",
+      ownerName,
+      ownerName,
+      "EXECUTE",
+    ),
+  );
+  if (hasSecurityBoundary) {
+    for (const functionRow of task4FunctionCatalogRows) {
+      acls.push(
+        aclSignature(
+          "function",
+          functionRow.identity,
+          "dasher_security_definer",
+          "dasher_security_definer",
+          "EXECUTE",
+        ),
+      );
+    }
+  }
+
+  const dependencyEntries = expectedDependencyInventory(
+    journalRows,
+    expectedAppLoginRoleNames,
+    databaseIdentity,
+    ownerName,
+  );
+  for (const dependency of dependencyEntries) {
+    if (dependency.dependency_type !== "a") continue;
+    const identity =
+      dependency.object_kind === "database"
+        ? "current_database"
+        : dependency.object_kind === "schema"
+          ? dependency.object_name
+          : dependency.object_kind === "function"
+            ? `${dependency.schema_name}.${dependency.object_name}(${dependency.function_arguments})`
+            : dependency.object_kind === "column"
+              ? `${dependency.schema_name}.${dependency.object_name}.${dependency.subobject_name}`
+              : `${dependency.schema_name}.${dependency.object_name}`;
+    acls.push(
+      aclSignature(
+        dependency.object_kind,
+        identity,
+        dependency.grantor_name ?? ownerName,
+        dependency.role_name,
+        dependency.privilege_type ?? "",
+        dependency.is_grantable ?? false,
+      ),
+    );
+  }
+  if (hasSuccessor) {
+    for (const routine of modeled0003StaticCatalogContract.functions) {
+      const identity = `${routine.schema}.${routine.name}(${routine.identityArguments})`;
+      const actualOwner =
+        routine.owner === "migration_owner" ? ownerName : routine.owner;
+      acls.push(
+        aclSignature("function", identity, actualOwner, actualOwner, "EXECUTE"),
+      );
+    }
+  }
+
+  return {
+    schemas: sortedStrings(schemas.map((name) => `${name}|${ownerName}`)),
+    relations: sortedStrings(relations),
+    columns: sortedStrings(columns),
+    sequences: [],
+    types: sortedStrings(types),
+    indexes: sortedStrings(indexes),
+    constraints: sortedStrings(constraints),
+    foreignKeys: sortedStrings(foreignKeys),
+    triggers: sortedStrings(triggers),
+    policies: sortedStrings(policies),
+    functions: sortedStrings(functions),
+    acls: sortedStrings(acls),
+    defaultAcls: sortedStrings([
+      `${ownerName}|<global>|T|${ownerName}|${ownerName}|USAGE|false`,
+      `${ownerName}|<global>|f|${ownerName}|${ownerName}|EXECUTE|false`,
+    ]),
+    comments: [],
+  };
 }
 
 async function assertCanonicalPrefixObjects(
   client: MigrationClient,
   journalRows: readonly JournalRow[],
   exactCanonicalFiles: boolean,
+  expectedAppLoginRoleNames: readonly string[],
+  databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
 ): Promise<void> {
   if (!exactCanonicalFiles || journalRows.length === 0) {
     return;
   }
 
-  const schemas = ["dasher", "dasher_meta", "dasher_private"];
-  const relations: readonly string[] = task3RelationNames;
-  const functions: Array<{
-    readonly function_name: string;
-    readonly identity_arguments: string;
-    readonly schema_name: string;
-  }> = [
-    {
-      schema_name: "dasher_private",
-      function_name: "reject_immutable_mutation",
-      identity_arguments: "",
-    },
-  ];
-
-  if (journalRows.length >= 2) {
-    schemas.push("dasher_api");
-    functions.push(
-      ...task4FunctionSignatures.map((signature) => ({
-        schema_name: signature.schema,
-        function_name: signature.name,
-        identity_arguments: signature.arguments,
-      })),
-    );
-  }
-  if (journalRows.length >= 3) {
-    schemas.push("dasher_retention_api");
-    functions.push(
-      ...modeled0003FunctionSignatures.map((signature) => ({
-        schema_name: signature.schema,
-        function_name: signature.name,
-        identity_arguments: signature.arguments,
-      })),
-    );
-  }
-
+  const expected = exactCatalogContract(
+    journalRows,
+    expectedAppLoginRoleNames,
+    databaseIdentity,
+    ownerName,
+  );
   const result = await client.query<DependencyComparisonRow>(
-    canonicalPrefixObjectInventorySql,
+    exactManagedCatalogInventorySql,
     [
-      schemas.sort(),
+      JSON.stringify(expected),
+      ownerName,
       journalRows.length >= 3
-        ? [...relations, ...modeled0003RelationNames].sort()
-        : [...relations].sort(),
-      JSON.stringify(
-        functions.sort((left, right) =>
-          JSON.stringify(left).localeCompare(JSON.stringify(right)),
-        ),
-      ),
-      JSON.stringify(
-        Object.entries(task4TableColumns).flatMap(
-          ([relation_name, columnNames]) =>
-            columnNames.map((column_name) => ({
-              relation_name,
-              column_name,
-            })),
-        ),
-      ),
-      [...relations].sort(),
+        ? JSON.stringify(modeled0003StaticCatalogContract)
+        : null,
     ],
   );
   if (result.rows.length !== 1 || result.rows[0]?.matches !== true) {
     return reject("managed_role_drift");
   }
-  if (journalRows.length >= 3) {
-    await assertModeledSuccessorCatalog(client, ownerName);
-  }
 }
 
 function dependencyEntry(
-  values: ManagedDependencyInventoryEntry,
+  values: Omit<
+    ManagedDependencyInventoryEntry,
+    | "is_grantable"
+    | "policy_command"
+    | "policy_name"
+    | "policy_permissive"
+    | "policy_roles"
+    | "policy_using_expression"
+    | "policy_with_check_expression"
+  > &
+    Partial<
+      Pick<
+        ManagedDependencyInventoryEntry,
+        | "is_grantable"
+        | "policy_command"
+        | "policy_name"
+        | "policy_permissive"
+        | "policy_roles"
+        | "policy_using_expression"
+        | "policy_with_check_expression"
+      >
+    >,
 ): ManagedDependencyInventoryEntry {
-  return values;
+  return {
+    is_grantable: values.dependency_type === "a" ? false : null,
+    policy_command: null,
+    policy_name: null,
+    policy_permissive: null,
+    policy_roles: null,
+    policy_using_expression: null,
+    policy_with_check_expression: null,
+    ...values,
+  };
 }
 
 function expectedDependencyInventory(
@@ -2769,6 +12025,30 @@ function expectedDependencyInventory(
     );
   }
 
+  for (const policy of task4Policies) {
+    entries.push(
+      dependencyEntry({
+        catalog_name: "pg_policy",
+        database_oid: databaseIdentity.database_oid,
+        dependency_type: "r",
+        function_arguments: null,
+        grantor_name: null,
+        object_kind: "policy",
+        object_name: policy.relation,
+        policy_command: policy.command,
+        policy_name: policy.name,
+        policy_permissive: policy.permissive,
+        policy_roles: policy.roles,
+        policy_using_expression: policy.usingExpression,
+        policy_with_check_expression: policy.withCheckExpression,
+        privilege_type: null,
+        role_name: "dasher_app",
+        schema_name: "dasher",
+        subobject_name: null,
+      }),
+    );
+  }
+
   const hasModeledSuccessor = journalRows.some(
     (row) =>
       row.sequence === 3 && row.filename === "0003_immutable_content.sql",
@@ -2859,6 +12139,40 @@ function expectedDependencyInventory(
           subobject_name: null,
         }),
       );
+    }
+
+    for (const policy of modeled0003StaticCatalogContract.policies) {
+      for (const roleName of policy.roles) {
+        if (
+          !allManagedRoleNames.includes(
+            roleName as (typeof allManagedRoleNames)[number],
+          ) &&
+          !expectedAppLoginRoleNames.includes(roleName)
+        ) {
+          continue;
+        }
+        entries.push(
+          dependencyEntry({
+            catalog_name: "pg_policy",
+            database_oid: databaseIdentity.database_oid,
+            dependency_type: "r",
+            function_arguments: null,
+            grantor_name: null,
+            object_kind: "policy",
+            object_name: policy.relation,
+            policy_command: policy.catalogCommand,
+            policy_name: policy.name,
+            policy_permissive: policy.permissive,
+            policy_roles: policy.roles,
+            policy_using_expression: policy.using,
+            policy_with_check_expression: policy.withCheck,
+            privilege_type: null,
+            role_name: roleName,
+            schema_name: "dasher",
+            subobject_name: null,
+          }),
+        );
+      }
     }
   }
 
@@ -3113,13 +12427,6 @@ async function validateMigrationPrefix(
   await assertJournalShape(client, ownerName);
   const journalRows = await readJournal(client);
   assertJournalPrefix(journalRows, migrations, ownerName);
-  await assertCanonicalPrefixObjects(
-    client,
-    journalRows,
-    exactCanonicalFiles,
-    ownerName,
-  );
-
   let preparedRolesPresent = false;
   if (journalRows.length < 2 || !modeledSuccessorPresent) {
     await assertPreparedRetentionRolesAbsent(client);
@@ -3133,6 +12440,14 @@ async function validateMigrationPrefix(
     client,
     expectedAppLoginRoleNames,
     false,
+  );
+  await assertCanonicalPrefixObjects(
+    client,
+    journalRows,
+    exactCanonicalFiles,
+    expectedAppLoginRoleNames,
+    databaseIdentity,
+    ownerName,
   );
   await assertDependencyInventory(
     client,
@@ -3185,7 +12500,12 @@ export async function resetPreparedRetentionRoles(
   let sessionGateHeld = false;
 
   try {
-    await client.query(advisorySessionLockSql);
+    try {
+      await client.query(advisorySessionLockSql);
+    } catch (error) {
+      destroyClientAfterAmbiguousGateAcquisition(client, state, error);
+      throw error;
+    }
     sessionGateHeld = true;
     const migrations = await discoverMigrations(directory);
     assertKnownCanonicalFileIdentity(migrations);
@@ -3268,7 +12588,12 @@ export async function runMigrations(
   let sessionGateHeld = false;
 
   try {
-    await client.query(advisorySessionLockSql);
+    try {
+      await client.query(advisorySessionLockSql);
+    } catch (error) {
+      destroyClientAfterAmbiguousGateAcquisition(client, state, error);
+      throw error;
+    }
     sessionGateHeld = true;
     const migrations = await discoverMigrations(directory);
     assertKnownCanonicalFileIdentity(migrations);
