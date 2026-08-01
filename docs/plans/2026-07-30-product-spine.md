@@ -1,5 +1,18 @@
 # Invite-Only Multi-Tenant Product Spine Implementation Plan
 
+> **Historical plan and implementation HOLD (2026-08-01):** Tasks 1–7 are
+> completed and merged. Preserve their requirements as the historical contract
+> for immutable migrations `0001` and `0002` and the current identity/session
+> foundation. The minimal immutable-content DDL below and Tasks 8–11 are
+> superseded and on **HOLD**: they must not be implemented, copied into a
+> migration, or used to claim Gate 2-A completion until
+> `docs/plans/2026-08-01-dashboard-lifecycle-and-agent-harness.md` has been
+> accepted. In particular, do not create `0003_immutable_content.sql` from this
+> document. The successor plan retains the useful source, evidence, isolation,
+> immutability, CAS, and audit requirements while adding the lifecycle,
+> revocation, retention, evidence-link, and purge seams that must exist before
+> `0003` bytes freeze.
+
 > **For Hermes:** Implement this plan task by task with one active writer. Require
 > spec-compliance review before security/code-quality review.
 
@@ -1682,7 +1695,7 @@ Expected commit: `feat: add atomic invitation acceptance`.
 
 Expected commit: `feat: add revocable rotated sessions`.
 
-### Task 8: Immutable `0003` source, evidence, and dashboard persistence
+### Task 8: Immutable `0003` source, evidence, and dashboard persistence — HOLD, superseded
 
 1. Before creating immutable `0003`, expand the migrator's validated-prefix
    managed-role dependency allowlist and tests by exactly the `0003` function
@@ -1704,7 +1717,7 @@ Expected commit: `feat: add revocable rotated sessions`.
 
 Expected commit: `feat: add immutable dashboard persistence`.
 
-### Task 9: Reproducible PostgreSQL 16 adversarial gate
+### Task 9: Reproducible PostgreSQL 16 adversarial gate — HOLD, superseded
 
 1. After connecting, prove owner and app target the same server/database OID
    but have distinct `session_user`. Prove the owner is the expected database
@@ -1743,7 +1756,7 @@ NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`, grant only
 
 Expected commit: `test: add authoritative PostgreSQL isolation gate`.
 
-### Task 10: CI and operator documentation
+### Task 10: CI and operator documentation — HOLD, superseded
 
 1. Add the official service image exactly as
    `postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55`
@@ -1773,7 +1786,7 @@ Expected commit: `test: add authoritative PostgreSQL isolation gate`.
 
 Expected commit: `ci: require PostgreSQL tenant-isolation gate`.
 
-### Task 11: Final verification and release hold
+### Task 11: Final verification and release hold — HOLD, superseded
 
 1. Run frozen install; Prettier check; lint; typecheck; ordinary tests with the
    three integration variables unset; build; Playwright; both audits; exact

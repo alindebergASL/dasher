@@ -2,13 +2,19 @@
 
 Status: Approved baseline
 Date: 2026-07-29
-Updated: 2026-07-31
+Updated: 2026-08-01
 Domain: `luckbutton.com`
 Repository: `alindebergASL/dasher`
 
 ## Product thesis
 
-Dasher turns a plain-language monitoring or decision request plus ordinary data sources into a useful, evidence-backed, multi-page dashboard. The user should not have to define KPIs, choose chart types, or organize the source material. Dasher determines what matters, builds the dashboard, explains its conclusions, and lets the user reconfigure it conversationally.
+Dasher is not an AI dashboard generator. It is a governed decision loop that
+turns a bounded plain-language intent and authorized evidence into a safe
+managerial action and durable decision memory. The loop binds intent, orients,
+detects material/new change, explains by epistemic type, proposes a safe action,
+preserves the human decision, and promotes reviewed work without widening
+authority. The user should not have to define KPIs, choose chart types, or
+organize source material before getting a useful evidence-backed view.
 
 ## Initial customer
 
@@ -91,26 +97,41 @@ Combine account briefs, meeting notes, emails, opportunities, support issues, an
 
 ## Multi-dashboard workspace
 
-The pilot target is a workspace with multiple dashboards, not a single
-dashboard per user or organization. Long-term durable dashboards and quick
-disposable dashboards are first-class:
+The pilot target is a Workspace container/registry with multiple Boards and
+Scratches, not a single dashboard per user or organization. A Scratch is a
+disposable dashboard; a Board is a durable dashboard. Published is a later
+reviewed audience projection of one immutable Board version, never a dashboard
+kind, lifecycle state, `active`, or working head. Decision Snapshots and Recipes
+are separately gated future product records.
 
 - Durable dashboards preserve version history, support manual refresh and an
   explicitly authorized schedule, preserve the prior good version on failure,
   and show what changed since an identified prior version with value and
   provenance.
-- Disposable dashboards require an explicit expiry, create no recurring work
-  by default, revoke access and enter secure cleanup at expiry, and expose
-  cleanup state. Exact TTL defaults and limits remain an open product decision.
+- Disposable dashboards require an explicit expiry, cannot schedule recurring
+  work, revoke access and enter secure cleanup at expiry, and expose
+  cleanup state. The default TTL is 24 hours, with 1-hour/24-hour/7-day/30-day
+  user presets, a 1-hour minimum, and a hard maximum of 30 days from creation;
+  an organization administrator may set the default only from 1 hour through 7
+  days. Expiry is fixed at creation and inclusive at `now >= expires_at`; there
+  is no renewal or arbitrary-timestamp pilot UX.
 - An authorized user may explicitly promote an unexpired disposable dashboard
   to durable. Promotion preserves snapshots, evidence, accepted and candidate
   versions, calculations, and origin lineage; it does not silently add a
-  schedule or source authority.
+  schedule, source authority, publication, or audience. The promoted Board head
+  remains private until separately reviewed/published; a Board cannot become a
+  Scratch, and pin/bookmark/share never extends Scratch TTL.
 
 These are approved product directions, not implemented capabilities in the
 current foundation.
 
 ## Dashboard interaction contract
+
+The 30-second default projection has fixed Known, Changed, Important, Next safe
+action, and Evidence slots. Freshness, metric-contract, or comparison failure
+displaces the affected insight rather than becoming a footnote. A change drawer
+is the first interaction and technical evidence lineage the second; raw run
+logs are not required for manager use.
 
 Every dashboard:
 
@@ -193,7 +214,7 @@ access.
 Durable dashboards first support manual refresh and one explicitly authorized
 daily schedule. Refresh runs are observable, idempotent where possible, expose
 changed-since value and provenance, and preserve the previous good version if a
-refresh fails. Disposable dashboards have no recurring work by default.
+refresh fails. Disposable dashboards cannot schedule recurring work.
 
 ## Generated code
 
