@@ -1087,14 +1087,243 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
 
   it("rejects representative catalog and grantability drift before prepared-role or modeled SQL side effects", async () => {
     const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-drift-"));
+    let originalDatabaseComment: string | null | undefined;
     const modeledFixture = new URL(
       "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
       import.meta.url,
     );
-    const driftCases = [
+    const driftCases: readonly {
+      readonly apply?: () => Promise<void>;
+      readonly cleanup?: () => Promise<void>;
+      readonly name: string;
+      readonly sql?: string;
+    }[] = [
       {
         name: "extra index",
         sql: "CREATE INDEX task8a_extra_index ON dasher.users (created_at)",
+      },
+      {
+        name: "same-name INCLUDE shape",
+        sql: `
+          DROP INDEX dasher.invitations_creator_idx;
+          CREATE INDEX invitations_creator_idx
+            ON dasher.invitations (organization_id, created_by_user_id)
+            INCLUDE (created_at)
+        `,
+      },
+      {
+        name: "column collation",
+        sql: `
+          ALTER TABLE dasher.organizations
+          ALTER COLUMN display_name
+          TYPE varchar(200) COLLATE "C"
+        `,
+      },
+      {
+        name: "index collation",
+        sql: `
+          DROP INDEX dasher.invitations_email_created_idx;
+          CREATE INDEX invitations_email_created_idx
+            ON dasher.invitations (
+              organization_id,
+              normalized_email COLLATE "C",
+              created_at DESC
+            )
+        `,
+      },
+      {
+        name: "trailing function default",
+        apply: async () => {
+          const before = await ownerPool.query<{
+            readonly default_count: number;
+            readonly definition: string;
+            readonly function_oid: string;
+          }>(`
+            SELECT routine.oid::text AS function_oid,
+              routine.pronargdefaults AS default_count,
+              pg_catalog.pg_get_functiondef(routine.oid) AS definition
+            FROM pg_catalog.pg_proc AS routine
+            WHERE routine.oid = 'dasher_private.context_allows(uuid, text)'::regprocedure
+          `);
+          const original = before.rows[0];
+          expect(original?.default_count).toBe(0);
+          const changedDefinition = original?.definition.replace(
+            /p_required_role text(?=\s*\))/u,
+            "p_required_role text DEFAULT 'viewer'::text",
+          );
+          expect(changedDefinition).toBeDefined();
+          expect(changedDefinition).not.toBe(original?.definition);
+          await ownerPool.query(changedDefinition ?? "");
+          const after = await ownerPool.query<{
+            readonly default_count: number;
+            readonly default_expression: string;
+            readonly function_oid: string;
+          }>(`
+            SELECT routine.oid::text AS function_oid,
+              routine.pronargdefaults AS default_count,
+              pg_catalog.pg_get_expr(
+                routine.proargdefaults,
+                0,
+                false
+              ) AS default_expression
+            FROM pg_catalog.pg_proc AS routine
+            WHERE routine.oid = 'dasher_private.context_allows(uuid, text)'::regprocedure
+          `);
+          expect(after.rows[0]).toEqual({
+            default_count: 1,
+            default_expression: "'viewer'::text",
+            function_oid: original?.function_oid,
+          });
+        },
+      },
+      {
+        name: "same-identity VARIADIC shape",
+        apply: async () => {
+          // The exact 0002 routines have no trailing array argument, while
+          // PostgreSQL requires a VARIADIC parameter to be the final array.
+          // This managed-schema probe supplies the compatible real shape.
+          await ownerPool.query(`
+            CREATE FUNCTION dasher_private.task8a_variadic_probe(text[])
+            RETURNS integer
+            LANGUAGE sql
+            STABLE
+            SET search_path = pg_catalog
+            AS 'SELECT cardinality($1)'
+          `);
+          const before = await ownerPool.query<{
+            readonly function_oid: string;
+            readonly identity_arguments: string;
+            readonly variadic_type: string | null;
+          }>(`
+            SELECT routine.oid::text AS function_oid,
+              pg_catalog.pg_get_function_identity_arguments(routine.oid)
+                AS identity_arguments,
+              pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
+                AS variadic_type
+            FROM pg_catalog.pg_proc AS routine
+            WHERE routine.oid =
+              'dasher_private.task8a_variadic_probe(text[])'::regprocedure
+          `);
+          await ownerPool.query(`
+            CREATE OR REPLACE FUNCTION
+              dasher_private.task8a_variadic_probe(VARIADIC text[])
+            RETURNS integer
+            LANGUAGE sql
+            STABLE
+            SET search_path = pg_catalog
+            AS 'SELECT cardinality($1)'
+          `);
+          const after = await ownerPool.query<{
+            readonly function_oid: string;
+            readonly identity_arguments: string;
+            readonly variadic_type: string | null;
+          }>(`
+            SELECT routine.oid::text AS function_oid,
+              pg_catalog.pg_get_function_identity_arguments(routine.oid)
+                AS identity_arguments,
+              pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
+                AS variadic_type
+            FROM pg_catalog.pg_proc AS routine
+            WHERE routine.oid =
+              'dasher_private.task8a_variadic_probe(text[])'::regprocedure
+          `);
+          expect(before.rows[0]).toMatchObject({
+            identity_arguments: "text[]",
+            variadic_type: null,
+          });
+          // PostgreSQL 16 preserves the OID but reports VARIADIC text[] as the
+          // identity argument text; provariadic is also changed to text.
+          expect(after.rows[0]).toEqual({
+            function_oid: before.rows[0]?.function_oid,
+            identity_arguments: "VARIADIC text[]",
+            variadic_type: "text",
+          });
+        },
+      },
+      {
+        name: "column comment",
+        sql: "COMMENT ON COLUMN dasher.users.user_id IS 'task8a-column-drift'",
+        cleanup: () =>
+          ownerPool
+            .query("COMMENT ON COLUMN dasher.users.user_id IS NULL")
+            .then(() => undefined),
+      },
+      {
+        name: "constraint comment",
+        sql: "COMMENT ON CONSTRAINT users_pkey ON dasher.users IS 'task8a-constraint-drift'",
+        cleanup: () =>
+          ownerPool
+            .query("COMMENT ON CONSTRAINT users_pkey ON dasher.users IS NULL")
+            .then(() => undefined),
+      },
+      {
+        name: "trigger comment",
+        sql: "COMMENT ON TRIGGER audit_events_immutable ON dasher.audit_events IS 'task8a-trigger-drift'",
+        cleanup: () =>
+          ownerPool
+            .query(
+              "COMMENT ON TRIGGER audit_events_immutable ON dasher.audit_events IS NULL",
+            )
+            .then(() => undefined),
+      },
+      {
+        name: "policy comment",
+        sql: "COMMENT ON POLICY organizations_select ON dasher.organizations IS 'task8a-policy-drift'",
+        cleanup: () =>
+          ownerPool
+            .query(
+              "COMMENT ON POLICY organizations_select ON dasher.organizations IS NULL",
+            )
+            .then(() => undefined),
+      },
+      {
+        name: "database comment",
+        apply: async () => {
+          const client = await ownerPool.connect();
+          try {
+            const original = await client.query<{
+              readonly comment: string | null;
+            }>(`
+              SELECT pg_catalog.shobj_description(
+                database_row.oid,
+                'pg_database'
+              ) AS comment
+              FROM pg_catalog.pg_database AS database_row
+              WHERE database_row.datname = pg_catalog.current_database()
+            `);
+            originalDatabaseComment = original.rows[0]?.comment ?? null;
+            await executeServerFormattedSql(
+              client,
+              "COMMENT ON DATABASE %I IS 'task8a-database-drift'",
+              [config.ownerDatabase],
+            );
+          } finally {
+            client.release();
+          }
+        },
+        cleanup: async () => {
+          const client = await ownerPool.connect();
+          try {
+            if (originalDatabaseComment === null) {
+              await executeServerFormattedSql(
+                client,
+                "COMMENT ON DATABASE %I IS NULL",
+                [config.ownerDatabase],
+              );
+            } else if (originalDatabaseComment !== undefined) {
+              await executeServerFormattedSql(
+                client,
+                "COMMENT ON DATABASE %I IS %L",
+                [config.ownerDatabase, originalDatabaseComment],
+              );
+            } else {
+              throw new Error("database comment cleanup lacks original value");
+            }
+            originalDatabaseComment = undefined;
+          } finally {
+            client.release();
+          }
+        },
       },
       {
         name: "extra constraint",
@@ -1183,7 +1412,13 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       for (const drift of driftCases) {
         await resetManagedSchemas();
         await runMigrations(ownerPool, canonicalMigrationDirectory, []);
-        await ownerPool.query(drift.sql);
+        if (drift.apply !== undefined) {
+          await drift.apply();
+        } else if (drift.sql !== undefined) {
+          await ownerPool.query(drift.sql);
+        } else {
+          throw new Error(`missing PostgreSQL drift mutation: ${drift.name}`);
+        }
         let preparedRoleDdlCount = 0;
         let modeledSqlCount = 0;
         const instrumentedPool = {
@@ -1210,14 +1445,38 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           },
         };
 
-        await expectMigrationRejection(
-          runMigrations(instrumentedPool, directory, []),
-          "managed_role_drift",
-        );
-        expect(preparedRoleDdlCount, drift.name).toBe(0);
-        expect(modeledSqlCount, drift.name).toBe(0);
+        try {
+          await expectMigrationRejection(
+            runMigrations(instrumentedPool, directory, []),
+            "managed_role_drift",
+          );
+          expect(preparedRoleDdlCount, drift.name).toBe(0);
+          expect(modeledSqlCount, drift.name).toBe(0);
+        } finally {
+          await drift.cleanup?.();
+        }
       }
     } finally {
+      if (originalDatabaseComment !== undefined) {
+        const client = await ownerPool.connect();
+        try {
+          if (originalDatabaseComment === null) {
+            await executeServerFormattedSql(
+              client,
+              "COMMENT ON DATABASE %I IS NULL",
+              [config.ownerDatabase],
+            );
+          } else {
+            await executeServerFormattedSql(
+              client,
+              "COMMENT ON DATABASE %I IS %L",
+              [config.ownerDatabase, originalDatabaseComment],
+            );
+          }
+        } finally {
+          client.release();
+        }
+      }
       await rm(directory, { recursive: true, force: true });
       await resetManagedSchemas();
     }

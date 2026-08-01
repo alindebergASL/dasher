@@ -648,6 +648,1141 @@ const task4TableColumns = {
   users: ["user_id", "created_at"],
 } as const;
 
+const modeled0003FunctionSources: Readonly<Record<string, string>> = {
+  "dasher_api.list_dashboards": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+BEGIN
+  IF $1 IS NULL OR $1 NOT BETWEEN 1 AND 100 OR v_organization_id IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN QUERY
+    SELECT ROW(dashboard_id, title, current_kind, lifecycle_state,
+      lifecycle_revision, effective_expires_at, head_version_id
+    )::dasher.dashboard_summary
+    FROM dasher.dashboards
+    WHERE organization_id = v_organization_id AND purged_at IS NULL
+    ORDER BY created_at DESC, dashboard_id
+    LIMIT $1;
+END
+`,
+  "dasher_api.get_dashboard_summary": `
+DECLARE
+  v_result dasher.dashboard_summary;
+BEGIN
+  SELECT ROW(dashboard_id, title, current_kind, lifecycle_state,
+      lifecycle_revision, effective_expires_at, head_version_id
+    )::dasher.dashboard_summary
+    INTO v_result
+  FROM dasher.dashboards
+  WHERE organization_id = dasher_private.context_organization_id()
+    AND dashboard_id = $1 AND purged_at IS NULL;
+  IF v_result IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN v_result;
+END
+`,
+  "dasher_api.get_dashboard_head": `
+DECLARE
+  v_head_version_id uuid;
+BEGIN
+  SELECT head_version_id INTO v_head_version_id
+  FROM dasher.dashboards
+  WHERE organization_id = dasher_private.context_organization_id()
+    AND dashboard_id = $1 AND access_revoked_at IS NULL AND purged_at IS NULL;
+  IF NOT FOUND OR v_head_version_id IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN v_head_version_id;
+END
+`,
+  "dasher_api.get_dashboard_version": `
+DECLARE
+  v_result dasher.dashboard_version_projection;
+BEGIN
+  SELECT ROW(version.dashboard_id, version.version_id, version.parent_version_id,
+      version.canonical_spec_sha256, version.validation_state,
+      version.validation_sha256, version.planner_provenance_sha256,
+      version.policy_revision, version.registry_revision,
+      version.calculation_graph_sha256, version.created_at
+    )::dasher.dashboard_version_projection
+    INTO v_result
+  FROM dasher.dashboard_versions AS version
+  JOIN dasher.dashboards AS dashboard
+    ON dashboard.organization_id = version.organization_id
+   AND dashboard.dashboard_id = version.dashboard_id
+  WHERE version.organization_id = dasher_private.context_organization_id()
+    AND version.dashboard_id = $1 AND version.version_id = $2
+    AND dashboard.access_revoked_at IS NULL AND dashboard.purged_at IS NULL;
+  IF v_result IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN v_result;
+END
+`,
+  "dasher_api.get_dashboard_evidence": `
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM dasher.dashboards
+    WHERE organization_id = dasher_private.context_organization_id()
+      AND dashboard_id = $1 AND access_revoked_at IS NULL AND purged_at IS NULL
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN QUERY
+    SELECT ROW(link.dashboard_id, link.version_id, evidence.evidence_id,
+      evidence.evidence_kind, evidence.content_sha256, evidence.observed_at,
+      evidence.retrieved_at)::dasher.dashboard_evidence_projection
+    FROM dasher.dashboard_version_evidence AS link
+    JOIN dasher.evidence_records AS evidence
+      ON evidence.organization_id = link.organization_id
+     AND evidence.evidence_id = link.evidence_id
+    WHERE link.organization_id = dasher_private.context_organization_id()
+      AND link.dashboard_id = $1 AND link.version_id = $2
+    ORDER BY evidence.evidence_id;
+END
+`,
+  "dasher_api.get_dashboard_lineage": `
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM dasher.dashboard_versions
+    WHERE organization_id = dasher_private.context_organization_id()
+      AND dashboard_id = $1 AND version_id = $2
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN QUERY
+    SELECT ROW(version.dashboard_id, version.version_id, version.parent_version_id,
+      snapshot.snapshot_id, evidence.evidence_id, artifact.artifact_id
+    )::dasher.dashboard_lineage_projection
+    FROM dasher.dashboard_versions AS version
+    LEFT JOIN dasher.dashboard_version_snapshots AS snapshot
+      ON snapshot.organization_id = version.organization_id
+     AND snapshot.dashboard_id = version.dashboard_id
+     AND snapshot.version_id = version.version_id
+    LEFT JOIN dasher.dashboard_version_evidence AS evidence
+      ON evidence.organization_id = version.organization_id
+     AND evidence.dashboard_id = version.dashboard_id
+     AND evidence.version_id = version.version_id
+    LEFT JOIN dasher.dashboard_artifacts AS artifact
+      ON artifact.organization_id = version.organization_id
+     AND artifact.dashboard_id = version.dashboard_id
+     AND artifact.version_id = version.version_id
+    WHERE version.organization_id = dasher_private.context_organization_id()
+      AND version.dashboard_id = $1 AND version.version_id = $2
+    ORDER BY snapshot.snapshot_id, evidence.evidence_id, artifact.artifact_id;
+END
+`,
+  "dasher_api.get_dashboard_admin_status": `
+DECLARE
+  v_result dasher.dashboard_admin_projection;
+BEGIN
+  IF NOT dasher_private.context_allows(
+    dasher_private.context_organization_id(), 'admin'
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  SELECT ROW(dashboard.dashboard_id, dashboard.lifecycle_state,
+      dashboard.lifecycle_revision, dashboard.capability_epoch,
+      dashboard.cache_epoch, dashboard.access_revoked_at, dashboard.purge_after,
+      dashboard.purge_started_at, dashboard.purged_at,
+      (SELECT count(*) FROM dasher.dashboard_legal_holds AS hold
+       WHERE hold.organization_id = dashboard.organization_id
+         AND hold.dashboard_id = dashboard.dashboard_id
+         AND hold.released_at IS NULL),
+      coordination.current_step)::dasher.dashboard_admin_projection
+    INTO v_result
+  FROM dasher.dashboards AS dashboard
+  LEFT JOIN dasher.dashboard_cleanup_coordination AS coordination
+    ON coordination.organization_id = dashboard.organization_id
+   AND coordination.dashboard_id = dashboard.dashboard_id
+  WHERE dashboard.organization_id = dasher_private.context_organization_id()
+    AND dashboard.dashboard_id = $1;
+  IF v_result IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN v_result;
+END
+`,
+  "dasher_api.create_dashboard": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+  v_actor_user_id uuid := dasher_private.context_user_id();
+  v_authority_revision bigint := dasher_private.context_authority_revision();
+  v_now timestamptz := statement_timestamp();
+  v_policy_revision bigint;
+BEGIN
+  IF v_organization_id IS NULL OR v_actor_user_id IS NULL OR $1 IS NULL
+    OR $2 IS NULL OR btrim($2) <> $2 OR char_length($2) NOT BETWEEN 1 AND 200
+    OR $3 NOT IN ('disposable', 'durable')
+    OR ($3 = 'disposable' AND ($4 IS NULL OR $4 NOT BETWEEN 3600 AND 604800))
+    OR ($3 = 'durable' AND $4 IS NOT NULL) OR $6 IS NULL OR $7 IS NULL
+    OR $8 IS NULL OR char_length($8) NOT BETWEEN 1 AND 64
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  SELECT retention_policy_revision INTO v_policy_revision
+  FROM dasher.dashboard_lifecycle_policies
+  WHERE organization_id = v_organization_id
+  ORDER BY policy_revision DESC LIMIT 1;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboards (
+    organization_id, dashboard_id, title, created_by_user_id, created_at,
+    created_kind, current_kind, original_expires_at, effective_expires_at,
+    lifecycle_state, lifecycle_revision, capability_epoch, cache_epoch,
+    retention_policy_revision, tombstone_lineage_id
+  ) VALUES (
+    v_organization_id, $1, $2, v_actor_user_id, v_now, $3, $3,
+    CASE WHEN $3 = 'disposable' THEN v_now + make_interval(secs => $4) END,
+    CASE WHEN $3 = 'disposable' THEN v_now + make_interval(secs => $4) END,
+    CASE WHEN $5 THEN 'active' ELSE 'draft' END, 0, 0, 0,
+    v_policy_revision, $6
+  );
+  RETURN $1;
+END
+`,
+  "dasher_api.create_evidence_record": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+BEGIN
+  IF v_organization_id IS NULL OR $1 IS NULL OR $2 IS NULL OR $3 IS NULL
+    OR $4 IS NULL OR $5 IS NULL OR $6 IS NULL OR $7 IS NULL
+    OR octet_length($7) <> 32 OR $8 IS NULL OR $9 IS NULL OR $8 > $9
+    OR $10 IS NULL OR $11 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.dashboards
+  WHERE organization_id = v_organization_id AND dashboard_id = $1
+    AND access_revoked_at IS NULL AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.evidence_records (
+    organization_id, evidence_id, snapshot_id, evidence_kind, coordinates,
+    transformation, content_sha256, observed_at, retrieved_at, created_at
+  ) VALUES (v_organization_id, $2, $3, $5, $6, 'identity', $7, $8, $9,
+    statement_timestamp());
+END
+`,
+  "dasher_api.create_dashboard_version": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+  v_actor_user_id uuid := dasher_private.context_user_id();
+  v_snapshot_id uuid;
+  v_evidence_id uuid;
+BEGIN
+  IF v_organization_id IS NULL OR v_actor_user_id IS NULL OR $1 IS NULL
+    OR $2 IS NULL OR $4 IS NULL OR $5 IS NULL OR octet_length($5) <> 32
+    OR $7 IS NULL OR octet_length($7) <> 32 OR $8 IS NULL
+    OR octet_length($8) <> 32 OR $9 < 1 OR $10 < 1 OR $12 IS NULL OR $13 IS NULL
+    OR $14 IS NULL OR $15 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboard_versions (
+    organization_id, dashboard_id, version_id, parent_version_id,
+    canonical_spec_bytes, canonical_spec_sha256, validation_state,
+    validation_sha256, planner_provenance_sha256, policy_revision,
+    registry_revision, calculation_graph_sha256, created_by_user_id, created_at
+  ) VALUES (v_organization_id, $1, $2, $3, $4, $5, 'validated', $7, $8,
+    $9, $10, $11, v_actor_user_id, statement_timestamp());
+  FOREACH v_snapshot_id IN ARRAY $12 LOOP
+    INSERT INTO dasher.dashboard_version_snapshots
+      (organization_id, dashboard_id, version_id, snapshot_id)
+    VALUES (v_organization_id, $1, $2, v_snapshot_id);
+  END LOOP;
+  FOREACH v_evidence_id IN ARRAY $13 LOOP
+    INSERT INTO dasher.dashboard_version_evidence
+      (organization_id, dashboard_id, version_id, evidence_id)
+    VALUES (v_organization_id, $1, $2, v_evidence_id);
+  END LOOP;
+  RETURN $2;
+END
+`,
+  "dasher_api.compare_and_swap_dashboard_head": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+BEGIN
+  IF v_organization_id IS NULL OR $1 IS NULL OR $3 IS NULL OR $4 IS NULL
+    OR $4 < 0 OR $5 IS NULL OR $6 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    'dasher:dashboard:v1|' || v_organization_id::text || '|' || $1::text, 0
+  ));
+  UPDATE dasher.dashboards
+  SET head_version_id = $3, lifecycle_revision = lifecycle_revision + 1,
+      cache_epoch = cache_epoch + 1
+  WHERE organization_id = v_organization_id AND dashboard_id = $1
+    AND head_version_id IS NOT DISTINCT FROM $2 AND lifecycle_revision = $4
+    AND access_revoked_at IS NULL AND purged_at IS NULL
+    AND EXISTS (SELECT 1 FROM dasher.dashboard_versions
+      WHERE organization_id = v_organization_id AND dashboard_id = $1
+        AND version_id = $3 AND validation_state = 'validated');
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_api.request_dashboard_promotion": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+  v_actor_user_id uuid := dasher_private.context_user_id();
+BEGIN
+  IF v_organization_id IS NULL OR v_actor_user_id IS NULL OR $1 IS NULL
+    OR $2 IS NULL OR $3 < 0 OR $4 IS NULL OR octet_length($4) <> 32
+    OR $5 IS NULL OR $6 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboard_promotion_requests (
+    organization_id, promotion_request_id, dashboard_id,
+    requested_lifecycle_revision, requested_at, requested_by_user_id,
+    rationale_sha256
+  ) SELECT v_organization_id, $2, $1, $3, statement_timestamp(),
+      v_actor_user_id, $4
+    FROM dasher.dashboards
+    WHERE organization_id = v_organization_id AND dashboard_id = $1
+      AND current_kind = 'disposable' AND lifecycle_revision = $3
+      AND access_revoked_at IS NULL AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+  RETURN $2;
+END
+`,
+  "dasher_api.decide_dashboard_promotion": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+  v_actor_user_id uuid := dasher_private.context_user_id();
+  v_requested_by_user_id uuid;
+  v_dashboard_id uuid;
+  v_policy_revision bigint;
+BEGIN
+  IF NOT dasher_private.context_allows(v_organization_id, 'admin')
+    OR v_actor_user_id IS NULL OR $1 IS NULL OR $2 IS NULL OR $3 IS NULL
+    OR $4 < 0 OR $5 NOT IN ('approved', 'denied') OR $6 IS NULL OR $7 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  SELECT dashboard_id, requested_by_user_id
+    INTO v_dashboard_id, v_requested_by_user_id
+  FROM dasher.dashboard_promotion_requests
+  WHERE organization_id = v_organization_id AND promotion_request_id = $1
+    AND requested_lifecycle_revision = $4;
+  IF NOT FOUND OR v_requested_by_user_id = v_actor_user_id THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  SELECT retention_policy_revision INTO v_policy_revision
+  FROM dasher.dashboards
+  WHERE organization_id = v_organization_id AND dashboard_id = v_dashboard_id
+    AND lifecycle_revision = $4 AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+  INSERT INTO dasher.dashboard_promotion_decisions (
+    organization_id, promotion_request_id, decision,
+    dashboard_lifecycle_revision, decided_at, requested_by_user_id,
+    decided_by_user_id, retention_policy_revision
+  ) VALUES (v_organization_id, $1, $5, $4, statement_timestamp(),
+    v_requested_by_user_id, v_actor_user_id, v_policy_revision);
+  IF $5 = 'approved' THEN
+    UPDATE dasher.dashboards SET current_kind = 'durable',
+      effective_expires_at = NULL, promoted_at = statement_timestamp(),
+      lifecycle_revision = lifecycle_revision + 1,
+      capability_epoch = capability_epoch + 1, cache_epoch = cache_epoch + 1
+    WHERE organization_id = v_organization_id AND dashboard_id = v_dashboard_id
+      AND lifecycle_revision = $4;
+  END IF;
+END
+`,
+  "dasher_api.set_dashboard_archive": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+BEGIN
+  IF v_organization_id IS NULL OR $1 IS NULL OR $2 IS NULL OR $3 < 0
+    OR $4 IS NULL OR $5 IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  UPDATE dasher.dashboards
+  SET lifecycle_state = CASE WHEN $2 THEN 'archived' ELSE 'active' END,
+      archived_at = CASE WHEN $2 THEN statement_timestamp() ELSE NULL END,
+      lifecycle_revision = lifecycle_revision + 1,
+      capability_epoch = capability_epoch + 1, cache_epoch = cache_epoch + 1
+  WHERE organization_id = v_organization_id AND dashboard_id = $1
+    AND lifecycle_revision = $3 AND current_kind = 'durable'
+    AND access_revoked_at IS NULL AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_api.delete_dashboard": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+BEGIN
+  IF v_organization_id IS NULL OR $1 IS NULL OR $2 < 0 OR $3 IS NULL
+    OR $4 IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  UPDATE dasher.dashboards SET lifecycle_state = 'access_revoked',
+    access_revoked_at = statement_timestamp(), revocation_reason = 'explicit_delete',
+    purge_after = statement_timestamp(), lifecycle_revision = lifecycle_revision + 1,
+    capability_epoch = capability_epoch + 1, cache_epoch = cache_epoch + 1
+  WHERE organization_id = v_organization_id AND dashboard_id = $1
+    AND lifecycle_revision = $2 AND access_revoked_at IS NULL AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_api.restore_dashboard_as_new": `
+DECLARE
+  v_organization_id uuid := dasher_private.context_organization_id();
+  v_actor_user_id uuid := dasher_private.context_user_id();
+  v_policy_revision bigint;
+BEGIN
+  IF NOT dasher_private.context_allows(v_organization_id, 'admin')
+    OR v_actor_user_id IS NULL OR $1 IS NULL OR $2 IS NULL OR $3 IS NULL
+    OR $4 IS NULL OR $5 IS NULL OR $6 IS NULL OR $7 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  SELECT retention_policy_revision INTO v_policy_revision
+  FROM dasher.dashboard_tombstones
+  WHERE organization_id = v_organization_id AND tombstone_lineage_id = $3
+    AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboards (
+    organization_id, dashboard_id, title, created_by_user_id, created_at,
+    created_kind, current_kind, lifecycle_state, lifecycle_revision,
+    capability_epoch, cache_epoch, retention_policy_revision,
+    tombstone_lineage_id, restored_from_tombstone_lineage_id
+  ) VALUES (v_organization_id, $1, $5, v_actor_user_id, statement_timestamp(),
+    'durable', 'durable', 'draft', 0, 0, 0, v_policy_revision, $2, $3);
+  INSERT INTO dasher.dashboard_restore_lineage (
+    organization_id, dashboard_id, version_id, source_tombstone_lineage_id,
+    source_version_id, retention_policy_revision, actor_user_id,
+    authority_revision, occurred_at, provenance_sha256
+  ) VALUES (v_organization_id, $1, $4, $3, $4, v_policy_revision,
+    v_actor_user_id, dasher_private.context_authority_revision(),
+    statement_timestamp(), decode(md5($5 || $7), 'hex'));
+END
+`,
+  "dasher_retention_api.initialize_operator_context": `
+DECLARE
+  v_binding_gate bigint;
+  v_organization_gate bigint;
+  v_principal_id uuid;
+  v_principal_revision bigint;
+  v_authority_scope text;
+  v_scope_organization_id uuid;
+  v_enabled boolean;
+  v_capability_allowed boolean;
+  v_target_organization_id uuid;
+  v_chain_count bigint;
+  v_chain_min_revision bigint;
+  v_chain_valid boolean;
+BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  IF COALESCE(current_setting('dasher.retention_phase', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_principal_id', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_principal_revision', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_authority_scope', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_capability', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_target_dashboard_id', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_target_organization_id', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_request_id', true), '') <> ''
+    OR COALESCE(current_setting('dasher.retention_case_matter_reference', true), '') <> ''
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  IF $1 IS NULL OR $2 NOT IN (
+      'materialize_expiry', 'place_hold', 'release_hold', 'claim_cleanup',
+      'record_attempt', 'purge'
+    ) OR $3 IS NULL OR $4 IS NULL OR btrim($4) <> $4
+    OR char_length($4) NOT BETWEEN 1 AND 200 OR $4 ~ '[[:cntrl:]]'
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  v_binding_gate := hashtextextended(
+    'dasher:retention-principal-binding:v1|postgres_session_user|' ||
+      session_user::text,
+    0
+  );
+  PERFORM pg_advisory_xact_lock(v_binding_gate);
+  PERFORM set_config('dasher.retention_phase', 'binding_lookup', true);
+  SELECT retention_service_principal_id, principal_revision, authority_scope,
+      scope_organization_id, enabled,
+      CASE $2
+        WHEN 'materialize_expiry' THEN can_materialize_expiry
+        WHEN 'place_hold' THEN can_place_hold
+        WHEN 'release_hold' THEN can_release_hold
+        WHEN 'claim_cleanup' THEN can_claim_cleanup
+        WHEN 'record_attempt' THEN can_record_attempt
+        WHEN 'purge' THEN can_purge
+        ELSE false
+      END
+    INTO v_principal_id, v_principal_revision, v_authority_scope,
+      v_scope_organization_id, v_enabled, v_capability_allowed
+  FROM dasher.retention_service_principal_allowlist
+  WHERE binding_kind = 'postgres_session_user'
+    AND binding_subject = session_user
+  ORDER BY principal_revision DESC
+  LIMIT 1;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  WITH RECURSIVE authority_chain AS (
+    SELECT principal_revision, predecessor_revision, predecessor_sha256,
+      revision_sha256
+    FROM dasher.retention_service_principal_allowlist
+    WHERE retention_service_principal_id = v_principal_id
+      AND principal_revision = v_principal_revision
+    UNION ALL
+    SELECT predecessor.principal_revision, predecessor.predecessor_revision,
+      predecessor.predecessor_sha256, predecessor.revision_sha256
+    FROM dasher.retention_service_principal_allowlist AS predecessor
+    JOIN authority_chain AS successor
+      ON predecessor.retention_service_principal_id = v_principal_id
+     AND predecessor.principal_revision = successor.predecessor_revision
+     AND predecessor.revision_sha256 = successor.predecessor_sha256
+  )
+  SELECT count(*), min(principal_revision),
+      bool_and(
+        (principal_revision = 1 AND predecessor_revision IS NULL
+          AND predecessor_sha256 IS NULL)
+        OR
+        (principal_revision > 1 AND predecessor_revision = principal_revision - 1
+          AND predecessor_sha256 IS NOT NULL)
+      )
+    INTO v_chain_count, v_chain_min_revision, v_chain_valid
+  FROM authority_chain;
+  IF v_chain_count <> v_principal_revision OR v_chain_min_revision <> 1
+    OR v_chain_valid IS DISTINCT FROM true OR NOT v_enabled
+    OR NOT v_capability_allowed
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM set_config('dasher.retention_principal_id', v_principal_id::text, true);
+  PERFORM set_config('dasher.retention_principal_revision', v_principal_revision::text, true);
+  PERFORM set_config('dasher.retention_authority_scope', v_authority_scope, true);
+  PERFORM set_config('dasher.retention_capability', 'initialize', true);
+  PERFORM set_config('dasher.retention_target_dashboard_id', $1::text, true);
+  PERFORM set_config('dasher.retention_request_id', $3::text, true);
+  PERFORM set_config('dasher.retention_case_matter_reference', $4, true);
+  PERFORM set_config('dasher.retention_phase', 'target_discovery', true);
+  SELECT organization_id INTO v_target_organization_id
+  FROM dasher.dashboards
+  WHERE dashboard_id = $1;
+  IF NOT FOUND OR (
+    v_authority_scope = 'tenant_legal_admin'
+    AND v_scope_organization_id IS DISTINCT FROM v_target_organization_id
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  v_organization_gate := hashtextextended(
+    'dasher:organization:v1|' || v_target_organization_id::text,
+    0
+  );
+  PERFORM pg_advisory_xact_lock(v_organization_gate);
+  PERFORM set_config(
+    'dasher.retention_target_organization_id',
+    v_target_organization_id::text,
+    true
+  );
+  PERFORM set_config('dasher.retention_capability', $2, true);
+  PERFORM set_config('dasher.retention_phase', 'authorized', true);
+  PERFORM 1 FROM dasher.dashboards
+  WHERE organization_id = v_target_organization_id AND dashboard_id = $1;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+END
+`,
+  "dasher_retention_api.materialize_dashboard_expiry": `
+BEGIN
+  IF current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR current_setting('dasher.retention_capability', true) <> 'materialize_expiry'
+    OR current_setting('dasher.retention_target_dashboard_id', true)::uuid <> $1
+    OR $2 < 0 OR $3 IS NULL OR $4 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.retention_service_principal_allowlist AS authority
+  WHERE authority.retention_service_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid
+    AND authority.principal_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint
+    AND authority.binding_kind = 'postgres_session_user'
+    AND authority.binding_subject = session_user AND authority.enabled
+    AND authority.can_materialize_expiry
+    AND NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+      WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+        AND later.principal_revision > authority.principal_revision
+    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  UPDATE dasher.dashboards SET lifecycle_state = 'access_revoked',
+    access_revoked_at = statement_timestamp(), revocation_reason = 'expired',
+    purge_after = statement_timestamp(), lifecycle_revision = lifecycle_revision + 1,
+    capability_epoch = capability_epoch + 1, cache_epoch = cache_epoch + 1
+  WHERE organization_id = current_setting(
+      'dasher.retention_target_organization_id', true
+    )::uuid
+    AND dashboard_id = $1 AND lifecycle_revision = $2
+    AND current_kind = 'disposable' AND effective_expires_at <= statement_timestamp()
+    AND access_revoked_at IS NULL AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_retention_api.place_dashboard_legal_hold": `
+BEGIN
+  IF current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR current_setting('dasher.retention_capability', true) <> 'place_hold'
+    OR current_setting('dasher.retention_target_dashboard_id', true)::uuid <> $1
+    OR $2 IS NULL OR $3 IS NULL OR btrim($3) <> $3
+    OR char_length($3) NOT BETWEEN 1 AND 200 OR $4 IS NULL
+    OR octet_length($4) <> 32 OR $5 < 0 OR $6 IS NULL OR $7 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.retention_service_principal_allowlist AS authority
+  WHERE authority.retention_service_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid
+    AND authority.principal_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint
+    AND authority.binding_kind = 'postgres_session_user'
+    AND authority.binding_subject = session_user AND authority.enabled
+    AND authority.can_place_hold
+    AND NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+      WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+        AND later.principal_revision > authority.principal_revision
+    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboard_legal_holds (
+    organization_id, dashboard_id, hold_id, case_matter_reference,
+    placed_by_principal_id, placed_authority_revision, placed_actor,
+    placed_reason_sha256, placed_at, retention_policy_revision
+  ) SELECT organization_id, dashboard_id, $2, $3,
+      current_setting('dasher.retention_principal_id', true)::uuid,
+      current_setting('dasher.retention_principal_revision', true)::bigint,
+      session_user::text, $4, statement_timestamp(), retention_policy_revision
+    FROM dasher.dashboards
+    WHERE organization_id = current_setting(
+        'dasher.retention_target_organization_id', true
+      )::uuid
+      AND dashboard_id = $1 AND lifecycle_revision = $5 AND purged_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_retention_api.release_dashboard_legal_hold": `
+BEGIN
+  IF current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR current_setting('dasher.retention_capability', true) <> 'release_hold'
+    OR current_setting('dasher.retention_target_dashboard_id', true)::uuid <> $1
+    OR $2 IS NULL OR $3 IS NULL OR octet_length($3) <> 32 OR $4 < 0
+    OR $5 IS NULL OR $6 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.retention_service_principal_allowlist AS authority
+  WHERE authority.retention_service_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid
+    AND authority.principal_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint
+    AND authority.binding_kind = 'postgres_session_user'
+    AND authority.binding_subject = session_user AND authority.enabled
+    AND authority.can_release_hold
+    AND NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+      WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+        AND later.principal_revision > authority.principal_revision
+    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  UPDATE dasher.dashboard_legal_holds SET released_at = statement_timestamp(),
+    released_by_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid,
+    released_authority_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint,
+    released_actor = session_user::text, released_reason_sha256 = $3
+  WHERE organization_id = current_setting(
+      'dasher.retention_target_organization_id', true
+    )::uuid
+    AND dashboard_id = $1 AND hold_id = $2 AND released_at IS NULL
+    AND EXISTS (SELECT 1 FROM dasher.dashboards
+      WHERE organization_id = current_setting(
+          'dasher.retention_target_organization_id', true
+        )::uuid
+        AND dashboard_id = $1 AND lifecycle_revision = $4);
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_retention_api.claim_dashboard_cleanup": `
+BEGIN
+  IF current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR current_setting('dasher.retention_capability', true) <> 'claim_cleanup'
+    OR current_setting('dasher.retention_target_dashboard_id', true)::uuid <> $1
+    OR $2 IS NULL OR btrim($2) <> $2 OR char_length($2) NOT BETWEEN 1 AND 64
+    OR $3 < 0 OR $4 IS NULL OR btrim($4) <> $4
+    OR char_length($4) NOT BETWEEN 1 AND 64 OR $5 <= interval '0 seconds'
+    OR $6 IS NULL OR $7 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.retention_service_principal_allowlist AS authority
+  WHERE authority.retention_service_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid
+    AND authority.principal_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint
+    AND authority.binding_kind = 'postgres_session_user'
+    AND authority.binding_subject = session_user AND authority.enabled
+    AND authority.can_claim_cleanup
+    AND NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+      WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+        AND later.principal_revision > authority.principal_revision
+    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboard_cleanup_coordination (
+    organization_id, dashboard_id, current_step, lease_owner,
+    lease_expires_at, expected_lifecycle_revision, next_attempt_at
+  ) VALUES (
+    current_setting('dasher.retention_target_organization_id', true)::uuid,
+    $1, $2, session_user, statement_timestamp() + $5, $3,
+    statement_timestamp()
+  ) ON CONFLICT (organization_id, dashboard_id) DO UPDATE
+    SET current_step = EXCLUDED.current_step, lease_owner = EXCLUDED.lease_owner,
+        lease_expires_at = EXCLUDED.lease_expires_at,
+        expected_lifecycle_revision = EXCLUDED.expected_lifecycle_revision
+    WHERE dasher.dashboard_cleanup_coordination.lease_expires_at IS NULL
+       OR dasher.dashboard_cleanup_coordination.lease_expires_at <= statement_timestamp();
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_retention_api.record_dashboard_cleanup_attempt": `
+BEGIN
+  IF current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR current_setting('dasher.retention_capability', true) <> 'record_attempt'
+    OR current_setting('dasher.retention_target_dashboard_id', true)::uuid <> $1
+    OR $2 IS NULL OR $3 IS NULL OR $4 NOT IN ('succeeded', 'failed', 'deferred')
+    OR $5 < 0 OR $6 < 0 OR $7 < 0 OR ($8 IS NOT NULL AND octet_length($8) <> 32)
+    OR $9 IS NULL OR $10 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.retention_service_principal_allowlist AS authority
+  WHERE authority.retention_service_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid
+    AND authority.principal_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint
+    AND authority.binding_kind = 'postgres_session_user'
+    AND authority.binding_subject = session_user AND authority.enabled
+    AND authority.can_record_attempt
+    AND NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+      WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+        AND later.principal_revision > authority.principal_revision
+    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  INSERT INTO dasher.dashboard_cleanup_attempts (
+    organization_id, dashboard_id, cleanup_attempt_id, step, started_at,
+    finished_at, result, released_claim_count, deleted_resource_count,
+    deferred_claim_count, failure_code, proof_sha256
+  ) VALUES (
+    current_setting('dasher.retention_target_organization_id', true)::uuid,
+    $1, $2, $3, statement_timestamp(), statement_timestamp(), $4,
+    $5, $6, $7, CASE WHEN $4 = 'failed' THEN 'cleanup_failed' END, $8
+  );
+  UPDATE dasher.dashboard_cleanup_coordination
+  SET lease_owner = NULL, lease_expires_at = NULL,
+      next_attempt_at = CASE WHEN $4 = 'succeeded' THEN NULL
+        ELSE statement_timestamp() + interval '5 minutes' END,
+      completion_proof_sha256 = CASE WHEN $4 = 'succeeded' THEN $8 END
+  WHERE organization_id = current_setting(
+      'dasher.retention_target_organization_id', true
+    )::uuid AND dashboard_id = $1 AND lease_owner = session_user;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';
+  END IF;
+END
+`,
+  "dasher_retention_api.purge_dashboard": `
+DECLARE
+  v_organization_id uuid := current_setting(
+    'dasher.retention_target_organization_id', true
+  )::uuid;
+BEGIN
+  IF current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR current_setting('dasher.retention_capability', true) <> 'purge'
+    OR current_setting('dasher.retention_target_dashboard_id', true)::uuid <> $1
+    OR $2 < 0 OR $3 IS NULL OR $4 IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.retention_service_principal_allowlist AS authority
+  WHERE authority.retention_service_principal_id = current_setting(
+      'dasher.retention_principal_id', true
+    )::uuid
+    AND authority.principal_revision = current_setting(
+      'dasher.retention_principal_revision', true
+    )::bigint
+    AND authority.binding_kind = 'postgres_session_user'
+    AND authority.binding_subject = session_user AND authority.enabled
+    AND authority.can_purge
+    AND NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+      WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+        AND later.principal_revision > authority.principal_revision
+    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  PERFORM 1 FROM dasher.dashboards
+  WHERE organization_id = v_organization_id AND dashboard_id = $1
+    AND lifecycle_revision = $2 AND lifecycle_state = 'purge_eligible'
+    AND purge_after <= statement_timestamp() AND purged_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM dasher.dashboard_legal_holds
+      WHERE organization_id = v_organization_id AND dashboard_id = $1
+        AND released_at IS NULL);
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  DELETE FROM dasher.snapshot_reference_claims
+    WHERE organization_id = v_organization_id AND dashboard_id = $1;
+  DELETE FROM dasher.evidence_reference_claims
+    WHERE organization_id = v_organization_id AND dashboard_id = $1;
+  DELETE FROM dasher.artifact_reference_claims
+    WHERE organization_id = v_organization_id AND dashboard_id = $1;
+  UPDATE dasher.dashboards SET lifecycle_state = 'cleaned',
+    purged_at = statement_timestamp(), lifecycle_revision = lifecycle_revision + 1,
+    capability_epoch = capability_epoch + 1, cache_epoch = cache_epoch + 1
+  WHERE organization_id = v_organization_id AND dashboard_id = $1
+    AND lifecycle_revision = $2;
+END
+`,
+  "dasher_private.reject_dashboard_append_mutation": `
+BEGIN
+  IF TG_LEVEL <> 'ROW' OR TG_WHEN <> 'BEFORE'
+    OR TG_OP NOT IN ('UPDATE', 'DELETE')
+  THEN
+    RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'invalid append-only trigger invocation';
+  END IF;
+  RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'append-only relation rejects update and delete';
+END
+`,
+  "dasher_private.enforce_dashboard_transition": `
+DECLARE
+  v_phase text := current_setting('dasher.retention_phase', true);
+  v_capability text := current_setting('dasher.retention_capability', true);
+BEGIN
+  IF TG_LEVEL <> 'ROW' OR TG_WHEN <> 'BEFORE' OR TG_OP <> 'UPDATE'
+    OR OLD.organization_id IS DISTINCT FROM NEW.organization_id
+    OR OLD.dashboard_id IS DISTINCT FROM NEW.dashboard_id
+    OR OLD.title IS DISTINCT FROM NEW.title
+    OR OLD.created_by_user_id IS DISTINCT FROM NEW.created_by_user_id
+    OR OLD.created_at IS DISTINCT FROM NEW.created_at
+    OR OLD.created_kind IS DISTINCT FROM NEW.created_kind
+    OR OLD.original_expires_at IS DISTINCT FROM NEW.original_expires_at
+    OR OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision
+    OR OLD.tombstone_lineage_id IS DISTINCT FROM NEW.tombstone_lineage_id
+    OR OLD.restored_from_tombstone_lineage_id IS DISTINCT FROM NEW.restored_from_tombstone_lineage_id
+    OR NEW.lifecycle_revision <> OLD.lifecycle_revision + 1
+    OR NEW.cache_epoch < OLD.cache_epoch
+    OR NEW.capability_epoch < OLD.capability_epoch
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  IF current_user = 'dasher_security_definer'::name THEN
+    IF dasher_private.context_organization_id() IS DISTINCT FROM OLD.organization_id
+      OR dasher_private.context_user_id() IS NULL
+      OR OLD.purged_at IS NOT NULL OR NOT (
+        (
+          NEW.head_version_id IS DISTINCT FROM OLD.head_version_id
+          AND ROW(
+            NEW.current_kind, NEW.effective_expires_at, NEW.lifecycle_state,
+            NEW.access_revoked_at, NEW.revocation_reason, NEW.purge_after,
+            NEW.purge_started_at, NEW.purged_at, NEW.promoted_at,
+            NEW.archived_at
+          ) IS NOT DISTINCT FROM ROW(
+            OLD.current_kind, OLD.effective_expires_at, OLD.lifecycle_state,
+            OLD.access_revoked_at, OLD.revocation_reason, OLD.purge_after,
+            OLD.purge_started_at, OLD.purged_at, OLD.promoted_at,
+            OLD.archived_at
+          )
+          AND NEW.capability_epoch = OLD.capability_epoch
+          AND NEW.cache_epoch = OLD.cache_epoch + 1
+        ) OR (
+          OLD.current_kind = 'disposable' AND NEW.current_kind = 'durable'
+          AND NEW.effective_expires_at IS NULL
+          AND OLD.promoted_at IS NULL AND NEW.promoted_at IS NOT NULL
+          AND ROW(
+            NEW.lifecycle_state, NEW.access_revoked_at, NEW.revocation_reason,
+            NEW.purge_after, NEW.purge_started_at, NEW.purged_at,
+            NEW.archived_at, NEW.head_version_id
+          ) IS NOT DISTINCT FROM ROW(
+            OLD.lifecycle_state, OLD.access_revoked_at, OLD.revocation_reason,
+            OLD.purge_after, OLD.purge_started_at, OLD.purged_at,
+            OLD.archived_at, OLD.head_version_id
+          )
+          AND NEW.capability_epoch = OLD.capability_epoch + 1
+          AND NEW.cache_epoch = OLD.cache_epoch + 1
+        ) OR (
+          OLD.current_kind = 'durable'
+          AND NEW.current_kind IS NOT DISTINCT FROM OLD.current_kind
+          AND (
+            (OLD.lifecycle_state = 'active' AND NEW.lifecycle_state = 'archived'
+              AND OLD.archived_at IS NULL AND NEW.archived_at IS NOT NULL)
+            OR
+            (OLD.lifecycle_state = 'archived' AND NEW.lifecycle_state = 'active'
+              AND OLD.archived_at IS NOT NULL AND NEW.archived_at IS NULL)
+          )
+          AND ROW(
+            NEW.effective_expires_at, NEW.access_revoked_at,
+            NEW.revocation_reason, NEW.purge_after, NEW.purge_started_at,
+            NEW.purged_at, NEW.promoted_at, NEW.head_version_id
+          ) IS NOT DISTINCT FROM ROW(
+            OLD.effective_expires_at, OLD.access_revoked_at,
+            OLD.revocation_reason, OLD.purge_after, OLD.purge_started_at,
+            OLD.purged_at, OLD.promoted_at, OLD.head_version_id
+          )
+          AND NEW.capability_epoch = OLD.capability_epoch + 1
+          AND NEW.cache_epoch = OLD.cache_epoch + 1
+        ) OR (
+          OLD.access_revoked_at IS NULL AND NEW.access_revoked_at IS NOT NULL
+          AND NEW.lifecycle_state = 'access_revoked'
+          AND NEW.revocation_reason = 'explicit_delete'
+          AND NEW.purge_after IS NOT NULL
+          AND ROW(
+            NEW.current_kind, NEW.effective_expires_at,
+            NEW.purge_started_at, NEW.purged_at, NEW.promoted_at,
+            NEW.archived_at, NEW.head_version_id
+          ) IS NOT DISTINCT FROM ROW(
+            OLD.current_kind, OLD.effective_expires_at,
+            OLD.purge_started_at, OLD.purged_at, OLD.promoted_at,
+            OLD.archived_at, OLD.head_version_id
+          )
+          AND NEW.capability_epoch = OLD.capability_epoch + 1
+          AND NEW.cache_epoch = OLD.cache_epoch + 1
+        )
+      )
+    THEN
+      RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+    END IF;
+  ELSIF current_user = 'dasher_retention_definer'::name THEN
+    IF v_phase <> 'authorized'
+      OR current_setting('dasher.retention_target_organization_id', true)::uuid
+        IS DISTINCT FROM OLD.organization_id
+      OR current_setting('dasher.retention_target_dashboard_id', true)::uuid
+        IS DISTINCT FROM OLD.dashboard_id
+      OR v_capability NOT IN ('materialize_expiry', 'purge')
+      OR (v_capability = 'materialize_expiry' AND (
+        OLD.access_revoked_at IS NOT NULL
+        OR NEW.lifecycle_state <> 'access_revoked'
+        OR NEW.access_revoked_at IS NULL OR NEW.revocation_reason <> 'expired'
+        OR NEW.purge_after IS NULL
+        OR ROW(
+          NEW.current_kind, NEW.effective_expires_at, NEW.purge_started_at,
+          NEW.purged_at, NEW.promoted_at, NEW.archived_at, NEW.head_version_id
+        ) IS DISTINCT FROM ROW(
+          OLD.current_kind, OLD.effective_expires_at, OLD.purge_started_at,
+          OLD.purged_at, OLD.promoted_at, OLD.archived_at, OLD.head_version_id
+        )
+        OR NEW.capability_epoch <> OLD.capability_epoch + 1
+        OR NEW.cache_epoch <> OLD.cache_epoch + 1
+      ))
+      OR (v_capability = 'purge' AND (
+        NEW.lifecycle_state <> 'cleaned' OR NEW.purged_at IS NULL
+        OR OLD.lifecycle_state <> 'purge_eligible'
+        OR ROW(
+          NEW.current_kind, NEW.effective_expires_at, NEW.access_revoked_at,
+          NEW.revocation_reason, NEW.purge_after, NEW.purge_started_at,
+          NEW.promoted_at, NEW.archived_at, NEW.head_version_id
+        ) IS DISTINCT FROM ROW(
+          OLD.current_kind, OLD.effective_expires_at, OLD.access_revoked_at,
+          OLD.revocation_reason, OLD.purge_after, OLD.purge_started_at,
+          OLD.promoted_at, OLD.archived_at, OLD.head_version_id
+        )
+        OR NEW.capability_epoch <> OLD.capability_epoch + 1
+        OR NEW.cache_epoch <> OLD.cache_epoch + 1
+      ))
+    THEN
+      RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+    END IF;
+  ELSE
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN NEW;
+END
+`,
+  "dasher_private.enforce_retention_mutation": `
+DECLARE
+  v_organization_id uuid := current_setting(
+    'dasher.retention_target_organization_id', true
+  )::uuid;
+  v_dashboard_id uuid := current_setting(
+    'dasher.retention_target_dashboard_id', true
+  )::uuid;
+  v_capability text := current_setting('dasher.retention_capability', true);
+BEGIN
+  IF TG_LEVEL <> 'ROW' OR TG_WHEN <> 'BEFORE'
+    OR TG_OP NOT IN ('UPDATE', 'DELETE')
+    OR current_user <> 'dasher_retention_definer'::name
+    OR current_setting('dasher.retention_phase', true) <> 'authorized'
+    OR OLD.organization_id IS DISTINCT FROM v_organization_id
+    OR NOT EXISTS (
+      SELECT 1 FROM dasher.retention_service_principal_allowlist AS authority
+      WHERE authority.retention_service_principal_id = current_setting(
+          'dasher.retention_principal_id', true
+        )::uuid
+        AND authority.principal_revision = current_setting(
+          'dasher.retention_principal_revision', true
+        )::bigint
+        AND authority.binding_kind = 'postgres_session_user'
+        AND authority.binding_subject = session_user AND authority.enabled
+        AND NOT EXISTS (
+          SELECT 1 FROM dasher.retention_service_principal_allowlist AS later
+          WHERE later.retention_service_principal_id = authority.retention_service_principal_id
+            AND later.principal_revision > authority.principal_revision
+        )
+        AND CASE v_capability
+          WHEN 'purge' THEN authority.can_purge
+          ELSE false
+        END
+    )
+  THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF TG_TABLE_NAME <> 'dashboard_tombstones'
+      OR v_capability <> 'purge'
+      OR OLD.organization_id IS DISTINCT FROM NEW.organization_id
+      OR OLD.tombstone_lineage_id IS DISTINCT FROM NEW.tombstone_lineage_id
+      OR OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision
+      OR OLD.access_revoked_at IS DISTINCT FROM NEW.access_revoked_at
+      OR OLD.access_revoked_lifecycle_revision IS DISTINCT FROM NEW.access_revoked_lifecycle_revision
+      OR OLD.access_revoked_proof_sha256 IS DISTINCT FROM NEW.access_revoked_proof_sha256
+      OR NEW.purged_at IS NULL OR NEW.purged_lifecycle_revision IS NULL
+      OR NEW.purged_proof_sha256 IS NULL
+    THEN
+      RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF v_capability <> 'purge' OR NOT (
+    (TG_TABLE_NAME IN (
+      'dashboard_versions', 'dashboard_version_snapshots',
+      'dashboard_version_evidence',
+      'snapshot_reference_claims', 'evidence_reference_claims',
+      'artifact_reference_claims'
+    ) AND OLD.dashboard_id IS NOT DISTINCT FROM v_dashboard_id)
+    OR
+    (TG_TABLE_NAME = 'dashboard_tombstones' AND EXISTS (
+      SELECT 1 FROM dasher.dashboards AS target
+      WHERE target.organization_id = v_organization_id
+        AND target.dashboard_id = v_dashboard_id
+        AND target.tombstone_lineage_id = OLD.tombstone_lineage_id
+    ))
+    OR
+    (TG_TABLE_NAME = 'source_snapshots'
+      AND NOT EXISTS (
+        SELECT 1 FROM dasher.snapshot_reference_claims AS claim
+        WHERE claim.organization_id = OLD.organization_id
+          AND claim.snapshot_id = OLD.snapshot_id
+      )
+      AND EXISTS (
+        SELECT 1 FROM dasher.snapshot_deletion_finalizers AS finalizer
+        WHERE finalizer.organization_id = OLD.organization_id
+          AND finalizer.snapshot_id = OLD.snapshot_id
+          AND finalizer.state = 'deleted'
+          AND finalizer.proof_sha256 IS NOT NULL
+          AND finalizer.bytes_deleted_at IS NOT NULL
+      ))
+    OR
+    (TG_TABLE_NAME = 'evidence_records'
+      AND NOT EXISTS (
+        SELECT 1 FROM dasher.evidence_reference_claims AS claim
+        WHERE claim.organization_id = OLD.organization_id
+          AND claim.evidence_id = OLD.evidence_id
+      )
+      AND EXISTS (
+        SELECT 1 FROM dasher.evidence_deletion_finalizers AS finalizer
+        WHERE finalizer.organization_id = OLD.organization_id
+          AND finalizer.evidence_id = OLD.evidence_id
+          AND finalizer.state = 'deleted'
+          AND finalizer.proof_sha256 IS NOT NULL
+          AND finalizer.bytes_deleted_at IS NOT NULL
+      ))
+    OR
+    (TG_TABLE_NAME = 'dashboard_artifacts'
+      AND OLD.dashboard_id IS NOT DISTINCT FROM v_dashboard_id
+      AND NOT EXISTS (
+        SELECT 1 FROM dasher.artifact_reference_claims AS claim
+        WHERE claim.organization_id = OLD.organization_id
+          AND claim.artifact_id = OLD.artifact_id
+      )
+      AND EXISTS (
+        SELECT 1 FROM dasher.artifact_deletion_finalizers AS finalizer
+        WHERE finalizer.organization_id = OLD.organization_id
+          AND finalizer.artifact_id = OLD.artifact_id
+          AND finalizer.state = 'deleted'
+          AND finalizer.proof_sha256 IS NOT NULL
+          AND finalizer.bytes_deleted_at IS NOT NULL
+      ))
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN OLD;
+END
+`,
+};
+
 const task3RelationNames = [
   "audit_events",
   "external_identities",
@@ -708,322 +1843,6 @@ const task4Policies = [
     usingExpression:
       "(dasher_private.context_allows(organization_id, 'viewer'::text) AND (dasher_private.context_user_id() = user_id))",
     withCheckExpression: null,
-  },
-] as const;
-
-const modeled0003RelationGrants = [
-  {
-    roleName: "dasher_security_definer",
-    privilege: "SELECT",
-    relations: [
-      "dashboard_lifecycle_policies",
-      "dashboards",
-      "dashboard_lifecycle_events",
-      "dashboard_promotion_requests",
-      "dashboard_promotion_decisions",
-      "dashboard_tombstones",
-      "dashboard_restore_lineage",
-      "backup_deletion_ledger",
-      "source_snapshots",
-      "evidence_records",
-      "dashboard_versions",
-      "dashboard_version_snapshots",
-      "dashboard_version_evidence",
-      "dashboard_artifacts",
-      "snapshot_reference_claims",
-      "evidence_reference_claims",
-      "artifact_reference_claims",
-    ],
-  },
-  {
-    roleName: "dasher_security_definer",
-    privilege: "INSERT",
-    relations: [
-      "dashboard_lifecycle_policies",
-      "dashboards",
-      "dashboard_lifecycle_events",
-      "dashboard_promotion_requests",
-      "dashboard_promotion_decisions",
-      "dashboard_tombstones",
-      "dashboard_restore_lineage",
-      "backup_deletion_ledger",
-      "evidence_records",
-      "dashboard_versions",
-      "dashboard_version_snapshots",
-      "dashboard_version_evidence",
-      "dashboard_artifacts",
-      "snapshot_reference_claims",
-      "evidence_reference_claims",
-      "artifact_reference_claims",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    privilege: "SELECT",
-    relations: [
-      "dashboard_lifecycle_policies",
-      "dashboards",
-      "dashboard_lifecycle_events",
-      "dashboard_cleanup_coordination",
-      "dashboard_cleanup_attempts",
-      "dashboard_legal_holds",
-      "dashboard_tombstones",
-      "dashboard_restore_lineage",
-      "backup_deletion_ledger",
-      "retention_service_principal_allowlist",
-      "source_snapshots",
-      "evidence_records",
-      "dashboard_versions",
-      "dashboard_version_snapshots",
-      "dashboard_version_evidence",
-      "dashboard_artifacts",
-      "snapshot_reference_claims",
-      "evidence_reference_claims",
-      "artifact_reference_claims",
-      "snapshot_deletion_finalizers",
-      "evidence_deletion_finalizers",
-      "artifact_deletion_finalizers",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    privilege: "INSERT",
-    relations: [
-      "dashboard_lifecycle_events",
-      "dashboard_cleanup_coordination",
-      "dashboard_cleanup_attempts",
-      "dashboard_legal_holds",
-      "dashboard_tombstones",
-      "backup_deletion_ledger",
-      "snapshot_reference_claims",
-      "evidence_reference_claims",
-      "artifact_reference_claims",
-      "snapshot_deletion_finalizers",
-      "evidence_deletion_finalizers",
-      "artifact_deletion_finalizers",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    privilege: "DELETE",
-    relations: [
-      "source_snapshots",
-      "evidence_records",
-      "dashboard_versions",
-      "dashboard_version_snapshots",
-      "dashboard_version_evidence",
-      "dashboard_artifacts",
-      "snapshot_reference_claims",
-      "evidence_reference_claims",
-      "artifact_reference_claims",
-    ],
-  },
-] as const;
-
-const modeled0003UpdateColumnGrants = [
-  {
-    roleName: "dasher_security_definer",
-    relation: "dashboards",
-    columns: [
-      "head_version_id",
-      "lifecycle_state",
-      "lifecycle_revision",
-      "capability_epoch",
-      "cache_epoch",
-      "current_kind",
-      "effective_expires_at",
-      "promoted_at",
-      "archived_at",
-      "access_revoked_at",
-      "revocation_reason",
-      "purge_after",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    relation: "dashboards",
-    columns: [
-      "lifecycle_state",
-      "lifecycle_revision",
-      "capability_epoch",
-      "cache_epoch",
-      "access_revoked_at",
-      "revocation_reason",
-      "purge_after",
-      "purge_started_at",
-      "purged_at",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    relation: "dashboard_cleanup_coordination",
-    columns: [
-      "current_step",
-      "lease_owner",
-      "lease_expires_at",
-      "expected_lifecycle_revision",
-      "next_attempt_at",
-      "completion_proof_sha256",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    relation: "dashboard_legal_holds",
-    columns: [
-      "released_at",
-      "released_by_principal_id",
-      "released_authority_revision",
-      "released_actor",
-      "released_reason_sha256",
-    ],
-  },
-  {
-    roleName: "dasher_retention_definer",
-    relation: "dashboard_tombstones",
-    columns: ["purged_at", "purged_lifecycle_revision", "purged_proof_sha256"],
-  },
-  ...[
-    "snapshot_deletion_finalizers",
-    "evidence_deletion_finalizers",
-    "artifact_deletion_finalizers",
-  ].map((relation) => ({
-    roleName: "dasher_retention_definer" as const,
-    relation,
-    columns: [
-      "state",
-      "lease_owner",
-      "lease_expires_at",
-      "proof_sha256",
-      "bytes_deleted_at",
-    ],
-  })),
-] as const;
-
-const modeled0003FunctionSignatures = [
-  { schema: "dasher_api", name: "list_dashboards", arguments: "integer" },
-  {
-    schema: "dasher_api",
-    name: "get_dashboard_summary",
-    arguments: "uuid",
-  },
-  { schema: "dasher_api", name: "get_dashboard_head", arguments: "uuid" },
-  {
-    schema: "dasher_api",
-    name: "get_dashboard_version",
-    arguments: "uuid, uuid",
-  },
-  {
-    schema: "dasher_api",
-    name: "get_dashboard_evidence",
-    arguments: "uuid, uuid",
-  },
-  {
-    schema: "dasher_api",
-    name: "get_dashboard_lineage",
-    arguments: "uuid, uuid",
-  },
-  {
-    schema: "dasher_api",
-    name: "get_dashboard_admin_status",
-    arguments: "uuid",
-  },
-  {
-    schema: "dasher_api",
-    name: "create_dashboard",
-    arguments: "uuid, text, text, integer, boolean, uuid, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "create_evidence_record",
-    arguments:
-      "uuid, uuid, uuid, uuid, text, text, bytea, timestamptz, timestamptz, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "create_dashboard_version",
-    arguments:
-      "uuid, uuid, uuid, bytea, bytea, uuid, bytea, bytea, bigint, bigint, bytea, uuid[], uuid[], uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "compare_and_swap_dashboard_head",
-    arguments: "uuid, uuid, uuid, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "request_dashboard_promotion",
-    arguments: "uuid, uuid, bigint, bytea, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "decide_dashboard_promotion",
-    arguments: "uuid, uuid, uuid, bigint, text, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "set_dashboard_archive",
-    arguments: "uuid, boolean, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "delete_dashboard",
-    arguments: "uuid, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_api",
-    name: "restore_dashboard_as_new",
-    arguments: "uuid, uuid, uuid, uuid, text, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "initialize_operator_context",
-    arguments: "uuid, text, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "materialize_dashboard_expiry",
-    arguments: "uuid, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "place_dashboard_legal_hold",
-    arguments: "uuid, uuid, text, bytea, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "release_dashboard_legal_hold",
-    arguments: "uuid, uuid, bytea, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "claim_dashboard_cleanup",
-    arguments: "uuid, text, bigint, text, interval, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "record_dashboard_cleanup_attempt",
-    arguments:
-      "uuid, uuid, text, text, integer, integer, integer, bytea, uuid, text",
-  },
-  {
-    schema: "dasher_retention_api",
-    name: "purge_dashboard",
-    arguments: "uuid, bigint, uuid, text",
-  },
-  {
-    schema: "dasher_private",
-    name: "reject_dashboard_append_mutation",
-    arguments: "",
-  },
-  {
-    schema: "dasher_private",
-    name: "enforce_dashboard_transition",
-    arguments: "",
-  },
-  {
-    schema: "dasher_private",
-    name: "enforce_retention_mutation",
-    arguments: "",
   },
 ] as const;
 
@@ -2518,7 +3337,7 @@ const canonicalFunctionBodyMd5 = {
   "dasher_api.issue_session": "3ac5e71b88a4e2a911ebafb3cd97abc3",
 } as const;
 
-const modeled0003StaticCatalogContract = {
+const modeled0003StaticCatalogContractBase = {
   schemas: [
     {
       name: "dasher_retention_api",
@@ -3414,7 +4233,7 @@ const modeled0003StaticCatalogContract = {
     },
     {
       relationName: "dashboard_promotion_decisions",
-      columnName: "decided_by_user_id",
+      columnName: "requested_by_user_id",
       ordinal: 6,
       type: "uuid",
       nullable: false,
@@ -3424,8 +4243,18 @@ const modeled0003StaticCatalogContract = {
     },
     {
       relationName: "dashboard_promotion_decisions",
-      columnName: "retention_policy_revision",
+      columnName: "decided_by_user_id",
       ordinal: 7,
+      type: "uuid",
+      nullable: false,
+      defaultExpression: null,
+      generated: "",
+      identity: "",
+    },
+    {
+      relationName: "dashboard_promotion_decisions",
+      columnName: "retention_policy_revision",
+      ordinal: 8,
       type: "bigint",
       nullable: false,
       defaultExpression: null,
@@ -5526,6 +6355,7 @@ const modeled0003StaticCatalogContract = {
         "decision text",
         "dashboard_lifecycle_revision bigint",
         "decided_at timestamp with time zone",
+        "requested_by_user_id uuid",
         "decided_by_user_id uuid",
         "retention_policy_revision bigint",
       ],
@@ -8012,6 +8842,16 @@ const modeled0003StaticCatalogContract = {
       validated: true,
     },
     {
+      name: "dashboard_promotion_decisions_requester_approver_check",
+      relation: "dashboard_promotion_decisions",
+      type: "CHECK",
+      columns: ["requested_by_user_id", "decided_by_user_id"],
+      definition: "CHECK ((requested_by_user_id <> decided_by_user_id))",
+      deferrable: false,
+      initiallyDeferred: false,
+      validated: true,
+    },
+    {
       name: "retention_allowlist_binding_kind_check",
       relation: "retention_service_principal_allowlist",
       type: "CHECK",
@@ -8223,9 +9063,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_lifecycle_policies_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_lifecycle_policies FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_lifecycle_events_immutable",
@@ -8237,9 +9074,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_lifecycle_events_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_lifecycle_events FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_promotion_requests_immutable",
@@ -8251,9 +9085,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_promotion_requests_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_promotion_requests FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_promotion_decisions_immutable",
@@ -8265,9 +9096,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_promotion_decisions_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_promotion_decisions FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_cleanup_attempts_immutable",
@@ -8279,9 +9107,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_cleanup_attempts_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_cleanup_attempts FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_restore_lineage_immutable",
@@ -8293,9 +9118,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_restore_lineage_immutable BEFORE UPDATE OR DELETE ON dasher.dashboard_restore_lineage FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "backup_deletion_ledger_immutable",
@@ -8307,9 +9129,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER backup_deletion_ledger_immutable BEFORE UPDATE OR DELETE ON dasher.backup_deletion_ledger FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "retention_service_principal_allowlist_immutable",
@@ -8321,9 +9140,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER retention_service_principal_allowlist_immutable BEFORE UPDATE OR DELETE ON dasher.retention_service_principal_allowlist FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_dashboard_append_mutation()",
-      requiredProofs: ["INSERT only; UPDATE and DELETE reject"],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboards_transition_guard",
@@ -8335,17 +9151,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboards_transition_guard BEFORE UPDATE ON dasher.dashboards FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_dashboard_transition()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_tombstones_retention_guard",
@@ -8357,17 +9162,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_tombstones_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_tombstones FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "source_snapshots_retention_guard",
@@ -8379,17 +9173,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER source_snapshots_retention_guard BEFORE UPDATE OR DELETE ON dasher.source_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "evidence_records_retention_guard",
@@ -8401,17 +9184,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER evidence_records_retention_guard BEFORE UPDATE OR DELETE ON dasher.evidence_records FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_versions_retention_guard",
@@ -8423,17 +9195,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_versions_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_versions FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_version_snapshots_retention_guard",
@@ -8445,17 +9206,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_version_snapshots_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_version_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_version_evidence_retention_guard",
@@ -8467,17 +9217,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_version_evidence_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_version_evidence FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "dashboard_artifacts_retention_guard",
@@ -8489,17 +9228,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER dashboard_artifacts_retention_guard BEFORE UPDATE OR DELETE ON dasher.dashboard_artifacts FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "snapshot_reference_claims_retention_guard",
@@ -8511,17 +9239,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER snapshot_reference_claims_retention_guard BEFORE UPDATE OR DELETE ON dasher.snapshot_reference_claims FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "evidence_reference_claims_retention_guard",
@@ -8533,17 +9250,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER evidence_reference_claims_retention_guard BEFORE UPDATE OR DELETE ON dasher.evidence_reference_claims FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
     {
       name: "artifact_reference_claims_retention_guard",
@@ -8555,17 +9261,6 @@ const modeled0003StaticCatalogContract = {
       enabled: "O",
       definition:
         "CREATE TRIGGER artifact_reference_claims_retention_guard BEFORE UPDATE OR DELETE ON dasher.artifact_reference_claims FOR EACH ROW EXECUTE FUNCTION dasher_private.enforce_retention_mutation()",
-      requiredProofs: [
-        "current_user = dasher_retention_definer",
-        "phase = authorized",
-        "exact principal revision and capability",
-        "exact organization and dashboard context",
-        "expected lifecycle revision",
-        "allowed OLD to NEW transition",
-        "exact changed-column allowlist",
-      ],
-      callStackInspection: false,
-      dynamicSql: false,
     },
   ],
   policies: [
@@ -8598,9 +9293,9 @@ const modeled0003StaticCatalogContract = {
         "revision_sha256",
         "migration_provenance",
       ],
-      shutsOffWhenPhase: null,
+      shutsOffWhenPhase: "target_discovery",
       using:
-        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (binding_kind = 'postgres_session_user'::text) AND (binding_subject = SESSION_USER))",
+        "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'binding_lookup'::text) AND (binding_kind = 'postgres_session_user'::text) AND (binding_subject = SESSION_USER))",
       withCheck: null,
     },
     {
@@ -8750,6 +9445,7 @@ const modeled0003StaticCatalogContract = {
         "decision",
         "dashboard_lifecycle_revision",
         "decided_at",
+        "requested_by_user_id",
         "decided_by_user_id",
         "retention_policy_revision",
       ],
@@ -10807,6 +11503,170 @@ const modeled0003StaticCatalogContract = {
   ],
 } as const;
 
+function catalogCollationIdentity(typeName: string): string {
+  if (typeName === "name") {
+    return "pg_catalog.C";
+  }
+  if (
+    typeName === "text" ||
+    typeName.startsWith("character varying(") ||
+    typeName.startsWith("character(")
+  ) {
+    return "pg_catalog.default";
+  }
+  return "<none>";
+}
+
+function modeledIndexCollations(
+  relationName: string,
+  keyExpressions: readonly string[],
+): readonly string[] {
+  return keyExpressions.map((columnName) => {
+    const column = modeled0003StaticCatalogContractBase.columns.find(
+      (candidate) =>
+        candidate.relationName === relationName &&
+        candidate.columnName === columnName,
+    );
+    if (column === undefined) {
+      throw new Error(
+        `missing modeled index collation column: ${relationName}.${columnName}`,
+      );
+    }
+    return catalogCollationIdentity(column.type);
+  });
+}
+
+function modeledFunctionSource(
+  schemaName: string,
+  functionName: string,
+): string {
+  const source = modeled0003FunctionSources[`${schemaName}.${functionName}`];
+  if (source === undefined) {
+    throw new Error(
+      `missing concrete modeled function source: ${schemaName}.${functionName}`,
+    );
+  }
+  return source;
+}
+
+const modeled0003StaticCatalogContract = {
+  ...modeled0003StaticCatalogContractBase,
+  columns: modeled0003StaticCatalogContractBase.columns.map((column) => ({
+    ...column,
+    collation: catalogCollationIdentity(column.type),
+  })),
+  indexes: modeled0003StaticCatalogContractBase.indexes.map((index) => ({
+    ...index,
+    includedColumns: [] as readonly string[],
+    collations: modeledIndexCollations(index.relation, index.keyExpressions),
+  })),
+  functions: modeled0003StaticCatalogContractBase.functions.map((routine) => ({
+    ...routine,
+    source: modeledFunctionSource(routine.schema, routine.name),
+  })),
+  comments: [] as readonly string[],
+  defaultAcls: [] as readonly string[],
+  ownershipDependencyRows: modeled0003StaticCatalogContractBase.functions
+    .filter((routine) => routine.owner !== "migration_owner")
+    .map(
+      (routine) =>
+        ({
+          dependencyType: "o",
+          catalog: "pg_proc",
+          objectKind: "function",
+          identity: `${routine.schema}.${routine.name}(${routine.identityArguments})`,
+          roleName: routine.owner,
+        }) as const,
+    ),
+  aclDependencyRows: [
+    ...(
+      [
+        ["dasher", "dasher_retention_definer"],
+        ["dasher_private", "dasher_retention_definer"],
+        ["dasher_retention_api", "dasher_retention_definer"],
+        ["dasher_retention_api", "dasher_retention_operator"],
+      ] as const
+    ).map(
+      ([identity, grantee]) =>
+        ({
+          dependencyType: "a",
+          catalog: "pg_namespace",
+          objectKind: "schema",
+          identity,
+          grantor: "migration_owner",
+          grantee,
+          privilege: "USAGE",
+          isGrantable: false,
+        }) as const,
+    ),
+    ...modeled0003StaticCatalogContractBase.functions.flatMap((routine) =>
+      routine.execute.map(
+        (grantee) =>
+          ({
+            dependencyType: "a",
+            catalog: "pg_proc",
+            objectKind: "function",
+            identity: `${routine.schema}.${routine.name}(${routine.identityArguments})`,
+            grantor: routine.owner,
+            grantee,
+            privilege: "EXECUTE",
+            isGrantable: false,
+          }) as const,
+      ),
+    ),
+    ...modeled0003StaticCatalogContractBase.relationAcls.map(
+      (acl) =>
+        ({
+          dependencyType: "a",
+          catalog: "pg_class",
+          objectKind: "relation",
+          identity: `${acl.schema}.${acl.relationName}`,
+          grantor: acl.grantor,
+          grantee: acl.grantee,
+          privilege: acl.privilege,
+          isGrantable: acl.isGrantable,
+        }) as const,
+    ),
+    ...modeled0003StaticCatalogContractBase.columnAcls.map(
+      (acl) =>
+        ({
+          dependencyType: "a",
+          catalog: "pg_class",
+          objectKind: "column",
+          identity: `${acl.schema}.${acl.relationName}.${acl.columnName}`,
+          grantor: acl.grantor,
+          grantee: acl.grantee,
+          privilege: acl.privilege,
+          isGrantable: acl.isGrantable,
+        }) as const,
+    ),
+  ],
+  policyDependencyRows: modeled0003StaticCatalogContractBase.policies.flatMap(
+    (policy) =>
+      policy.roles.map(
+        (roleName) =>
+          ({
+            dependencyType: "r",
+            catalog: "pg_policy",
+            objectKind: "policy",
+            identity: `dasher.${policy.relation}.${policy.name}`,
+            roleName,
+            roles: policy.roles,
+            command: policy.catalogCommand,
+            permissive: policy.permissive,
+            using: policy.using,
+            withCheck: policy.withCheck,
+          }) as const,
+      ),
+  ),
+} as const;
+
+export function getModeled0003StaticCatalogContractForTests(): unknown {
+  return JSON.parse(
+    JSON.stringify(modeled0003StaticCatalogContract),
+  ) as unknown;
+}
+
 const canonicalColumnSignatures = [
   "audit_events|1|audit_event_id|uuid|true|<none>",
   "audit_events|2|organization_id|uuid|true|<none>",
@@ -11028,7 +11888,10 @@ const exactManagedCatalogInventorySql = `
             namespace.nspname || '|' || relation.relname || '|' ||
             attribute.attnum::text || '|' || attribute.attname || '|' ||
             pg_catalog.format_type(attribute.atttypid, attribute.atttypmod) ||
-            '|' || attribute.attnotnull::text || '|' ||
+            '|' || COALESCE(
+              collation_namespace.nspname || '.' || collation_row.collname,
+              '<none>'
+            ) || '|' || attribute.attnotnull::text || '|' ||
             COALESCE(
               pg_catalog.pg_get_expr(default_value.adbin, default_value.adrelid),
               '<none>'
@@ -11042,6 +11905,10 @@ const exactManagedCatalogInventorySql = `
           LEFT JOIN pg_catalog.pg_attrdef AS default_value
             ON default_value.adrelid = attribute.attrelid
            AND default_value.adnum = attribute.attnum
+          LEFT JOIN pg_catalog.pg_collation AS collation_row
+            ON collation_row.oid = NULLIF(attribute.attcollation, 0)
+          LEFT JOIN pg_catalog.pg_namespace AS collation_namespace
+            ON collation_namespace.oid = collation_row.collnamespace
           WHERE relation.relkind IN ('r', 'p')
             AND attribute.attnum > 0
             AND NOT attribute.attisdropped
@@ -11121,15 +11988,27 @@ const exactManagedCatalogInventorySql = `
             COALESCE(
               pg_catalog.pg_get_expr(index_row.indpred, index_row.indrelid),
               '<none>'
-            ) || '|' ||
+            ) || '|' || index_row.indnatts::text || '|' ||
+            index_row.indnkeyatts::text || '|' ||
             ARRAY(
               SELECT pg_catalog.pg_get_indexdef(
                 index_row.indexrelid,
-                ordinal,
+                ordinal.position,
                 false
               )
               FROM pg_catalog.generate_series(1, index_row.indnkeyatts)
-                AS ordinal
+                AS ordinal(position)
+            )::text || '|' ||
+            ARRAY(
+              SELECT pg_catalog.pg_get_indexdef(
+                index_row.indexrelid,
+                ordinal.position,
+                false
+              )
+              FROM pg_catalog.generate_series(
+                index_row.indnkeyatts + 1,
+                index_row.indnatts
+              ) AS ordinal(position)
             )::text || '|' ||
             ARRAY(
               SELECT operator_class.opcname
@@ -11138,6 +12017,31 @@ const exactManagedCatalogInventorySql = `
               JOIN pg_catalog.pg_opclass AS operator_class
                 ON operator_class.oid = class.oid
               ORDER BY class.ordinal
+            )::text || '|' ||
+            ARRAY(
+              SELECT CASE
+                WHEN ordinal.position > index_row.indnkeyatts THEN '<none>'
+                ELSE COALESCE(
+                  collation_namespace.nspname || '.' || collation_row.collname,
+                  '<none>'
+                )
+              END
+              FROM pg_catalog.generate_series(1, index_row.indnatts)
+                AS ordinal(position)
+              LEFT JOIN LATERAL (
+                SELECT vector_entry.collation_oid
+                FROM pg_catalog.unnest(index_row.indcollation::oid[])
+                  WITH ORDINALITY AS vector_entry(collation_oid, position)
+                WHERE vector_entry.position = ordinal.position
+              ) AS index_collation ON true
+              LEFT JOIN pg_catalog.pg_collation AS collation_row
+                ON collation_row.oid = NULLIF(
+                  index_collation.collation_oid,
+                  0
+                )
+              LEFT JOIN pg_catalog.pg_namespace AS collation_namespace
+                ON collation_namespace.oid = collation_row.collnamespace
+              ORDER BY ordinal.position
             )::text || '|' || index_row.indoption::text AS signature
           FROM pg_catalog.pg_index AS index_row
           JOIN pg_catalog.pg_class AS relation
@@ -11275,6 +12179,14 @@ const exactManagedCatalogInventorySql = `
             routine.prosecdef::text || '|' || routine.proleakproof::text ||
             '|' || routine.proisstrict::text || '|' ||
             routine.proretset::text || '|' || routine.proparallel::text || '|' ||
+            COALESCE(
+              pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL),
+              '<none>'
+            ) || '|' || routine.pronargdefaults::text || '|' ||
+            COALESCE(
+              pg_catalog.pg_get_expr(routine.proargdefaults, 0, false),
+              '<none>'
+            ) || '|' ||
             owner.rolname || '|' || COALESCE(routine.proconfig::text, '<none>') ||
             '|' || pg_catalog.md5(routine.prosrc) AS signature
           FROM pg_catalog.pg_proc AS routine
@@ -11397,16 +12309,75 @@ const exactManagedCatalogInventorySql = `
       'comments', COALESCE((
         SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
         FROM (
+          SELECT 'database|' || database_row.datname || '|' ||
+            pg_catalog.shobj_description(database_row.oid, 'pg_database') AS signature
+          FROM pg_catalog.pg_database AS database_row
+          WHERE database_row.datname = pg_catalog.current_database()
+            AND pg_catalog.shobj_description(
+              database_row.oid,
+              'pg_database'
+            ) IS NOT NULL
+          UNION ALL
           SELECT 'schema|' || namespace.nspname || '|' ||
             pg_catalog.obj_description(namespace.oid, 'pg_namespace') AS signature
           FROM managed_namespaces AS namespace
           WHERE pg_catalog.obj_description(namespace.oid, 'pg_namespace') IS NOT NULL
           UNION ALL
-          SELECT 'relation|' || namespace.nspname || '.' || relation.relname ||
+          SELECT CASE relation.relkind
+              WHEN 'i' THEN 'index'
+              WHEN 'I' THEN 'index'
+              WHEN 'S' THEN 'sequence'
+              ELSE 'relation'
+            END || '|' || namespace.nspname || '.' || relation.relname ||
             '|' || pg_catalog.obj_description(relation.oid, 'pg_class')
           FROM pg_catalog.pg_class AS relation
           JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
           WHERE pg_catalog.obj_description(relation.oid, 'pg_class') IS NOT NULL
+          UNION ALL
+          SELECT 'column|' || namespace.nspname || '.' || relation.relname ||
+            '.' || attribute.attname || '|' ||
+            pg_catalog.col_description(relation.oid, attribute.attnum)
+          FROM pg_catalog.pg_class AS relation
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          JOIN pg_catalog.pg_attribute AS attribute
+            ON attribute.attrelid = relation.oid
+          WHERE attribute.attnum > 0
+            AND NOT attribute.attisdropped
+            AND pg_catalog.col_description(
+              relation.oid,
+              attribute.attnum
+            ) IS NOT NULL
+          UNION ALL
+          SELECT 'constraint|' || namespace.nspname || '.' || relation.relname ||
+            '.' || constraint_row.conname || '|' ||
+            pg_catalog.obj_description(constraint_row.oid, 'pg_constraint')
+          FROM pg_catalog.pg_constraint AS constraint_row
+          JOIN pg_catalog.pg_class AS relation ON relation.oid = constraint_row.conrelid
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          WHERE pg_catalog.obj_description(
+            constraint_row.oid,
+            'pg_constraint'
+          ) IS NOT NULL
+          UNION ALL
+          SELECT 'trigger|' || namespace.nspname || '.' || relation.relname ||
+            '.' || trigger_row.tgname || '|' ||
+            pg_catalog.obj_description(trigger_row.oid, 'pg_trigger')
+          FROM pg_catalog.pg_trigger AS trigger_row
+          JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger_row.tgrelid
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          WHERE NOT trigger_row.tgisinternal
+            AND pg_catalog.obj_description(
+              trigger_row.oid,
+              'pg_trigger'
+            ) IS NOT NULL
+          UNION ALL
+          SELECT 'policy|' || namespace.nspname || '.' || relation.relname ||
+            '.' || policy.polname || '|' ||
+            pg_catalog.obj_description(policy.oid, 'pg_policy')
+          FROM pg_catalog.pg_policy AS policy
+          JOIN pg_catalog.pg_class AS relation ON relation.oid = policy.polrelid
+          JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+          WHERE pg_catalog.obj_description(policy.oid, 'pg_policy') IS NOT NULL
           UNION ALL
           SELECT 'function|' || namespace.nspname || '.' || routine.proname ||
             '(' || pg_catalog.oidvectortypes(routine.proargtypes) || ')|' ||
@@ -11425,11 +12396,7 @@ const exactManagedCatalogInventorySql = `
     ) AS inventory
   )
   SELECT
-    inventory = $1::jsonb
-    AND (
-      $3::jsonb IS NULL
-      OR pg_catalog.jsonb_typeof($3::jsonb) = 'object'
-    ) AS matches
+    inventory = $1::jsonb AS matches
   FROM signature_catalog
 `;
 
@@ -11457,7 +12424,7 @@ function sortedStrings(values: readonly string[]): readonly string[] {
 function pgTextArray(values: readonly string[]): string {
   return `{${values
     .map((value) =>
-      /^[a-z0-9_]+$/u.test(value)
+      value.length > 0 && !/^null$/iu.test(value) && !/[{},"\\\s]/u.test(value)
         ? value
         : `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
     )
@@ -11466,6 +12433,63 @@ function pgTextArray(values: readonly string[]): string {
 
 function canonicalColumnParts(signature: string): readonly string[] {
   return signature.split("|");
+}
+
+function columnSignatureWithCollation(signature: string): string {
+  const parts = canonicalColumnParts(signature);
+  const typeName = parts[3];
+  if (typeName === undefined) {
+    throw new Error(`invalid canonical column signature: ${signature}`);
+  }
+  return [
+    ...parts.slice(0, 4),
+    catalogCollationIdentity(typeName),
+    ...parts.slice(4),
+  ].join("|");
+}
+
+function pgArrayMembers(value: string): readonly string[] {
+  if (value === "{}") return [];
+  if (!value.startsWith("{") || !value.endsWith("}")) {
+    throw new Error(`invalid expected PostgreSQL array: ${value}`);
+  }
+  return value.slice(1, -1).split(",");
+}
+
+function canonicalIndexSignatureWithClosure(signature: string): string {
+  const parts = signature.split("|");
+  const relationName = parts[0];
+  const keyExpressionArray = parts[10];
+  if (relationName === undefined || keyExpressionArray === undefined) {
+    throw new Error(`invalid canonical index signature: ${signature}`);
+  }
+  const keyExpressions = pgArrayMembers(keyExpressionArray);
+  const collations = keyExpressions.map((columnName) => {
+    const column = canonicalColumnSignatures.find((candidate) => {
+      const columnParts = candidate.split("|");
+      return columnParts[0] === relationName && columnParts[2] === columnName;
+    });
+    if (column === undefined) {
+      throw new Error(
+        `missing canonical index collation column: ${relationName}.${columnName}`,
+      );
+    }
+    const typeName = column.split("|")[3];
+    if (typeName === undefined) {
+      throw new Error(`invalid canonical column signature: ${column}`);
+    }
+    return catalogCollationIdentity(typeName);
+  });
+  return [
+    ...parts.slice(0, 10),
+    String(keyExpressions.length),
+    String(keyExpressions.length),
+    keyExpressionArray,
+    "{}",
+    parts[11],
+    pgTextArray(collations),
+    parts[12],
+  ].join("|");
 }
 
 function tableCompositeTypeSignature(
@@ -11507,6 +12531,24 @@ function aclSignature(
   return `${kind}|${identity}|${grantor}|${grantee}|${privilege}|${String(isGrantable)}`;
 }
 
+function modeledVariadicType(routine: {
+  readonly identityArguments: string;
+  readonly variadic: boolean;
+}): string {
+  if (!routine.variadic) return "<none>";
+  const lastArgument = routine.identityArguments.split(", ").at(-1);
+  if (lastArgument === undefined || !lastArgument.endsWith("[]")) {
+    throw new Error("modeled variadic routine must end with an array argument");
+  }
+  return lastArgument.slice(0, -2);
+}
+
+function modeledDefaults(routine: {
+  readonly defaults: readonly string[];
+}): string {
+  return routine.defaults.length === 0 ? "<none>" : routine.defaults.join(", ");
+}
+
 function exactCatalogContract(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
@@ -11536,32 +12578,36 @@ function exactCatalogContract(
   }
 
   const columns = [
-    `dasher_meta|schema_migrations|1|sequence|integer|true|<none>||`,
-    `dasher_meta|schema_migrations|2|filename|text|true|<none>||`,
-    `dasher_meta|schema_migrations|3|checksum_sha256|bytea|true|<none>||`,
-    `dasher_meta|schema_migrations|4|applied_at|timestamp with time zone|true|statement_timestamp()||`,
-    `dasher_meta|schema_migrations|5|applied_by|name|true|<none>||`,
-    ...canonicalColumnSignatures.map((signature) => `dasher|${signature}||`),
+    `dasher_meta|schema_migrations|1|sequence|integer|<none>|true|<none>||`,
+    `dasher_meta|schema_migrations|2|filename|text|pg_catalog.default|true|<none>||`,
+    `dasher_meta|schema_migrations|3|checksum_sha256|bytea|<none>|true|<none>||`,
+    `dasher_meta|schema_migrations|4|applied_at|timestamp with time zone|<none>|true|statement_timestamp()||`,
+    `dasher_meta|schema_migrations|5|applied_by|name|pg_catalog.C|true|<none>||`,
+    ...canonicalColumnSignatures.map(
+      (signature) => `dasher|${columnSignatureWithCollation(signature)}||`,
+    ),
   ];
   if (hasSuccessor) {
     columns.push(
       ...modeled0003StaticCatalogContract.columns.map(
         (column) =>
-          `dasher|${column.relationName}|${String(column.ordinal)}|${column.columnName}|${column.type}|${String(!column.nullable)}|${column.defaultExpression ?? "<none>"}|${column.identity}|${column.generated}`,
+          `dasher|${column.relationName}|${String(column.ordinal)}|${column.columnName}|${column.type}|${column.collation}|${String(!column.nullable)}|${column.defaultExpression ?? "<none>"}|${column.identity}|${column.generated}`,
       ),
     );
   }
 
   const indexes = [
-    `dasher_meta|schema_migrations|schema_migrations_filename_key|btree|true|false|true|true|true|false|<none>|{filename}|{text_ops}|0`,
-    `dasher_meta|schema_migrations|schema_migrations_pkey|btree|true|true|true|true|true|false|<none>|{sequence}|{int4_ops}|0`,
-    ...canonicalIndexSignatures.map((signature) => `dasher|${signature}`),
+    `dasher_meta|schema_migrations|schema_migrations_filename_key|btree|true|false|true|true|true|false|<none>|1|1|{filename}|{}|{text_ops}|{pg_catalog.default}|0`,
+    `dasher_meta|schema_migrations|schema_migrations_pkey|btree|true|true|true|true|true|false|<none>|1|1|{sequence}|{}|{int4_ops}|{<none>}|0`,
+    ...canonicalIndexSignatures.map(
+      (signature) => `dasher|${canonicalIndexSignatureWithClosure(signature)}`,
+    ),
   ];
   if (hasSuccessor) {
     indexes.push(
       ...modeled0003StaticCatalogContract.indexes.map(
         (index) =>
-          `dasher|${index.relation}|${index.name}|${index.method}|${String(index.unique)}|${String(index.primary)}|${String(index.valid)}|${String(index.ready)}|${String(index.live)}|${String(index.nullsNotDistinct)}|${index.predicate ?? "<none>"}|${pgTextArray(index.keyExpressions)}|${pgTextArray(index.opclasses)}|${index.options.join(" ")}`,
+          `dasher|${index.relation}|${index.name}|${index.method}|${String(index.unique)}|${String(index.primary)}|${String(index.valid)}|${String(index.ready)}|${String(index.live)}|${String(index.nullsNotDistinct)}|${index.predicate ?? "<none>"}|${String(index.keyExpressions.length + index.includedColumns.length)}|${String(index.keyExpressions.length)}|${pgTextArray(index.keyExpressions)}|${pgTextArray(index.includedColumns)}|${pgTextArray(index.opclasses)}|${pgTextArray(index.collations)}|${index.options.join(" ")}`,
       ),
     );
   }
@@ -11613,10 +12659,13 @@ function exactCatalogContract(
   ];
   if (hasSuccessor) {
     triggers.push(
-      ...modeled0003StaticCatalogContract.triggers.map(
-        (trigger) =>
-          `dasher|${trigger.relationName}|${trigger.name}|${trigger.enabled}|true|true|${String((trigger.events as readonly string[]).includes("INSERT"))}|${String((trigger.events as readonly string[]).includes("DELETE"))}|${String((trigger.events as readonly string[]).includes("UPDATE"))}|false|${trigger.functionIdentity}|<modeled-body>|${trigger.definition}`,
-      ),
+      ...modeled0003StaticCatalogContract.triggers.map((trigger) => {
+        const functionName = trigger.functionIdentity.slice(
+          "dasher_private.".length,
+          -2,
+        );
+        return `dasher|${trigger.relationName}|${trigger.name}|${trigger.enabled}|true|true|${String((trigger.events as readonly string[]).includes("INSERT"))}|${String((trigger.events as readonly string[]).includes("DELETE"))}|${String((trigger.events as readonly string[]).includes("UPDATE"))}|false|${trigger.functionIdentity}|${modeledFunctionSource("dasher_private", functionName)}|${trigger.definition}`;
+      }),
     );
   }
 
@@ -11636,7 +12685,7 @@ function exactCatalogContract(
   }
 
   const functions = [
-    `dasher_private.reject_immutable_mutation()|f|trigger|plpgsql|v|false|false|false|false|u|${ownerName}|{search_path=pg_catalog}|${canonicalFunctionBodyMd5["dasher_private.reject_immutable_mutation"]}`,
+    `dasher_private.reject_immutable_mutation()|f|trigger|plpgsql|v|false|false|false|false|u|<none>|0|<none>|${ownerName}|{search_path=pg_catalog}|${canonicalFunctionBodyMd5["dasher_private.reject_immutable_mutation"]}`,
   ];
   if (hasSecurityBoundary) {
     functions.push(
@@ -11645,7 +12694,7 @@ function exactCatalogContract(
           0,
           functionRow.identity.indexOf("("),
         ) as keyof typeof canonicalFunctionBodyMd5;
-        return `${functionRow.identity}|f|${functionRow.result}|plpgsql|${functionRow.volatility}|true|false|false|${String(functionRow.result.startsWith("TABLE("))}|u|dasher_security_definer|{search_path=pg_catalog}|${canonicalFunctionBodyMd5[functionName]}`;
+        return `${functionRow.identity}|f|${functionRow.result}|plpgsql|${functionRow.volatility}|true|false|false|${String(functionRow.result.startsWith("TABLE("))}|u|<none>|0|<none>|dasher_security_definer|{search_path=pg_catalog}|${canonicalFunctionBodyMd5[functionName]}`;
       }),
     );
   }
@@ -11653,7 +12702,7 @@ function exactCatalogContract(
     functions.push(
       ...modeled0003StaticCatalogContract.functions.map((routine) => {
         const identity = `${routine.schema}.${routine.name}(${routine.identityArguments})`;
-        return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(`task-8a-body:${identity}`).digest("hex")}`;
+        return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${modeledVariadicType(routine)}|${String(routine.defaults.length)}|${modeledDefaults(routine)}|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(routine.source).digest("hex")}`;
       }),
     );
   }
@@ -11851,7 +12900,9 @@ function exactCatalogContract(
       `${ownerName}|<global>|T|${ownerName}|${ownerName}|USAGE|false`,
       `${ownerName}|<global>|f|${ownerName}|${ownerName}|EXECUTE|false`,
     ]),
-    comments: [],
+    comments: sortedStrings(
+      hasSuccessor ? modeled0003StaticCatalogContract.comments : [],
+    ),
   };
 }
 
@@ -11875,13 +12926,7 @@ async function assertCanonicalPrefixObjects(
   );
   const result = await client.query<DependencyComparisonRow>(
     exactManagedCatalogInventorySql,
-    [
-      JSON.stringify(expected),
-      ownerName,
-      journalRows.length >= 3
-        ? JSON.stringify(modeled0003StaticCatalogContract)
-        : null,
-    ],
+    [JSON.stringify(expected), ownerName],
   );
   if (result.rows.length !== 1 || result.rows[0]?.matches !== true) {
     return reject("managed_role_drift");
@@ -12054,125 +13099,120 @@ function expectedDependencyInventory(
       row.sequence === 3 && row.filename === "0003_immutable_content.sql",
   );
   if (hasModeledSuccessor) {
-    for (const [roleName, schemaNames] of [
-      [
-        "dasher_retention_definer",
-        ["dasher", "dasher_private", "dasher_retention_api"],
-      ],
-      ["dasher_retention_operator", ["dasher_retention_api"]],
-    ] as const) {
-      for (const schemaName of schemaNames) {
-        entries.push(
-          dependencyEntry({
-            catalog_name: "pg_namespace",
-            database_oid: databaseIdentity.database_oid,
-            dependency_type: "a",
-            function_arguments: null,
-            grantor_name: ownerName,
-            object_kind: "schema",
-            object_name: schemaName,
-            privilege_type: "USAGE",
-            role_name: roleName,
-            schema_name: schemaName,
-            subobject_name: null,
-          }),
-        );
+    const functionIdentityParts = (
+      identity: string,
+    ): {
+      readonly arguments: string;
+      readonly name: string;
+      readonly schema: string;
+    } => {
+      const openParenthesis = identity.indexOf("(");
+      const schemaSeparator = identity.indexOf(".");
+      if (
+        openParenthesis < 0 ||
+        !identity.endsWith(")") ||
+        schemaSeparator < 1 ||
+        schemaSeparator > openParenthesis
+      ) {
+        throw new Error(`invalid modeled function dependency: ${identity}`);
       }
-    }
+      return {
+        arguments: identity.slice(openParenthesis + 1, -1),
+        name: identity.slice(schemaSeparator + 1, openParenthesis),
+        schema: identity.slice(0, schemaSeparator),
+      };
+    };
 
-    for (const grant of modeled0003RelationGrants) {
-      for (const relationName of grant.relations) {
-        entries.push(
-          dependencyEntry({
-            catalog_name: "pg_class",
-            database_oid: databaseIdentity.database_oid,
-            dependency_type: "a",
-            function_arguments: null,
-            grantor_name: ownerName,
-            object_kind: "relation",
-            object_name: relationName,
-            privilege_type: grant.privilege,
-            role_name: grant.roleName,
-            schema_name: "dasher",
-            subobject_name: null,
-          }),
-        );
-      }
-    }
-
-    for (const signature of modeled0003FunctionSignatures) {
-      if (signature.schema === "dasher_private") {
-        continue;
-      }
-      const retentionFunction = signature.schema === "dasher_retention_api";
-      const ownerRole = retentionFunction
-        ? "dasher_retention_definer"
-        : "dasher_security_definer";
-      const executeRole = retentionFunction
-        ? "dasher_retention_operator"
-        : "dasher_app";
+    for (const row of modeled0003StaticCatalogContract.ownershipDependencyRows) {
+      const identity = functionIdentityParts(row.identity);
       entries.push(
         dependencyEntry({
-          catalog_name: "pg_proc",
+          catalog_name: row.catalog,
           database_oid: databaseIdentity.database_oid,
-          dependency_type: "o",
-          function_arguments: signature.arguments,
+          dependency_type: row.dependencyType,
+          function_arguments: identity.arguments,
           grantor_name: null,
-          object_kind: "function",
-          object_name: signature.name,
+          object_kind: row.objectKind,
+          object_name: identity.name,
           privilege_type: null,
-          role_name: ownerRole,
-          schema_name: signature.schema,
-          subobject_name: null,
-        }),
-        dependencyEntry({
-          catalog_name: "pg_proc",
-          database_oid: databaseIdentity.database_oid,
-          dependency_type: "a",
-          function_arguments: signature.arguments,
-          grantor_name: ownerRole,
-          object_kind: "function",
-          object_name: signature.name,
-          privilege_type: "EXECUTE",
-          role_name: executeRole,
-          schema_name: signature.schema,
+          role_name: row.roleName,
+          schema_name: identity.schema,
           subobject_name: null,
         }),
       );
     }
 
-    for (const policy of modeled0003StaticCatalogContract.policies) {
-      for (const roleName of policy.roles) {
-        if (
-          !allManagedRoleNames.includes(
-            roleName as (typeof allManagedRoleNames)[number],
-          ) &&
-          !expectedAppLoginRoleNames.includes(roleName)
-        ) {
-          continue;
+    for (const row of modeled0003StaticCatalogContract.aclDependencyRows) {
+      let functionArguments: string | null = null;
+      let objectName: string;
+      let schemaName: string;
+      let subobjectName: string | null = null;
+      if (row.objectKind === "schema") {
+        objectName = row.identity;
+        schemaName = row.identity;
+      } else if (row.objectKind === "function") {
+        const identity = functionIdentityParts(row.identity);
+        functionArguments = identity.arguments;
+        objectName = identity.name;
+        schemaName = identity.schema;
+      } else {
+        const [schema, relation, column] = row.identity.split(".");
+        if (schema === undefined || relation === undefined) {
+          throw new Error(`invalid modeled ACL dependency: ${row.identity}`);
         }
-        entries.push(
-          dependencyEntry({
-            catalog_name: "pg_policy",
-            database_oid: databaseIdentity.database_oid,
-            dependency_type: "r",
-            function_arguments: null,
-            grantor_name: null,
-            object_kind: "policy",
-            object_name: policy.relation,
-            policy_command: policy.catalogCommand,
-            policy_name: policy.name,
-            policy_permissive: policy.permissive,
-            policy_roles: policy.roles,
-            policy_using_expression: policy.using,
-            policy_with_check_expression: policy.withCheck,
-            privilege_type: null,
-            role_name: roleName,
-            schema_name: "dasher",
-            subobject_name: null,
-          }),
-        );
+        objectName = relation;
+        schemaName = schema;
+        subobjectName = row.objectKind === "column" ? (column ?? null) : null;
       }
+      entries.push(
+        dependencyEntry({
+          catalog_name: row.catalog,
+          database_oid: databaseIdentity.database_oid,
+          dependency_type: row.dependencyType,
+          function_arguments: functionArguments,
+          grantor_name:
+            row.grantor === "migration_owner" ? ownerName : row.grantor,
+          is_grantable: row.isGrantable,
+          object_kind: row.objectKind,
+          object_name: objectName,
+          privilege_type: row.privilege,
+          role_name: row.grantee,
+          schema_name: schemaName,
+          subobject_name: subobjectName,
+        }),
+      );
+    }
+
+    for (const row of modeled0003StaticCatalogContract.policyDependencyRows) {
+      const [schemaName, relationName, policyName] = row.identity.split(".");
+      if (
+        schemaName === undefined ||
+        relationName === undefined ||
+        policyName === undefined
+      ) {
+        throw new Error(`invalid modeled policy dependency: ${row.identity}`);
+      }
+      entries.push(
+        dependencyEntry({
+          catalog_name: row.catalog,
+          database_oid: databaseIdentity.database_oid,
+          dependency_type: row.dependencyType,
+          function_arguments: null,
+          grantor_name: null,
+          object_kind: row.objectKind,
+          object_name: relationName,
+          policy_command: row.command,
+          policy_name: policyName,
+          policy_permissive: row.permissive,
+          policy_roles: row.roles,
+          policy_using_expression: row.using,
+          policy_with_check_expression: row.withCheck,
+          privilege_type: null,
+          role_name: row.roleName,
+          schema_name: schemaName,
+          subobject_name: null,
+        }),
+      );
     }
   }
 
@@ -12302,28 +13342,6 @@ function expectedDependencyInventory(
     task4TableColumns.audit_events,
     ["INSERT"],
   );
-
-  if (hasModeledSuccessor) {
-    for (const grant of modeled0003UpdateColumnGrants) {
-      for (const columnName of grant.columns) {
-        entries.push(
-          dependencyEntry({
-            catalog_name: "pg_class",
-            database_oid: databaseIdentity.database_oid,
-            dependency_type: "a",
-            function_arguments: null,
-            grantor_name: ownerName,
-            object_kind: "column",
-            object_name: grant.relation,
-            privilege_type: "UPDATE",
-            role_name: grant.roleName,
-            schema_name: "dasher",
-            subobject_name: columnName,
-          }),
-        );
-      }
-    }
-  }
 
   return entries;
 }

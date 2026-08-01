@@ -10,8 +10,9 @@ import {
   modeled0003ColumnCatalog,
   modeled0003FixtureIds,
   modeled0003Functions,
-  modeled0003InitializerBodyContract,
   modeled0003ManagedRoles,
+  modeled0003NonNullableColumnIdentities,
+  modeled0003NullableColumnIdentities,
   modeled0003Policies,
   modeled0003SafetyMatrix,
 } from "../test/fixtures/migrations-0003-allowlist/modeled-0003-inventory.js";
@@ -231,9 +232,11 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       expect(role.incomingMemberships).toEqual([]);
       expect(role.outgoingMemberships).toEqual([]);
     }
-    expect(modeled0003CatalogMatrix.dependencyInventory.preparedPrefix).toEqual(
-      [],
-    );
+    expect(
+      modeled0003CatalogMatrix.ownershipDependencyRows.some((row) =>
+        row.identity.startsWith("dasher_retention_api."),
+      ),
+    ).toBe(true);
   });
 
   it("freezes every modeled catalog category and the closed function owners", () => {
@@ -275,7 +278,9 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
           index.live &&
           !index.nullsNotDistinct &&
           index.keyExpressions.length === index.opclasses.length &&
-          index.keyExpressions.length === index.options.length,
+          index.keyExpressions.length === index.options.length &&
+          index.keyExpressions.length + index.includedColumns.length ===
+            index.collations.length,
       ),
     ).toBe(true);
     expect(
@@ -299,6 +304,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
         "evidence_deletion_finalizers.evidence_deletion_finalizers_state_check",
         "artifact_deletion_finalizers.artifact_deletion_finalizers_state_check",
         "dashboard_lifecycle_events.dashboard_lifecycle_events_kind_check",
+        "dashboard_promotion_decisions.dashboard_promotion_decisions_requester_approver_check",
       ]),
     );
     expect(modeled0003CatalogMatrix.types.map((type) => type.name)).toEqual(
@@ -317,11 +323,26 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       modeled0003CatalogMatrix.columns.every(
         (column) =>
           column.type.length > 0 &&
+          column.collation.length > 0 &&
           column.defaultExpression === null &&
           column.generated === "" &&
           column.identity === "",
       ),
     ).toBe(true);
+    const allColumnIdentities = modeled0003ColumnCatalog.map(
+      (column) => `${column.relationName}.${column.columnName}`,
+    );
+    expect(
+      [...modeled0003NullableColumnIdentities].filter((identity) =>
+        modeled0003NonNullableColumnIdentities.has(identity),
+      ),
+    ).toEqual([]);
+    expect(
+      [
+        ...modeled0003NullableColumnIdentities,
+        ...modeled0003NonNullableColumnIdentities,
+      ].sort(),
+    ).toEqual([...allColumnIdentities].sort());
     expect(
       modeled0003CatalogMatrix.columns.find(
         (column) =>
@@ -369,12 +390,12 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     expect(modeled0003CatalogMatrix.triggers).toHaveLength(19);
     for (const trigger of modeled0003CatalogMatrix.triggers) {
       expect(trigger).toMatchObject({
-        callStackInspection: false,
-        dynamicSql: false,
         level: "ROW",
         timing: "BEFORE",
       });
-      expect(trigger.requiredProofs).not.toEqual([]);
+      expect(trigger.definition).toBe(
+        `CREATE TRIGGER ${trigger.name} BEFORE ${trigger.events.join(" OR ")} ON dasher.${trigger.relationName} FOR EACH ROW EXECUTE FUNCTION ${trigger.functionIdentity}`,
+      );
     }
     expect(modeled0003Functions).toHaveLength(26);
     expect(
@@ -389,6 +410,13 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       expect(routine.proconfig).toEqual(["search_path=pg_catalog"]);
       expect(routine.defaults).toEqual([]);
       expect(routine.variadic).toBe(false);
+      expect(routine.identityArguments).not.toMatch(
+        /jsonb|regclass|regprocedure|record/iu,
+      );
+      expect(routine.source).toMatch(/\bBEGIN\b[\s\S]*\bEND\b/u);
+      expect(routine.source).not.toMatch(
+        /<modeled-body>|task-8a-body|\bEXECUTE\b|pg_backend_pid|pg_stat_activity/iu,
+      );
       if (routine.schema === "dasher_private") {
         expect(routine.execute).toEqual([]);
         expect(routine.returns).toBe("trigger");
@@ -405,6 +433,57 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       returns: "void",
       schema: "dasher_retention_api",
     });
+    expect(
+      modeled0003CheckConstraints.find(
+        (constraint) =>
+          constraint.name ===
+          "dashboard_promotion_decisions_requester_approver_check",
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        columns: ["requested_by_user_id", "decided_by_user_id"],
+        definition: "CHECK ((requested_by_user_id <> decided_by_user_id))",
+      }),
+    );
+
+    const transitionTrigger = modeled0003Functions.find(
+      (routine) => routine.name === "enforce_dashboard_transition",
+    )?.source;
+    expect(transitionTrigger).toContain(
+      "current_user = 'dasher_security_definer'::name",
+    );
+    expect(transitionTrigger).toContain(
+      "current_user = 'dasher_retention_definer'::name",
+    );
+    expect(transitionTrigger).toContain(
+      "NEW.lifecycle_revision <> OLD.lifecycle_revision + 1",
+    );
+    expect(transitionTrigger).toContain(
+      "NEW.cache_epoch = OLD.cache_epoch + 1",
+    );
+    expect(transitionTrigger).toContain(
+      "NEW.capability_epoch = OLD.capability_epoch + 1",
+    );
+    expect(transitionTrigger).toContain("ROW(\n            NEW.current_kind");
+
+    const retentionTrigger = modeled0003Functions.find(
+      (routine) => routine.name === "enforce_retention_mutation",
+    )?.source;
+    expect(retentionTrigger).toContain(
+      "current_user <> 'dasher_retention_definer'::name",
+    );
+    for (const identity of [
+      "OLD.dashboard_id IS NOT DISTINCT FROM v_dashboard_id",
+      "dasher.snapshot_deletion_finalizers",
+      "dasher.evidence_deletion_finalizers",
+      "dasher.artifact_deletion_finalizers",
+      "finalizer.state = 'deleted'",
+      "finalizer.proof_sha256 IS NOT NULL",
+      "finalizer.bytes_deleted_at IS NOT NULL",
+    ]) {
+      expect(retentionTrigger).toContain(identity);
+    }
+    expect(retentionTrigger).not.toMatch(/to_jsonb|\bEXECUTE\b/iu);
   });
 
   it("freezes exactly two bootstrap SELECT policies and no allowlist mutation authority", () => {
@@ -426,7 +505,9 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       "SELECT",
     ]);
     expect(
-      modeled0003CatalogMatrix.aclClosure.dasher_retention_operator,
+      modeled0003CatalogMatrix.catalogRelationAcls.filter(
+        (acl) => String(acl.grantee) === "dasher_retention_operator",
+      ),
     ).toEqual([]);
     expect(
       modeled0003CatalogMatrix.relationAcls.filter(
@@ -456,40 +537,63 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       transactionIsolation: "read committed",
       usesDynamicSql: false,
     });
-    expect(modeled0003InitializerBodyContract.requiredOrder).toEqual([
-      "exact-read-committed-check",
-      "all-reserved-context-keys-empty-check",
-      "derive-gate-from-postgres-session-user-binding",
-      "pg_advisory_xact_lock-binding-gate",
-      "distinct-ordinary-post-gate-allowlist-select",
-      "select-highest-revision-regardless-enabled",
-      "validate-predecessor-and-hash-chain",
-      "deny-latest-disabled-or-missing-capability-without-fallback",
-      "set-target-discovery-context",
-      "single-dashboard-organization-projection-without-tuple-lock",
-      "pg_advisory_xact_lock-derived-organization-gate",
-      "replace-context-with-full-authorized-context",
-      "ordinary-policy-dashboard-lock-and-revalidation",
-    ]);
-    expect(modeled0003InitializerBodyContract.forbiddenSql).toEqual(
-      expect.arrayContaining([
-        "pre-gate allowlist read or cache",
-        "latest-enabled fallback",
-        "dynamic SQL",
-        "STABLE wrapper",
-        "IMMUTABLE wrapper",
-      ]),
+    const initializer = modeled0003Functions.find(
+      (routine) => routine.name === "initialize_operator_context",
+    )?.source;
+    expect(initializer).toBeDefined();
+    const exactSource = initializer ?? "";
+    const order = [
+      "current_setting('transaction_isolation')",
+      "current_setting('dasher.retention_phase', true)",
+      "dasher:retention-principal-binding:v1|postgres_session_user|",
+      "pg_advisory_xact_lock(v_binding_gate)",
+      "set_config('dasher.retention_phase', 'binding_lookup'",
+      "FROM dasher.retention_service_principal_allowlist",
+      "ORDER BY principal_revision DESC",
+      "WITH RECURSIVE authority_chain",
+      "NOT v_enabled",
+      "set_config('dasher.retention_phase', 'target_discovery'",
+      "FROM dasher.dashboards",
+      "pg_advisory_xact_lock(v_organization_gate)",
+      "set_config('dasher.retention_phase', 'authorized'",
+      "PERFORM 1 FROM dasher.dashboards",
+    ].map((fragment) => exactSource.indexOf(fragment));
+    expect(order.every((position) => position >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+    expect(exactSource).not.toMatch(
+      /FOR\s+(?:NO\s+KEY\s+)?(?:UPDATE|SHARE)|\bEXECUTE\b|pg_backend_pid|pg_stat_activity/iu,
     );
-    expect(modeled0003InitializerBodyContract.writerGateUsers).toHaveLength(3);
-    expect(modeled0003InitializerBodyContract.bindingGateIdentity).toContain(
-      "postgres_session_user|session_user",
+    expect(
+      exactSource.match(/ORDER BY principal_revision DESC/gu),
+    ).toHaveLength(1);
+    expect(exactSource).toContain(
+      "v_chain_count <> v_principal_revision OR v_chain_min_revision <> 1",
     );
-    expect(modeled0003InitializerBodyContract.writerOperationOrder).toEqual([
-      "derive identical immutable binding gate",
-      "pg_advisory_xact_lock identical binding gate",
-      "append synthetic revision or remove synthetic fixture",
-      "commit before gate release",
-    ]);
+    for (const contextKey of [
+      "retention_principal_id",
+      "retention_principal_revision",
+      "retention_authority_scope",
+      "retention_capability",
+      "retention_target_dashboard_id",
+      "retention_target_organization_id",
+      "retention_request_id",
+      "retention_case_matter_reference",
+    ]) {
+      expect(exactSource).toContain(
+        `current_setting('dasher.${contextKey}', true)`,
+      );
+    }
+    const latestLookup = exactSource.slice(
+      exactSource.indexOf(
+        "FROM dasher.retention_service_principal_allowlist\n  WHERE binding_kind",
+      ),
+      exactSource.indexOf("IF NOT FOUND THEN"),
+    );
+    expect(latestLookup).not.toMatch(/enabled\s*=|AND\s+enabled/iu);
+    expect(exactSource).toContain("OR NOT v_capability_allowed");
+    expect(modeled0003Policies[0]?.using).toContain(
+      "dasher.retention_phase'::text, true) = 'binding_lookup'::text",
+    );
   });
 
   it("binds the initializer ordering contract to an executable same-gate PostgreSQL harness", async () => {

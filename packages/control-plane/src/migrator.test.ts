@@ -17,6 +17,7 @@ import {
   MigrationContractError,
   bootstrapManagedRoles,
   discoverMigrations,
+  getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
   runMigrations,
   type MigrationClient,
@@ -37,6 +38,29 @@ const modeledSuccessorFixture = fileURLToPath(
   ),
 );
 const temporaryDirectories: string[] = [];
+
+function independentModeled0003CatalogContract() {
+  return {
+    schemas: modeled0003CatalogMatrix.schemas,
+    relations: modeled0003CatalogMatrix.relationCatalog,
+    columns: modeled0003CatalogMatrix.columns,
+    types: modeled0003CatalogMatrix.types,
+    sequences: modeled0003CatalogMatrix.sequences,
+    indexes: modeled0003CatalogMatrix.indexes,
+    constraints: modeled0003CatalogMatrix.constraints,
+    triggers: modeled0003CatalogMatrix.triggers,
+    policies: modeled0003CatalogMatrix.policies,
+    functions: modeled0003CatalogMatrix.functions,
+    relationAcls: modeled0003CatalogMatrix.catalogRelationAcls,
+    columnAcls: modeled0003CatalogMatrix.catalogColumnAcls,
+    functionExecuteGrants: modeled0003CatalogMatrix.functionExecuteGrants,
+    comments: modeled0003CatalogMatrix.comments,
+    defaultAcls: modeled0003CatalogMatrix.defaultAcls,
+    ownershipDependencyRows: modeled0003CatalogMatrix.ownershipDependencyRows,
+    aclDependencyRows: modeled0003CatalogMatrix.aclDependencyRows,
+    policyDependencyRows: modeled0003CatalogMatrix.policyDependencyRows,
+  };
+}
 
 type FailureStage =
   | "advisory"
@@ -107,7 +131,6 @@ interface ScriptedMigrationClient {
   >[])[];
   readonly dependencyRoleNames: readonly (readonly string[])[];
   readonly catalogContracts: readonly Record<string, readonly string[]>[];
-  readonly modeledCatalogContracts: readonly Record<string, unknown>[];
   readonly journalRows: readonly Record<string, unknown>[];
   readonly modeledSuccessorSideEffectPresent: boolean;
 }
@@ -176,7 +199,6 @@ function scriptedMigrationClient(
   const dependencyInventories: (readonly Record<string, unknown>[])[] = [];
   const dependencyRoleNames: (readonly string[])[] = [];
   const catalogContracts: Record<string, readonly string[]>[] = [];
-  const modeledCatalogContracts: Record<string, unknown>[] = [];
   const journalRows = [...(options.initialJournalRows ?? [])];
   const managedRoleReadCounts: Record<ManagedRoleName, number> = {
     dasher_app: 0,
@@ -438,21 +460,19 @@ function scriptedMigrationClient(
         readonly string[]
       >;
       catalogContracts.push(contract);
-      if (typeof values?.[2] === "string") {
-        modeledCatalogContracts.push(
-          JSON.parse(values[2]) as Record<string, unknown>,
-        );
-      }
+      expect(values).toHaveLength(2);
       const isSuccessor = (contract.relations ?? []).some((signature) =>
         signature.includes("|dashboards|"),
       );
+      const explicitMatch = isSuccessor
+        ? (options.successorCatalogMatches ?? options.prefixObjectMatches)
+        : options.prefixObjectMatches;
+      if (explicitMatch === undefined) {
+        throw new Error("scripted catalog matching must be explicit");
+      }
       return result([
         {
-          matches: isSuccessor
-            ? (options.successorCatalogMatches ??
-              options.prefixObjectMatches ??
-              true)
-            : (options.prefixObjectMatches ?? true),
+          matches: explicitMatch,
         },
       ]);
     }
@@ -675,7 +695,6 @@ function scriptedMigrationClient(
     dependencyInventories,
     dependencyRoleNames,
     catalogContracts,
-    modeledCatalogContracts,
     get journalRows() {
       return journalRows;
     },
@@ -1345,6 +1364,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const series = await modeledSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
     });
 
     await expect(
@@ -1413,11 +1433,47 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(successorCatalogQuery).toContain("routine.provolatile");
     expect(successorCatalogQuery).toContain("routine.prosecdef");
     expect(successorCatalogQuery).toContain("routine.proconfig");
+    expect(successorCatalogQuery).toContain("routine.provariadic");
+    expect(successorCatalogQuery).toContain("routine.pronargdefaults");
+    expect(successorCatalogQuery).toContain("routine.proargdefaults");
+    expect(successorCatalogQuery).toContain("attribute.attcollation");
+    expect(successorCatalogQuery).toContain("index_row.indnatts");
+    expect(successorCatalogQuery).toContain("index_row.indnkeyatts");
+    expect(successorCatalogQuery).toContain("index_row.indcollation");
     expect(successorCatalogQuery).toContain("pg_catalog.pg_get_constraintdef");
     expect(successorCatalogQuery).toContain("pg_catalog.pg_get_triggerdef");
+    expect(successorCatalogQuery).toContain("pg_catalog.col_description");
+    expect(successorCatalogQuery).toContain("'pg_constraint'");
+    expect(successorCatalogQuery).toContain("'pg_trigger'");
+    expect(successorCatalogQuery).toContain("'pg_policy'");
+    expect(successorCatalogQuery).toMatch(
+      /pg_catalog\.shobj_description\(\s*database_row\.oid,\s*'pg_database'/,
+    );
+    expect(successorCatalogQuery).not.toMatch(
+      /pg_catalog\.obj_description\(\s*database_row\.oid,\s*'pg_database'/,
+    );
     expect(successorCatalogQuery).toContain("privilege.is_grantable");
+    expect(successorCatalogQuery).not.toContain("$3::jsonb");
     const successorContract = scripted.catalogContracts.at(-1);
     expect(successorContract).toBeDefined();
+    expect(Object.keys(successorContract ?? {}).sort()).toEqual(
+      [
+        "acls",
+        "columns",
+        "comments",
+        "constraints",
+        "defaultAcls",
+        "foreignKeys",
+        "functions",
+        "indexes",
+        "policies",
+        "relations",
+        "schemas",
+        "sequences",
+        "triggers",
+        "types",
+      ].sort(),
+    );
     for (const category of [
       "schemas",
       "relations",
@@ -1434,6 +1490,22 @@ describe("prefix-aware managed roles and expected app logins", () => {
     ]) {
       expect(successorContract?.[category]).not.toEqual([]);
     }
+    expect(successorContract?.comments).toEqual([]);
+    expect(
+      (successorContract?.functions ?? []).every(
+        (signature) => signature.split("|").length === 16,
+      ),
+    ).toBe(true);
+    expect(
+      (successorContract?.columns ?? []).every(
+        (signature) => signature.split("|").length === 10,
+      ),
+    ).toBe(true);
+    expect(
+      (successorContract?.indexes ?? []).every(
+        (signature) => signature.split("|").length === 18,
+      ),
+    ).toBe(true);
     expect(
       (successorContract?.policies ?? []).filter(
         (signature) =>
@@ -1443,30 +1515,22 @@ describe("prefix-aware managed roles and expected app logins", () => {
           signature.includes("dashboards_retention_target_discovery_select"),
       ),
     ).toHaveLength(2);
-    const runtimeModeledContract = scripted.modeledCatalogContracts.at(-1);
-    const independentFixtureContract = {
-      schemas: modeled0003CatalogMatrix.schemas,
-      relations: modeled0003CatalogMatrix.relationCatalog,
-      columns: modeled0003CatalogMatrix.columns,
-      types: modeled0003CatalogMatrix.types,
-      sequences: modeled0003CatalogMatrix.sequences,
-      indexes: modeled0003CatalogMatrix.indexes,
-      constraints: modeled0003CatalogMatrix.constraints,
-      triggers: modeled0003CatalogMatrix.triggers,
-      policies: modeled0003CatalogMatrix.policies,
-      functions: modeled0003CatalogMatrix.functions,
-      relationAcls: modeled0003CatalogMatrix.catalogRelationAcls,
-      columnAcls: modeled0003CatalogMatrix.catalogColumnAcls,
-      functionExecuteGrants: modeled0003CatalogMatrix.functionExecuteGrants,
-    };
-    expect(Object.keys(runtimeModeledContract ?? {})).toEqual(
-      Object.keys(independentFixtureContract),
-    );
-    for (const [category, expectedRows] of Object.entries(
+    const runtimeModeledContract =
+      getModeled0003StaticCatalogContractForTests();
+    const independentFixtureContract = independentModeled0003CatalogContract();
+    expect(runtimeModeledContract).toEqual(independentFixtureContract);
+    const secondRuntimeCopy =
+      getModeled0003StaticCatalogContractForTests() as typeof independentFixtureContract;
+    expect(secondRuntimeCopy).toEqual(runtimeModeledContract);
+    expect(secondRuntimeCopy).not.toBe(runtimeModeledContract);
+    const disposableRuntimeCopy =
+      getModeled0003StaticCatalogContractForTests() as {
+        comments: string[];
+      };
+    disposableRuntimeCopy.comments.push("database|drift|copy-only");
+    expect(getModeled0003StaticCatalogContractForTests()).toEqual(
       independentFixtureContract,
-    )) {
-      expect(runtimeModeledContract?.[category]).toEqual(expectedRows);
-    }
+    );
     const successorDependencies = scripted.dependencyInventories.at(-1) ?? [];
     expect(
       successorDependencies.filter(
@@ -1502,10 +1566,100 @@ describe("prefix-aware managed roles and expected app logins", () => {
     ).toHaveLength(7);
   });
 
+  it("rejects one-field mutations in every independently bound successor dimension", () => {
+    const runtime = getModeled0003StaticCatalogContractForTests();
+    const fixture = independentModeled0003CatalogContract();
+    const mutations = [
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine, index) =>
+          index === 0 ? { ...routine, defaults: ["100"] } : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine, index) =>
+          index === 0 ? { ...routine, variadic: true } : routine,
+        ),
+      },
+      {
+        ...fixture,
+        columns: fixture.columns.map((column, index) =>
+          index === 0 ? { ...column, collation: "pg_catalog.C" } : column,
+        ),
+      },
+      {
+        ...fixture,
+        indexes: fixture.indexes.map((indexRow, index) =>
+          index === 0
+            ? { ...indexRow, includedColumns: ["created_at"] }
+            : indexRow,
+        ),
+      },
+      { ...fixture, comments: ["column|dasher.dashboards.title|drift"] },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine, index) =>
+          index === 0 ? { ...routine, source: `${routine.source}\n` } : routine,
+        ),
+      },
+      {
+        ...fixture,
+        columns: fixture.columns.map((column, index) =>
+          index === 0 ? { ...column, nullable: !column.nullable } : column,
+        ),
+      },
+      {
+        ...fixture,
+        constraints: fixture.constraints.map((constraint) =>
+          constraint.name ===
+          "dashboard_promotion_decisions_requester_approver_check"
+            ? {
+                ...constraint,
+                definition:
+                  "CHECK ((requested_by_user_id = decided_by_user_id))",
+              }
+            : constraint,
+        ),
+      },
+      {
+        ...fixture,
+        policies: fixture.policies.map((policy, index) =>
+          index === 0 ? { ...policy, using: "true" } : policy,
+        ),
+      },
+      {
+        ...fixture,
+        policyDependencyRows: fixture.policyDependencyRows.map((row, index) =>
+          index === 0 ? { ...row, dependencyType: "a" } : row,
+        ),
+      },
+      {
+        ...fixture,
+        ownershipDependencyRows: fixture.ownershipDependencyRows.map(
+          (row, index) =>
+            index === 0 ? { ...row, roleName: "migration_owner" } : row,
+        ),
+      },
+      {
+        ...fixture,
+        aclDependencyRows: fixture.aclDependencyRows.map((row, index) =>
+          index === 0 ? { ...row, isGrantable: true } : row,
+        ),
+      },
+    ];
+
+    expect(fixture).toEqual(runtime);
+    for (const mutation of mutations) {
+      expect(mutation).not.toEqual(runtime);
+    }
+  });
+
   it("accepts the exact dependency-free prepared residue and retries the same modeled file without adoption", async () => {
     const series = await modeledSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
       retentionRoleNames: [
         "dasher_retention_definer",
         "dasher_retention_operator",
@@ -1614,6 +1768,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
       { prefixObjectMatches: false },
     ] as const) {
       const scripted = scriptedMigrationClient({
+        prefixObjectMatches: true,
         ...options,
         initialJournalRows: series.journalRows,
         retentionRoleNames: [
@@ -1731,6 +1886,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const scripted = scriptedMigrationClient({
       failure: { stage: "migration", transaction: 3 },
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
     });
 
     await expect(
@@ -1766,6 +1922,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const series = await modeledSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
       successorCatalogMatches: false,
     });
 
@@ -1787,6 +1944,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const series = await canonical0002Series();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
       retentionRoleNames: [
         "dasher_retention_definer",
         "dasher_retention_operator",
@@ -1814,11 +1972,13 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const cases: readonly ScriptedMigrationOptions[] = [
       {
         initialJournalRows: series.journalRows,
+        prefixObjectMatches: true,
         retentionRoleNames: ["dasher_retention_definer"],
       },
       {
         dependencyMatches: [false],
         initialJournalRows: series.journalRows,
+        prefixObjectMatches: true,
         retentionRoleNames: [
           "dasher_retention_definer",
           "dasher_retention_operator",
@@ -2169,6 +2329,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const series = await securityBoundarySeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
     });
 
     await expect(
@@ -2343,6 +2504,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const series = await securityBoundarySeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: [series.journalRows[0]!],
+      prefixObjectMatches: true,
     });
 
     await expect(
@@ -2380,6 +2542,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const scripted = scriptedMigrationClient({
       dependencyMatches: [false],
       initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
     });
 
     await expect(
@@ -2393,6 +2556,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const scripted = scriptedMigrationClient({
       dependencyMatches: [true, true, false],
       initialJournalRows: [series.journalRows[0]!],
+      prefixObjectMatches: true,
     });
 
     await expect(
