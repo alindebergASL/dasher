@@ -29,6 +29,37 @@ const modeledInventorySource = new URL(
   import.meta.url,
 );
 
+function hasExactBindingCardinalityProof(source: string): boolean {
+  const normalized = source.replace(/\s+/gu, " ").trim();
+  return (
+    /binding_proof AS \( SELECT count\(DISTINCT retention_service_principal_id\) AS distinct_principal_count, max\(principal_revision\) AS max_principal_revision FROM exact_binding \)/u.test(
+      normalized,
+    ) &&
+    /unique_latest AS \( SELECT authority[.]\* FROM exact_binding AS authority CROSS JOIN binding_proof AS proof WHERE proof[.]distinct_principal_count = 1 AND authority[.]principal_revision = proof[.]max_principal_revision AND \( SELECT count\(\*\) FROM exact_binding AS latest WHERE latest[.]principal_revision = proof[.]max_principal_revision \) = 1 \)/u.test(
+      normalized,
+    ) &&
+    !/\bDISTINCT ON\b|\bLIMIT\b|ORDER BY\s+(?:authority[.])?principal_revision/iu.test(
+      normalized,
+    )
+  );
+}
+
+function weakenBindingCardinalityProofs(source: string): readonly string[] {
+  return [
+    source.replace("count(DISTINCT retention_service_principal_id)", "1"),
+    source.replace("proof.distinct_principal_count = 1", "true"),
+    source.replace(
+      "proof.distinct_principal_count = 1",
+      "proof.distinct_principal_count >= 1",
+    ),
+    source.replace(
+      "      AND (\n        SELECT count(*)\n        FROM exact_binding AS latest\n        WHERE latest.principal_revision = proof.max_principal_revision\n      ) = 1\n",
+      "",
+    ),
+    source.replace("      ) = 1\n", "      ) >= 1\n"),
+  ];
+}
+
 const identityAuditMigration = {
   sequence: 1,
   filename: "0001_identity_audit.sql",
@@ -633,8 +664,11 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       "dasher:retention-principal-binding:v1|postgres_session_user|",
       "pg_advisory_xact_lock(v_binding_gate)",
       "set_config('dasher.retention_phase', 'binding_lookup'",
+      "WITH exact_binding AS MATERIALIZED",
       "FROM dasher.retention_service_principal_allowlist",
-      "ORDER BY principal_revision DESC",
+      "binding_proof AS",
+      "proof.distinct_principal_count = 1",
+      "FROM unique_latest",
       "WITH RECURSIVE authority_chain",
       "NOT v_enabled",
       "set_config('dasher.retention_phase', 'target_discovery'",
@@ -648,9 +682,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     expect(exactSource).not.toMatch(
       /FOR\s+(?:NO\s+KEY\s+)?(?:UPDATE|SHARE)|\bEXECUTE\b|pg_backend_pid|pg_stat_activity/iu,
     );
-    expect(
-      exactSource.match(/ORDER BY principal_revision DESC/gu),
-    ).toHaveLength(1);
+    expect(hasExactBindingCardinalityProof(exactSource)).toBe(true);
     expect(exactSource).toContain(
       "v_chain_count <> v_principal_revision OR v_chain_min_revision <> 1",
     );
@@ -669,9 +701,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       );
     }
     const latestLookup = exactSource.slice(
-      exactSource.indexOf(
-        "FROM dasher.retention_service_principal_allowlist\n  WHERE binding_kind",
-      ),
+      exactSource.indexOf("WITH exact_binding AS MATERIALIZED"),
       exactSource.indexOf("IF NOT FOUND THEN"),
     );
     expect(latestLookup).not.toMatch(/enabled\s*=|AND\s+enabled/iu);
@@ -727,6 +757,40 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     );
   });
 
+  it("rejects removed or weakened binding identity and unique-max cardinality proofs in every independent source", async () => {
+    const fixtureInitializer = modeled0003Functions.find(
+      (routine) => routine.name === "initialize_operator_context",
+    )?.source;
+    expect(fixtureInitializer).toBeDefined();
+
+    const productionText = await readFile(migratorSource, "utf8");
+    const productionInitializer =
+      /"dasher_retention_api[.]initialize_operator_context": `([\s\S]*?\n)`,/u.exec(
+        productionText,
+      )?.[1];
+    expect(productionInitializer).toBeDefined();
+    expect(productionInitializer).toBe(fixtureInitializer);
+
+    const harnessText = await readFile(initializerBarrierHarness, "utf8");
+    const harnessInitializer =
+      /CREATE FUNCTION task8a_retention_barrier[.]initialize[\s\S]*?AS \$function\$([\s\S]*?)\$function\$;/u.exec(
+        harnessText,
+      )?.[1];
+    expect(harnessInitializer).toBeDefined();
+
+    for (const [sourceName, source] of [
+      ["production", productionInitializer ?? ""],
+      ["independent fixture", fixtureInitializer ?? ""],
+      ["executable harness", harnessInitializer ?? ""],
+    ] as const) {
+      expect(hasExactBindingCardinalityProof(source), sourceName).toBe(true);
+      for (const mutant of weakenBindingCardinalityProofs(source)) {
+        expect(mutant, sourceName).not.toBe(source);
+        expect(hasExactBindingCardinalityProof(mutant), sourceName).toBe(false);
+      }
+    }
+  });
+
   it("binds the initializer ordering contract to an executable same-gate PostgreSQL harness", async () => {
     const sql = await readFile(initializerBarrierHarness, "utf8");
     const initializer =
@@ -738,19 +802,29 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       "task8a.bound_revision",
       "PERFORM 1",
       "pg_advisory_xact_lock",
+      "WITH exact_binding AS MATERIALIZED",
       "FROM task8a_retention_barrier.authority_revisions",
-      "ORDER BY authority.principal_revision DESC",
+      "proof.distinct_principal_count = 1",
+      "FROM unique_latest",
       "NOT v_enabled",
       "set_config",
     ].map((fragment) => initializer.indexOf(fragment));
     expect(order.every((position) => position >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((left, right) => left - right));
     expect(initializer).not.toMatch(/FOR\s+(?:UPDATE|SHARE)|\bEXECUTE\b/iu);
+    expect(hasExactBindingCardinalityProof(initializer)).toBe(true);
     expect(
       sql.match(/task8a_retention_barrier[.]binding_gate\(/gu),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
+    expect(sql).not.toContain(
+      "PRIMARY KEY (binding_subject, principal_revision)",
+    );
+    expect(sql).toContain("retention_service_principal_id uuid NOT NULL");
     expect(sql).toContain(
       "CREATE FUNCTION task8a_retention_barrier.append_revision",
+    );
+    expect(sql).toContain(
+      "CREATE FUNCTION task8a_retention_barrier.insert_adversarial_revision",
     );
     expect(sql).toContain(
       "CREATE FUNCTION task8a_retention_barrier.cleanup_subject",

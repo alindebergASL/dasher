@@ -1122,6 +1122,33 @@ BEGIN
   );
   PERFORM pg_advisory_xact_lock(v_binding_gate);
   PERFORM set_config('dasher.retention_phase', 'binding_lookup', true);
+  WITH exact_binding AS MATERIALIZED (
+    SELECT retention_service_principal_id, principal_revision,
+      authority_scope, scope_organization_id, enabled, can_initialize,
+      can_materialize_expiry, can_place_hold, can_release_hold,
+      can_claim_cleanup, can_record_attempt, can_purge
+    FROM dasher.retention_service_principal_allowlist
+    WHERE binding_kind = 'postgres_session_user'
+      AND binding_subject = session_user
+  ),
+  binding_proof AS (
+    SELECT count(DISTINCT retention_service_principal_id)
+        AS distinct_principal_count,
+      max(principal_revision) AS max_principal_revision
+    FROM exact_binding
+  ),
+  unique_latest AS (
+    SELECT authority.*
+    FROM exact_binding AS authority
+    CROSS JOIN binding_proof AS proof
+    WHERE proof.distinct_principal_count = 1
+      AND authority.principal_revision = proof.max_principal_revision
+      AND (
+        SELECT count(*)
+        FROM exact_binding AS latest
+        WHERE latest.principal_revision = proof.max_principal_revision
+      ) = 1
+  )
   SELECT retention_service_principal_id, principal_revision, authority_scope,
       scope_organization_id, enabled, can_initialize,
       CASE $2
@@ -1136,11 +1163,7 @@ BEGIN
     INTO v_principal_id, v_principal_revision, v_authority_scope,
       v_scope_organization_id, v_enabled, v_can_initialize,
       v_capability_allowed
-  FROM dasher.retention_service_principal_allowlist
-  WHERE binding_kind = 'postgres_session_user'
-    AND binding_subject = session_user
-  ORDER BY principal_revision DESC
-  LIMIT 1;
+  FROM unique_latest;
   IF NOT FOUND THEN
     RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';
   END IF;

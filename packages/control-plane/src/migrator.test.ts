@@ -1632,8 +1632,50 @@ describe("prefix-aware managed roles and expected app logins", () => {
             ? {
                 ...routine,
                 source: (routine.source ?? "").replace(
+                  "count(DISTINCT retention_service_principal_id)",
+                  "1",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "initialize_operator_context"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
                   "OR NOT v_can_initialize OR NOT v_capability_allowed",
                   "OR NOT v_capability_allowed",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "initialize_operator_context"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "proof.distinct_principal_count = 1",
+                  "proof.distinct_principal_count >= 1",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "initialize_operator_context"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "      ) = 1\n",
+                  "      ) >= 1\n",
                 ),
               }
             : routine,

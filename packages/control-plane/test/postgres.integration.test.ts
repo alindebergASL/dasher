@@ -1962,6 +1962,120 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   }, 120_000);
 
+  it("denies ambiguous initializer bindings without leaving bound context", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const normalPrincipalId = "80000000-0000-4000-8000-000000000001";
+    const conflictingPrincipalId = "80000000-0000-4000-8000-000000000002";
+
+    const expectNormalizedDenialWithoutContext = async (
+      subject: string,
+    ): Promise<void> => {
+      const client = await ownerPool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SAVEPOINT initializer_attempt");
+        await expect(
+          client.query("SELECT task8a_retention_barrier.initialize($1)", [
+            subject,
+          ]),
+        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+        await client.query("ROLLBACK TO SAVEPOINT initializer_attempt");
+        const context = await client.query<{
+          readonly bound_principal_id: string;
+          readonly bound_revision: string;
+        }>(`
+          SELECT
+            COALESCE(
+              pg_catalog.current_setting(
+                'task8a.bound_principal_id',
+                true
+              ),
+              ''
+            ) AS bound_principal_id,
+            COALESCE(
+              pg_catalog.current_setting('task8a.bound_revision', true),
+              ''
+            ) AS bound_revision
+        `);
+        expect(context.rows[0]).toEqual({
+          bound_principal_id: "",
+          bound_revision: "",
+        });
+        await client.query("ROLLBACK");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
+    };
+
+    const cases = [
+      {
+        name: "different principals tied at the maximum revision",
+        subject: "task8a_tied_principals",
+        principalId: conflictingPrincipalId,
+        revision: 1,
+      },
+      {
+        name: "different principals at different revisions",
+        subject: "task8a_conflicting_principal_history",
+        principalId: conflictingPrincipalId,
+        revision: 2,
+      },
+      {
+        name: "duplicate rows for one principal and revision",
+        subject: "task8a_duplicate_revision",
+        principalId: normalPrincipalId,
+        revision: 1,
+      },
+    ] as const;
+
+    try {
+      await ownerPool.query(harnessSql);
+      for (const testCase of cases) {
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+          [testCase.subject],
+        );
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.insert_adversarial_revision($1, $2, $3, true)",
+          [testCase.subject, testCase.principalId, testCase.revision],
+        );
+
+        await expectNormalizedDenialWithoutContext(testCase.subject);
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [testCase.subject],
+        );
+        const subjectResidue = await ownerPool.query<{
+          readonly count: string;
+        }>(
+          `
+            SELECT pg_catalog.count(*)::text AS count
+            FROM task8a_retention_barrier.authority_revisions
+            WHERE binding_subject = $1
+          `,
+          [testCase.subject],
+        );
+        expect(subjectResidue.rows[0]?.count, testCase.name).toBe("0");
+      }
+
+      const totalResidue = await ownerPool.query<{ readonly count: string }>(
+        "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
+      );
+      expect(totalResidue.rows[0]?.count).toBe("0");
+    } finally {
+      await ownerPool.query(
+        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
+      );
+    }
+  }, 120_000);
+
   it("rejects either managed namespace as an adoption conflict", async () => {
     for (const schemaName of ["dasher", "dasher_meta"] as const) {
       try {
