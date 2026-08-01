@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +21,11 @@ import {
   type MigrationClient,
   type PgCompatiblePool,
 } from "../src/index.js";
-import { resetPreparedRetentionRoles } from "../src/migrator.js";
+import {
+  exactCatalogMatchesForTests,
+  getCanonical0002ExactCatalogContractForTests,
+  resetPreparedRetentionRoles,
+} from "../src/migrator.js";
 import {
   borrowedClientPool,
   canonicalMigrationDirectory,
@@ -1085,7 +1089,245 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   }, 120_000);
 
+  async function proveSoleVariadicCatalogDelta(): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-variadic-"));
+    const modeledFixture = new URL(
+      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+      import.meta.url,
+    );
+    const probeIdentity = "dasher_private.task8a_variadic_probe(text[])";
+    const probeSource = "SELECT pg_catalog.cardinality($1)";
+    let probeCreated = false;
+
+    try {
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+      ] as const) {
+        await writeFile(
+          join(directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await writeFile(
+        join(directory, "0003_immutable_content.sql"),
+        await readFile(modeledFixture),
+      );
+
+      await resetManagedSchemas();
+      await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+      const owner = await ownerPool.query<{ readonly owner_name: string }>(
+        "SELECT session_user::text AS owner_name",
+      );
+      const ownerName = owner.rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("PostgreSQL did not return the session owner");
+      }
+
+      await ownerPool.query(`
+        CREATE FUNCTION dasher_private.task8a_variadic_probe(text[])
+        RETURNS integer
+        LANGUAGE sql
+        STABLE
+        SET search_path = pg_catalog
+        AS 'SELECT pg_catalog.cardinality($1)';
+        REVOKE ALL ON FUNCTION
+          dasher_private.task8a_variadic_probe(text[]) FROM PUBLIC
+      `);
+      probeCreated = true;
+
+      type ExactCatalog = Record<string, readonly string[]> & {
+        readonly acls: readonly string[];
+        readonly functions: readonly string[];
+      };
+      const canonicalExpected = getCanonical0002ExactCatalogContractForTests(
+        ownerName,
+      ) as ExactCatalog;
+      const baselineFunctionSignature =
+        `${probeIdentity}|f|integer|sql|s|false|false|false|false|u|<none>|0|<none>|${ownerName}|{search_path=pg_catalog}|` +
+        createHash("md5").update(probeSource).digest("hex");
+      const baselineAclSignature = `function|${probeIdentity}|${ownerName}|${ownerName}|EXECUTE|false`;
+      const withProbeBaseline: ExactCatalog = {
+        ...canonicalExpected,
+        functions: [
+          ...canonicalExpected.functions,
+          baselineFunctionSignature,
+        ].sort(),
+        acls: [...canonicalExpected.acls, baselineAclSignature].sort(),
+      };
+
+      const comparisonClient = await ownerPool.connect();
+      try {
+        expect(
+          await exactCatalogMatchesForTests(
+            comparisonClient,
+            withProbeBaseline,
+            ownerName,
+          ),
+        ).toBe(true);
+      } finally {
+        comparisonClient.release();
+      }
+
+      const before = await ownerPool.query<{
+        readonly compared_identity: string;
+        readonly function_oid: string;
+        readonly source_md5: string;
+        readonly variadic_type: string | null;
+      }>(
+        `
+        SELECT routine.oid::text AS function_oid,
+          pg_catalog.oidvectortypes(routine.proargtypes) AS compared_identity,
+          pg_catalog.md5(routine.prosrc) AS source_md5,
+          pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
+            AS variadic_type
+        FROM pg_catalog.pg_proc AS routine
+        WHERE routine.oid = $1::regprocedure
+      `,
+        [probeIdentity],
+      );
+      expect(before.rows[0]).toEqual({
+        compared_identity: "text[]",
+        function_oid: expect.any(String),
+        source_md5: createHash("md5").update(probeSource).digest("hex"),
+        variadic_type: null,
+      });
+
+      await ownerPool.query(`
+        CREATE OR REPLACE FUNCTION
+          dasher_private.task8a_variadic_probe(VARIADIC text[])
+        RETURNS integer
+        LANGUAGE sql
+        STABLE
+        SET search_path = pg_catalog
+        AS 'SELECT pg_catalog.cardinality($1)'
+      `);
+      const after = await ownerPool.query<{
+        readonly compared_identity: string;
+        readonly function_oid: string;
+        readonly source_md5: string;
+        readonly variadic_type: string | null;
+      }>(
+        `
+        SELECT routine.oid::text AS function_oid,
+          pg_catalog.oidvectortypes(routine.proargtypes) AS compared_identity,
+          pg_catalog.md5(routine.prosrc) AS source_md5,
+          pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
+            AS variadic_type
+        FROM pg_catalog.pg_proc AS routine
+        WHERE routine.oid = $1::regprocedure
+      `,
+        [probeIdentity],
+      );
+      expect(after.rows[0]).toEqual({
+        ...before.rows[0],
+        variadic_type: "text",
+      });
+
+      const afterClient = await ownerPool.connect();
+      try {
+        expect(
+          await exactCatalogMatchesForTests(
+            afterClient,
+            withProbeBaseline,
+            ownerName,
+          ),
+        ).toBe(false);
+        const provariadicBlindMutant: ExactCatalog = {
+          ...withProbeBaseline,
+          functions: withProbeBaseline.functions.map((signature) =>
+            signature === baselineFunctionSignature
+              ? signature.replace("|u|<none>|0|", "|u|text|0|")
+              : signature,
+          ),
+        };
+        expect(provariadicBlindMutant.functions).not.toEqual(
+          withProbeBaseline.functions,
+        );
+        expect(
+          await exactCatalogMatchesForTests(
+            afterClient,
+            provariadicBlindMutant,
+            ownerName,
+          ),
+        ).toBe(true);
+      } finally {
+        afterClient.release();
+      }
+
+      let exactComparisonCount = 0;
+      let preparedRoleDdlCount = 0;
+      let modeledSqlCount = 0;
+      const instrumentedPool = {
+        async connect(): Promise<MigrationClient> {
+          const client = await ownerPool.connect();
+          const query = (async (text: string, values?: readonly unknown[]) => {
+            if (text.includes("signature_catalog AS")) {
+              exactComparisonCount += 1;
+              const runnerExpected = JSON.parse(
+                String(values?.[0]),
+              ) as ExactCatalog;
+              expect(runnerExpected.functions).not.toContain(
+                baselineFunctionSignature,
+              );
+              return client.query(text, [
+                JSON.stringify(withProbeBaseline),
+                values?.[1],
+              ]);
+            }
+            if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
+              preparedRoleDdlCount += 1;
+            }
+            if (text.includes("modeled_successor_inventory_version")) {
+              modeledSqlCount += 1;
+            }
+            return client.query(text, values as unknown[] | undefined);
+          }) as MigrationClient["query"];
+          return {
+            query,
+            release(error) {
+              client.release(error);
+            },
+          };
+        },
+      };
+      await expectMigrationRejection(
+        runMigrations(instrumentedPool, directory, []),
+        "managed_role_drift",
+      );
+      expect(exactComparisonCount).toBe(1);
+      expect(preparedRoleDdlCount).toBe(0);
+      expect(modeledSqlCount).toBe(0);
+      const preparedRoleResidue = await ownerPool.query<{
+        readonly count: string;
+      }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      expect(preparedRoleResidue.rows[0]?.count).toBe("0");
+    } finally {
+      if (probeCreated) {
+        await ownerPool.query(
+          "DROP FUNCTION IF EXISTS dasher_private.task8a_variadic_probe(text[])",
+        );
+        const residue = await ownerPool.query<{
+          readonly identity: string | null;
+        }>(
+          "SELECT pg_catalog.to_regprocedure('dasher_private.task8a_variadic_probe(text[])')::text AS identity",
+        );
+        expect(residue.rows[0]?.identity).toBeNull();
+      }
+      await rm(directory, { recursive: true, force: true });
+      await resetManagedSchemas();
+    }
+  }
+
   it("rejects representative catalog and grantability drift before prepared-role or modeled SQL side effects", async () => {
+    await proveSoleVariadicCatalogDelta();
     const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-drift-"));
     let originalDatabaseComment: string | null | undefined;
     const modeledFixture = new URL(
@@ -1132,6 +1374,60 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         `,
       },
       {
+        name: "same-index clustered state",
+        apply: async () => {
+          const before = await ownerPool.query<{
+            readonly identity: string;
+          }>(`
+            SELECT namespace.nspname || '.' || index_relation.relname AS identity
+            FROM pg_catalog.pg_index AS index_row
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            WHERE namespace.nspname LIKE 'dasher%'
+              AND index_row.indisclustered
+            ORDER BY identity
+          `);
+          expect(before.rows).toEqual([]);
+          await ownerPool.query(
+            "ALTER TABLE dasher.invitations CLUSTER ON invitations_creator_idx",
+          );
+          const after = await ownerPool.query<{
+            readonly identity: string;
+          }>(`
+            SELECT namespace.nspname || '.' || index_relation.relname AS identity
+            FROM pg_catalog.pg_index AS index_row
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            WHERE namespace.nspname LIKE 'dasher%'
+              AND index_row.indisclustered
+            ORDER BY identity
+          `);
+          expect(after.rows).toEqual([
+            { identity: "dasher.invitations_creator_idx" },
+          ]);
+        },
+        cleanup: async () => {
+          await ownerPool.query(
+            "ALTER TABLE dasher.invitations SET WITHOUT CLUSTER",
+          );
+          const reset = await ownerPool.query<{ readonly count: string }>(`
+            SELECT pg_catalog.count(*)::text AS count
+            FROM pg_catalog.pg_index AS index_row
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            WHERE namespace.nspname LIKE 'dasher%'
+              AND index_row.indisclustered
+          `);
+          expect(reset.rows[0]?.count).toBe("0");
+        },
+      },
+      {
         name: "trailing function default",
         apply: async () => {
           const before = await ownerPool.query<{
@@ -1173,70 +1469,6 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             default_count: 1,
             default_expression: "'viewer'::text",
             function_oid: original?.function_oid,
-          });
-        },
-      },
-      {
-        name: "same-identity VARIADIC shape",
-        apply: async () => {
-          // The exact 0002 routines have no trailing array argument, while
-          // PostgreSQL requires a VARIADIC parameter to be the final array.
-          // This managed-schema probe supplies the compatible real shape.
-          await ownerPool.query(`
-            CREATE FUNCTION dasher_private.task8a_variadic_probe(text[])
-            RETURNS integer
-            LANGUAGE sql
-            STABLE
-            SET search_path = pg_catalog
-            AS 'SELECT cardinality($1)'
-          `);
-          const before = await ownerPool.query<{
-            readonly function_oid: string;
-            readonly identity_arguments: string;
-            readonly variadic_type: string | null;
-          }>(`
-            SELECT routine.oid::text AS function_oid,
-              pg_catalog.pg_get_function_identity_arguments(routine.oid)
-                AS identity_arguments,
-              pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
-                AS variadic_type
-            FROM pg_catalog.pg_proc AS routine
-            WHERE routine.oid =
-              'dasher_private.task8a_variadic_probe(text[])'::regprocedure
-          `);
-          await ownerPool.query(`
-            CREATE OR REPLACE FUNCTION
-              dasher_private.task8a_variadic_probe(VARIADIC text[])
-            RETURNS integer
-            LANGUAGE sql
-            STABLE
-            SET search_path = pg_catalog
-            AS 'SELECT cardinality($1)'
-          `);
-          const after = await ownerPool.query<{
-            readonly function_oid: string;
-            readonly identity_arguments: string;
-            readonly variadic_type: string | null;
-          }>(`
-            SELECT routine.oid::text AS function_oid,
-              pg_catalog.pg_get_function_identity_arguments(routine.oid)
-                AS identity_arguments,
-              pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
-                AS variadic_type
-            FROM pg_catalog.pg_proc AS routine
-            WHERE routine.oid =
-              'dasher_private.task8a_variadic_probe(text[])'::regprocedure
-          `);
-          expect(before.rows[0]).toMatchObject({
-            identity_arguments: "text[]",
-            variadic_type: null,
-          });
-          // PostgreSQL 16 preserves the OID but reports VARIADIC text[] as the
-          // identity argument text; provariadic is also changed to text.
-          expect(after.rows[0]).toEqual({
-            function_oid: before.rows[0]?.function_oid,
-            identity_arguments: "VARIADIC text[]",
-            variadic_type: "text",
           });
         },
       },
@@ -2597,33 +2829,33 @@ const expectedForeignKeys = [
 ] as const;
 
 const expectedIndexes = [
-  "audit_events|audit_events_actor_idx|btree|false|false|true|true|true|false|<none>|{organization_id,actor_user_id}|{uuid_ops,uuid_ops}|0 0",
-  "audit_events|audit_events_occurred_idx|btree|false|false|true|true|true|false|<none>|{organization_id,occurred_at,audit_event_id}|{uuid_ops,timestamptz_ops,uuid_ops}|0 0 0",
-  "audit_events|audit_events_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,audit_event_id}|{uuid_ops,uuid_ops}|0 0",
-  "audit_events|audit_events_pkey|btree|true|true|true|true|true|false|<none>|{audit_event_id}|{uuid_ops}|0",
-  "external_identities|external_identities_pkey|btree|true|true|true|true|true|false|<none>|{issuer,subject}|{text_ops,text_ops}|0 0",
-  "external_identities|external_identities_user_key|btree|true|false|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
-  "invitations|invitations_accepted_user_idx|btree|false|false|true|true|true|false|<none>|{accepted_user_id}|{uuid_ops}|0",
-  "invitations|invitations_creator_idx|btree|false|false|true|true|true|false|<none>|{organization_id,created_by_user_id}|{uuid_ops,uuid_ops}|0 0",
-  "invitations|invitations_email_created_idx|btree|false|false|true|true|true|false|<none>|{organization_id,normalized_email,created_at}|{uuid_ops,text_ops,timestamptz_ops}|0 0 3",
-  "invitations|invitations_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,invitation_id}|{uuid_ops,uuid_ops}|0 0",
-  "invitations|invitations_pkey|btree|true|true|true|true|true|false|<none>|{invitation_id}|{uuid_ops}|0",
-  "invitations|invitations_revoker_idx|btree|false|false|true|true|true|false|<none>|{organization_id,revoked_by_user_id}|{uuid_ops,uuid_ops}|0 0",
-  "invitations|invitations_token_key|btree|true|false|true|true|true|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
-  "memberships|memberships_active_authority_idx|btree|false|false|true|true|true|false|((state)::text = 'active'::text)|{organization_id,user_id,authority_revision}|{uuid_ops,uuid_ops,int8_ops}|0 0 0",
-  "memberships|memberships_org_membership_key|btree|true|false|true|true|true|false|<none>|{organization_id,membership_id}|{uuid_ops,uuid_ops}|0 0",
-  "memberships|memberships_org_user_key|btree|true|false|true|true|true|false|<none>|{organization_id,user_id}|{uuid_ops,uuid_ops}|0 0",
-  "memberships|memberships_pkey|btree|true|true|true|true|true|false|<none>|{membership_id}|{uuid_ops}|0",
-  "memberships|memberships_user_idx|btree|false|false|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
-  "organizations|organizations_pkey|btree|true|true|true|true|true|false|<none>|{organization_id}|{uuid_ops}|0",
-  "sessions|sessions_csrf_key|btree|true|false|true|true|true|false|<none>|{csrf_key_version,csrf_digest}|{int2_ops,bytea_ops}|0 0",
-  "sessions|sessions_live_user_idx|btree|false|false|true|true|true|false|<none>|{organization_id,user_id,revoked_at}|{uuid_ops,uuid_ops,timestamptz_ops}|0 0 0",
-  "sessions|sessions_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,session_id}|{uuid_ops,uuid_ops}|0 0",
-  "sessions|sessions_pkey|btree|true|true|true|true|true|false|<none>|{session_id}|{uuid_ops}|0",
-  "sessions|sessions_replaced_by_idx|btree|false|false|true|true|true|false|<none>|{organization_id,replaced_by_session_id}|{uuid_ops,uuid_ops}|0 0",
-  "sessions|sessions_rotated_from_idx|btree|false|false|true|true|true|false|<none>|{organization_id,rotated_from_session_id}|{uuid_ops,uuid_ops}|0 0",
-  "sessions|sessions_token_key|btree|true|false|true|true|true|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
-  "users|users_pkey|btree|true|true|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
+  "audit_events|audit_events_actor_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,actor_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "audit_events|audit_events_occurred_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,occurred_at,audit_event_id}|{uuid_ops,timestamptz_ops,uuid_ops}|0 0 0",
+  "audit_events|audit_events_org_id_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,audit_event_id}|{uuid_ops,uuid_ops}|0 0",
+  "audit_events|audit_events_pkey|btree|true|true|true|true|true|false|false|<none>|{audit_event_id}|{uuid_ops}|0",
+  "external_identities|external_identities_pkey|btree|true|true|true|true|true|false|false|<none>|{issuer,subject}|{text_ops,text_ops}|0 0",
+  "external_identities|external_identities_user_key|btree|true|false|true|true|true|false|false|<none>|{user_id}|{uuid_ops}|0",
+  "invitations|invitations_accepted_user_idx|btree|false|false|true|true|true|false|false|<none>|{accepted_user_id}|{uuid_ops}|0",
+  "invitations|invitations_creator_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,created_by_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_email_created_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,normalized_email,created_at}|{uuid_ops,text_ops,timestamptz_ops}|0 0 3",
+  "invitations|invitations_org_id_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,invitation_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_pkey|btree|true|true|true|true|true|false|false|<none>|{invitation_id}|{uuid_ops}|0",
+  "invitations|invitations_revoker_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,revoked_by_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_token_key|btree|true|false|true|true|true|false|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
+  "memberships|memberships_active_authority_idx|btree|false|false|true|true|true|false|false|((state)::text = 'active'::text)|{organization_id,user_id,authority_revision}|{uuid_ops,uuid_ops,int8_ops}|0 0 0",
+  "memberships|memberships_org_membership_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,membership_id}|{uuid_ops,uuid_ops}|0 0",
+  "memberships|memberships_org_user_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,user_id}|{uuid_ops,uuid_ops}|0 0",
+  "memberships|memberships_pkey|btree|true|true|true|true|true|false|false|<none>|{membership_id}|{uuid_ops}|0",
+  "memberships|memberships_user_idx|btree|false|false|true|true|true|false|false|<none>|{user_id}|{uuid_ops}|0",
+  "organizations|organizations_pkey|btree|true|true|true|true|true|false|false|<none>|{organization_id}|{uuid_ops}|0",
+  "sessions|sessions_csrf_key|btree|true|false|true|true|true|false|false|<none>|{csrf_key_version,csrf_digest}|{int2_ops,bytea_ops}|0 0",
+  "sessions|sessions_live_user_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,user_id,revoked_at}|{uuid_ops,uuid_ops,timestamptz_ops}|0 0 0",
+  "sessions|sessions_org_id_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_pkey|btree|true|true|true|true|true|false|false|<none>|{session_id}|{uuid_ops}|0",
+  "sessions|sessions_replaced_by_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,replaced_by_session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_rotated_from_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,rotated_from_session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_token_key|btree|true|false|true|true|true|false|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
+  "users|users_pkey|btree|true|true|true|true|true|false|false|<none>|{user_id}|{uuid_ops}|0",
 ] as const;
 
 const ownerTableAcl =
@@ -3915,6 +4147,7 @@ describe.sequential(
         index_row.indisready::text || '|' ||
         (index_row.indnatts = index_row.indnkeyatts)::text || '|' ||
         index_row.indnullsnotdistinct::text || '|' ||
+        index_row.indisclustered::text || '|' ||
         COALESCE(
           pg_catalog.pg_get_expr(index_row.indpred, index_row.indrelid),
           '<none>'

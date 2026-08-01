@@ -23,6 +23,11 @@ const initializerBarrierHarness = new URL(
   "../test/fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
   import.meta.url,
 );
+const migratorSource = new URL("./migrator.ts", import.meta.url);
+const modeledInventorySource = new URL(
+  "../test/fixtures/migrations-0003-allowlist/modeled-0003-inventory.ts",
+  import.meta.url,
+);
 
 const identityAuditMigration = {
   sequence: 1,
@@ -239,6 +244,55 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     ).toBe(true);
   });
 
+  it("materializes every modeled column and index dimension in both independent sources", async () => {
+    const [production, fixture] = await Promise.all([
+      readFile(migratorSource, "utf8"),
+      readFile(modeledInventorySource, "utf8"),
+    ]);
+    const fieldCount = (source: string, field: string): number =>
+      [...source.matchAll(new RegExp(`^\\s+(?:"?${field}"?):`, "gmu"))].length;
+    const productionBase = production.slice(
+      production.indexOf("const modeled0003StaticCatalogContractBase ="),
+      production.indexOf("function catalogCollationIdentity"),
+    );
+    const productionColumns = productionBase.slice(
+      productionBase.indexOf("  columns: ["),
+      productionBase.indexOf("\n  types: ["),
+    );
+    const productionIndexes = productionBase.slice(
+      productionBase.indexOf("  indexes: ["),
+      productionBase.indexOf("\n  constraints: ["),
+    );
+    const fixtureColumns = fixture.slice(
+      fixture.indexOf("export const modeled0003ColumnCatalog = ["),
+      fixture.indexOf("const typedColumnIdentities"),
+    );
+    const fixtureMatrix = fixture.slice(
+      fixture.indexOf("export const modeled0003CatalogMatrix ="),
+    );
+    const fixtureIndexes = fixtureMatrix.slice(
+      fixtureMatrix.indexOf("  indexes: ["),
+      fixtureMatrix.indexOf("\n  constraints: ["),
+    );
+
+    expect(fieldCount(productionColumns, "collation")).toBe(
+      modeled0003CatalogMatrix.columns.length,
+    );
+    expect(fieldCount(fixtureColumns, "collation")).toBe(
+      modeled0003CatalogMatrix.columns.length,
+    );
+    for (const field of ["includedColumns", "collations", "clustered"]) {
+      expect(fieldCount(productionIndexes, field)).toBe(
+        modeled0003CatalogMatrix.indexes.length,
+      );
+      expect(fieldCount(fixtureIndexes, field)).toBe(
+        modeled0003CatalogMatrix.indexes.length,
+      );
+    }
+    expect(productionIndexes).not.toMatch(/\.map\s*\(/u);
+    expect(fixtureIndexes).not.toMatch(/\.map\s*\(/u);
+  });
+
   it("freezes every modeled catalog category and the closed function owners", () => {
     expect(Object.keys(modeled0003CatalogMatrix.relations)).toEqual([
       "dashboard_lifecycle_policies",
@@ -276,6 +330,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
           index.valid &&
           index.ready &&
           index.live &&
+          !index.clustered &&
           !index.nullsNotDistinct &&
           index.keyExpressions.length === index.opclasses.length &&
           index.keyExpressions.length === index.options.length &&
@@ -483,6 +538,36 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     ]) {
       expect(retentionTrigger).toContain(identity);
     }
+    for (const exactPurgeTransition of [
+      "OLD.purged_at IS NOT NULL",
+      "OLD.purged_lifecycle_revision IS NOT NULL",
+      "OLD.purged_proof_sha256 IS NOT NULL",
+      "NEW.purged_at IS NULL",
+      "NEW.purged_lifecycle_revision IS NULL",
+      "NEW.purged_proof_sha256 IS NULL",
+      "OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision",
+      "OLD.access_revoked_at IS DISTINCT FROM NEW.access_revoked_at",
+      "OLD.access_revoked_lifecycle_revision IS DISTINCT FROM NEW.access_revoked_lifecycle_revision",
+      "OLD.access_revoked_proof_sha256 IS DISTINCT FROM NEW.access_revoked_proof_sha256",
+    ]) {
+      expect(retentionTrigger).toContain(exactPurgeTransition);
+    }
+    const recordedPurgeRewriteMutant = retentionTrigger?.replace(
+      "      OR OLD.purged_at IS NOT NULL\n      OR OLD.purged_lifecycle_revision IS NOT NULL\n      OR OLD.purged_proof_sha256 IS NOT NULL\n",
+      "",
+    );
+    const immutableTombstoneMutant = retentionTrigger?.replace(
+      "      OR OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision\n",
+      "",
+    );
+    expect(recordedPurgeRewriteMutant).not.toBe(retentionTrigger);
+    expect(recordedPurgeRewriteMutant).not.toContain(
+      "OLD.purged_proof_sha256 IS NOT NULL",
+    );
+    expect(immutableTombstoneMutant).not.toBe(retentionTrigger);
+    expect(immutableTombstoneMutant).not.toContain(
+      "OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision",
+    );
     expect(retentionTrigger).not.toMatch(/to_jsonb|\bEXECUTE\b/iu);
   });
 
@@ -590,9 +675,55 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       exactSource.indexOf("IF NOT FOUND THEN"),
     );
     expect(latestLookup).not.toMatch(/enabled\s*=|AND\s+enabled/iu);
-    expect(exactSource).toContain("OR NOT v_capability_allowed");
+    expect(exactSource).toContain(
+      "scope_organization_id, enabled, can_initialize",
+    );
+    expect(exactSource).toContain(
+      "OR NOT v_can_initialize OR NOT v_capability_allowed",
+    );
+    expect(exactSource).toContain(
+      "set_config('dasher.retention_capability', $2, true)",
+    );
+    expect(exactSource).not.toContain(
+      "set_config('dasher.retention_capability', 'initialize', true)",
+    );
     expect(modeled0003Policies[0]?.using).toContain(
       "dasher.retention_phase'::text, true) = 'binding_lookup'::text",
+    );
+    const targetDiscoveryPolicy = modeled0003Policies.find(
+      (policy) =>
+        policy.name === "dashboards_retention_target_discovery_select",
+    );
+    expect(targetDiscoveryPolicy?.using).toContain(
+      "current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['materialize_expiry'::text, 'place_hold'::text, 'release_hold'::text, 'claim_cleanup'::text, 'record_attempt'::text, 'purge'::text])",
+    );
+    expect(targetDiscoveryPolicy?.using).not.toContain("'initialize'::text");
+
+    const initializerMutants = [
+      exactSource.replace(
+        "OR NOT v_can_initialize OR NOT v_capability_allowed",
+        "OR NOT v_capability_allowed",
+      ),
+      exactSource.replace(
+        "set_config('dasher.retention_capability', $2, true)",
+        "set_config('dasher.retention_capability', 'initialize', true)",
+      ),
+    ];
+    expect(initializerMutants[0]).not.toContain("OR NOT v_can_initialize");
+    expect(initializerMutants[1]).toContain(
+      "set_config('dasher.retention_capability', 'initialize', true)",
+    );
+    for (const mutant of initializerMutants) {
+      expect(mutant).not.toBe(exactSource);
+    }
+
+    const mismatchedCapabilityPolicy = targetDiscoveryPolicy?.using.replace(
+      "'purge'::text]",
+      "'initialize'::text]",
+    );
+    expect(mismatchedCapabilityPolicy).not.toBe(targetDiscoveryPolicy?.using);
+    expect(mismatchedCapabilityPolicy).not.toContain(
+      "'record_attempt'::text, 'purge'::text]",
     );
   });
 

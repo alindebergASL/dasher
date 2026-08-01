@@ -1440,6 +1440,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(successorCatalogQuery).toContain("index_row.indnatts");
     expect(successorCatalogQuery).toContain("index_row.indnkeyatts");
     expect(successorCatalogQuery).toContain("index_row.indcollation");
+    expect(successorCatalogQuery).toContain("index_row.indisclustered");
     expect(successorCatalogQuery).toContain("pg_catalog.pg_get_constraintdef");
     expect(successorCatalogQuery).toContain("pg_catalog.pg_get_triggerdef");
     expect(successorCatalogQuery).toContain("pg_catalog.col_description");
@@ -1503,7 +1504,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
     ).toBe(true);
     expect(
       (successorContract?.indexes ?? []).every(
-        (signature) => signature.split("|").length === 18,
+        (signature) => signature.split("|").length === 19,
       ),
     ).toBe(true);
     expect(
@@ -1515,9 +1516,16 @@ describe("prefix-aware managed roles and expected app logins", () => {
           signature.includes("dashboards_retention_target_discovery_select"),
       ),
     ).toHaveLength(2);
-    const runtimeModeledContract =
-      getModeled0003StaticCatalogContractForTests();
     const independentFixtureContract = independentModeled0003CatalogContract();
+    const runtimeModeledContract =
+      getModeled0003StaticCatalogContractForTests() as typeof independentFixtureContract;
+    for (const category of Object.keys(
+      independentFixtureContract,
+    ) as (keyof typeof independentFixtureContract)[]) {
+      expect(runtimeModeledContract[category], category).toEqual(
+        independentFixtureContract[category],
+      );
+    }
     expect(runtimeModeledContract).toEqual(independentFixtureContract);
     const secondRuntimeCopy =
       getModeled0003StaticCatalogContractForTests() as typeof independentFixtureContract;
@@ -1596,11 +1604,81 @@ describe("prefix-aware managed roles and expected app logins", () => {
             : indexRow,
         ),
       },
+      {
+        ...fixture,
+        indexes: fixture.indexes.map((indexRow, index) =>
+          index === 0
+            ? { ...indexRow, collations: ["pg_catalog.default", "<none>"] }
+            : indexRow,
+        ),
+      },
+      {
+        ...fixture,
+        indexes: fixture.indexes.map((indexRow, index) =>
+          index === 0 ? { ...indexRow, clustered: true } : indexRow,
+        ),
+      },
       { ...fixture, comments: ["column|dasher.dashboards.title|drift"] },
       {
         ...fixture,
         functions: fixture.functions.map((routine, index) =>
           index === 0 ? { ...routine, source: `${routine.source}\n` } : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "initialize_operator_context"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "OR NOT v_can_initialize OR NOT v_capability_allowed",
+                  "OR NOT v_capability_allowed",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        policies: fixture.policies.map((policy) =>
+          policy.name === "dashboards_retention_target_discovery_select"
+            ? {
+                ...policy,
+                using: policy.using.replace(
+                  "= ANY (ARRAY['materialize_expiry'::text, 'place_hold'::text, 'release_hold'::text, 'claim_cleanup'::text, 'record_attempt'::text, 'purge'::text])",
+                  "<> ''::text",
+                ),
+              }
+            : policy,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "enforce_retention_mutation"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "      OR OLD.purged_at IS NOT NULL\n      OR OLD.purged_lifecycle_revision IS NOT NULL\n      OR OLD.purged_proof_sha256 IS NOT NULL\n",
+                  "",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "enforce_retention_mutation"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "      OR OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision\n",
+                  "",
+                ),
+              }
+            : routine,
         ),
       },
       {
