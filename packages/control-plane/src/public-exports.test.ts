@@ -5,9 +5,10 @@ import * as emailExports from "@dasher/control-plane/email";
 import * as invitationRepositoryExports from "@dasher/control-plane/invitation-repository";
 import * as secretExports from "@dasher/control-plane/secrets";
 import * as sessionCookieExports from "@dasher/control-plane/session-cookie";
+import * as sessionRepositoryExports from "@dasher/control-plane/session-repository";
 import * as verifiedPrincipalExports from "@dasher/control-plane/verified-principal";
 
-describe("control-plane Task 5 and 6 public exports", () => {
+describe("control-plane Task 5 through 7 public exports", () => {
   it("exposes the expected root symbols", () => {
     expect(Object.keys(packageRoot).sort()).toEqual([
       "EmailNormalizationError",
@@ -21,6 +22,7 @@ describe("control-plane Task 5 and 6 public exports", () => {
       "SecretKeyRing",
       "SecretPrimitiveError",
       "SessionCookieMetadataError",
+      "SessionRepository",
       "VerifiedPrincipal",
       "VerifiedPrincipalError",
       "bootstrapManagedRoles",
@@ -53,6 +55,12 @@ describe("control-plane Task 5 and 6 public exports", () => {
     expect(Object.keys(sessionCookieExports).sort()).toEqual([
       "SessionCookieMetadataError",
       "createSessionCookieMetadata",
+    ]);
+  });
+
+  it("exposes only the expected session repository runtime symbols", () => {
+    expect(Object.keys(sessionRepositoryExports).sort()).toEqual([
+      "SessionRepository",
     ]);
   });
 

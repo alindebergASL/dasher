@@ -70,3 +70,24 @@ export {
   type PgCompatibleQueryResult,
   type SecurityEventReason,
 } from "./invitation-repository.js";
+
+export {
+  SessionRepository,
+  type ChangeMembershipRoleInput,
+  type ChangeMembershipRoleResult,
+  type IssueSessionInput,
+  type IssueSessionResult,
+  type ResolveSessionInput,
+  type ResolveSessionResult,
+  type RevokeMembershipInput,
+  type RevokeMembershipResult,
+  type RevokeSessionInput,
+  type RevokeSessionResult,
+  type RotateSessionInput,
+  type RotateSessionResult,
+  type SessionRepositoryConfig,
+  type SessionRole,
+  type SessionSecurityEvent,
+  type SessionSecurityEventReason,
+  type SessionSecurityEventSink,
+} from "./session-repository.js";

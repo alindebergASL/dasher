@@ -10,6 +10,7 @@
     "./migrator": "./src/migrator.ts",
     "./preflight": "./src/preflight.ts",
     "./secrets": "./src/secrets.ts",
+    "./session-repository": "./src/session-repository.ts",
     "./session-cookie": "./src/session-cookie.ts",
     "./verified-principal": "./src/verified-principal.ts"
   },

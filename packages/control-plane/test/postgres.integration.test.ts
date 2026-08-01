@@ -9,6 +9,7 @@ import {
   OperationDeniedError,
   OperationInternalError,
   SecretKeyRing,
+  SessionRepository,
   bootstrapManagedRoles,
   createVerifiedPrincipalFromServerVerification,
   discoverMigrations,
@@ -52,6 +53,50 @@ let canonicalSecondRun:
       readonly previouslyAppliedCount: number;
     }
   | undefined;
+
+async function closeAppPoolBeforeLoginTeardown(): Promise<void> {
+  if (appPool === undefined) {
+    return;
+  }
+
+  const pool = appPool;
+  appPool = undefined;
+  const expectedRemovals = pool.totalCount;
+  let observedRemovals = 0;
+  let resolveAllRemoved!: () => void;
+  const allRemoved = new Promise<void>((resolve) => {
+    resolveAllRemoved = resolve;
+  });
+  const observeRemoval = () => {
+    observedRemovals += 1;
+    if (observedRemovals === expectedRemovals) {
+      resolveAllRemoved();
+    }
+  };
+
+  if (expectedRemovals > 0) {
+    pool.on("remove", observeRemoval);
+  }
+  try {
+    await pool.end();
+    if (expectedRemovals > 0) {
+      await allRemoved;
+    }
+  } finally {
+    pool.off("remove", observeRemoval);
+  }
+
+  const remaining = await ownerPool.query<{ readonly count: string }>(
+    `
+      SELECT pg_catalog.count(*)::text AS count
+      FROM pg_catalog.pg_stat_activity AS activity
+      WHERE activity.usename = $1
+        AND activity.pid <> pg_catalog.pg_backend_pid()
+    `,
+    [config.appUsername],
+  );
+  expect(remaining.rows[0]?.count).toBe("0");
+}
 
 async function resetManagedSchemas(): Promise<void> {
   await ownerPool.query(`
@@ -343,10 +388,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (appPool !== undefined) {
-    await appPool.end();
-    appPool = undefined;
-  }
+  await closeAppPoolBeforeLoginTeardown();
 
   if (!disposableStateConfirmed) {
     await ownerPool?.end();
@@ -2234,6 +2276,32 @@ function createTask6Repository(
   });
 }
 
+function createTask7Repository(
+  client: PoolClient,
+  keyRing: SecretKeyRing,
+  uuidValues: readonly string[],
+  events: Array<Readonly<{ requestId: string; reason: string }>> = [],
+): SessionRepository {
+  return new SessionRepository({
+    pool: task6BorrowedPool(client),
+    keyRing,
+    deploymentRevision: "task7-repository-integration",
+    securityEventSink: (event) => {
+      events.push(event);
+      return true;
+    },
+    uuidSource: task6UuidSource(uuidValues),
+  });
+}
+
+function task7Principal(actor: Task4Actor) {
+  return task6Principal(
+    `task7-${actor.userId}@example.test`,
+    actor.identityIssuer,
+    actor.identitySubject,
+  );
+}
+
 function task6Principal(
   email: string,
   issuer: string = "https://task6-provider.test/immutable",
@@ -2374,10 +2442,7 @@ describe.sequential(
   "Task 3 and Task 4 canonical identity and security boundary",
   () => {
     beforeAll(async () => {
-      if (appPool !== undefined) {
-        await appPool.end();
-        appPool = undefined;
-      }
+      await closeAppPoolBeforeLoginTeardown();
       if (appLoginCreated) {
         await dropTemporaryAppLogin(
           ownerPool,
@@ -8220,6 +8285,766 @@ describe.sequential(
           ON dasher.audit_events
           TO dasher_security_definer
         `);
+        await client.query("RESET ROLE").catch(() => undefined);
+        revoker.release();
+        client.release();
+      }
+    });
+
+    it("runs Task 7 issue and resolve wrappers with DB winners, bounded refresh, and inclusive expiry denial", async () => {
+      const client = await appPool!.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const existingSession = keyRing.issue("session");
+        const existingCsrf = keyRing.issue("csrf");
+        const actor = await createTask4Actor(client, "admin", undefined, {
+          sessionDigest: Buffer.from(existingSession.persistence.digest),
+          csrfDigest: Buffer.from(existingCsrf.persistence.digest),
+        });
+        const issuedSessionId = randomUUID();
+        const issueAuditId = randomUUID();
+        const events: Array<Readonly<{ requestId: string; reason: string }>> =
+          [];
+        const repository = createTask7Repository(
+          client,
+          keyRing,
+          [issuedSessionId, issueAuditId],
+          events,
+        );
+        const issued = await repository.issueSession({
+          requestId: randomUUID(),
+          principal: task7Principal(actor),
+          membershipId: actor.membershipId,
+        });
+        expect(issued).toMatchObject({
+          userId: actor.userId,
+          organizationId: actor.organizationId,
+          membershipId: actor.membershipId,
+          role: "admin",
+          authorityRevision: 1,
+          sessionId: issuedSessionId,
+        });
+        expect(issued.sessionCookie.maxAge).toBeGreaterThanOrEqual(604_799);
+        expect(issued.sessionCookie.maxAge).toBeLessThanOrEqual(604_800);
+
+        const persisted = await ownerPool.query<{
+          readonly audit_count: string;
+          readonly csrf_matches: boolean;
+          readonly session_matches: boolean;
+        }>(
+          `
+            SELECT
+              session_row.token_key_version = $2::smallint
+                AND session_row.token_digest = $3::bytea AS session_matches,
+              session_row.csrf_key_version = $4::smallint
+                AND session_row.csrf_digest = $5::bytea AS csrf_matches,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.audit_events
+                WHERE audit_event_id = $6::uuid
+                  AND action = 'session.issued'
+              ) AS audit_count
+            FROM dasher.sessions AS session_row
+            WHERE session_row.session_id = $1::uuid
+          `,
+          [
+            issuedSessionId,
+            keyRing.verify("session", issued.sessionToken).keyVersion,
+            Buffer.from(keyRing.verify("session", issued.sessionToken).digest),
+            keyRing.verify("csrf", issued.csrfValue).keyVersion,
+            Buffer.from(keyRing.verify("csrf", issued.csrfValue).digest),
+            issueAuditId,
+          ],
+        );
+        expect(persisted.rows[0]).toEqual({
+          audit_count: "1",
+          csrf_matches: true,
+          session_matches: true,
+        });
+
+        const resolved = await repository.resolveSession({
+          requestId: randomUUID(),
+          sessionToken: issued.sessionToken,
+        });
+        expect(resolved).toMatchObject({
+          sessionId: issuedSessionId,
+          userId: actor.userId,
+          organizationId: actor.organizationId,
+          membershipId: actor.membershipId,
+          authorityRevision: 1,
+        });
+
+        const belowThreshold = await ownerPool.query<{
+          readonly idle_expires_at: Date;
+          readonly last_seen_at: Date;
+        }>(
+          `
+            WITH database_time AS (
+              SELECT pg_catalog.clock_timestamp() AS now
+            )
+            UPDATE dasher.sessions
+            SET
+              issued_at = database_time.now - interval '4 minutes',
+              last_seen_at = database_time.now - interval '4 minutes',
+              idle_expires_at = database_time.now + interval '10 minutes',
+              absolute_expires_at = database_time.now + interval '1 day'
+            FROM database_time
+            WHERE session_id = $1::uuid
+            RETURNING last_seen_at, idle_expires_at
+          `,
+          [issuedSessionId],
+        );
+        await repository.resolveSession({
+          requestId: randomUUID(),
+          sessionToken: issued.sessionToken,
+        });
+        const unrefreshed = await ownerPool.query<{
+          readonly idle_expires_at: Date;
+          readonly last_seen_at: Date;
+        }>(
+          `
+            SELECT last_seen_at, idle_expires_at
+            FROM dasher.sessions
+            WHERE session_id = $1::uuid
+          `,
+          [issuedSessionId],
+        );
+        expect(unrefreshed.rows[0]).toEqual(belowThreshold.rows[0]);
+
+        const refreshBaseline = await ownerPool.query<{
+          readonly absolute_expires_at: Date;
+          readonly last_seen_at: Date;
+        }>(
+          `
+            WITH database_time AS (
+              SELECT pg_catalog.clock_timestamp() AS now
+            )
+            UPDATE dasher.sessions
+            SET
+              issued_at = database_time.now - interval '6 minutes',
+              last_seen_at = database_time.now - interval '6 minutes',
+              idle_expires_at = database_time.now + interval '1 minute',
+              absolute_expires_at = database_time.now + interval '10 minutes'
+            FROM database_time
+            WHERE session_id = $1::uuid
+            RETURNING last_seen_at, absolute_expires_at
+          `,
+          [issuedSessionId],
+        );
+        const refreshed = await repository.resolveSession({
+          requestId: randomUUID(),
+          sessionToken: issued.sessionToken,
+        });
+        expect(refreshed.idleExpiresAt).toEqual(
+          refreshBaseline.rows[0]?.absolute_expires_at,
+        );
+        const refreshedState = await ownerPool.query<{
+          readonly idle_expires_at: Date;
+          readonly last_seen_at: Date;
+        }>(
+          `
+            SELECT last_seen_at, idle_expires_at
+            FROM dasher.sessions
+            WHERE session_id = $1::uuid
+          `,
+          [issuedSessionId],
+        );
+        expect(refreshedState.rows[0]?.last_seen_at.getTime()).toBeGreaterThan(
+          refreshBaseline.rows[0]!.last_seen_at.getTime(),
+        );
+        expect(refreshedState.rows[0]?.idle_expires_at).toEqual(
+          refreshBaseline.rows[0]?.absolute_expires_at,
+        );
+
+        await ownerPool.query(
+          `
+            UPDATE dasher.sessions
+            SET
+              idle_expires_at = pg_catalog.clock_timestamp(),
+              absolute_expires_at = pg_catalog.clock_timestamp() + interval '1 day'
+            WHERE session_id = $1::uuid
+          `,
+          [issuedSessionId],
+        );
+        await expect(
+          repository.resolveSession({
+            requestId: randomUUID(),
+            sessionToken: issued.sessionToken,
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+
+        await ownerPool.query(
+          `
+            UPDATE dasher.sessions
+            SET
+              idle_expires_at = pg_catalog.clock_timestamp(),
+              absolute_expires_at = pg_catalog.clock_timestamp()
+            WHERE session_id = $1::uuid
+          `,
+          [issuedSessionId],
+        );
+        await expect(
+          repository.resolveSession({
+            requestId: randomUUID(),
+            sessionToken: issued.sessionToken,
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+        expect(events).toEqual([
+          expect.objectContaining({ reason: "authority_invalid" }),
+          expect.objectContaining({ reason: "authority_invalid" }),
+        ]);
+        expect(JSON.stringify(events)).not.toContain(issued.sessionToken);
+        await expect(client.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+      } finally {
+        await client.query("RESET ROLE").catch(() => undefined);
+        client.release();
+      }
+    });
+
+    it("atomically rotates through Task 7 wrappers behind a deterministic organization-lock barrier", async () => {
+      const first = await appPool!.connect();
+      const second = await appPool!.connect();
+      const blocker = await ownerPool.connect();
+      const observer = await ownerPool.connect();
+      let blockerOpen = false;
+      const retainedOperations: Array<Promise<unknown>> = [];
+      try {
+        await first.query("SET ROLE dasher_app");
+        await second.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        const actor = await createTask4Actor(first, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const firstSuccessor = randomUUID();
+        const secondSuccessor = randomUUID();
+        const firstAudit = randomUUID();
+        const secondAudit = randomUUID();
+        const firstRepository = createTask7Repository(first, keyRing, [
+          firstSuccessor,
+          firstAudit,
+        ]);
+        const secondRepository = createTask7Repository(second, keyRing, [
+          secondSuccessor,
+          secondAudit,
+        ]);
+        const firstPid = await appBackendPid(first);
+        const secondPid = await appBackendPid(second);
+
+        await blocker.query("BEGIN");
+        blockerOpen = true;
+        await blocker.query(
+          `
+            SELECT pg_catalog.pg_advisory_xact_lock(
+              pg_catalog.hashtextextended(
+                'dasher:task4-organization:v1:' || $1::uuid::text,
+                20260730::bigint
+              )
+            )
+          `,
+          [actor.organizationId],
+        );
+
+        const rotateInput = {
+          requestId: randomUUID(),
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+        };
+        const firstRotation = settleDatabasePromise(
+          firstRepository.rotateSession(rotateInput),
+        );
+        retainedOperations.push(firstRotation);
+        await waitForDatabaseLock(
+          observer,
+          firstPid,
+          "advisory",
+          firstRotation,
+        );
+        const secondRotation = settleDatabasePromise(
+          secondRepository.rotateSession({
+            ...rotateInput,
+            requestId: randomUUID(),
+          }),
+        );
+        retainedOperations.push(secondRotation);
+        await waitForDatabaseLock(
+          observer,
+          secondPid,
+          "advisory",
+          secondRotation,
+        );
+
+        await blocker.query("COMMIT");
+        blockerOpen = false;
+        const results = await Promise.all([firstRotation, secondRotation]);
+        const fulfilled = results.filter(
+          (
+            result,
+          ): result is PromiseFulfilledResult<
+            Awaited<ReturnType<SessionRepository["rotateSession"]>>
+          > => result.status === "fulfilled",
+        );
+        const rejected = results.filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        );
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0]?.reason).toBeInstanceOf(OperationDeniedError);
+        const winner = fulfilled[0]!.value;
+        expect([firstSuccessor, secondSuccessor]).toContain(winner.sessionId);
+
+        await expect(
+          firstRepository.resolveSession({
+            requestId: randomUUID(),
+            sessionToken: currentSession.wireValue,
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+        const lineage = await ownerPool.query<{
+          readonly audit_count: string;
+          readonly orphan_count: string;
+          readonly replaced_by_session_id: string;
+          readonly rotated_from_session_id: string;
+          readonly successor_count: string;
+        }>(
+          `
+            SELECT
+              predecessor.replaced_by_session_id::text,
+              successor.rotated_from_session_id::text,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.sessions
+                WHERE session_id = ANY($2::uuid[])
+              ) AS successor_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.sessions
+                WHERE session_id = ANY($2::uuid[])
+                  AND rotated_from_session_id IS NULL
+              ) AS orphan_count,
+              (
+                SELECT pg_catalog.count(*)::text
+                FROM dasher.audit_events
+                WHERE audit_event_id = ANY($3::uuid[])
+                  AND action = 'session.rotated'
+              ) AS audit_count
+            FROM dasher.sessions AS predecessor
+            JOIN dasher.sessions AS successor
+              ON successor.session_id = predecessor.replaced_by_session_id
+            WHERE predecessor.session_id = $1::uuid
+          `,
+          [
+            actor.sessionId,
+            [firstSuccessor, secondSuccessor],
+            [firstAudit, secondAudit],
+          ],
+        );
+        expect(lineage.rows[0]).toEqual({
+          audit_count: "1",
+          orphan_count: "0",
+          replaced_by_session_id: winner.sessionId,
+          rotated_from_session_id: actor.sessionId,
+          successor_count: "1",
+        });
+        await expect(first.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+        await expect(second.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+      } finally {
+        if (blockerOpen) await blocker.query("ROLLBACK").catch(() => undefined);
+        await Promise.all(retainedOperations);
+        await first.query("RESET ROLE").catch(() => undefined);
+        await second.query("RESET ROLE").catch(() => undefined);
+        blocker.release();
+        observer.release();
+        first.release();
+        second.release();
+      }
+    });
+
+    it("enforces Task 7 CSRF, tenant authority, revision, dependent revocation, and admin invariants", async () => {
+      const client = await appPool!.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const currentSession = keyRing.issue("session");
+        const currentCsrf = keyRing.issue("csrf");
+        const actor = await createTask4Actor(client, "admin", undefined, {
+          sessionDigest: Buffer.from(currentSession.persistence.digest),
+          csrfDigest: Buffer.from(currentCsrf.persistence.digest),
+        });
+        const roleTarget = await createTask4Actor(
+          client,
+          "viewer",
+          actor.organizationId,
+        );
+        const revokeTarget = await createTask4Actor(
+          client,
+          "editor",
+          actor.organizationId,
+        );
+        const foreignTarget = await createTask4Actor(client, "viewer");
+        const additionalSessionId = randomUUID();
+        await issueAdditionalTask4Session(client, actor, additionalSessionId);
+        const wrongCsrf = keyRing.issue("csrf");
+        const repository = createTask7Repository(client, keyRing, [
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+        ]);
+
+        await expect(
+          repository.revokeSession({
+            requestId: randomUUID(),
+            currentSessionToken: currentSession.wireValue,
+            currentCsrfValue: wrongCsrf.wireValue,
+            targetSessionId: actor.sessionId,
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+        await expect(
+          repository.revokeSession({
+            requestId: randomUUID(),
+            currentSessionToken: currentSession.wireValue,
+            currentCsrfValue: currentCsrf.wireValue,
+            targetSessionId: foreignTarget.sessionId,
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+
+        await client.query(
+          "SELECT pg_catalog.set_config('dasher.context_organization_id', $1, false)",
+          [foreignTarget.organizationId],
+        );
+        await expect(
+          repository.changeMembershipRole({
+            requestId: randomUUID(),
+            currentSessionToken: currentSession.wireValue,
+            currentCsrfValue: currentCsrf.wireValue,
+            membershipId: foreignTarget.membershipId,
+            newRole: "admin",
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+        const sessionRevocation = await repository.revokeSession({
+          requestId: randomUUID(),
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+          targetSessionId: additionalSessionId,
+        });
+        expect(sessionRevocation).toMatchObject({
+          sessionId: additionalSessionId,
+        });
+
+        const changed = await repository.changeMembershipRole({
+          requestId: randomUUID(),
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+          membershipId: roleTarget.membershipId,
+          newRole: "editor",
+        });
+        expect(changed).toEqual({
+          membershipId: roleTarget.membershipId,
+          authorityRevision: 2,
+        });
+        const revoked = await repository.revokeMembership({
+          requestId: randomUUID(),
+          currentSessionToken: currentSession.wireValue,
+          currentCsrfValue: currentCsrf.wireValue,
+          membershipId: revokeTarget.membershipId,
+        });
+        expect(revoked).toMatchObject({
+          membershipId: revokeTarget.membershipId,
+          authorityRevision: 2,
+        });
+        await expect(
+          repository.changeMembershipRole({
+            requestId: randomUUID(),
+            currentSessionToken: currentSession.wireValue,
+            currentCsrfValue: currentCsrf.wireValue,
+            membershipId: actor.membershipId,
+            newRole: "viewer",
+          }),
+        ).rejects.toBeInstanceOf(OperationDeniedError);
+
+        const state = await ownerPool.query<{
+          readonly actor_revision: string;
+          readonly actor_role: string;
+          readonly revoke_revision: string;
+          readonly revoke_session_reason: string;
+          readonly revoke_state: string;
+          readonly role_revision: string;
+          readonly role_role: string;
+          readonly role_session_reason: string;
+          readonly session_revocation_reason: string;
+        }>(
+          `
+            SELECT
+              actor.role AS actor_role,
+              actor.authority_revision::text AS actor_revision,
+              role_target.role AS role_role,
+              role_target.authority_revision::text AS role_revision,
+              role_session.revocation_reason AS role_session_reason,
+              revoke_target.state AS revoke_state,
+              revoke_target.authority_revision::text AS revoke_revision,
+              revoke_session.revocation_reason AS revoke_session_reason,
+              explicitly_revoked.revocation_reason AS session_revocation_reason
+            FROM dasher.memberships AS actor
+            JOIN dasher.memberships AS role_target
+              ON role_target.membership_id = $2::uuid
+            JOIN dasher.sessions AS role_session
+              ON role_session.session_id = $3::uuid
+            JOIN dasher.memberships AS revoke_target
+              ON revoke_target.membership_id = $4::uuid
+            JOIN dasher.sessions AS revoke_session
+              ON revoke_session.session_id = $5::uuid
+            JOIN dasher.sessions AS explicitly_revoked
+              ON explicitly_revoked.session_id = $6::uuid
+            WHERE actor.membership_id = $1::uuid
+          `,
+          [
+            actor.membershipId,
+            roleTarget.membershipId,
+            roleTarget.sessionId,
+            revokeTarget.membershipId,
+            revokeTarget.sessionId,
+            additionalSessionId,
+          ],
+        );
+        expect(state.rows[0]).toEqual({
+          actor_revision: "1",
+          actor_role: "admin",
+          revoke_revision: "2",
+          revoke_session_reason: "authority_changed",
+          revoke_state: "revoked",
+          role_revision: "2",
+          role_role: "editor",
+          role_session_reason: "authority_changed",
+          session_revocation_reason: "user_revoked",
+        });
+        await client.query("RESET dasher.context_organization_id");
+        await expect(client.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+      } finally {
+        await client
+          .query("RESET dasher.context_organization_id")
+          .catch(() => undefined);
+        await client.query("RESET ROLE").catch(() => undefined);
+        client.release();
+      }
+    });
+
+    it("rolls back every Task 7 audited mutation when audit INSERT is revoked and restores reusable clients", async () => {
+      const client = await appPool!.connect();
+      const revoker = await ownerPool.connect();
+      let grantRevoked = false;
+      try {
+        await client.query("SET ROLE dasher_app");
+        const keyRing = createTask6KeyRing();
+        const createActor = async () => {
+          const session = keyRing.issue("session");
+          const csrf = keyRing.issue("csrf");
+          const actor = await createTask4Actor(client, "admin", undefined, {
+            sessionDigest: Buffer.from(session.persistence.digest),
+            csrfDigest: Buffer.from(csrf.persistence.digest),
+          });
+          return { actor, session, csrf };
+        };
+        const issueActor = await createActor();
+        const rotateActor = await createActor();
+        const revokeActor = await createActor();
+        const roleActor = await createActor();
+        const membershipActor = await createActor();
+        const revokeTargetSessionId = randomUUID();
+        await issueAdditionalTask4Session(
+          client,
+          revokeActor.actor,
+          revokeTargetSessionId,
+        );
+        const roleTarget = await createTask4Actor(
+          client,
+          "viewer",
+          roleActor.actor.organizationId,
+        );
+        const membershipTarget = await createTask4Actor(
+          client,
+          "viewer",
+          membershipActor.actor.organizationId,
+        );
+        const proposedIssueSession = randomUUID();
+        const proposedSuccessor = randomUUID();
+        const auditIds = Array.from({ length: 5 }, () => randomUUID());
+
+        await revoker.query("BEGIN");
+        await revoker.query(`
+          REVOKE INSERT (${task4AuditColumnsSql})
+          ON dasher.audit_events
+          FROM dasher_security_definer
+        `);
+        await revoker.query("COMMIT");
+        grantRevoked = true;
+
+        const operations = [
+          {
+            label: "issueSession",
+            run: () =>
+              createTask7Repository(client, keyRing, [
+                proposedIssueSession,
+                auditIds[0]!,
+              ]).issueSession({
+                requestId: randomUUID(),
+                principal: task7Principal(issueActor.actor),
+                membershipId: issueActor.actor.membershipId,
+              }),
+          },
+          {
+            label: "rotateSession",
+            run: () =>
+              createTask7Repository(client, keyRing, [
+                proposedSuccessor,
+                auditIds[1]!,
+              ]).rotateSession({
+                requestId: randomUUID(),
+                currentSessionToken: rotateActor.session.wireValue,
+                currentCsrfValue: rotateActor.csrf.wireValue,
+              }),
+          },
+          {
+            label: "revokeSession",
+            run: () =>
+              createTask7Repository(client, keyRing, [
+                auditIds[2]!,
+              ]).revokeSession({
+                requestId: randomUUID(),
+                currentSessionToken: revokeActor.session.wireValue,
+                currentCsrfValue: revokeActor.csrf.wireValue,
+                targetSessionId: revokeTargetSessionId,
+              }),
+          },
+          {
+            label: "changeMembershipRole",
+            run: () =>
+              createTask7Repository(client, keyRing, [
+                auditIds[3]!,
+              ]).changeMembershipRole({
+                requestId: randomUUID(),
+                currentSessionToken: roleActor.session.wireValue,
+                currentCsrfValue: roleActor.csrf.wireValue,
+                membershipId: roleTarget.membershipId,
+                newRole: "editor",
+              }),
+          },
+          {
+            label: "revokeMembership",
+            run: () =>
+              createTask7Repository(client, keyRing, [
+                auditIds[4]!,
+              ]).revokeMembership({
+                requestId: randomUUID(),
+                currentSessionToken: membershipActor.session.wireValue,
+                currentCsrfValue: membershipActor.csrf.wireValue,
+                membershipId: membershipTarget.membershipId,
+              }),
+          },
+        ];
+        for (const operation of operations) {
+          await expect(operation.run(), operation.label).rejects.toBeInstanceOf(
+            OperationInternalError,
+          );
+        }
+
+        const residue = await ownerPool.query<{
+          readonly audit_count: string;
+          readonly issue_session_count: string;
+          readonly membership_revision: string;
+          readonly membership_session_revoked: boolean;
+          readonly membership_state: string;
+          readonly predecessor_link: string | null;
+          readonly revoke_session_revoked: boolean;
+          readonly role_revision: string;
+          readonly role_role: string;
+          readonly role_session_revoked: boolean;
+          readonly successor_count: string;
+        }>(
+          `
+            SELECT
+              (SELECT pg_catalog.count(*)::text FROM dasher.sessions
+                WHERE session_id = $1::uuid) AS issue_session_count,
+              (SELECT replaced_by_session_id::text FROM dasher.sessions
+                WHERE session_id = $2::uuid) AS predecessor_link,
+              (SELECT pg_catalog.count(*)::text FROM dasher.sessions
+                WHERE session_id = $3::uuid) AS successor_count,
+              (SELECT revoked_at IS NOT NULL FROM dasher.sessions
+                WHERE session_id = $4::uuid) AS revoke_session_revoked,
+              role_target.role AS role_role,
+              role_target.authority_revision::text AS role_revision,
+              role_session.revoked_at IS NOT NULL AS role_session_revoked,
+              membership_target.state AS membership_state,
+              membership_target.authority_revision::text AS membership_revision,
+              membership_session.revoked_at IS NOT NULL AS membership_session_revoked,
+              (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+                WHERE audit_event_id = ANY($9::uuid[])) AS audit_count
+            FROM dasher.memberships AS role_target
+            JOIN dasher.sessions AS role_session ON role_session.session_id = $6::uuid
+            JOIN dasher.memberships AS membership_target
+              ON membership_target.membership_id = $7::uuid
+            JOIN dasher.sessions AS membership_session
+              ON membership_session.session_id = $8::uuid
+            WHERE role_target.membership_id = $5::uuid
+          `,
+          [
+            proposedIssueSession,
+            rotateActor.actor.sessionId,
+            proposedSuccessor,
+            revokeTargetSessionId,
+            roleTarget.membershipId,
+            roleTarget.sessionId,
+            membershipTarget.membershipId,
+            membershipTarget.sessionId,
+            auditIds,
+          ],
+        );
+        expect(residue.rows[0]).toEqual({
+          audit_count: "0",
+          issue_session_count: "0",
+          membership_revision: "1",
+          membership_session_revoked: false,
+          membership_state: "active",
+          predecessor_link: null,
+          revoke_session_revoked: false,
+          role_revision: "1",
+          role_role: "viewer",
+          role_session_revoked: false,
+          successor_count: "0",
+        });
+        await expect(client.query("SELECT 1")).resolves.toMatchObject({
+          rowCount: 1,
+        });
+      } finally {
+        await revoker.query("ROLLBACK").catch(() => undefined);
+        await revoker.query("BEGIN");
+        try {
+          await revoker.query(`
+            GRANT INSERT (${task4AuditColumnsSql})
+            ON dasher.audit_events
+            TO dasher_security_definer
+          `);
+          await revoker.query("COMMIT");
+          grantRevoked = false;
+        } catch (error) {
+          await revoker.query("ROLLBACK").catch(() => undefined);
+          throw error;
+        }
+        expect(grantRevoked).toBe(false);
         await client.query("RESET ROLE").catch(() => undefined);
         revoker.release();
         client.release();
