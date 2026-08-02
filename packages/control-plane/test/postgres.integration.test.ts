@@ -42,6 +42,14 @@ const config = parsePostgresIntegrationEnv(process.env);
 const shapeOwnerRole = "dasher_task2_shape_owner";
 const setRoleExecutor = "dasher_task2_set_role";
 const siblingDatabaseNonce = randomUUID().replaceAll("-", "");
+const task8aHarnessDefinerRole = "task8a_retention_harness_definer";
+const task8aSecurityHarnessDefinerRole = "task8a_security_harness_definer";
+const task8aHarnessSubjectA = "task8a_synthetic_operator_a";
+const task8aHarnessSubjectB = "task8a_synthetic_operator_b";
+const task8aHarnessLifecycleLock = 2_026_080_208;
+const task8aHarnessTargetOrganizationA = "83000000-0000-4000-8000-000000000001";
+const task8aHarnessTargetOrganizationB = "83000000-0000-4000-8000-000000000002";
+const task8aHarnessTargetDashboard = "83000000-0000-4000-8000-000000000010";
 
 let ownerPool: Pool;
 let appPool: Pool | undefined;
@@ -129,6 +137,745 @@ async function resetManagedSchemas(): Promise<void> {
   } finally {
     client.release();
   }
+}
+
+interface Task8aSelfBindingHarness {
+  readonly initializer: PoolClient;
+  readonly owner: PoolClient;
+  readonly secondIdentity: PoolClient;
+  readonly writer: PoolClient;
+  readonly close: () => Promise<void>;
+}
+
+type Task8aHarnessFunctionAcl = Readonly<{
+  executeAcl: readonly Readonly<{
+    grantee: string;
+    grantor: string;
+    isGrantable: boolean;
+  }>[];
+  identityArguments: string;
+  name: string;
+  owner: string;
+  schema: string;
+  securityDefiner: boolean;
+}>;
+
+function task8aHarnessFunctionAclContract(
+  databaseOwnerRole: string,
+): readonly Task8aHarnessFunctionAcl[] {
+  return [
+    {
+      schema: "task8a_retention_barrier",
+      name: "exercise_security_lock_modes",
+      identityArguments: "",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "exercise_retention_lock_modes",
+      identityArguments: "",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "binding_gate",
+      identityArguments: "p_subject name",
+      owner: databaseOwnerRole,
+      securityDefiner: false,
+      executeAcl: [
+        {
+          grantee: task8aHarnessDefinerRole,
+          grantor: databaseOwnerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "initialize",
+      identityArguments: "p_organization_id uuid, p_dashboard_id uuid",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "revalidate",
+      identityArguments: "",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "append_revision",
+      identityArguments: "p_subject name, p_revision bigint, p_enabled boolean",
+      owner: databaseOwnerRole,
+      securityDefiner: false,
+      executeAcl: [],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "insert_adversarial_revision",
+      identityArguments:
+        "p_subject name, p_principal_id uuid, p_revision bigint, p_enabled boolean",
+      owner: databaseOwnerRole,
+      securityDefiner: false,
+      executeAcl: [],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "cleanup_subject",
+      identityArguments: "p_subject name",
+      owner: databaseOwnerRole,
+      securityDefiner: false,
+      executeAcl: [],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "admit_version_reference",
+      identityArguments:
+        "p_organization_id uuid, p_snapshot_id uuid, p_dashboard_id uuid",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "admit_evidence_reference",
+      identityArguments:
+        "p_organization_id uuid, p_snapshot_id uuid, p_evidence_id uuid, p_dashboard_id uuid",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "admit_restore_reference",
+      identityArguments:
+        "p_organization_id uuid, p_snapshot_id uuid, p_dashboard_id uuid",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "create_snapshot_intent",
+      identityArguments:
+        "p_organization_id uuid, p_snapshot_id uuid, p_source_dashboard_id uuid",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "finalize_evidence",
+      identityArguments: "p_organization_id uuid, p_evidence_id uuid",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "finalize_snapshot",
+      identityArguments: "p_organization_id uuid, p_snapshot_id uuid",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "request_promotion",
+      identityArguments:
+        "p_organization_id uuid, p_dashboard_id uuid, p_promotion_request_id uuid, p_audit_event_id uuid, p_lock_barrier bigint",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "execute_modeled_mutation",
+      identityArguments: "p_operation text",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "read_evidence_projection",
+      identityArguments:
+        "p_organization_id uuid, p_dashboard_id uuid, p_barrier bigint",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "read_lineage_projection",
+      identityArguments:
+        "p_organization_id uuid, p_dashboard_id uuid, p_barrier bigint",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "artifact_expected_claim_hash",
+      identityArguments:
+        "p_organization_id uuid, p_dashboard_id uuid, p_artifact_id uuid",
+      owner: databaseOwnerRole,
+      securityDefiner: false,
+      executeAcl: [
+        {
+          grantee: task8aSecurityHarnessDefinerRole,
+          grantor: databaseOwnerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "artifact_is_governable",
+      identityArguments:
+        "p_organization_id uuid, p_dashboard_id uuid, p_artifact_id uuid",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "guard_artifact_delete",
+      identityArguments: "",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "purge_artifact_step",
+      identityArguments: "p_organization_id uuid, p_dashboard_id uuid",
+      owner: task8aSecurityHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aSecurityHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+    {
+      schema: "task8a_retention_barrier",
+      name: "purge_snapshot_batch",
+      identityArguments:
+        "p_organization_id uuid, p_dashboard_id uuid, p_lock_barrier bigint",
+      owner: task8aHarnessDefinerRole,
+      securityDefiner: true,
+      executeAcl: [
+        {
+          grantee: task8aHarnessSubjectA,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+        {
+          grantee: task8aHarnessSubjectB,
+          grantor: task8aHarnessDefinerRole,
+          isGrantable: false,
+        },
+      ],
+    },
+  ];
+}
+
+async function assertExactTask8aHarnessFunctionAclClosure(
+  owner: PoolClient,
+): Promise<void> {
+  const expected = [
+    ...task8aHarnessFunctionAclContract(config.ownerUsername),
+  ].sort((left, right) =>
+    `${left.schema}.${left.name}(${left.identityArguments})`.localeCompare(
+      `${right.schema}.${right.name}(${right.identityArguments})`,
+    ),
+  );
+  expect(expected).toHaveLength(23);
+
+  const catalog = await owner.query<Task8aHarnessFunctionAcl>(`
+    SELECT
+      namespace.nspname AS schema,
+      routine.proname AS name,
+      pg_catalog.pg_get_function_identity_arguments(routine.oid)
+        AS "identityArguments",
+      owner_role.rolname AS owner,
+      routine.prosecdef AS "securityDefiner",
+      COALESCE(
+        pg_catalog.jsonb_agg(
+          pg_catalog.jsonb_build_object(
+            'grantee', CASE
+              WHEN execute_privilege.grantee = 0 THEN 'PUBLIC'
+              ELSE grantee_role.rolname
+            END,
+            'grantor', grantor_role.rolname,
+            'isGrantable', execute_privilege.is_grantable
+          )
+          ORDER BY
+            CASE
+              WHEN execute_privilege.grantee = 0 THEN 'PUBLIC'
+              ELSE grantee_role.rolname
+            END,
+            grantor_role.rolname,
+            execute_privilege.is_grantable
+        ) FILTER (WHERE execute_privilege.grantee IS NOT NULL),
+        '[]'::jsonb
+      ) AS "executeAcl"
+    FROM pg_catalog.pg_proc AS routine
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = routine.pronamespace
+    JOIN pg_catalog.pg_roles AS owner_role
+      ON owner_role.oid = routine.proowner
+    LEFT JOIN LATERAL (
+      -- Expand a null ACL to its effective default so a missing PUBLIC revoke
+      -- remains observable. Owner execution is inherent, so it is excluded
+      -- from the explicit non-owner grantee closure asserted below.
+      SELECT privilege.grantee, privilege.grantor, privilege.is_grantable
+      FROM pg_catalog.aclexplode(
+        COALESCE(
+          routine.proacl,
+          pg_catalog.acldefault('f', routine.proowner)
+        )
+      ) AS privilege
+      WHERE privilege.privilege_type = 'EXECUTE'
+        AND privilege.grantee <> routine.proowner
+    ) AS execute_privilege ON true
+    LEFT JOIN pg_catalog.pg_roles AS grantee_role
+      ON grantee_role.oid = execute_privilege.grantee
+    LEFT JOIN pg_catalog.pg_roles AS grantor_role
+      ON grantor_role.oid = execute_privilege.grantor
+    WHERE namespace.nspname = 'task8a_retention_barrier'
+    GROUP BY
+      namespace.nspname,
+      routine.oid,
+      routine.proname,
+      owner_role.rolname,
+      routine.prosecdef
+    ORDER BY
+      namespace.nspname,
+      routine.proname,
+      pg_catalog.pg_get_function_identity_arguments(routine.oid)
+  `);
+
+  expect(catalog.rows).toHaveLength(23);
+  expect(
+    catalog.rows.flatMap((routine) =>
+      routine.executeAcl.map((privilege) => privilege.grantee),
+    ),
+  ).not.toContain("PUBLIC");
+  expect(catalog.rows).toEqual(expected);
+}
+
+async function createTask8aSelfBindingHarness(
+  harnessSql: string,
+): Promise<Task8aSelfBindingHarness> {
+  const owner = await ownerPool.connect();
+  const initializerPool = new Pool({
+    connectionString: config.ownerDsn,
+    application_name: "dasher_task8a_initializer",
+    max: 1,
+  });
+  const secondIdentityPool = new Pool({
+    connectionString: config.ownerDsn,
+    application_name: "dasher_task8a_second_identity",
+    max: 1,
+  });
+  const writerPool = new Pool({
+    connectionString: config.ownerDsn,
+    application_name: "dasher_task8a_writer",
+    max: 1,
+  });
+  let initializer: PoolClient | undefined;
+  let secondIdentity: PoolClient | undefined;
+  let writer: PoolClient | undefined;
+  let lifecycleLockHeld = false;
+
+  const close = async (): Promise<void> => {
+    let cleanupError: unknown;
+    let residueCount: string | undefined;
+    let unlocked: boolean | undefined;
+    try {
+      for (const client of [initializer, secondIdentity]) {
+        if (client !== undefined) {
+          await client.query("ROLLBACK").catch(() => undefined);
+          await client
+            .query("RESET SESSION AUTHORIZATION")
+            .catch(() => undefined);
+          client.release();
+        }
+      }
+      if (writer !== undefined) {
+        await writer.query("ROLLBACK").catch(() => undefined);
+        writer.release();
+      }
+      await Promise.allSettled([
+        initializerPool.end(),
+        secondIdentityPool.end(),
+        writerPool.end(),
+      ]);
+      await owner.query(
+        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
+      );
+      await owner.query(
+        `
+          DROP ROLE IF EXISTS ${task8aHarnessSubjectA};
+          DROP ROLE IF EXISTS ${task8aHarnessSubjectB};
+          DROP ROLE IF EXISTS ${task8aSecurityHarnessDefinerRole};
+          DROP ROLE IF EXISTS ${task8aHarnessDefinerRole}
+        `,
+      );
+      const residue = await owner.query<{ readonly count: string }>(
+        `
+          SELECT pg_catalog.count(*)::text AS count
+          FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = ANY($1::text[])
+        `,
+        [
+          [
+            task8aHarnessDefinerRole,
+            task8aSecurityHarnessDefinerRole,
+            task8aHarnessSubjectA,
+            task8aHarnessSubjectB,
+          ],
+        ],
+      );
+      residueCount = residue.rows[0]?.count;
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      if (lifecycleLockHeld) {
+        try {
+          const unlockResult = await owner.query<{
+            readonly unlocked: boolean;
+          }>("SELECT pg_catalog.pg_advisory_unlock($1) AS unlocked", [
+            task8aHarnessLifecycleLock,
+          ]);
+          unlocked = unlockResult.rows[0]?.unlocked;
+        } catch (error) {
+          cleanupError ??= error;
+        }
+      }
+      owner.release(cleanupError instanceof Error ? cleanupError : undefined);
+    }
+    if (cleanupError !== undefined) throw cleanupError;
+    expect(residueCount).toBe("0");
+    if (lifecycleLockHeld) expect(unlocked).toBe(true);
+  };
+
+  try {
+    await owner.query("SELECT pg_catalog.pg_advisory_lock($1)", [
+      task8aHarnessLifecycleLock,
+    ]);
+    lifecycleLockHeld = true;
+    await owner.query("DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE");
+    await owner.query(`
+      DROP ROLE IF EXISTS ${task8aHarnessSubjectA};
+      DROP ROLE IF EXISTS ${task8aHarnessSubjectB};
+      DROP ROLE IF EXISTS ${task8aSecurityHarnessDefinerRole};
+      DROP ROLE IF EXISTS ${task8aHarnessDefinerRole}
+    `);
+    const authority = await owner.query<{ readonly is_superuser: boolean }>(`
+      SELECT role.rolsuper AS is_superuser
+      FROM pg_catalog.pg_roles AS role
+      WHERE role.rolname = session_user
+    `);
+    expect(authority.rows[0]?.is_superuser).toBe(true);
+    await owner.query(`
+      CREATE ROLE ${task8aHarnessDefinerRole} WITH NOLOGIN NOINHERIT
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+        PASSWORD NULL;
+      CREATE ROLE ${task8aSecurityHarnessDefinerRole} WITH NOLOGIN NOINHERIT
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS
+        PASSWORD NULL;
+      CREATE ROLE ${task8aHarnessSubjectA} WITH NOLOGIN NOINHERIT
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+        PASSWORD NULL;
+      CREATE ROLE ${task8aHarnessSubjectB} WITH NOLOGIN NOINHERIT
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+        PASSWORD NULL
+    `);
+    await owner.query(harnessSql);
+    await owner.query(`
+      GRANT USAGE ON SCHEMA task8a_retention_barrier
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.initialize(uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.revalidate()
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.exercise_security_lock_modes()
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.exercise_retention_lock_modes()
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.admit_version_reference(uuid, uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.admit_evidence_reference(uuid, uuid, uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.admit_restore_reference(uuid, uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.create_snapshot_intent(uuid, uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.finalize_evidence(uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.finalize_snapshot(uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.request_promotion(uuid, uuid, uuid, uuid, bigint)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.execute_modeled_mutation(text)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.read_evidence_projection(uuid, uuid, bigint)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.read_lineage_projection(uuid, uuid, bigint)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.purge_snapshot_batch(uuid, uuid, bigint)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.purge_artifact_step(uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB};
+      GRANT EXECUTE ON FUNCTION task8a_retention_barrier.artifact_is_governable(uuid, uuid, uuid)
+        TO ${task8aHarnessSubjectA}, ${task8aHarnessSubjectB}
+    `);
+    await assertExactTask8aHarnessFunctionAclClosure(owner);
+    initializer = await initializerPool.connect();
+    secondIdentity = await secondIdentityPool.connect();
+    writer = await writerPool.connect();
+    await initializer.query(
+      `SET SESSION AUTHORIZATION ${task8aHarnessSubjectA}`,
+    );
+    await secondIdentity.query(
+      `SET SESSION AUTHORIZATION ${task8aHarnessSubjectB}`,
+    );
+    return { initializer, owner, secondIdentity, writer, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+async function observeTask8aBarrierWaiter(
+  applicationName: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const state = await ownerPool.query<{ readonly waiting: boolean }>(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS lock_row ON lock_row.pid = activity.pid
+          WHERE activity.application_name = $1
+            AND lock_row.locktype = 'advisory'
+            AND NOT lock_row.granted
+            AND activity.wait_event_type = 'Lock'
+        ) AS waiting
+      `,
+      [applicationName],
+    );
+    if (state.rows[0]?.waiting === true) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Task 8A self-binding barrier waiter was not observed");
+}
+
+async function observeTask8aRowLockWaiter(
+  applicationName: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const state = await ownerPool.query<{ readonly waiting: boolean }>(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS lock_row ON lock_row.pid = activity.pid
+          WHERE activity.application_name = $1
+            AND lock_row.locktype IN ('tuple', 'transactionid')
+            AND NOT lock_row.granted
+            AND activity.wait_event_type = 'Lock'
+        ) AS waiting
+      `,
+      [applicationName],
+    );
+    if (state.rows[0]?.waiting === true) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Task 8A resource row-lock waiter was not observed");
 }
 
 async function prepareAppliedJournal(): Promise<void> {
@@ -1821,7 +2568,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("executes both retention initializer/writer gate winner orders and gated cleanup", async () => {
+  it("executes self-bound initialization and both initializer/writer gate winner orders", async () => {
     const harnessSql = await readFile(
       new URL(
         "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
@@ -1829,140 +2576,2113 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       ),
       "utf8",
     );
-    const initializerPool = new Pool({
-      connectionString: config.ownerDsn,
-      application_name: "dasher_task8a_initializer",
-      max: 1,
-    });
-    const writerPool = new Pool({
-      connectionString: config.ownerDsn,
-      application_name: "dasher_task8a_writer",
-      max: 1,
-    });
-    const subject = "task8a_synthetic_operator";
-    const observeWaiter = async (applicationName: string): Promise<void> => {
-      for (let attempt = 0; attempt < 1_000; attempt += 1) {
-        const state = await ownerPool.query<{ readonly waiting: boolean }>(
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const normalPrincipalId = "80000000-0000-4000-8000-000000000001";
+
+    try {
+      const relation = await harness.owner.query<{
+        readonly force_row_security: boolean;
+        readonly row_security: boolean;
+      }>(
+        `
+          SELECT relation.relrowsecurity AS row_security,
+            relation.relforcerowsecurity AS force_row_security
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid =
+            'task8a_retention_barrier.authority_revisions'::regclass
+        `,
+      );
+      expect(relation.rows[0]).toEqual({
+        force_row_security: true,
+        row_security: true,
+      });
+
+      const policy = await harness.owner.query<{
+        readonly command: string;
+        readonly name: string;
+        readonly permissive: boolean;
+        readonly roles: string[];
+        readonly using_expression: string;
+        readonly with_check_expression: string | null;
+      }>(`
+        SELECT policy.polname AS name,
+          policy.polcmd AS command,
+          policy.polpermissive AS permissive,
+          ARRAY(
+            SELECT role.rolname
+            FROM pg_catalog.unnest(policy.polroles) AS policy_role(role_oid)
+            JOIN pg_catalog.pg_roles AS role
+              ON role.oid = policy_role.role_oid
+            ORDER BY role.rolname
+          )::text[] AS roles,
+          pg_catalog.pg_get_expr(
+            policy.polqual,
+            policy.polrelid,
+            true
+          ) AS using_expression,
+          pg_catalog.pg_get_expr(
+            policy.polwithcheck,
+            policy.polrelid,
+            true
+          ) AS with_check_expression
+        FROM pg_catalog.pg_policy AS policy
+        WHERE policy.polrelid =
+          'task8a_retention_barrier.authority_revisions'::regclass
+      `);
+      expect(policy.rows).toHaveLength(1);
+      expect(policy.rows[0]).toMatchObject({
+        command: "r",
+        name: "authority_revisions_self_binding_select",
+        permissive: true,
+        roles: [task8aHarnessDefinerRole],
+        with_check_expression: null,
+      });
+      const normalizedPolicy = policy.rows[0]?.using_expression.replace(
+        /\s+/gu,
+        " ",
+      );
+      expect(normalizedPolicy).toContain(
+        "CURRENT_USER = 'task8a_retention_harness_definer'::name",
+      );
+      expect(normalizedPolicy).toContain("binding_subject = SESSION_USER");
+
+      const roles = await harness.owner.query<{
+        readonly bypass_rls: boolean;
+        readonly inherit: boolean;
+        readonly login: boolean;
+        readonly name: string;
+        readonly superuser: boolean;
+      }>(
+        `
+          SELECT role.rolname AS name,
+            role.rolcanlogin AS login,
+            role.rolinherit AS inherit,
+            role.rolsuper AS superuser,
+            role.rolbypassrls AS bypass_rls
+          FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = ANY($1::text[])
+          ORDER BY role.rolname
+        `,
+        [
+          [
+            task8aHarnessDefinerRole,
+            task8aSecurityHarnessDefinerRole,
+            task8aHarnessSubjectA,
+            task8aHarnessSubjectB,
+          ],
+        ],
+      );
+      expect(roles.rows).toEqual(
+        [
+          task8aHarnessDefinerRole,
+          task8aSecurityHarnessDefinerRole,
+          task8aHarnessSubjectA,
+          task8aHarnessSubjectB,
+        ]
+          .sort()
+          .map((name) => ({
+            bypass_rls: name === task8aSecurityHarnessDefinerRole,
+            inherit: false,
+            login: false,
+            name,
+            superuser: false,
+          })),
+      );
+
+      const lockPrivileges = await harness.owner.query<{
+        readonly column_update: boolean;
+        readonly relation_update: boolean;
+        readonly role_name: string;
+      }>(
+        `
+          SELECT expected.role_name,
+            pg_catalog.has_column_privilege(
+              expected.role_name,
+              expected.relation_name,
+              'organization_id',
+              'UPDATE'
+            ) AS column_update,
+            pg_catalog.has_table_privilege(
+              expected.role_name,
+              expected.relation_name,
+              'UPDATE'
+            ) AS relation_update
+          FROM (VALUES
+            ($1::name, 'task8a_retention_barrier.security_lock_target'::text),
+            ($2::name, 'task8a_retention_barrier.retention_lock_target'::text)
+          ) AS expected(role_name, relation_name)
+          ORDER BY expected.role_name
+        `,
+        [task8aSecurityHarnessDefinerRole, task8aHarnessDefinerRole],
+      );
+      expect(lockPrivileges.rows).toEqual(
+        [task8aSecurityHarnessDefinerRole, task8aHarnessDefinerRole]
+          .sort()
+          .map((roleName) => ({
+            column_update: true,
+            relation_update: false,
+            role_name: roleName,
+          })),
+      );
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_security_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_retention_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+
+      await harness.owner.query(`
+        REVOKE UPDATE (organization_id)
+          ON task8a_retention_barrier.security_lock_target
+          FROM ${task8aSecurityHarnessDefinerRole}
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_security_lock_modes()",
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await harness.owner.query(`
+        GRANT UPDATE (organization_id)
+          ON task8a_retention_barrier.security_lock_target
+          TO ${task8aSecurityHarnessDefinerRole}
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_security_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+
+      await harness.owner.query(`
+        REVOKE UPDATE (organization_id)
+          ON task8a_retention_barrier.retention_lock_target
+          FROM ${task8aHarnessDefinerRole};
+        GRANT UPDATE (organization_id)
+          ON task8a_retention_barrier.retention_lock_target
+          TO ${task8aHarnessSubjectA}
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_retention_lock_modes()",
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await harness.owner.query(`
+        REVOKE UPDATE (organization_id)
+          ON task8a_retention_barrier.retention_lock_target
+          FROM ${task8aHarnessSubjectA};
+        GRANT UPDATE (organization_id)
+          ON task8a_retention_barrier.retention_lock_target
+          TO ${task8aHarnessDefinerRole}
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_retention_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+
+      await harness.owner.query(`
+        DROP POLICY security_lock_target_security_update
+          ON task8a_retention_barrier.security_lock_target
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_security_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+      await harness.owner.query(`
+        CREATE POLICY security_lock_target_security_update
+        ON task8a_retention_barrier.security_lock_target
+        FOR UPDATE TO ${task8aSecurityHarnessDefinerRole}
+        USING (
+          CURRENT_USER = '${task8aSecurityHarnessDefinerRole}'::name
+          AND organization_id =
+            '81000000-0000-4000-8000-000000000001'::uuid
+        )
+        WITH CHECK (
+          CURRENT_USER = '${task8aSecurityHarnessDefinerRole}'::name
+          AND organization_id =
+            '81000000-0000-4000-8000-000000000001'::uuid
+        )
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_security_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+
+      await harness.owner.query(`
+        DROP POLICY retention_lock_target_retention_update
+          ON task8a_retention_barrier.retention_lock_target
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_retention_lock_modes()",
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+      await harness.owner.query(`
+        CREATE POLICY retention_lock_target_retention_update
+        ON task8a_retention_barrier.retention_lock_target
+        FOR UPDATE TO ${task8aHarnessDefinerRole}
+        USING (
+          CURRENT_USER = '${task8aHarnessDefinerRole}'::name
+          AND organization_id =
+            '82000000-0000-4000-8000-000000000001'::uuid
+        )
+        WITH CHECK (
+          CURRENT_USER = '${task8aHarnessDefinerRole}'::name
+          AND organization_id =
+            '82000000-0000-4000-8000-000000000001'::uuid
+        )
+      `);
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.exercise_retention_lock_modes()",
+        ),
+      ).resolves.toBeDefined();
+
+      const entrypoints = await harness.owner.query<{
+        readonly argument_count: number;
+        readonly name: string;
+        readonly owner: string;
+        readonly security_definer: boolean;
+      }>(`
+        SELECT routine.proname AS name,
+          routine.pronargs AS argument_count,
+          routine.prosecdef AS security_definer,
+          pg_catalog.pg_get_userbyid(routine.proowner) AS owner
+        FROM pg_catalog.pg_proc AS routine
+        WHERE routine.pronamespace =
+          'task8a_retention_barrier'::regnamespace
+          AND routine.proname IN ('initialize', 'revalidate')
+        ORDER BY routine.proname
+      `);
+      expect(entrypoints.rows).toEqual([
+        {
+          argument_count: 2,
+          name: "initialize",
+          owner: task8aHarnessDefinerRole,
+          security_definer: true,
+        },
+        {
+          argument_count: 0,
+          name: "revalidate",
+          owner: task8aHarnessDefinerRole,
+          security_definer: true,
+        },
+      ]);
+
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [task8aHarnessSubjectA],
+      );
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 9, true)",
+        [task8aHarnessSubjectB],
+      );
+
+      await expect(
+        harness.initializer.query(
+          "SELECT * FROM task8a_retention_barrier.authority_revisions",
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        harness.secondIdentity.query(
+          "SELECT * FROM task8a_retention_barrier.authority_revisions",
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 2, true)",
+          [task8aHarnessSubjectA],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.initialize($1::name)",
+          [task8aHarnessSubjectB],
+        ),
+      ).rejects.toMatchObject({ code: "42883" });
+
+      await harness.initializer.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      await harness.initializer.query(
+        "SELECT task8a_retention_barrier.initialize($1, $2)",
+        [task8aHarnessTargetOrganizationA, task8aHarnessTargetDashboard],
+      );
+      const initializedContext = await harness.initializer.query<{
+        readonly binding_phase: string;
+        readonly bound_principal_id: string;
+        readonly bound_revision: string;
+        readonly bound_subject: string;
+        readonly session_identity: string;
+        readonly target_organization_id: string;
+      }>(`
+          SELECT
+            session_user::text AS session_identity,
+            COALESCE(
+              pg_catalog.current_setting('task8a.binding_phase', true),
+              ''
+            ) AS binding_phase,
+            COALESCE(
+              pg_catalog.current_setting('task8a.bound_subject', true),
+              ''
+            ) AS bound_subject,
+            COALESCE(
+              pg_catalog.current_setting('task8a.bound_principal_id', true),
+              ''
+            ) AS bound_principal_id,
+            COALESCE(
+              pg_catalog.current_setting('task8a.bound_revision', true),
+              ''
+            ) AS bound_revision,
+            COALESCE(
+              pg_catalog.current_setting('task8a.target_organization_id', true),
+              ''
+            ) AS target_organization_id
+        `);
+      expect(initializedContext.rows[0]).toEqual({
+        binding_phase: "authorized",
+        bound_principal_id: normalPrincipalId,
+        bound_revision: "1",
+        bound_subject: task8aHarnessSubjectA,
+        session_identity: task8aHarnessSubjectA,
+        target_organization_id: task8aHarnessTargetOrganizationA,
+      });
+
+      await harness.writer.query("BEGIN");
+      const disableAfterInitializer = harness.writer
+        .query(
+          "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
+          [task8aHarnessSubjectA],
+        )
+        .then(
+          () => ({ error: undefined }),
+          (error: unknown) => ({ error }),
+        );
+      await observeTask8aBarrierWaiter("dasher_task8a_writer");
+      await harness.initializer.query(
+        "SELECT task8a_retention_barrier.revalidate()",
+      );
+      await harness.initializer.query("COMMIT");
+      expect((await disableAfterInitializer).error).toBeUndefined();
+      await harness.writer.query("COMMIT");
+
+      await harness.initializer.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.initialize($1, $2)",
+          [task8aHarnessTargetOrganizationA, task8aHarnessTargetDashboard],
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+      await harness.initializer.query("ROLLBACK");
+
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.cleanup_subject($1)",
+        [task8aHarnessSubjectA],
+      );
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [task8aHarnessSubjectA],
+      );
+
+      await harness.writer.query("BEGIN");
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
+        [task8aHarnessSubjectA],
+      );
+      await harness.initializer.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      await harness.initializer.query("SELECT 1");
+      const initializeAfterWriter = harness.initializer
+        .query("SELECT task8a_retention_barrier.initialize($1, $2)", [
+          task8aHarnessTargetOrganizationA,
+          task8aHarnessTargetDashboard,
+        ])
+        .then(
+          () => ({ error: undefined }),
+          (error: unknown) => ({ error }),
+        );
+      await observeTask8aBarrierWaiter("dasher_task8a_initializer");
+      await harness.writer.query("COMMIT");
+      expect((await initializeAfterWriter).error).toMatchObject({
+        code: "55000",
+        message: "task8a_denied",
+      });
+      await harness.initializer.query("ROLLBACK");
+
+      await harness.secondIdentity.query(
+        "BEGIN ISOLATION LEVEL READ COMMITTED",
+      );
+      await harness.secondIdentity.query(
+        "SELECT task8a_retention_barrier.initialize($1, $2)",
+        [task8aHarnessTargetOrganizationB, task8aHarnessTargetDashboard],
+      );
+      const secondContext = await harness.secondIdentity.query<{
+        readonly bound_revision: string;
+        readonly bound_subject: string;
+        readonly session_identity: string;
+      }>(`
+        SELECT session_user::text AS session_identity,
+          pg_catalog.current_setting(
+            'task8a.bound_subject'
+          ) AS bound_subject,
+          pg_catalog.current_setting(
+            'task8a.bound_revision'
+          ) AS bound_revision
+      `);
+      expect(secondContext.rows[0]).toEqual({
+        bound_revision: "9",
+        bound_subject: task8aHarnessSubjectB,
+        session_identity: task8aHarnessSubjectB,
+      });
+      await harness.secondIdentity.query(
+        "SELECT task8a_retention_barrier.revalidate()",
+      );
+      await harness.secondIdentity.query("COMMIT");
+
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.cleanup_subject($1)",
+        [task8aHarnessSubjectA],
+      );
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.cleanup_subject($1)",
+        [task8aHarnessSubjectB],
+      );
+      const residue = await harness.owner.query<{ readonly count: string }>(
+        "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
+      );
+      expect(residue.rows[0]?.count).toBe("0");
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("binds duplicate dashboard UUIDs to the explicit organization under forced RLS", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const wrongOrganization = "83000000-0000-4000-8000-000000000003";
+    const wrongDashboard = "83000000-0000-4000-8000-000000000099";
+
+    try {
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [task8aHarnessSubjectA],
+      );
+      const targetRelation = await harness.owner.query<{
+        readonly force_row_security: boolean;
+        readonly row_security: boolean;
+      }>(`
+        SELECT relation.relrowsecurity AS row_security,
+          relation.relforcerowsecurity AS force_row_security
+        FROM pg_catalog.pg_class AS relation
+        WHERE relation.oid =
+          'task8a_retention_barrier.target_dashboards'::regclass
+      `);
+      expect(targetRelation.rows[0]).toEqual({
+        force_row_security: true,
+        row_security: true,
+      });
+      const discoveryPolicy = await harness.owner.query<{
+        readonly using_expression: string;
+      }>(`
+        SELECT pg_catalog.pg_get_expr(
+          policy.polqual, policy.polrelid, true
+        ) AS using_expression
+        FROM pg_catalog.pg_policy AS policy
+        WHERE policy.polrelid =
+          'task8a_retention_barrier.target_dashboards'::regclass
+          AND policy.polname =
+            'target_dashboards_retention_discovery_select'
+      `);
+      const normalizedPolicy =
+        discoveryPolicy.rows[0]?.using_expression.replace(/\s+/gu, " ");
+      expect(normalizedPolicy).toContain(
+        "organization_id = current_setting('task8a.target_organization_id'::text, true)::uuid",
+      );
+      expect(normalizedPolicy).toContain(
+        "dashboard_id = current_setting('task8a.target_dashboard_id'::text, true)::uuid",
+      );
+
+      const exactAction = await harness.initializer.query<{
+        readonly stage: string;
+      }>(
+        "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3) AS stage",
+        [task8aHarnessTargetOrganizationA, task8aHarnessTargetDashboard, 0],
+      );
+      expect(exactAction.rows[0]?.stage).toBe("retention_action");
+
+      const exactState = async () =>
+        harness.owner.query<{
+          readonly audit_count: string;
+          readonly event_count: string;
+          readonly organization_id: string;
+          readonly retention_action_count: string;
+        }>(
+          `
+          SELECT dashboard.organization_id::text AS organization_id,
+            dashboard.retention_action_count::text AS retention_action_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.target_events AS event
+              WHERE event.organization_id = dashboard.organization_id
+                AND event.dashboard_id = dashboard.dashboard_id
+            ) AS event_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.target_audits AS audit
+              WHERE audit.organization_id = dashboard.organization_id
+                AND audit.dashboard_id = dashboard.dashboard_id
+            ) AS audit_count
+          FROM task8a_retention_barrier.target_dashboards AS dashboard
+          WHERE dashboard.dashboard_id = $1
+          ORDER BY dashboard.organization_id
+        `,
+          [task8aHarnessTargetDashboard],
+        );
+
+      expect((await exactState()).rows).toEqual([
+        {
+          audit_count: "1",
+          event_count: "1",
+          organization_id: task8aHarnessTargetOrganizationA,
+          retention_action_count: "1",
+        },
+        {
+          audit_count: "0",
+          event_count: "0",
+          organization_id: task8aHarnessTargetOrganizationB,
+          retention_action_count: "0",
+        },
+      ]);
+
+      for (const [organizationId, dashboardId] of [
+        [wrongOrganization, task8aHarnessTargetDashboard],
+        [task8aHarnessTargetOrganizationA, wrongDashboard],
+      ] as const) {
+        await expect(
+          harness.initializer.query(
+            "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3)",
+            [organizationId, dashboardId, 0],
+          ),
+        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+        expect((await exactState()).rows).toEqual([
+          {
+            audit_count: "1",
+            event_count: "1",
+            organization_id: task8aHarnessTargetOrganizationA,
+            retention_action_count: "1",
+          },
+          {
+            audit_count: "0",
+            event_count: "0",
+            organization_id: task8aHarnessTargetOrganizationB,
+            retention_action_count: "0",
+          },
+        ]);
+      }
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("serializes admission and retention on policy then dashboard in both winner orders", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const lockBarrier = 2_026_080_209;
+    let barrierHeld = false;
+
+    try {
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [task8aHarnessSubjectA],
+      );
+      await harness.writer.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [task8aHarnessSubjectB],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.promotion_dashboards (
+            organization_id, dashboard_id, lifecycle_state,
+            effective_expires_at
+          ) VALUES ($1, $2, 'active', statement_timestamp() + interval '1 day')
+        `,
+        [task8aHarnessTargetOrganizationA, task8aHarnessTargetDashboard],
+      );
+      await harness.initializer.query("SET statement_timeout = '10s'");
+      await harness.secondIdentity.query("SET statement_timeout = '10s'");
+      const applicationPid = await appBackendPid(harness.initializer);
+      const retentionPid = await appBackendPid(harness.secondIdentity);
+
+      const runWinnerOrder = async (
+        winner: "application" | "retention",
+        nonce: string,
+      ): Promise<void> => {
+        await harness.owner.query("SELECT pg_catalog.pg_advisory_lock($1)", [
+          lockBarrier,
+        ]);
+        barrierHeld = true;
+        const application = () =>
+          settleDatabasePromise(
+            harness.initializer.query(
+              "SELECT task8a_retention_barrier.request_promotion($1, $2, $3, $4, $5)",
+              [
+                task8aHarnessTargetOrganizationA,
+                task8aHarnessTargetDashboard,
+                `85000000-0000-4000-8000-0000000000${nonce}`,
+                `86000000-0000-4000-8000-0000000000${nonce}`,
+                lockBarrier,
+              ],
+            ),
+          );
+        const retention = () =>
+          settleDatabasePromise(
+            harness.secondIdentity.query(
+              "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3)",
+              [
+                task8aHarnessTargetOrganizationA,
+                task8aHarnessTargetDashboard,
+                lockBarrier,
+              ],
+            ),
+          );
+        const first = winner === "application" ? application() : retention();
+        await waitForDatabaseLock(
+          harness.owner,
+          winner === "application" ? applicationPid : retentionPid,
+          "advisory",
+          first,
+        );
+        const second = winner === "application" ? retention() : application();
+        await waitForDatabaseLock(
+          harness.owner,
+          winner === "application" ? retentionPid : applicationPid,
+          ["transactionid", "tuple"],
+          second,
+        );
+        const unlock = await harness.owner.query<{
+          readonly unlocked: boolean;
+        }>("SELECT pg_catalog.pg_advisory_unlock($1) AS unlocked", [
+          lockBarrier,
+        ]);
+        barrierHeld = false;
+        expect(unlock.rows[0]?.unlocked).toBe(true);
+        const settlements = await Promise.all([first, second]);
+        for (const settlement of settlements) {
+          if (settlement.status === "rejected") {
+            expect(settlement.reason).not.toMatchObject({ code: "40P01" });
+            expect(String(settlement.reason)).not.toContain(
+              "deadlock detected",
+            );
+          }
+          expect(settlement.status).toBe("fulfilled");
+        }
+
+        const state = await harness.owner.query<{
+          readonly promotion_audit_count: string;
+          readonly promotion_request_count: string;
+          readonly retention_action_count: string;
+          readonly target_audit_count: string;
+          readonly target_event_count: string;
+        }>(`
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.promotion_requests
+            ) AS promotion_request_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.promotion_audits
+            ) AS promotion_audit_count,
+            (
+              SELECT retention_action_count::text
+              FROM task8a_retention_barrier.target_dashboards
+              WHERE organization_id = '${task8aHarnessTargetOrganizationA}'::uuid
+                AND dashboard_id = '${task8aHarnessTargetDashboard}'::uuid
+            ) AS retention_action_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.target_events
+            ) AS target_event_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.target_audits
+            ) AS target_audit_count
+        `);
+        expect(state.rows[0]).toEqual({
+          promotion_audit_count: "1",
+          promotion_request_count: "1",
+          retention_action_count: "1",
+          target_audit_count: "1",
+          target_event_count: "1",
+        });
+        const sessions = await harness.owner.query<{
+          readonly waiting: boolean;
+        }>(
           `
             SELECT EXISTS (
-              SELECT 1
-              FROM pg_catalog.pg_stat_activity AS activity
-              JOIN pg_catalog.pg_locks AS lock_row
-                ON lock_row.pid = activity.pid
-              WHERE activity.application_name = $1
-                AND lock_row.locktype = 'advisory'
-                AND NOT lock_row.granted
+              SELECT 1 FROM pg_catalog.pg_stat_activity AS activity
+              WHERE activity.pid = ANY($1::integer[])
                 AND activity.wait_event_type = 'Lock'
             ) AS waiting
           `,
-          [applicationName],
+          [[applicationPid, retentionPid]],
         );
-        if (state.rows[0]?.waiting === true) return;
-        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(sessions.rows[0]?.waiting).toBe(false);
+      };
+
+      await runWinnerOrder("application", "11");
+      await harness.owner.query(`
+        DELETE FROM task8a_retention_barrier.promotion_requests;
+        DELETE FROM task8a_retention_barrier.promotion_audits;
+        DELETE FROM task8a_retention_barrier.target_events;
+        DELETE FROM task8a_retention_barrier.target_audits;
+        UPDATE task8a_retention_barrier.target_dashboards
+        SET retention_action_count = 0
+      `);
+      await runWinnerOrder("retention", "22");
+    } finally {
+      if (barrierHeld) {
+        await harness.owner.query("SELECT pg_catalog.pg_advisory_unlock($1)", [
+          lockBarrier,
+        ]);
       }
-      throw new Error("Task 8A barrier waiter was not observed");
-    };
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("serializes snapshot admissions against durable finalizers in both winner orders", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const organizationId = "83000000-0000-4000-8000-000000000001";
+    const snapshotId = "83000000-0000-4000-8000-000000000002";
+    const sourceDashboardId = "83000000-0000-4000-8000-000000000003";
+    const sharedDashboardId = "83000000-0000-4000-8000-000000000004";
+    const deniedDashboardId = "83000000-0000-4000-8000-000000000005";
+    const deniedEvidenceId = "83000000-0000-4000-8000-000000000006";
+    const attachedSnapshotId = "83000000-0000-4000-8000-000000000007";
+    const attachedEvidenceId = "83000000-0000-4000-8000-000000000008";
+    const attachedDashboardId = "83000000-0000-4000-8000-000000000009";
 
     try {
-      await ownerPool.query(harnessSql);
-      await ownerPool.query(
-        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
-        [subject],
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_resources (
+            organization_id, snapshot_id, snapshot_bytes
+          ) VALUES ($1, $2, 'bounded synthetic snapshot')
+        `,
+        [organizationId, snapshotId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_claims (
+            organization_id, snapshot_id, dashboard_id
+          ) VALUES ($1, $2, $3)
+        `,
+        [organizationId, snapshotId, sourceDashboardId],
       );
 
-      const initializer = await initializerPool.connect();
-      const writer = await writerPool.connect();
-      try {
-        await initializer.query("BEGIN");
-        const initialized = await initializer.query<{
-          readonly revision: string;
-        }>("SELECT task8a_retention_barrier.initialize($1) AS revision", [
-          subject,
-        ]);
-        expect(initialized.rows[0]?.revision).toBe("1");
+      await harness.initializer.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      await harness.initializer.query(
+        "SELECT task8a_retention_barrier.admit_version_reference($1, $2, $3)",
+        [organizationId, snapshotId, sharedDashboardId],
+      );
+      await harness.writer.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      const intentAfterAdmission = harness.writer.query<{
+        readonly created: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.create_snapshot_intent($1, $2, $3) AS created",
+        [organizationId, snapshotId, sourceDashboardId],
+      );
+      await observeTask8aRowLockWaiter("dasher_task8a_writer");
+      await harness.initializer.query("COMMIT");
+      expect((await intentAfterAdmission).rows[0]?.created).toBe(false);
+      await harness.writer.query("COMMIT");
 
-        await writer.query("BEGIN");
-        const disableAfterInitializer = writer
+      const admissionWinner = await harness.owner.query<{
+        readonly claim_count: string;
+        readonly finalizer_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_claims AS claim
+              WHERE claim.organization_id = $1 AND claim.snapshot_id = $2
+            ) AS claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+                AND finalizer.snapshot_id = $2
+            ) AS finalizer_count
+        `,
+        [organizationId, snapshotId],
+      );
+      expect(admissionWinner.rows[0]).toEqual({
+        claim_count: "2",
+        finalizer_count: "0",
+      });
+
+      await harness.owner.query(
+        `
+          DELETE FROM task8a_retention_barrier.snapshot_claims
+          WHERE organization_id = $1 AND snapshot_id = $2
+            AND dashboard_id = $3
+        `,
+        [organizationId, snapshotId, sharedDashboardId],
+      );
+      const intentWinner = await harness.writer.query<{
+        readonly created: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.create_snapshot_intent($1, $2, $3) AS created",
+        [organizationId, snapshotId, sourceDashboardId],
+      );
+      expect(intentWinner.rows[0]?.created).toBe(true);
+
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.admit_version_reference($1, $2, $3)",
+          [organizationId, snapshotId, deniedDashboardId],
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+
+      await harness.owner.query(
+        `
+          UPDATE task8a_retention_barrier.snapshot_finalizers
+          SET state = 'eligible'
+          WHERE organization_id = $1 AND snapshot_id = $2
+        `,
+        [organizationId, snapshotId],
+      );
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.admit_evidence_reference($1, $2, $3, $4)",
+          [organizationId, snapshotId, deniedEvidenceId, deniedDashboardId],
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+      await expect(
+        harness.secondIdentity.query(
+          "SELECT task8a_retention_barrier.admit_restore_reference($1, $2, $3)",
+          [organizationId, snapshotId, deniedDashboardId],
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+
+      const deniedRows = await harness.owner.query<{
+        readonly claim_count: string;
+        readonly evidence_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_claims AS claim
+              WHERE claim.organization_id = $1
+                AND claim.snapshot_id = $2
+                AND claim.dashboard_id = $3
+            ) AS claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.evidence_attachments AS evidence
+              WHERE evidence.organization_id = $1
+                AND evidence.evidence_id = $4
+            ) AS evidence_count
+        `,
+        [organizationId, snapshotId, deniedDashboardId, deniedEvidenceId],
+      );
+      expect(deniedRows.rows[0]).toEqual({
+        claim_count: "0",
+        evidence_count: "0",
+      });
+
+      await harness.owner.query(
+        `
+          DELETE FROM task8a_retention_barrier.snapshot_claims
+          WHERE organization_id = $1 AND snapshot_id = $2
+            AND dashboard_id = $3
+        `,
+        [organizationId, snapshotId, sourceDashboardId],
+      );
+      const finalized = await harness.writer.query<{
+        readonly finalized: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.finalize_snapshot($1, $2) AS finalized",
+        [organizationId, snapshotId],
+      );
+      expect(finalized.rows[0]?.finalized).toBe(true);
+      const deletedState = await harness.owner.query<{
+        readonly finalizer_state: string;
+        readonly resource_count: string;
+      }>(
+        `
+          SELECT finalizer.state AS finalizer_state,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_resources AS snapshot
+              WHERE snapshot.organization_id = finalizer.organization_id
+                AND snapshot.snapshot_id = finalizer.snapshot_id
+            ) AS resource_count
+          FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+          WHERE finalizer.organization_id = $1
+            AND finalizer.snapshot_id = $2
+        `,
+        [organizationId, snapshotId],
+      );
+      expect(deletedState.rows[0]).toEqual({
+        finalizer_state: "deleted",
+        resource_count: "0",
+      });
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.admit_version_reference($1, $2, $3)",
+          [organizationId, snapshotId, deniedDashboardId],
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_resources (
+            organization_id, snapshot_id, snapshot_bytes
+          ) VALUES ($1, $2, 'bounded attached-evidence snapshot')
+        `,
+        [organizationId, attachedSnapshotId],
+      );
+      await harness.initializer.query(
+        "SELECT task8a_retention_barrier.admit_evidence_reference($1, $2, $3, $4)",
+        [
+          organizationId,
+          attachedSnapshotId,
+          attachedEvidenceId,
+          attachedDashboardId,
+        ],
+      );
+      const attachedIntent = await harness.writer.query<{
+        readonly created: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.create_snapshot_intent($1, $2, $3) AS created",
+        [organizationId, attachedSnapshotId, attachedDashboardId],
+      );
+      expect(attachedIntent.rows[0]?.created).toBe(true);
+      const attachedIntentState = await harness.owner.query<{
+        readonly evidence_state: string;
+        readonly snapshot_state: string;
+      }>(
+        `
+          SELECT evidence_finalizer.state AS evidence_state,
+            snapshot_finalizer.state AS snapshot_state
+          FROM task8a_retention_barrier.evidence_finalizers AS evidence_finalizer
+          JOIN task8a_retention_barrier.snapshot_finalizers AS snapshot_finalizer
+            ON snapshot_finalizer.organization_id = evidence_finalizer.organization_id
+          WHERE evidence_finalizer.organization_id = $1
+            AND evidence_finalizer.evidence_id = $2
+            AND snapshot_finalizer.snapshot_id = $3
+        `,
+        [organizationId, attachedEvidenceId, attachedSnapshotId],
+      );
+      expect(attachedIntentState.rows[0]).toEqual({
+        evidence_state: "intent",
+        snapshot_state: "intent",
+      });
+      await harness.owner.query(
+        `
+          DELETE FROM task8a_retention_barrier.snapshot_claims
+          WHERE organization_id = $1 AND snapshot_id = $2
+            AND dashboard_id = $3
+        `,
+        [organizationId, attachedSnapshotId, attachedDashboardId],
+      );
+      await harness.owner.query(
+        `
+          UPDATE task8a_retention_barrier.evidence_finalizers
+          SET state = 'eligible'
+          WHERE organization_id = $1 AND evidence_id = $2
+        `,
+        [organizationId, attachedEvidenceId],
+      );
+      await harness.owner.query(
+        `
+          UPDATE task8a_retention_barrier.snapshot_finalizers
+          SET state = 'eligible'
+          WHERE organization_id = $1 AND snapshot_id = $2
+        `,
+        [organizationId, attachedSnapshotId],
+      );
+      const blockedSnapshotFinalizer = await harness.writer.query<{
+        readonly finalized: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.finalize_snapshot($1, $2) AS finalized",
+        [organizationId, attachedSnapshotId],
+      );
+      expect(blockedSnapshotFinalizer.rows[0]?.finalized).toBe(false);
+      const finalizedEvidence = await harness.writer.query<{
+        readonly finalized: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.finalize_evidence($1, $2) AS finalized",
+        [organizationId, attachedEvidenceId],
+      );
+      expect(finalizedEvidence.rows[0]?.finalized).toBe(true);
+      const finalizedAttachedSnapshot = await harness.writer.query<{
+        readonly finalized: boolean;
+      }>(
+        "SELECT task8a_retention_barrier.finalize_snapshot($1, $2) AS finalized",
+        [organizationId, attachedSnapshotId],
+      );
+      expect(finalizedAttachedSnapshot.rows[0]?.finalized).toBe(true);
+      const attachedFinalState = await harness.owner.query<{
+        readonly attachment_count: string;
+        readonly evidence_state: string;
+        readonly snapshot_count: string;
+        readonly snapshot_state: string;
+      }>(
+        `
+          SELECT evidence_finalizer.state AS evidence_state,
+            snapshot_finalizer.state AS snapshot_state,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.evidence_attachments AS evidence
+              WHERE evidence.organization_id = $1
+                AND evidence.evidence_id = $2
+            ) AS attachment_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_resources AS snapshot
+              WHERE snapshot.organization_id = $1
+                AND snapshot.snapshot_id = $3
+            ) AS snapshot_count
+          FROM task8a_retention_barrier.evidence_finalizers AS evidence_finalizer
+          JOIN task8a_retention_barrier.snapshot_finalizers AS snapshot_finalizer
+            ON snapshot_finalizer.organization_id = evidence_finalizer.organization_id
+          WHERE evidence_finalizer.organization_id = $1
+            AND evidence_finalizer.evidence_id = $2
+            AND snapshot_finalizer.snapshot_id = $3
+        `,
+        [organizationId, attachedEvidenceId, attachedSnapshotId],
+      );
+      expect(attachedFinalState.rows[0]).toEqual({
+        attachment_count: "0",
+        evidence_state: "deleted",
+        snapshot_count: "0",
+        snapshot_state: "deleted",
+      });
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("enforces editor-only promotion requests before forced-RLS tenant side effects", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const organizationId = "86000000-0000-4000-8000-000000000001";
+    const dashboardId = "86000000-0000-4000-8000-000000000002";
+    const editorRequestId = "86000000-0000-4000-8000-000000000003";
+    const editorAuditId = "86000000-0000-4000-8000-000000000004";
+    const viewerRequestId = "86000000-0000-4000-8000-000000000005";
+    const viewerAuditId = "86000000-0000-4000-8000-000000000006";
+
+    try {
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.promotion_dashboards (
+            organization_id, dashboard_id, lifecycle_state,
+            effective_expires_at
+          ) VALUES ($1, $2, 'active', statement_timestamp() + interval '1 hour')
+        `,
+        [organizationId, dashboardId],
+      );
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.request_promotion($1, $2, $3, $4, $5)",
+          [organizationId, dashboardId, editorRequestId, editorAuditId, null],
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        harness.secondIdentity.query(
+          "SELECT task8a_retention_barrier.request_promotion($1, $2, $3, $4, $5)",
+          [organizationId, dashboardId, viewerRequestId, viewerAuditId, null],
+        ),
+      ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+
+      const state = await harness.owner.query<{
+        readonly audit_count: string;
+        readonly forced_rls_count: string;
+        readonly request_count: string;
+        readonly viewer_audit_count: string;
+        readonly viewer_request_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.promotion_requests
+              WHERE organization_id = $1
+            ) AS request_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.promotion_audits
+              WHERE organization_id = $1
+            ) AS audit_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.promotion_requests
+              WHERE organization_id = $1 AND promotion_request_id = $2
+            ) AS viewer_request_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.promotion_audits
+              WHERE organization_id = $1 AND audit_event_id = $3
+            ) AS viewer_audit_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM pg_catalog.pg_class AS relation
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+              WHERE namespace.nspname = 'task8a_retention_barrier'
+                AND relation.relname IN (
+                  'promotion_dashboards', 'promotion_requests',
+                  'promotion_audits'
+                )
+                AND relation.relrowsecurity AND relation.relforcerowsecurity
+            ) AS forced_rls_count
+        `,
+        [organizationId, viewerRequestId, viewerAuditId],
+      );
+      expect(state.rows[0]).toEqual({
+        audit_count: "1",
+        forced_rls_count: "3",
+        request_count: "1",
+        viewer_audit_count: "0",
+        viewer_request_count: "0",
+      });
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("enforces all nine mutation role gates inside the BYPASSRLS definer", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const editorOperations = [
+      "create_dashboard",
+      "create_evidence_record",
+      "create_dashboard_version",
+      "compare_and_swap_dashboard_head",
+      "request_dashboard_promotion",
+    ] as const;
+    const adminOperations = [
+      "decide_dashboard_promotion",
+      "set_dashboard_archive",
+      "delete_dashboard",
+      "restore_dashboard_as_new",
+    ] as const;
+    const allOperations = [...editorOperations, ...adminOperations];
+
+    try {
+      const definer = await harness.owner.query<{
+        readonly bypasses_rls: boolean;
+      }>(
+        `
+          SELECT role.rolbypassrls AS bypasses_rls
+          FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = $1
+        `,
+        [task8aSecurityHarnessDefinerRole],
+      );
+      expect(definer.rows[0]?.bypasses_rls).toBe(true);
+
+      for (const operation of allOperations) {
+        await expect(
+          harness.secondIdentity.query(
+            "SELECT task8a_retention_barrier.execute_modeled_mutation($1)",
+            [operation],
+          ),
+        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+      }
+      for (const operation of editorOperations) {
+        await expect(
+          harness.initializer.query(
+            "SELECT task8a_retention_barrier.execute_modeled_mutation($1)",
+            [operation],
+          ),
+        ).resolves.toBeDefined();
+      }
+      for (const operation of adminOperations) {
+        await expect(
+          harness.initializer.query(
+            "SELECT task8a_retention_barrier.execute_modeled_mutation($1)",
+            [operation],
+          ),
+        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+      }
+      for (const operation of allOperations) {
+        await expect(
+          harness.writer.query(
+            "SELECT task8a_retention_barrier.execute_modeled_mutation($1)",
+            [operation],
+          ),
+        ).resolves.toBeDefined();
+      }
+
+      const state = await harness.owner.query<{
+        readonly admin_audits: string;
+        readonly admin_writes: string;
+        readonly editor_audits: string;
+        readonly editor_writes: string;
+        readonly forced_rls_count: string;
+        readonly viewer_audits: string;
+        readonly viewer_writes: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.modeled_mutations
+              WHERE actor = $1::name
+            ) AS viewer_writes,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.modeled_mutation_audits
+              WHERE actor = $1::name
+            ) AS viewer_audits,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.modeled_mutations
+              WHERE actor = $2::name
+            ) AS editor_writes,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.modeled_mutation_audits
+              WHERE actor = $2::name
+            ) AS editor_audits,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.modeled_mutations
+              WHERE actor = session_user
+            ) AS admin_writes,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.modeled_mutation_audits
+              WHERE actor = session_user
+            ) AS admin_audits,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM pg_catalog.pg_class AS relation
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+              WHERE namespace.nspname = 'task8a_retention_barrier'
+                AND relation.relname IN (
+                  'modeled_mutations', 'modeled_mutation_audits'
+                )
+                AND relation.relrowsecurity AND relation.relforcerowsecurity
+            ) AS forced_rls_count
+        `,
+        [task8aHarnessSubjectB, task8aHarnessSubjectA],
+      );
+      expect(state.rows[0]).toEqual({
+        admin_audits: "9",
+        admin_writes: "9",
+        editor_audits: "5",
+        editor_writes: "5",
+        forced_rls_count: "2",
+        viewer_audits: "0",
+        viewer_writes: "0",
+      });
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("denies read projections when authority changes between preliminary and final statements", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const organizationId = "88000000-0000-4000-8000-000000000001";
+    const dashboardId = "88000000-0000-4000-8000-000000000002";
+    const versionId = "88000000-0000-4000-8000-000000000003";
+    const snapshotId = "88000000-0000-4000-8000-000000000004";
+    const evidenceId = "88000000-0000-4000-8000-000000000005";
+    const evidenceBarrier = 2_026_080_301;
+    const lineageBarrier = 2_026_080_302;
+
+    try {
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_dashboards (
+            organization_id, dashboard_id, current_kind, lifecycle_state,
+            effective_expires_at, access_revoked_at, purged_at,
+            current_head_version_id
+          ) VALUES ($1, $2, 'durable', 'active', NULL, NULL, NULL, $3)
+        `,
+        [organizationId, dashboardId, versionId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_versions (
+            organization_id, dashboard_id, version_id, parent_version_id,
+            validation_state
+          ) VALUES ($1, $2, $3, NULL, 'validated')
+        `,
+        [organizationId, dashboardId, versionId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_snapshot_links (
+            organization_id, dashboard_id, version_id, snapshot_id
+          ) VALUES ($1, $2, $3, $4)
+        `,
+        [organizationId, dashboardId, versionId, snapshotId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_snapshot_claims (
+            organization_id, dashboard_id, snapshot_id, claim_kind
+          ) VALUES ($1, $2, $3, 'version')
+        `,
+        [organizationId, dashboardId, snapshotId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_evidence_records (
+            organization_id, evidence_id, source_snapshot_id
+          ) VALUES ($1, $2, $3)
+        `,
+        [organizationId, evidenceId, snapshotId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_evidence_links (
+            organization_id, dashboard_id, version_id, evidence_id
+          ) VALUES ($1, $2, $3, $4)
+        `,
+        [organizationId, dashboardId, versionId, evidenceId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.projection_evidence_claims (
+            organization_id, dashboard_id, evidence_id, claim_kind
+          ) VALUES ($1, $2, $3, 'evidence')
+        `,
+        [organizationId, dashboardId, evidenceId],
+      );
+
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.read_evidence_projection($1, $2, $3)",
+          [organizationId, dashboardId, evidenceBarrier],
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        harness.initializer.query(
+          "SELECT task8a_retention_barrier.read_lineage_projection($1, $2, $3)",
+          [organizationId, dashboardId, lineageBarrier],
+        ),
+      ).resolves.toBeDefined();
+
+      let evidenceLockHeld = false;
+      let evidenceRead: Promise<{ readonly error: unknown }> | undefined;
+      try {
+        await harness.owner.query("SELECT pg_catalog.pg_advisory_lock($1)", [
+          evidenceBarrier,
+        ]);
+        evidenceLockHeld = true;
+        evidenceRead = harness.initializer
           .query(
-            "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
-            [subject],
+            "SELECT task8a_retention_barrier.read_evidence_projection($1, $2, $3)",
+            [organizationId, dashboardId, evidenceBarrier],
           )
           .then(
             () => ({ error: undefined }),
             (error: unknown) => ({ error }),
           );
-        await observeWaiter("dasher_task8a_writer");
-        const revalidated = await initializer.query<{
-          readonly revision: string;
-        }>("SELECT task8a_retention_barrier.revalidate($1) AS revision", [
-          subject,
+        await observeTask8aBarrierWaiter("dasher_task8a_initializer");
+        await harness.writer.query(
+          `
+            UPDATE task8a_retention_barrier.projection_dashboards
+            SET access_revoked_at = statement_timestamp()
+            WHERE organization_id = $1 AND dashboard_id = $2
+          `,
+          [organizationId, dashboardId],
+        );
+        const unlocked = await harness.owner.query<{
+          readonly unlocked: boolean;
+        }>("SELECT pg_catalog.pg_advisory_unlock($1) AS unlocked", [
+          evidenceBarrier,
         ]);
-        expect(revalidated.rows[0]?.revision).toBe("1");
-        await initializer.query("COMMIT");
-        expect((await disableAfterInitializer).error).toBeUndefined();
-        await writer.query("COMMIT");
+        evidenceLockHeld = false;
+        expect(unlocked.rows[0]?.unlocked).toBe(true);
+        expect((await evidenceRead).error).toMatchObject({
+          code: "55000",
+          message: "task8a_denied",
+        });
+      } finally {
+        if (evidenceLockHeld) {
+          await harness.owner.query(
+            "SELECT pg_catalog.pg_advisory_unlock($1)",
+            [evidenceBarrier],
+          );
+        }
+        await evidenceRead;
+      }
 
-        await initializer.query("BEGIN");
-        await expect(
-          initializer.query("SELECT task8a_retention_barrier.initialize($1)", [
-            subject,
-          ]),
-        ).rejects.toMatchObject({ code: "55000" });
-        await initializer.query("ROLLBACK");
+      await harness.owner.query(
+        `
+          UPDATE task8a_retention_barrier.projection_dashboards
+          SET access_revoked_at = NULL
+          WHERE organization_id = $1 AND dashboard_id = $2
+        `,
+        [organizationId, dashboardId],
+      );
 
-        await ownerPool.query(
-          "SELECT task8a_retention_barrier.cleanup_subject($1)",
-          [subject],
-        );
-        await ownerPool.query(
-          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
-          [subject],
-        );
-
-        await writer.query("BEGIN");
-        await writer.query(
-          "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
-          [subject],
-        );
-        await initializer.query("BEGIN");
-        const initializeAfterWriter = initializer
-          .query("SELECT task8a_retention_barrier.initialize($1)", [subject])
+      let lineageLockHeld = false;
+      let lineageRead: Promise<{ readonly error: unknown }> | undefined;
+      try {
+        await harness.owner.query("SELECT pg_catalog.pg_advisory_lock($1)", [
+          lineageBarrier,
+        ]);
+        lineageLockHeld = true;
+        lineageRead = harness.initializer
+          .query(
+            "SELECT task8a_retention_barrier.read_lineage_projection($1, $2, $3)",
+            [organizationId, dashboardId, lineageBarrier],
+          )
           .then(
             () => ({ error: undefined }),
             (error: unknown) => ({ error }),
           );
-        await observeWaiter("dasher_task8a_initializer");
-        await writer.query("COMMIT");
-        expect((await initializeAfterWriter).error).toMatchObject({
-          code: "55000",
-        });
-        await initializer.query("ROLLBACK");
-
-        await ownerPool.query(
-          "SELECT task8a_retention_barrier.cleanup_subject($1)",
-          [subject],
+        await observeTask8aBarrierWaiter("dasher_task8a_initializer");
+        await harness.writer.query(
+          `
+            DELETE FROM task8a_retention_barrier.projection_snapshot_claims
+            WHERE organization_id = $1 AND dashboard_id = $2
+              AND snapshot_id = $3
+          `,
+          [organizationId, dashboardId, snapshotId],
         );
-        const residue = await ownerPool.query<{ readonly count: string }>(
-          "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
-        );
-        expect(residue.rows[0]?.count).toBe("0");
-      } finally {
-        await Promise.allSettled([
-          initializer.query("ROLLBACK"),
-          writer.query("ROLLBACK"),
+        const unlocked = await harness.owner.query<{
+          readonly unlocked: boolean;
+        }>("SELECT pg_catalog.pg_advisory_unlock($1) AS unlocked", [
+          lineageBarrier,
         ]);
-        initializer.release();
-        writer.release();
+        lineageLockHeld = false;
+        expect(unlocked.rows[0]?.unlocked).toBe(true);
+        expect((await lineageRead).error).toMatchObject({
+          code: "55000",
+          message: "task8a_denied",
+        });
+      } finally {
+        if (lineageLockHeld) {
+          await harness.owner.query(
+            "SELECT pg_catalog.pg_advisory_unlock($1)",
+            [lineageBarrier],
+          );
+        }
+        await lineageRead;
       }
     } finally {
-      await Promise.allSettled([initializerPool.end(), writerPool.end()]);
-      await ownerPool.query(
-        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
-      );
+      await harness.close();
     }
   }, 120_000);
 
-  it("denies ambiguous initializer bindings without leaving bound context", async () => {
+  it("governs shared artifacts by an exact target claim and target-bound finalizer", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const organizationId = "89000000-0000-4000-8000-000000000001";
+    const dashboard1Id = "89000000-0000-4000-8000-000000000002";
+    const dashboard2Id = "89000000-0000-4000-8000-000000000003";
+    const ownedArtifactId = "89000000-0000-4000-8000-000000000004";
+    const sharedArtifactId = "89000000-0000-4000-8000-000000000005";
+
+    try {
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.artifact_resources (
+            organization_id, artifact_id, dashboard_id, ownership_class,
+            artifact_bytes
+          ) VALUES
+            ($1, $3, $2, 'dashboard_owned', 'owned-bytes'),
+            ($1, $4, $2, 'shared', 'shared-bytes')
+        `,
+        [organizationId, dashboard1Id, ownedArtifactId, sharedArtifactId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.artifact_claims (
+            organization_id, artifact_id, reference_claim_id, dashboard_id,
+            claim_kind
+          ) VALUES
+            ($1, $4, '89100000-0000-4000-8000-000000000001', $2, 'access'),
+            ($1, $5, '89100000-0000-4000-8000-000000000002', $2, 'access'),
+            ($1, $5, '89100000-0000-4000-8000-000000000003', $3, 'access')
+        `,
+        [
+          organizationId,
+          dashboard1Id,
+          dashboard2Id,
+          ownedArtifactId,
+          sharedArtifactId,
+        ],
+      );
+
+      const initialAuthority = await harness.writer.query<{
+        readonly d2_can_govern_owned: boolean;
+        readonly d2_can_govern_shared: boolean;
+      }>(
+        `
+          SELECT
+            task8a_retention_barrier.artifact_is_governable($1, $2, $3)
+              AS d2_can_govern_owned,
+            task8a_retention_barrier.artifact_is_governable($1, $2, $4)
+              AS d2_can_govern_shared
+        `,
+        [organizationId, dashboard2Id, ownedArtifactId, sharedArtifactId],
+      );
+      expect(initialAuthority.rows[0]).toEqual({
+        d2_can_govern_owned: false,
+        d2_can_govern_shared: true,
+      });
+
+      const runPurge = async (dashboardId: string): Promise<string[]> => {
+        const stages: string[] = [];
+        for (let step = 0; step < 8; step += 1) {
+          const result = await harness.writer.query<{
+            readonly stage: string;
+          }>(
+            "SELECT task8a_retention_barrier.purge_artifact_step($1, $2) AS stage",
+            [organizationId, dashboardId],
+          );
+          const stage = result.rows[0]?.stage;
+          if (stage === undefined) throw new Error("artifact stage missing");
+          stages.push(stage);
+          if (stage === "cleaned") return stages;
+        }
+        throw new Error("artifact purge did not close within eight stages");
+      };
+
+      expect(await runPurge(dashboard1Id)).toEqual([
+        "intent",
+        "claims",
+        "eligible",
+        "bytes",
+        "cleaned",
+      ]);
+      const afterDashboard1 = await harness.owner.query<{
+        readonly original_dashboard_id: string;
+        readonly shared_claim_count: string;
+        readonly shared_finalizer_count: string;
+        readonly shared_resource_count: string;
+      }>(
+        `
+          SELECT artifact.dashboard_id::text AS original_dashboard_id,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_claims AS claim
+              WHERE claim.organization_id = $1
+                AND claim.artifact_id = $3
+                AND claim.dashboard_id = $2
+                AND claim.claim_kind = 'access'
+            ) AS shared_claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+                AND finalizer.artifact_id = $3
+            ) AS shared_finalizer_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_resources AS resource
+              WHERE resource.organization_id = $1
+                AND resource.artifact_id = $3
+            ) AS shared_resource_count
+          FROM task8a_retention_barrier.artifact_resources AS artifact
+          WHERE artifact.organization_id = $1 AND artifact.artifact_id = $3
+        `,
+        [organizationId, dashboard2Id, sharedArtifactId],
+      );
+      expect(afterDashboard1.rows[0]).toEqual({
+        original_dashboard_id: dashboard1Id,
+        shared_claim_count: "1",
+        shared_finalizer_count: "0",
+        shared_resource_count: "1",
+      });
+
+      const d2Intent = await harness.writer.query<{ readonly stage: string }>(
+        "SELECT task8a_retention_barrier.purge_artifact_step($1, $2) AS stage",
+        [organizationId, dashboard2Id],
+      );
+      expect(d2Intent.rows[0]?.stage).toBe("intent");
+      const boundIntent = await harness.owner.query<{
+        readonly hash_matches_target: boolean;
+        readonly original_dashboard_id: string;
+        readonly state: string;
+        readonly target_dashboard_id: string;
+      }>(
+        `
+          SELECT artifact.dashboard_id::text AS original_dashboard_id,
+            finalizer.target_dashboard_id::text AS target_dashboard_id,
+            finalizer.state,
+            finalizer.expected_claim_set_sha256 =
+              task8a_retention_barrier.artifact_expected_claim_hash(
+                artifact.organization_id, $2, artifact.artifact_id
+              ) AS hash_matches_target
+          FROM task8a_retention_barrier.artifact_resources AS artifact
+          JOIN task8a_retention_barrier.artifact_finalizers AS finalizer
+            ON finalizer.organization_id = artifact.organization_id
+            AND finalizer.artifact_id = artifact.artifact_id
+          WHERE artifact.organization_id = $1 AND artifact.artifact_id = $3
+        `,
+        [organizationId, dashboard2Id, sharedArtifactId],
+      );
+      expect(boundIntent.rows[0]).toEqual({
+        hash_matches_target: true,
+        original_dashboard_id: dashboard1Id,
+        state: "intent",
+        target_dashboard_id: dashboard2Id,
+      });
+
+      expect(await runPurge(dashboard2Id)).toEqual([
+        "claims",
+        "eligible",
+        "bytes",
+        "cleaned",
+      ]);
+      const finalState = await harness.owner.query<{
+        readonly claim_count: string;
+        readonly claimless_resource_count: string;
+        readonly deleted_finalizer_count: string;
+        readonly resource_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_resources
+            ) AS resource_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_claims
+            ) AS claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_resources AS artifact
+              WHERE NOT EXISTS (
+                SELECT 1
+                FROM task8a_retention_barrier.artifact_claims AS claim
+                WHERE claim.organization_id = artifact.organization_id
+                  AND claim.artifact_id = artifact.artifact_id
+              )
+            ) AS claimless_resource_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.artifact_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+                AND finalizer.artifact_id = $2
+                AND finalizer.target_dashboard_id = $3
+                AND finalizer.state = 'deleted'
+                AND finalizer.proof_sha256 =
+                  finalizer.expected_claim_set_sha256
+                AND finalizer.bytes_deleted_at IS NOT NULL
+                AND finalizer.expected_claim_set_sha256 =
+                  task8a_retention_barrier.artifact_expected_claim_hash(
+                    finalizer.organization_id,
+                    finalizer.target_dashboard_id,
+                    finalizer.artifact_id
+                  )
+            ) AS deleted_finalizer_count
+        `,
+        [organizationId, sharedArtifactId, dashboard2Id],
+      );
+      expect(finalState.rows[0]).toEqual({
+        claim_count: "0",
+        claimless_resource_count: "0",
+        deleted_finalizer_count: "1",
+        resource_count: "0",
+      });
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("closes noncanonical snapshot pagination above 100 with inverse link order and shared preservation", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
+    const organizationId = "87000000-0000-4000-8000-000000000001";
+    const dashboardId = "87000000-0000-4000-8000-000000000002";
+    const sharedDashboardId = "87000000-0000-4000-8000-000000000003";
+
+    try {
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_resources (
+            organization_id, snapshot_id, snapshot_bytes
+          )
+          SELECT $1,
+            (
+              '87100000-0000-4000-8000-' ||
+              pg_catalog.lpad(sequence::text, 12, '0')
+            )::uuid,
+            'exclusive-' || sequence::text
+          FROM pg_catalog.generate_series(1, 125) AS sequence
+        `,
+        [organizationId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_claims (
+            organization_id, snapshot_id, dashboard_id
+          )
+          SELECT $1,
+            (
+              '87100000-0000-4000-8000-' ||
+              pg_catalog.lpad(sequence::text, 12, '0')
+            )::uuid,
+            $2
+          FROM pg_catalog.generate_series(1, 125) AS sequence
+        `,
+        [organizationId, dashboardId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_links (
+            organization_id, dashboard_id, version_id, snapshot_id
+          )
+          SELECT $1, $2,
+            (
+              '87200000-0000-4000-8000-' ||
+              pg_catalog.lpad((126 - sequence)::text, 12, '0')
+            )::uuid,
+            (
+              '87100000-0000-4000-8000-' ||
+              pg_catalog.lpad(sequence::text, 12, '0')
+            )::uuid
+          FROM pg_catalog.generate_series(1, 125) AS sequence
+        `,
+        [organizationId, dashboardId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_resources (
+            organization_id, snapshot_id, snapshot_bytes
+          )
+          SELECT $1,
+            (
+              '87100000-0000-4000-8000-' ||
+              pg_catalog.lpad(sequence::text, 12, '0')
+            )::uuid,
+            'shared-' || sequence::text
+          FROM pg_catalog.generate_series(201, 205) AS sequence
+        `,
+        [organizationId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_claims (
+            organization_id, snapshot_id, dashboard_id
+          )
+          SELECT $1,
+            (
+              '87100000-0000-4000-8000-' ||
+              pg_catalog.lpad(sequence::text, 12, '0')
+            )::uuid,
+            source_dashboard_id
+          FROM pg_catalog.generate_series(201, 205) AS sequence
+          CROSS JOIN (VALUES ($2::uuid), ($3::uuid)) AS dashboards(source_dashboard_id)
+        `,
+        [organizationId, dashboardId, sharedDashboardId],
+      );
+      await harness.owner.query(
+        `
+          INSERT INTO task8a_retention_barrier.snapshot_links (
+            organization_id, dashboard_id, version_id, snapshot_id
+          )
+          SELECT $1, source_dashboard_id,
+            (
+              '87200000-0000-4000-8000-' ||
+              pg_catalog.lpad((sequence - 200)::text, 12, '0')
+            )::uuid,
+            (
+              '87100000-0000-4000-8000-' ||
+              pg_catalog.lpad(sequence::text, 12, '0')
+            )::uuid
+          FROM pg_catalog.generate_series(201, 205) AS sequence
+          CROSS JOIN (VALUES ($2::uuid), ($3::uuid)) AS dashboards(source_dashboard_id)
+        `,
+        [organizationId, dashboardId, sharedDashboardId],
+      );
+
+      const firstStep = await harness.writer.query<{
+        readonly stage: string;
+      }>(
+        "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3) AS stage",
+        [organizationId, dashboardId, null],
+      );
+      expect(firstStep.rows[0]?.stage).toBe("intent");
+      const oldAlgorithmFailure = await harness.owner.query<{
+        readonly finalized_count: string;
+        readonly orphaned_exclusive_count: string;
+      }>(
+        `
+          WITH old_link_batch AS MATERIALIZED (
+            SELECT link.organization_id, link.snapshot_id
+            FROM task8a_retention_barrier.snapshot_links AS link
+            WHERE link.organization_id = $1 AND link.dashboard_id = $2
+            ORDER BY link.version_id, link.snapshot_id
+            LIMIT 100
+          )
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+            ) AS finalized_count,
+            pg_catalog.count(*) FILTER (
+              WHERE NOT EXISTS (
+                SELECT 1
+                FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+                WHERE finalizer.organization_id = old_link.organization_id
+                  AND finalizer.snapshot_id = old_link.snapshot_id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM task8a_retention_barrier.snapshot_claims AS other_claim
+                WHERE other_claim.organization_id = old_link.organization_id
+                  AND other_claim.snapshot_id = old_link.snapshot_id
+                  AND other_claim.dashboard_id <> $2
+              )
+            )::text AS orphaned_exclusive_count
+          FROM old_link_batch AS old_link
+        `,
+        [organizationId, dashboardId],
+      );
+      expect(oldAlgorithmFailure.rows[0]).toEqual({
+        finalized_count: "100",
+        orphaned_exclusive_count: "25",
+      });
+
+      const stages = [firstStep.rows[0]!.stage];
+      for (let invocation = 0; invocation < 20; invocation += 1) {
+        const result = await harness.writer.query<{ readonly stage: string }>(
+          "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3) AS stage",
+          [organizationId, dashboardId, null],
+        );
+        stages.push(result.rows[0]!.stage);
+        if (result.rows[0]!.stage === "cleaned") break;
+      }
+      expect(stages.at(-1)).toBe("cleaned");
+      expect(stages.filter((stage) => stage === "intent")).toHaveLength(2);
+      expect(stages).toContain("claims");
+      expect(stages).toContain("eligible");
+      expect(stages).toContain("links");
+      expect(stages).toContain("bytes");
+
+      const finalState = await harness.owner.query<{
+        readonly exclusive_finalizer_count: string;
+        readonly exclusive_resource_count: string;
+        readonly source_claim_count: string;
+        readonly source_link_count: string;
+        readonly shared_finalizer_count: string;
+        readonly shared_resource_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_resources AS snapshot
+              WHERE snapshot.organization_id = $1
+                AND snapshot.snapshot_id::text <
+                  '87100000-0000-4000-8000-000000000200'
+            ) AS exclusive_resource_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_resources AS snapshot
+              WHERE snapshot.organization_id = $1
+                AND snapshot.snapshot_id::text >=
+                  '87100000-0000-4000-8000-000000000200'
+            ) AS shared_resource_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+                AND finalizer.snapshot_id::text <
+                  '87100000-0000-4000-8000-000000000200'
+                AND finalizer.state = 'deleted'
+            ) AS exclusive_finalizer_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+                AND finalizer.snapshot_id::text >=
+                  '87100000-0000-4000-8000-000000000200'
+            ) AS shared_finalizer_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_claims AS claim
+              WHERE claim.organization_id = $1 AND claim.dashboard_id = $2
+            ) AS source_claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_links AS link
+              WHERE link.organization_id = $1 AND link.dashboard_id = $2
+            ) AS source_link_count
+        `,
+        [organizationId, dashboardId],
+      );
+      expect(finalState.rows[0]).toEqual({
+        exclusive_finalizer_count: "125",
+        exclusive_resource_count: "0",
+        shared_finalizer_count: "0",
+        shared_resource_count: "5",
+        source_claim_count: "0",
+        source_link_count: "0",
+      });
+
+      const laterSharedPurge = await harness.writer.query<{
+        readonly stage: string;
+      }>(
+        "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3) AS stage",
+        [organizationId, sharedDashboardId, null],
+      );
+      expect(laterSharedPurge.rows[0]?.stage).toBe("intent");
+      const governedExclusivity = await harness.owner.query<{
+        readonly finalizer_count: string;
+        readonly resource_count: string;
+        readonly shared_claim_count: string;
+        readonly shared_link_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_finalizers AS finalizer
+              WHERE finalizer.organization_id = $1
+                AND finalizer.snapshot_id::text >=
+                  '87100000-0000-4000-8000-000000000200'
+                AND finalizer.state = 'intent'
+            ) AS finalizer_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_resources AS snapshot
+              WHERE snapshot.organization_id = $1
+            ) AS resource_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_claims AS claim
+              WHERE claim.organization_id = $1 AND claim.dashboard_id = $2
+            ) AS shared_claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_links AS link
+              WHERE link.organization_id = $1 AND link.dashboard_id = $2
+            ) AS shared_link_count
+        `,
+        [organizationId, sharedDashboardId],
+      );
+      expect(governedExclusivity.rows[0]).toEqual({
+        finalizer_count: "5",
+        resource_count: "5",
+        shared_claim_count: "5",
+        shared_link_count: "5",
+      });
+
+      const laterStages = [laterSharedPurge.rows[0]!.stage];
+      for (let invocation = 0; invocation < 10; invocation += 1) {
+        const result = await harness.writer.query<{ readonly stage: string }>(
+          "SELECT task8a_retention_barrier.purge_snapshot_batch($1, $2, $3) AS stage",
+          [organizationId, sharedDashboardId, null],
+        );
+        laterStages.push(result.rows[0]!.stage);
+        if (result.rows[0]!.stage === "cleaned") break;
+      }
+      expect(laterStages).toEqual([
+        "intent",
+        "claims",
+        "eligible",
+        "links",
+        "bytes",
+        "cleaned",
+      ]);
+      const laterFinalState = await harness.owner.query<{
+        readonly claim_count: string;
+        readonly link_count: string;
+        readonly resource_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_resources
+              WHERE organization_id = $1
+            ) AS resource_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_claims
+              WHERE organization_id = $1 AND dashboard_id = $2
+            ) AS claim_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM task8a_retention_barrier.snapshot_links
+              WHERE organization_id = $1 AND dashboard_id = $2
+            ) AS link_count
+        `,
+        [organizationId, sharedDashboardId],
+      );
+      expect(laterFinalState.rows[0]).toEqual({
+        claim_count: "0",
+        link_count: "0",
+        resource_count: "0",
+      });
+    } finally {
+      await harness.close();
+    }
+  }, 120_000);
+
+  it("denies ambiguous self-bound initializer histories with normalized errors", async () => {
     const harnessSql = await readFile(
       new URL(
         "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
@@ -1972,87 +4692,56 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     );
     const normalPrincipalId = "80000000-0000-4000-8000-000000000001";
     const conflictingPrincipalId = "80000000-0000-4000-8000-000000000002";
-
-    const expectNormalizedDenialWithoutContext = async (
-      subject: string,
-    ): Promise<void> => {
-      const client = await ownerPool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query("SAVEPOINT initializer_attempt");
-        await expect(
-          client.query("SELECT task8a_retention_barrier.initialize($1)", [
-            subject,
-          ]),
-        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
-        await client.query("ROLLBACK TO SAVEPOINT initializer_attempt");
-        const context = await client.query<{
-          readonly bound_principal_id: string;
-          readonly bound_revision: string;
-        }>(`
-          SELECT
-            COALESCE(
-              pg_catalog.current_setting(
-                'task8a.bound_principal_id',
-                true
-              ),
-              ''
-            ) AS bound_principal_id,
-            COALESCE(
-              pg_catalog.current_setting('task8a.bound_revision', true),
-              ''
-            ) AS bound_revision
-        `);
-        expect(context.rows[0]).toEqual({
-          bound_principal_id: "",
-          bound_revision: "",
-        });
-        await client.query("ROLLBACK");
-      } finally {
-        await client.query("ROLLBACK").catch(() => undefined);
-        client.release();
-      }
-    };
+    const harness = await createTask8aSelfBindingHarness(harnessSql);
 
     const cases = [
       {
         name: "different principals tied at the maximum revision",
-        subject: "task8a_tied_principals",
         principalId: conflictingPrincipalId,
         revision: 1,
       },
       {
         name: "different principals at different revisions",
-        subject: "task8a_conflicting_principal_history",
         principalId: conflictingPrincipalId,
         revision: 2,
       },
       {
         name: "duplicate rows for one principal and revision",
-        subject: "task8a_duplicate_revision",
         principalId: normalPrincipalId,
         revision: 1,
       },
     ] as const;
 
     try {
-      await ownerPool.query(harnessSql);
       for (const testCase of cases) {
-        await ownerPool.query(
-          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
-          [testCase.subject],
+        await harness.writer.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [task8aHarnessSubjectA],
         );
-        await ownerPool.query(
+        await harness.writer.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+          [task8aHarnessSubjectA],
+        );
+        await harness.writer.query(
           "SELECT task8a_retention_barrier.insert_adversarial_revision($1, $2, $3, true)",
-          [testCase.subject, testCase.principalId, testCase.revision],
+          [task8aHarnessSubjectA, testCase.principalId, testCase.revision],
         );
 
-        await expectNormalizedDenialWithoutContext(testCase.subject);
-        await ownerPool.query(
+        await harness.initializer.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+        await expect(
+          harness.initializer.query(
+            "SELECT task8a_retention_barrier.initialize($1, $2)",
+            [task8aHarnessTargetOrganizationA, task8aHarnessTargetDashboard],
+          ),
+          testCase.name,
+        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+        await harness.initializer.query("ROLLBACK");
+
+        await harness.writer.query(
           "SELECT task8a_retention_barrier.cleanup_subject($1)",
-          [testCase.subject],
+          [task8aHarnessSubjectA],
         );
-        const subjectResidue = await ownerPool.query<{
+        const subjectResidue = await harness.owner.query<{
           readonly count: string;
         }>(
           `
@@ -2060,19 +4749,19 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             FROM task8a_retention_barrier.authority_revisions
             WHERE binding_subject = $1
           `,
-          [testCase.subject],
+          [task8aHarnessSubjectA],
         );
         expect(subjectResidue.rows[0]?.count, testCase.name).toBe("0");
       }
 
-      const totalResidue = await ownerPool.query<{ readonly count: string }>(
+      const totalResidue = await harness.owner.query<{
+        readonly count: string;
+      }>(
         "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
       );
       expect(totalResidue.rows[0]?.count).toBe("0");
     } finally {
-      await ownerPool.query(
-        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
-      );
+      await harness.close();
     }
   }, 120_000);
 

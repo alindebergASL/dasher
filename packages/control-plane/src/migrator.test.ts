@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -60,6 +61,33 @@ function independentModeled0003CatalogContract() {
     aclDependencyRows: modeled0003CatalogMatrix.aclDependencyRows,
     policyDependencyRows: modeled0003CatalogMatrix.policyDependencyRows,
   };
+}
+
+type Modeled0003CatalogContract = ReturnType<
+  typeof independentModeled0003CatalogContract
+>;
+
+function catalogContractMismatchDimensions(
+  expected: Modeled0003CatalogContract,
+  candidate: unknown,
+): readonly string[] {
+  if (candidate === null || typeof candidate !== "object") {
+    return ["contract"];
+  }
+  const candidateContract = candidate as Record<string, unknown>;
+  const expectedDimensions = Object.keys(
+    expected,
+  ) as (keyof Modeled0003CatalogContract)[];
+  const unexpectedDimensions = Object.keys(candidateContract).filter(
+    (dimension) => !(dimension in expected),
+  );
+  return [
+    ...expectedDimensions.filter(
+      (dimension) =>
+        !isDeepStrictEqual(expected[dimension], candidateContract[dimension]),
+    ),
+    ...unexpectedDimensions,
+  ];
 }
 
 type FailureStage =
@@ -1550,7 +1578,9 @@ describe("prefix-aware managed roles and expected app logins", () => {
     const successorPolicyDependencies = successorDependencies.filter(
       (entry) =>
         entry.dependency_type === "r" &&
-        entry.role_name === "dasher_retention_definer",
+        entry.object_kind === "policy" &&
+        (entry.role_name === "dasher_security_definer" ||
+          entry.role_name === "dasher_retention_definer"),
     );
     expect(successorPolicyDependencies).toHaveLength(
       modeled0003CatalogMatrix.policies.length,
@@ -1561,8 +1591,10 @@ describe("prefix-aware managed roles and expected app logins", () => {
           entry.object_kind === "policy" &&
           entry.policy_permissive === true &&
           Array.isArray(entry.policy_roles) &&
-          entry.policy_roles.includes("dasher_retention_definer") &&
-          typeof entry.policy_using_expression === "string",
+          entry.role_name !== null &&
+          entry.policy_roles.includes(entry.role_name) &&
+          (typeof entry.policy_using_expression === "string" ||
+            typeof entry.policy_with_check_expression === "string"),
       ),
     ).toBe(true);
     expect(
@@ -1571,12 +1603,56 @@ describe("prefix-aware managed roles and expected app logins", () => {
           entry.privilege_type === "EXECUTE" &&
           entry.role_name === "dasher_retention_operator",
       ),
-    ).toHaveLength(7);
+    ).toHaveLength(6);
+    expect(
+      successorDependencies.some(
+        (entry) =>
+          entry.privilege_type === "EXECUTE" &&
+          entry.role_name === "dasher_retention_operator" &&
+          entry.identity ===
+            "dasher_retention_api.initialize_operator_context(uuid, text, uuid, text, uuid)",
+      ),
+    ).toBe(false);
   });
 
   it("rejects one-field mutations in every independently bound successor dimension", () => {
-    const runtime = getModeled0003StaticCatalogContractForTests();
+    const runtime =
+      getModeled0003StaticCatalogContractForTests() as Modeled0003CatalogContract;
     const fixture = independentModeled0003CatalogContract();
+    const mutationDimensions = [
+      "functions",
+      "functions",
+      "columns",
+      "indexes",
+      "indexes",
+      "indexes",
+      "comments",
+      "functions",
+      "functions",
+      "functions",
+      "functions",
+      "functions",
+      "policies",
+      "functions",
+      "functions",
+      "columns",
+      "constraints",
+      "policies",
+      "policyDependencyRows",
+      "ownershipDependencyRows",
+      "aclDependencyRows",
+      "functions",
+      "functions",
+      "functions",
+      "columnAcls",
+      "policies",
+      "triggers",
+      "relationAcls",
+      "constraints",
+      "aclDependencyRows",
+      "columnAcls",
+      "aclDependencyRows",
+    ] as const satisfies readonly (keyof Modeled0003CatalogContract)[];
     const mutations = [
       {
         ...fixture,
@@ -1687,7 +1763,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
           policy.name === "dashboards_retention_target_discovery_select"
             ? {
                 ...policy,
-                using: policy.using.replace(
+                using: (policy.using ?? "").replace(
                   "= ANY (ARRAY['materialize_expiry'::text, 'place_hold'::text, 'release_hold'::text, 'claim_cleanup'::text, 'record_attempt'::text, 'purge'::text])",
                   "<> ''::text",
                 ),
@@ -1702,7 +1778,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
             ? {
                 ...routine,
                 source: (routine.source ?? "").replace(
-                  "      OR OLD.purged_at IS NOT NULL\n      OR OLD.purged_lifecycle_revision IS NOT NULL\n      OR OLD.purged_proof_sha256 IS NOT NULL\n",
+                  "      AND OLD.purged_at IS NULL\n      AND OLD.purged_lifecycle_revision IS NULL\n      AND OLD.purged_proof_sha256 IS NULL\n",
                   "",
                 ),
               }
@@ -1716,7 +1792,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
             ? {
                 ...routine,
                 source: (routine.source ?? "").replace(
-                  "      OR OLD.retention_policy_revision IS DISTINCT FROM NEW.retention_policy_revision\n",
+                  "        OLD.retention_policy_revision, OLD.access_revoked_at,\n",
                   "",
                 ),
               }
@@ -1767,11 +1843,148 @@ describe("prefix-aware managed roles and expected app logins", () => {
           index === 0 ? { ...row, isGrantable: true } : row,
         ),
       },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "materialize_dashboard_expiry"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "  PERFORM dasher_retention_api.initialize_operator_context(\n    $1, 'materialize_expiry', $3, $4, $5\n  );\n",
+                  "",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "purge_dashboard"
+            ? {
+                ...routine,
+                source: (routine.source ?? "").replace(
+                  "SET state = 'eligible', proof_sha256 = finalizer.expected_claim_set_sha256",
+                  "SET state = 'deleted', proof_sha256 = finalizer.expected_claim_set_sha256",
+                ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        functions: fixture.functions.map((routine) =>
+          routine.name === "decide_dashboard_promotion"
+            ? {
+                ...routine,
+                source: (routine.source ?? "")
+                  .replace(
+                    "INSERT INTO dasher.dashboard_promotion_decisions",
+                    "__TASK8A_DECISION_WRITE__",
+                  )
+                  .replace(
+                    "INSERT INTO dasher.dashboard_lifecycle_events",
+                    "INSERT INTO dasher.dashboard_promotion_decisions",
+                  )
+                  .replace(
+                    "__TASK8A_DECISION_WRITE__",
+                    "INSERT INTO dasher.dashboard_lifecycle_events",
+                  ),
+              }
+            : routine,
+        ),
+      },
+      {
+        ...fixture,
+        columnAcls: fixture.columnAcls.map((acl) =>
+          acl.grantee === "dasher_retention_definer" &&
+          acl.relationName === "dashboard_restore_lineage" &&
+          acl.columnName === "organization_id" &&
+          acl.privilege === "UPDATE"
+            ? { ...acl, columnName: "dashboard_id" }
+            : acl,
+        ),
+      },
+      {
+        ...fixture,
+        policies: fixture.policies.map((policy) =>
+          policy.name === "dashboard_restore_lineage_retention_delete"
+            ? { ...policy, using: "true" }
+            : policy,
+        ),
+      },
+      {
+        ...fixture,
+        triggers: fixture.triggers.map((trigger) =>
+          trigger.name === "dashboard_restore_lineage_immutable"
+            ? {
+                ...trigger,
+                functionIdentity:
+                  "dasher_private.reject_dashboard_append_mutation()",
+              }
+            : trigger,
+        ),
+      },
+      {
+        ...fixture,
+        relationAcls: fixture.relationAcls.map((acl) =>
+          acl.relationName === "dashboard_restore_lineage" &&
+          acl.grantee === "dasher_retention_definer" &&
+          acl.privilege === "DELETE"
+            ? { ...acl, grantee: "dasher_security_definer" }
+            : acl,
+        ),
+      },
+      {
+        ...fixture,
+        constraints: fixture.constraints.map((constraint) =>
+          constraint.name === "dashboard_restore_lineage_dashboard_version_fk"
+            ? { ...constraint, deleteAction: "c" }
+            : constraint,
+        ),
+      },
+      {
+        ...fixture,
+        aclDependencyRows: fixture.aclDependencyRows.map((row) =>
+          row.objectKind === "column" &&
+          row.identity === "dasher.dashboard_restore_lineage.organization_id" &&
+          row.grantee === "dasher_retention_definer" &&
+          row.privilege === "UPDATE"
+            ? { ...row, grantee: "dasher_retention_operator" }
+            : row,
+        ),
+      },
+      {
+        ...fixture,
+        columnAcls: fixture.columnAcls.map((acl) =>
+          acl.grantee === "dasher_retention_definer" &&
+          acl.relationName === "source_snapshots" &&
+          acl.columnName === "organization_id" &&
+          acl.privilege === "UPDATE"
+            ? { ...acl, columnName: "snapshot_id" }
+            : acl,
+        ),
+      },
+      {
+        ...fixture,
+        aclDependencyRows: fixture.aclDependencyRows.map((row) =>
+          row.objectKind === "column" &&
+          row.identity === "dasher.source_snapshots.organization_id" &&
+          row.grantee === "dasher_retention_definer" &&
+          row.privilege === "UPDATE"
+            ? { ...row, grantee: "dasher_retention_operator" }
+            : row,
+        ),
+      },
     ];
 
-    expect(fixture).toEqual(runtime);
-    for (const mutation of mutations) {
-      expect(mutation).not.toEqual(runtime);
+    expect(catalogContractMismatchDimensions(runtime, fixture)).toEqual([]);
+    expect(mutations).toHaveLength(mutationDimensions.length);
+    for (const [index, mutation] of mutations.entries()) {
+      expect(
+        catalogContractMismatchDimensions(runtime, mutation),
+        `catalog mutant ${index + 1}`,
+      ).toEqual([mutationDimensions[index]]);
     }
   });
 
