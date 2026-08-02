@@ -439,6 +439,82 @@ function exactModeledPolicyBridgeMismatches(
   return mismatches;
 }
 
+type ExactModeledPolicyDependencyRow = Readonly<{
+  catalog: string;
+  command: string;
+  dependencyType: string;
+  identity: string;
+  objectKind: string;
+  permissive: boolean;
+  roleName: string;
+  roles: readonly string[];
+  using: string | null;
+  withCheck: string | null;
+}>;
+
+const exactModeledPolicyDependencyDimensions = [
+  "dependencyType",
+  "catalog",
+  "objectKind",
+  "identity",
+  "roleName",
+  "roles",
+  "command",
+  "permissive",
+  "using",
+  "withCheck",
+] as const satisfies readonly (keyof ExactModeledPolicyDependencyRow)[];
+
+function exactModeledPolicyDependencyMismatches(
+  policies: readonly ExactModeledPolicy[],
+  rows: readonly ExactModeledPolicyDependencyRow[],
+): readonly string[] {
+  const mismatches: string[] = [];
+  const identities = new Set([
+    ...policies.map(exactModeledPolicyIdentity),
+    ...rows.map(({ identity }) => identity),
+  ]);
+
+  for (const identity of identities) {
+    const policyMatches = policies.filter(
+      (policy) => exactModeledPolicyIdentity(policy) === identity,
+    );
+    const rowMatches = rows.filter((row) => row.identity === identity);
+    if (policyMatches.length !== 1) {
+      mismatches.push(`policy:${identity}:count=${policyMatches.length}`);
+    }
+    if (rowMatches.length !== 1) {
+      mismatches.push(`dependency:${identity}:count=${rowMatches.length}`);
+    }
+    if (policyMatches.length !== 1 || rowMatches.length !== 1) continue;
+
+    const policy = policyMatches[0]!;
+    const row = rowMatches[0]!;
+    const expected: ExactModeledPolicyDependencyRow = {
+      dependencyType: "r",
+      catalog: "pg_policy",
+      objectKind: "policy",
+      identity,
+      roleName: policy.roles[0] ?? "<missing-role>",
+      roles: policy.roles,
+      command: policy.catalogCommand,
+      permissive: policy.permissive,
+      using: policy.using,
+      withCheck: policy.withCheck,
+    };
+    if (policy.roles.length !== 1) {
+      mismatches.push(`${identity}:roles:count=${policy.roles.length}`);
+    }
+    for (const dimension of exactModeledPolicyDependencyDimensions) {
+      if (!isDeepStrictEqual(row[dimension], expected[dimension])) {
+        mismatches.push(`${identity}:${dimension}`);
+      }
+    }
+  }
+
+  return mismatches;
+}
+
 const exactSnapshotFinalizerPolicyExpression =
   "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['purge'::text])) AND EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS bound_authority WHERE bound_authority.retention_service_principal_id = (current_setting('dasher.retention_principal_id'::text, true))::uuid AND bound_authority.principal_revision = (current_setting('dasher.retention_principal_revision'::text, true))::bigint AND bound_authority.binding_kind = 'postgres_session_user'::text AND bound_authority.binding_subject = SESSION_USER AND bound_authority.authority_scope = 'platform_operator'::text AND bound_authority.scope_organization_id IS NULL AND bound_authority.enabled AND bound_authority.can_initialize AND NOT EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS later_authority WHERE later_authority.retention_service_principal_id = bound_authority.retention_service_principal_id AND later_authority.principal_revision > bound_authority.principal_revision) AND CASE current_setting('dasher.retention_capability'::text, true) WHEN 'materialize_expiry'::text THEN bound_authority.can_materialize_expiry WHEN 'place_hold'::text THEN bound_authority.can_place_hold WHEN 'release_hold'::text THEN bound_authority.can_release_hold WHEN 'claim_cleanup'::text THEN bound_authority.can_claim_cleanup WHEN 'record_attempt'::text THEN bound_authority.can_record_attempt WHEN 'purge'::text THEN bound_authority.can_purge ELSE false END) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (expected_claim_set_sha256 = sha256((((uuid_send((current_setting('dasher.retention_target_organization_id'::text, true))::uuid) || uuid_send((current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)) || uuid_send(snapshot_id)) || convert_to('snapshot|expected_claim_set=empty'::text, 'UTF8'::name)))))";
 const exactEvidenceFinalizerPolicyExpression =
@@ -3310,9 +3386,11 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
 
   it("bridges all 75 policies and semantically rejects every reintroduced finalizer parenthesis", () => {
     const production = getModeled0003StaticCatalogContractForTests() as {
-      readonly ownershipDependencyRows: readonly unknown[];
       readonly policies: readonly ExactModeledPolicy[];
+      readonly policyDependencyRows: readonly ExactModeledPolicyDependencyRow[];
     };
+    const fixturePolicyDependencyRows =
+      modeled0003CatalogMatrix.policyDependencyRows as readonly ExactModeledPolicyDependencyRow[];
     const sources = [
       {
         label: "fixture-semantic",
@@ -3332,12 +3410,39 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     expect(modeled0003CatalogMatrix.policies).toHaveLength(75);
     expect(production.policies).toHaveLength(75);
     expect(exactModeledPolicyBridgeMismatches(sources)).toEqual([]);
+    expect(fixturePolicyDependencyRows).toHaveLength(75);
+    expect(production.policyDependencyRows).toHaveLength(75);
+    expect(
+      new Set(fixturePolicyDependencyRows.map(({ identity }) => identity)).size,
+    ).toBe(75);
+    expect(
+      new Set(production.policyDependencyRows.map(({ identity }) => identity))
+        .size,
+    ).toBe(75);
     expect(
       isDeepStrictEqual(
-        production.ownershipDependencyRows,
-        modeled0003CatalogMatrix.ownershipDependencyRows,
+        production.policyDependencyRows,
+        fixturePolicyDependencyRows,
       ),
     ).toBe(true);
+    expect(
+      exactModeledPolicyDependencyMismatches(
+        modeled0003Policies,
+        fixturePolicyDependencyRows,
+      ),
+    ).toEqual([]);
+    expect(
+      exactModeledPolicyDependencyMismatches(
+        modeled0003CatalogMatrix.policies,
+        fixturePolicyDependencyRows,
+      ),
+    ).toEqual([]);
+    expect(
+      exactModeledPolicyDependencyMismatches(
+        production.policies,
+        production.policyDependencyRows,
+      ),
+    ).toEqual([]);
 
     expect(exactFinalizerPolicyClauses).toHaveLength(12);
     expect(
@@ -3383,6 +3488,25 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
         ]),
         `${identity}.${contract.clause}`,
       ).not.toEqual([]);
+      const dependencyMutant = fixturePolicyDependencyRows.map((row) =>
+        row.identity === identity
+          ? {
+              ...row,
+              [contract.clause]: `${row[contract.clause]})`,
+            }
+          : row,
+      );
+      expect(dependencyMutant).not.toEqual(fixturePolicyDependencyRows);
+      expect(
+        exactModeledPolicyDependencyMismatches(
+          modeled0003Policies,
+          dependencyMutant,
+        ),
+        `${identity}.${contract.clause}.dependency`,
+      ).toContain(`${identity}:${contract.clause}`);
+      expect(
+        isDeepStrictEqual(production.policyDependencyRows, dependencyMutant),
+      ).toBe(false);
     }
   });
 
