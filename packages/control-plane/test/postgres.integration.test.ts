@@ -24,6 +24,7 @@ import {
 import {
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
+  getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
 } from "../src/migrator.js";
 import {
@@ -1270,6 +1271,243 @@ afterAll(async () => {
 });
 
 describe.sequential("Task 2 PostgreSQL migration contract", () => {
+  it("has PostgreSQL 16 accept all 12 production finalizer clauses and reject their surplus-parenthesis mutants", async () => {
+    type ProductionModeledPolicy = Readonly<{
+      catalogCommand: string;
+      command: string;
+      name: string;
+      relation: string;
+      roles: readonly string[];
+      using: string | null;
+      withCheck: string | null;
+    }>;
+    const production = getModeled0003StaticCatalogContractForTests() as {
+      readonly policies: readonly ProductionModeledPolicy[];
+    };
+    const clauses = [
+      {
+        name: "snapshot_deletion_finalizers_retention_select",
+        relation: "snapshot_deletion_finalizers",
+        command: "SELECT",
+        catalogCommand: "r",
+        clause: "using",
+      },
+      {
+        name: "snapshot_deletion_finalizers_retention_insert",
+        relation: "snapshot_deletion_finalizers",
+        command: "INSERT",
+        catalogCommand: "a",
+        clause: "withCheck",
+      },
+      {
+        name: "snapshot_deletion_finalizers_retention_update",
+        relation: "snapshot_deletion_finalizers",
+        command: "UPDATE",
+        catalogCommand: "w",
+        clause: "using",
+      },
+      {
+        name: "snapshot_deletion_finalizers_retention_update",
+        relation: "snapshot_deletion_finalizers",
+        command: "UPDATE",
+        catalogCommand: "w",
+        clause: "withCheck",
+      },
+      {
+        name: "evidence_deletion_finalizers_retention_select",
+        relation: "evidence_deletion_finalizers",
+        command: "SELECT",
+        catalogCommand: "r",
+        clause: "using",
+      },
+      {
+        name: "evidence_deletion_finalizers_retention_insert",
+        relation: "evidence_deletion_finalizers",
+        command: "INSERT",
+        catalogCommand: "a",
+        clause: "withCheck",
+      },
+      {
+        name: "evidence_deletion_finalizers_retention_update",
+        relation: "evidence_deletion_finalizers",
+        command: "UPDATE",
+        catalogCommand: "w",
+        clause: "using",
+      },
+      {
+        name: "evidence_deletion_finalizers_retention_update",
+        relation: "evidence_deletion_finalizers",
+        command: "UPDATE",
+        catalogCommand: "w",
+        clause: "withCheck",
+      },
+      {
+        name: "artifact_deletion_finalizers_retention_select",
+        relation: "artifact_deletion_finalizers",
+        command: "SELECT",
+        catalogCommand: "r",
+        clause: "using",
+      },
+      {
+        name: "artifact_deletion_finalizers_retention_insert",
+        relation: "artifact_deletion_finalizers",
+        command: "INSERT",
+        catalogCommand: "a",
+        clause: "withCheck",
+      },
+      {
+        name: "artifact_deletion_finalizers_retention_update",
+        relation: "artifact_deletion_finalizers",
+        command: "UPDATE",
+        catalogCommand: "w",
+        clause: "using",
+      },
+      {
+        name: "artifact_deletion_finalizers_retention_update",
+        relation: "artifact_deletion_finalizers",
+        command: "UPDATE",
+        catalogCommand: "w",
+        clause: "withCheck",
+      },
+    ] as const satisfies readonly Readonly<{
+      catalogCommand: string;
+      clause: "using" | "withCheck";
+      command: string;
+      name: string;
+      relation: string;
+    }>[];
+    const client = await ownerPool.connect();
+    let transactionOpen = false;
+
+    try {
+      await client.query("BEGIN");
+      transactionOpen = true;
+      await client.query(`
+        CREATE ROLE dasher_retention_definer WITH
+          NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
+          NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+        CREATE SCHEMA dasher;
+        CREATE TABLE dasher.retention_service_principal_allowlist (
+          retention_service_principal_id uuid NOT NULL,
+          principal_revision bigint NOT NULL,
+          binding_kind text NOT NULL,
+          binding_subject text NOT NULL,
+          authority_scope text NOT NULL,
+          scope_organization_id uuid,
+          enabled boolean NOT NULL,
+          can_initialize boolean NOT NULL,
+          can_materialize_expiry boolean NOT NULL,
+          can_place_hold boolean NOT NULL,
+          can_release_hold boolean NOT NULL,
+          can_claim_cleanup boolean NOT NULL,
+          can_record_attempt boolean NOT NULL,
+          can_purge boolean NOT NULL
+        );
+        CREATE TABLE dasher.snapshot_deletion_finalizers (
+          organization_id uuid NOT NULL,
+          snapshot_id uuid NOT NULL,
+          expected_claim_set_sha256 bytea NOT NULL
+        );
+        CREATE TABLE dasher.evidence_deletion_finalizers (
+          organization_id uuid NOT NULL,
+          evidence_id uuid NOT NULL,
+          expected_claim_set_sha256 bytea NOT NULL
+        );
+        CREATE TABLE dasher.artifact_deletion_finalizers (
+          organization_id uuid NOT NULL,
+          artifact_id uuid NOT NULL,
+          expected_claim_set_sha256 bytea NOT NULL
+        )
+      `);
+
+      for (const [index, clause] of clauses.entries()) {
+        const matches = production.policies.filter(
+          (policy) =>
+            policy.name === clause.name && policy.relation === clause.relation,
+        );
+        expect(matches, `${clause.name}.${clause.clause}`).toHaveLength(1);
+        const policy = matches[0]!;
+        expect(policy, `${clause.name}.${clause.clause}`).toMatchObject({
+          catalogCommand: clause.catalogCommand,
+          command: clause.command,
+          roles: ["dasher_retention_definer"],
+        });
+        const expression = policy[clause.clause];
+        expect(expression, `${clause.name}.${clause.clause}`).not.toBeNull();
+        const clauseDdl =
+          clause.clause === "using"
+            ? `USING ${expression}`
+            : `WITH CHECK ${expression}`;
+        await client.query(
+          `CREATE POLICY task8a2_corrected_${index}
+             ON dasher.${clause.relation}
+             AS PERMISSIVE
+             FOR ${clause.command}
+             TO dasher_retention_definer
+             ${clauseDdl}`,
+        );
+
+        const savepoint = `task8a2_mutant_${index}`;
+        await client.query(`SAVEPOINT ${savepoint}`);
+        let mutantError: unknown;
+        try {
+          const mutantExpression = `${expression})`;
+          const mutantClauseDdl =
+            clause.clause === "using"
+              ? `USING ${mutantExpression}`
+              : `WITH CHECK ${mutantExpression}`;
+          await client.query(
+            `CREATE POLICY task8a2_mutant_${index}
+               ON dasher.${clause.relation}
+               AS PERMISSIVE
+               FOR ${clause.command}
+               TO dasher_retention_definer
+               ${mutantClauseDdl}`,
+          );
+        } catch (error) {
+          mutantError = error;
+        } finally {
+          await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+          await client.query(`RELEASE SAVEPOINT ${savepoint}`);
+        }
+        expect(mutantError, `${clause.name}.${clause.clause}`).toMatchObject({
+          code: "42601",
+        });
+      }
+
+      const accepted = await client.query<{ readonly count: string }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_policy AS policy
+        WHERE policy.polname LIKE 'task8a2_corrected_%'
+      `);
+      expect(accepted.rows[0]?.count).toBe("12");
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+    } finally {
+      if (transactionOpen) {
+        await client.query("ROLLBACK").catch(() => undefined);
+      }
+      client.release();
+    }
+
+    const residue = await ownerPool.query<{
+      readonly role_absent: boolean;
+      readonly schema_absent: boolean;
+    }>(`
+      SELECT
+        NOT EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = 'dasher_retention_definer'
+        ) AS role_absent,
+        pg_catalog.to_regnamespace('dasher') IS NULL AS schema_absent
+    `);
+    expect(residue.rows[0]).toEqual({
+      role_absent: true,
+      schema_absent: true,
+    });
+  });
+
   it("bootstraps the same cluster roles concurrently from two disposable databases", async () => {
     const databaseNames = [
       `dasher_t2_${siblingDatabaseNonce}_bootstrap_a`,

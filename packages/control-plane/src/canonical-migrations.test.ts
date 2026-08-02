@@ -4,7 +4,10 @@ import { isDeepStrictEqual } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
-import { discoverMigrations } from "./migrator.js";
+import {
+  discoverMigrations,
+  getModeled0003StaticCatalogContractForTests,
+} from "./migrator.js";
 import {
   modeled0003CatalogMatrix,
   modeled0003CheckConstraints,
@@ -361,6 +364,256 @@ function exactModeledFunctionBridgeMismatches(
       if (!isDeepStrictEqual(semantic[dimension], catalog[dimension])) {
         mismatches.push(`${identity}:${dimension}`);
       }
+    }
+  }
+
+  return mismatches;
+}
+
+type ExactModeledPolicy = Readonly<{
+  bootstrap: boolean;
+  catalogCommand: string;
+  command: string;
+  name: string;
+  permissive: boolean;
+  relation: string;
+  roles: readonly string[];
+  shutsOffWhenPhase: string | null;
+  using: string | null;
+  withCheck: string | null;
+}>;
+
+const exactModeledPolicyDimensions = [
+  "name",
+  "relation",
+  "command",
+  "catalogCommand",
+  "permissive",
+  "roles",
+  "bootstrap",
+  "shutsOffWhenPhase",
+  "using",
+  "withCheck",
+] as const satisfies readonly (keyof ExactModeledPolicy)[];
+
+function exactModeledPolicyIdentity(policy: ExactModeledPolicy): string {
+  return `dasher.${policy.relation}.${policy.name}`;
+}
+
+function exactModeledPolicyBridgeMismatches(
+  sources: readonly Readonly<{
+    label: string;
+    policies: readonly ExactModeledPolicy[];
+  }>[],
+): readonly string[] {
+  const mismatches: string[] = [];
+  const identities = new Set(
+    sources.flatMap(({ policies }) => policies.map(exactModeledPolicyIdentity)),
+  );
+
+  for (const identity of identities) {
+    const matches = sources.map(({ label, policies }) => {
+      const exact = policies.filter(
+        (policy) => exactModeledPolicyIdentity(policy) === identity,
+      );
+      if (exact.length !== 1) {
+        mismatches.push(`${label}:${identity}:count=${exact.length}`);
+      }
+      return exact;
+    });
+    if (matches.some((exact) => exact.length !== 1)) continue;
+
+    const baseline = matches[0]![0]!;
+    for (let sourceIndex = 1; sourceIndex < sources.length; sourceIndex += 1) {
+      const candidate = matches[sourceIndex]![0]!;
+      for (const dimension of exactModeledPolicyDimensions) {
+        if (!isDeepStrictEqual(baseline[dimension], candidate[dimension])) {
+          mismatches.push(
+            `${sources[0]!.label}<->${sources[sourceIndex]!.label}:${identity}:${dimension}`,
+          );
+        }
+      }
+    }
+  }
+
+  return mismatches;
+}
+
+const exactSnapshotFinalizerPolicyExpression =
+  "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['purge'::text])) AND EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS bound_authority WHERE bound_authority.retention_service_principal_id = (current_setting('dasher.retention_principal_id'::text, true))::uuid AND bound_authority.principal_revision = (current_setting('dasher.retention_principal_revision'::text, true))::bigint AND bound_authority.binding_kind = 'postgres_session_user'::text AND bound_authority.binding_subject = SESSION_USER AND bound_authority.authority_scope = 'platform_operator'::text AND bound_authority.scope_organization_id IS NULL AND bound_authority.enabled AND bound_authority.can_initialize AND NOT EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS later_authority WHERE later_authority.retention_service_principal_id = bound_authority.retention_service_principal_id AND later_authority.principal_revision > bound_authority.principal_revision) AND CASE current_setting('dasher.retention_capability'::text, true) WHEN 'materialize_expiry'::text THEN bound_authority.can_materialize_expiry WHEN 'place_hold'::text THEN bound_authority.can_place_hold WHEN 'release_hold'::text THEN bound_authority.can_release_hold WHEN 'claim_cleanup'::text THEN bound_authority.can_claim_cleanup WHEN 'record_attempt'::text THEN bound_authority.can_record_attempt WHEN 'purge'::text THEN bound_authority.can_purge ELSE false END) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (expected_claim_set_sha256 = sha256((((uuid_send((current_setting('dasher.retention_target_organization_id'::text, true))::uuid) || uuid_send((current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)) || uuid_send(snapshot_id)) || convert_to('snapshot|expected_claim_set=empty'::text, 'UTF8'::name)))))";
+const exactEvidenceFinalizerPolicyExpression =
+  "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['purge'::text])) AND EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS bound_authority WHERE bound_authority.retention_service_principal_id = (current_setting('dasher.retention_principal_id'::text, true))::uuid AND bound_authority.principal_revision = (current_setting('dasher.retention_principal_revision'::text, true))::bigint AND bound_authority.binding_kind = 'postgres_session_user'::text AND bound_authority.binding_subject = SESSION_USER AND bound_authority.authority_scope = 'platform_operator'::text AND bound_authority.scope_organization_id IS NULL AND bound_authority.enabled AND bound_authority.can_initialize AND NOT EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS later_authority WHERE later_authority.retention_service_principal_id = bound_authority.retention_service_principal_id AND later_authority.principal_revision > bound_authority.principal_revision) AND CASE current_setting('dasher.retention_capability'::text, true) WHEN 'materialize_expiry'::text THEN bound_authority.can_materialize_expiry WHEN 'place_hold'::text THEN bound_authority.can_place_hold WHEN 'release_hold'::text THEN bound_authority.can_release_hold WHEN 'claim_cleanup'::text THEN bound_authority.can_claim_cleanup WHEN 'record_attempt'::text THEN bound_authority.can_record_attempt WHEN 'purge'::text THEN bound_authority.can_purge ELSE false END) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (expected_claim_set_sha256 = sha256((((uuid_send((current_setting('dasher.retention_target_organization_id'::text, true))::uuid) || uuid_send((current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)) || uuid_send(evidence_id)) || convert_to('evidence|expected_claim_set=empty'::text, 'UTF8'::name)))))";
+const exactArtifactFinalizerPolicyExpression =
+  "((CURRENT_USER = 'dasher_retention_definer'::name) AND (current_setting('dasher.retention_phase'::text, true) = 'authorized'::text) AND (current_setting('dasher.retention_principal_id'::text, true) <> ''::text) AND (current_setting('dasher.retention_principal_revision'::text, true) <> ''::text) AND (current_setting('dasher.retention_authority_scope'::text, true) = 'platform_operator'::text) AND (current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['purge'::text])) AND EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS bound_authority WHERE bound_authority.retention_service_principal_id = (current_setting('dasher.retention_principal_id'::text, true))::uuid AND bound_authority.principal_revision = (current_setting('dasher.retention_principal_revision'::text, true))::bigint AND bound_authority.binding_kind = 'postgres_session_user'::text AND bound_authority.binding_subject = SESSION_USER AND bound_authority.authority_scope = 'platform_operator'::text AND bound_authority.scope_organization_id IS NULL AND bound_authority.enabled AND bound_authority.can_initialize AND NOT EXISTS (SELECT 1 FROM dasher.retention_service_principal_allowlist AS later_authority WHERE later_authority.retention_service_principal_id = bound_authority.retention_service_principal_id AND later_authority.principal_revision > bound_authority.principal_revision) AND CASE current_setting('dasher.retention_capability'::text, true) WHEN 'materialize_expiry'::text THEN bound_authority.can_materialize_expiry WHEN 'place_hold'::text THEN bound_authority.can_place_hold WHEN 'release_hold'::text THEN bound_authority.can_release_hold WHEN 'claim_cleanup'::text THEN bound_authority.can_claim_cleanup WHEN 'record_attempt'::text THEN bound_authority.can_record_attempt WHEN 'purge'::text THEN bound_authority.can_purge ELSE false END) AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (expected_claim_set_sha256 = sha256((((uuid_send((current_setting('dasher.retention_target_organization_id'::text, true))::uuid) || uuid_send((current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)) || uuid_send(artifact_id)) || convert_to('artifact|expected_claim_set=empty'::text, 'UTF8'::name)))))";
+
+type ExactFinalizerPolicyClause = Readonly<{
+  catalogCommand: string;
+  clause: "using" | "withCheck";
+  command: string;
+  expression: string;
+  name: string;
+  relation: string;
+}>;
+
+const exactFinalizerPolicyClauses = [
+  {
+    name: "snapshot_deletion_finalizers_retention_select",
+    relation: "snapshot_deletion_finalizers",
+    command: "SELECT",
+    catalogCommand: "r",
+    clause: "using",
+    expression: exactSnapshotFinalizerPolicyExpression,
+  },
+  {
+    name: "snapshot_deletion_finalizers_retention_insert",
+    relation: "snapshot_deletion_finalizers",
+    command: "INSERT",
+    catalogCommand: "a",
+    clause: "withCheck",
+    expression: exactSnapshotFinalizerPolicyExpression,
+  },
+  {
+    name: "snapshot_deletion_finalizers_retention_update",
+    relation: "snapshot_deletion_finalizers",
+    command: "UPDATE",
+    catalogCommand: "w",
+    clause: "using",
+    expression: exactSnapshotFinalizerPolicyExpression,
+  },
+  {
+    name: "snapshot_deletion_finalizers_retention_update",
+    relation: "snapshot_deletion_finalizers",
+    command: "UPDATE",
+    catalogCommand: "w",
+    clause: "withCheck",
+    expression: exactSnapshotFinalizerPolicyExpression,
+  },
+  {
+    name: "evidence_deletion_finalizers_retention_select",
+    relation: "evidence_deletion_finalizers",
+    command: "SELECT",
+    catalogCommand: "r",
+    clause: "using",
+    expression: exactEvidenceFinalizerPolicyExpression,
+  },
+  {
+    name: "evidence_deletion_finalizers_retention_insert",
+    relation: "evidence_deletion_finalizers",
+    command: "INSERT",
+    catalogCommand: "a",
+    clause: "withCheck",
+    expression: exactEvidenceFinalizerPolicyExpression,
+  },
+  {
+    name: "evidence_deletion_finalizers_retention_update",
+    relation: "evidence_deletion_finalizers",
+    command: "UPDATE",
+    catalogCommand: "w",
+    clause: "using",
+    expression: exactEvidenceFinalizerPolicyExpression,
+  },
+  {
+    name: "evidence_deletion_finalizers_retention_update",
+    relation: "evidence_deletion_finalizers",
+    command: "UPDATE",
+    catalogCommand: "w",
+    clause: "withCheck",
+    expression: exactEvidenceFinalizerPolicyExpression,
+  },
+  {
+    name: "artifact_deletion_finalizers_retention_select",
+    relation: "artifact_deletion_finalizers",
+    command: "SELECT",
+    catalogCommand: "r",
+    clause: "using",
+    expression: exactArtifactFinalizerPolicyExpression,
+  },
+  {
+    name: "artifact_deletion_finalizers_retention_insert",
+    relation: "artifact_deletion_finalizers",
+    command: "INSERT",
+    catalogCommand: "a",
+    clause: "withCheck",
+    expression: exactArtifactFinalizerPolicyExpression,
+  },
+  {
+    name: "artifact_deletion_finalizers_retention_update",
+    relation: "artifact_deletion_finalizers",
+    command: "UPDATE",
+    catalogCommand: "w",
+    clause: "using",
+    expression: exactArtifactFinalizerPolicyExpression,
+  },
+  {
+    name: "artifact_deletion_finalizers_retention_update",
+    relation: "artifact_deletion_finalizers",
+    command: "UPDATE",
+    catalogCommand: "w",
+    clause: "withCheck",
+    expression: exactArtifactFinalizerPolicyExpression,
+  },
+] as const satisfies readonly ExactFinalizerPolicyClause[];
+
+function exactFinalizerPolicyContractMismatches(
+  policies: readonly ExactModeledPolicy[],
+): readonly string[] {
+  const mismatches: string[] = [];
+  const expectedNames = new Set<string>(
+    exactFinalizerPolicyClauses.map(({ name }) => name),
+  );
+  const expectedRelations = new Set<string>(
+    exactFinalizerPolicyClauses.map(({ relation }) => relation),
+  );
+  const candidates = policies.filter(
+    (policy) =>
+      expectedRelations.has(policy.relation) &&
+      isDeepStrictEqual(policy.roles, ["dasher_retention_definer"]),
+  );
+
+  for (const name of expectedNames) {
+    const contracts = exactFinalizerPolicyClauses.filter(
+      (contract) => contract.name === name,
+    );
+    const identity = `dasher.${contracts[0]!.relation}.${name}`;
+    const matches = candidates.filter(
+      (policy) =>
+        policy.name === name && policy.relation === contracts[0]!.relation,
+    );
+    if (matches.length !== 1) {
+      mismatches.push(`${identity}:count=${matches.length}`);
+      continue;
+    }
+
+    const policy = matches[0]!;
+    const expected = contracts[0]!;
+    for (const [dimension, value] of [
+      ["command", expected.command],
+      ["catalogCommand", expected.catalogCommand],
+      ["permissive", true],
+      ["roles", ["dasher_retention_definer"]],
+      ["bootstrap", false],
+      ["shutsOffWhenPhase", null],
+    ] as const) {
+      if (!isDeepStrictEqual(policy[dimension], value)) {
+        mismatches.push(`${identity}:${dimension}`);
+      }
+    }
+    for (const contract of contracts) {
+      if (policy[contract.clause] !== contract.expression) {
+        mismatches.push(`${identity}:${contract.clause}`);
+      }
+    }
+    if (policy.command === "SELECT" && policy.withCheck !== null) {
+      mismatches.push(`${identity}:withCheck`);
+    }
+    if (policy.command === "INSERT" && policy.using !== null) {
+      mismatches.push(`${identity}:using`);
+    }
+  }
+
+  for (const policy of candidates) {
+    if (!expectedNames.has(policy.name)) {
+      mismatches.push(`${exactModeledPolicyIdentity(policy)}:unexpected`);
     }
   }
 
@@ -3055,7 +3308,93 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     }
   });
 
+  it("bridges all 75 policies and semantically rejects every reintroduced finalizer parenthesis", () => {
+    const production = getModeled0003StaticCatalogContractForTests() as {
+      readonly ownershipDependencyRows: readonly unknown[];
+      readonly policies: readonly ExactModeledPolicy[];
+    };
+    const sources = [
+      {
+        label: "fixture-semantic",
+        policies: modeled0003Policies,
+      },
+      {
+        label: "fixture-catalog",
+        policies: modeled0003CatalogMatrix.policies,
+      },
+      {
+        label: "production-catalog",
+        policies: production.policies,
+      },
+    ] as const;
+
+    expect(modeled0003Policies).toHaveLength(75);
+    expect(modeled0003CatalogMatrix.policies).toHaveLength(75);
+    expect(production.policies).toHaveLength(75);
+    expect(exactModeledPolicyBridgeMismatches(sources)).toEqual([]);
+    expect(
+      isDeepStrictEqual(
+        production.ownershipDependencyRows,
+        modeled0003CatalogMatrix.ownershipDependencyRows,
+      ),
+    ).toBe(true);
+
+    expect(exactFinalizerPolicyClauses).toHaveLength(12);
+    expect(
+      new Set(exactFinalizerPolicyClauses.map(({ name }) => name)).size,
+    ).toBe(9);
+    for (const source of sources) {
+      expect(
+        exactFinalizerPolicyContractMismatches(source.policies),
+        source.label,
+      ).toEqual([]);
+    }
+
+    for (const contract of exactFinalizerPolicyClauses) {
+      const original = modeled0003Policies.find(
+        (policy) =>
+          policy.name === contract.name &&
+          policy.relation === contract.relation,
+      );
+      expect(original, `${contract.name}.${contract.clause}`).toBeDefined();
+      const expression = original?.[contract.clause];
+      expect(expression, `${contract.name}.${contract.clause}`).toBe(
+        contract.expression,
+      );
+      const mutant = modeled0003Policies.map((policy) =>
+        policy === original
+          ? {
+              ...policy,
+              [contract.clause]: `${expression})`,
+            }
+          : policy,
+      );
+      expect(mutant).not.toEqual(modeled0003Policies);
+      const identity = `dasher.${contract.relation}.${contract.name}`;
+      expect(
+        exactFinalizerPolicyContractMismatches(mutant),
+        `${identity}.${contract.clause}`,
+      ).toContain(`${identity}:${contract.clause}`);
+      expect(
+        exactModeledPolicyBridgeMismatches([
+          sources[1],
+          sources[2],
+          { label: "semantic-mutant", policies: mutant },
+        ]),
+        `${identity}.${contract.clause}`,
+      ).not.toEqual([]);
+    }
+  });
+
   it("freezes every modeled catalog category and the closed function owners", () => {
+    expect(Object.keys(modeled0003CatalogMatrix.relations)).toHaveLength(24);
+    expect(modeled0003CatalogMatrix.columns).toHaveLength(245);
+    expect(modeled0003CatalogMatrix.types).toHaveLength(29);
+    expect(modeled0003CatalogMatrix.indexes).toHaveLength(65);
+    expect(modeled0003CatalogMatrix.constraints).toHaveLength(100);
+    expect(modeled0003CatalogMatrix.triggers).toHaveLength(23);
+    expect(modeled0003CatalogMatrix.policies).toHaveLength(75);
+    expect(modeled0003CatalogMatrix.functions).toHaveLength(26);
     expect(Object.keys(modeled0003CatalogMatrix.relations)).toEqual([
       "dashboard_lifecycle_policies",
       "dashboards",
