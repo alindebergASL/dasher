@@ -1,5 +1,8 @@
 import { Buffer } from "node:buffer";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -18,6 +21,11 @@ import {
   type MigrationClient,
   type PgCompatiblePool,
 } from "../src/index.js";
+import {
+  exactCatalogMatchesForTests,
+  getCanonical0002ExactCatalogContractForTests,
+  resetPreparedRetentionRoles,
+} from "../src/migrator.js";
 import {
   borrowedClientPool,
   canonicalMigrationDirectory,
@@ -99,13 +107,28 @@ async function closeAppPoolBeforeLoginTeardown(): Promise<void> {
 }
 
 async function resetManagedSchemas(): Promise<void> {
-  await ownerPool.query(`
-    DROP SCHEMA IF EXISTS fixture_role_owned CASCADE;
-    DROP SCHEMA IF EXISTS dasher_api CASCADE;
-    DROP SCHEMA IF EXISTS dasher_private CASCADE;
-    DROP SCHEMA IF EXISTS dasher CASCADE;
-    DROP SCHEMA IF EXISTS dasher_meta CASCADE
-  `);
+  const client = await ownerPool.connect();
+  try {
+    await client.query(`
+      DROP SCHEMA IF EXISTS fixture_role_owned CASCADE;
+      DROP SCHEMA IF EXISTS dasher_api CASCADE;
+      DROP SCHEMA IF EXISTS dasher_private CASCADE;
+      DROP SCHEMA IF EXISTS dasher CASCADE;
+      DROP SCHEMA IF EXISTS dasher_meta CASCADE
+    `);
+    const managedAppRole = await client.query<{ readonly exists: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'dasher_app') AS exists",
+    );
+    if (managedAppRole.rows[0]?.exists === true) {
+      await executeServerFormattedSql(
+        client,
+        "REVOKE CONNECT ON DATABASE %I FROM dasher_app",
+        [config.ownerDatabase],
+      );
+    }
+  } finally {
+    client.release();
+  }
 }
 
 async function prepareAppliedJournal(): Promise<void> {
@@ -179,7 +202,7 @@ async function managedDependencyCount(databaseOid: string): Promise<string> {
         ON referenced_role.oid = dependency.refobjid
       WHERE dependency.dbid = $1::oid
         AND dependency.refclassid = 'pg_catalog.pg_authid'::regclass
-        AND dependency.deptype IN ('a', 'o')
+        AND dependency.deptype IN ('a', 'o', 'r')
         AND referenced_role.rolname IN (
           'dasher_app',
           'dasher_security_definer'
@@ -815,12 +838,970 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("serializes concurrent runners into exactly one apply and one skip", async () => {
+  it("keeps only the exact prepared pair after modeled-0003 catalog failure, retries, and explicitly resets", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-pg-"));
+    const modeledFixture = new URL(
+      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+      import.meta.url,
+    );
+    let modeledSqlExecutions = 0;
+    const instrumentedPool = {
+      async connect(): Promise<MigrationClient> {
+        const client = await ownerPool.connect();
+        const query = (async (text: string, values?: readonly unknown[]) => {
+          if (text.includes("modeled_successor_inventory_version")) {
+            modeledSqlExecutions += 1;
+          }
+          return client.query(text, values as unknown[] | undefined);
+        }) as MigrationClient["query"];
+        return {
+          query,
+          release(error) {
+            client.release(error);
+          },
+        };
+      },
+    };
+
     try {
-      const results = await Promise.all([
-        runMigrations(ownerPool, fixtureMigrationDirectory, []),
-        runMigrations(ownerPool, fixtureMigrationDirectory, []),
+      await resetManagedSchemas();
+      await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+      ] as const) {
+        await writeFile(
+          join(directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await writeFile(
+        join(directory, "0003_immutable_content.sql"),
+        await readFile(modeledFixture),
+      );
+
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        await expectMigrationRejection(
+          runMigrations(instrumentedPool, directory, []),
+          "managed_role_drift",
+        );
+        expect(modeledSqlExecutions).toBe(attempt);
+      }
+
+      const rolledBackModeledState = await ownerPool.query<{
+        readonly journal_count: string;
+        readonly probe_relation: string | null;
+      }>(`
+        SELECT
+          pg_catalog.to_regclass(
+            'dasher.modeled_successor_inventory_probe'
+          )::text AS probe_relation,
+          (
+            SELECT pg_catalog.count(*)::text
+            FROM dasher_meta.schema_migrations
+          ) AS journal_count
+      `);
+      expect(rolledBackModeledState.rows[0]).toEqual({
+        journal_count: "2",
+        probe_relation: null,
+      });
+
+      const prepared = await ownerPool.query<{
+        readonly attributes_match: boolean;
+        readonly comment: string | null;
+        readonly dependency_count: string;
+        readonly membership_count: string;
+        readonly role_name: string;
+      }>(`
+        SELECT
+          role.rolname::text AS role_name,
+          NOT role.rolcanlogin
+            AND NOT role.rolinherit
+            AND NOT role.rolsuper
+            AND NOT role.rolcreatedb
+            AND NOT role.rolcreaterole
+            AND NOT role.rolreplication
+            AND NOT role.rolbypassrls
+            AND role.rolpassword IS NULL
+            AND role.rolconnlimit = -1
+            AND role.rolvaliduntil = 'infinity'::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_db_role_setting AS setting
+              WHERE setting.setrole = role.oid
+            ) AS attributes_match,
+          pg_catalog.shobj_description(role.oid, 'pg_authid') AS comment,
+          (
+            SELECT pg_catalog.count(*)::text
+            FROM pg_catalog.pg_auth_members AS membership
+            WHERE membership.roleid = role.oid
+               OR membership.member = role.oid
+          ) AS membership_count,
+          (
+            SELECT pg_catalog.count(*)::text
+            FROM pg_catalog.pg_shdepend AS dependency
+            WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass
+              AND dependency.refobjid = role.oid
+              AND dependency.deptype IN ('a', 'o', 'r')
+          ) AS dependency_count
+        FROM pg_catalog.pg_authid AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+        ORDER BY role.rolname
+      `);
+      expect(prepared.rows).toEqual([
+        {
+          attributes_match: true,
+          comment: "dasher:managed-role:v1:retention-definer",
+          dependency_count: "0",
+          membership_count: "0",
+          role_name: "dasher_retention_definer",
+        },
+        {
+          attributes_match: true,
+          comment: "dasher:managed-role:v1:retention-operator",
+          dependency_count: "0",
+          membership_count: "0",
+          role_name: "dasher_retention_operator",
+        },
       ]);
+
+      const contaminationCases = [
+        {
+          name: "membership",
+          contaminate: () =>
+            ownerPool.query(
+              "GRANT dasher_retention_definer TO dasher_retention_operator",
+            ),
+          cleanup: () =>
+            ownerPool.query(
+              "REVOKE dasher_retention_definer FROM dasher_retention_operator",
+            ),
+        },
+        {
+          name: "ownership",
+          contaminate: () =>
+            ownerPool.query(
+              "CREATE SCHEMA fixture_role_owned AUTHORIZATION dasher_retention_definer",
+            ),
+          cleanup: () => ownerPool.query("DROP SCHEMA fixture_role_owned"),
+        },
+        {
+          name: "ACL",
+          contaminate: () =>
+            ownerPool.query(
+              "GRANT SELECT ON dasher.organizations TO dasher_retention_definer",
+            ),
+          cleanup: () =>
+            ownerPool.query(
+              "REVOKE SELECT ON dasher.organizations FROM dasher_retention_definer",
+            ),
+        },
+        {
+          name: "policy",
+          contaminate: () =>
+            ownerPool.query(`
+              CREATE POLICY task8a_prepared_dependency_policy
+              ON dasher.organizations
+              FOR SELECT
+              TO dasher_retention_definer
+              USING (false)
+            `),
+          cleanup: () =>
+            ownerPool.query(
+              "DROP POLICY task8a_prepared_dependency_policy ON dasher.organizations",
+            ),
+        },
+      ] as const;
+
+      for (const contamination of contaminationCases) {
+        await contamination.contaminate();
+        let dropRoleStatements = 0;
+        const resetProbePool = {
+          async connect(): Promise<MigrationClient> {
+            const client = await ownerPool.connect();
+            const query = (async (
+              text: string,
+              values?: readonly unknown[],
+            ) => {
+              if (text.trim().startsWith("DROP ROLE ")) {
+                dropRoleStatements += 1;
+              }
+              return client.query(text, values as unknown[] | undefined);
+            }) as MigrationClient["query"];
+            return {
+              query,
+              release(error) {
+                client.release(error);
+              },
+            };
+          },
+        };
+        try {
+          await expectMigrationRejection(
+            resetPreparedRetentionRoles(
+              resetProbePool,
+              canonicalMigrationDirectory,
+              [],
+            ),
+            "managed_role_drift",
+          );
+          expect(dropRoleStatements, contamination.name).toBe(0);
+        } finally {
+          await contamination.cleanup();
+        }
+      }
+
+      await resetPreparedRetentionRoles(
+        ownerPool,
+        canonicalMigrationDirectory,
+        [],
+      );
+      const residue = await ownerPool.query<{ readonly count: string }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      expect(residue.rows[0]?.count).toBe("0");
+    } finally {
+      const preparedCount = await ownerPool.query<{ readonly count: string }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      if (preparedCount.rows[0]?.count === "2") {
+        await resetPreparedRetentionRoles(
+          ownerPool,
+          canonicalMigrationDirectory,
+          [],
+        );
+      }
+      await rm(directory, { recursive: true, force: true });
+      await resetManagedSchemas();
+    }
+  }, 120_000);
+
+  async function proveSoleVariadicCatalogDelta(): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-variadic-"));
+    const modeledFixture = new URL(
+      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+      import.meta.url,
+    );
+    const probeIdentity = "dasher_private.task8a_variadic_probe(text[])";
+    const probeSource = "SELECT pg_catalog.cardinality($1)";
+    let probeCreated = false;
+
+    try {
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+      ] as const) {
+        await writeFile(
+          join(directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await writeFile(
+        join(directory, "0003_immutable_content.sql"),
+        await readFile(modeledFixture),
+      );
+
+      await resetManagedSchemas();
+      await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+      const owner = await ownerPool.query<{ readonly owner_name: string }>(
+        "SELECT session_user::text AS owner_name",
+      );
+      const ownerName = owner.rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("PostgreSQL did not return the session owner");
+      }
+
+      await ownerPool.query(`
+        CREATE FUNCTION dasher_private.task8a_variadic_probe(text[])
+        RETURNS integer
+        LANGUAGE sql
+        STABLE
+        SET search_path = pg_catalog
+        AS 'SELECT pg_catalog.cardinality($1)';
+        REVOKE ALL ON FUNCTION
+          dasher_private.task8a_variadic_probe(text[]) FROM PUBLIC
+      `);
+      probeCreated = true;
+
+      type ExactCatalog = Record<string, readonly string[]> & {
+        readonly acls: readonly string[];
+        readonly functions: readonly string[];
+      };
+      const canonicalExpected = getCanonical0002ExactCatalogContractForTests(
+        ownerName,
+      ) as ExactCatalog;
+      const baselineFunctionSignature =
+        `${probeIdentity}|f|integer|sql|s|false|false|false|false|u|<none>|0|<none>|${ownerName}|{search_path=pg_catalog}|` +
+        createHash("md5").update(probeSource).digest("hex");
+      const baselineAclSignature = `function|${probeIdentity}|${ownerName}|${ownerName}|EXECUTE|false`;
+      const withProbeBaseline: ExactCatalog = {
+        ...canonicalExpected,
+        functions: [
+          ...canonicalExpected.functions,
+          baselineFunctionSignature,
+        ].sort(),
+        acls: [...canonicalExpected.acls, baselineAclSignature].sort(),
+      };
+
+      const comparisonClient = await ownerPool.connect();
+      try {
+        expect(
+          await exactCatalogMatchesForTests(
+            comparisonClient,
+            withProbeBaseline,
+            ownerName,
+          ),
+        ).toBe(true);
+      } finally {
+        comparisonClient.release();
+      }
+
+      const before = await ownerPool.query<{
+        readonly compared_identity: string;
+        readonly function_oid: string;
+        readonly source_md5: string;
+        readonly variadic_type: string | null;
+      }>(
+        `
+        SELECT routine.oid::text AS function_oid,
+          pg_catalog.oidvectortypes(routine.proargtypes) AS compared_identity,
+          pg_catalog.md5(routine.prosrc) AS source_md5,
+          pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
+            AS variadic_type
+        FROM pg_catalog.pg_proc AS routine
+        WHERE routine.oid = $1::regprocedure
+      `,
+        [probeIdentity],
+      );
+      expect(before.rows[0]).toEqual({
+        compared_identity: "text[]",
+        function_oid: expect.any(String),
+        source_md5: createHash("md5").update(probeSource).digest("hex"),
+        variadic_type: null,
+      });
+
+      await ownerPool.query(`
+        CREATE OR REPLACE FUNCTION
+          dasher_private.task8a_variadic_probe(VARIADIC text[])
+        RETURNS integer
+        LANGUAGE sql
+        STABLE
+        SET search_path = pg_catalog
+        AS 'SELECT pg_catalog.cardinality($1)'
+      `);
+      const after = await ownerPool.query<{
+        readonly compared_identity: string;
+        readonly function_oid: string;
+        readonly source_md5: string;
+        readonly variadic_type: string | null;
+      }>(
+        `
+        SELECT routine.oid::text AS function_oid,
+          pg_catalog.oidvectortypes(routine.proargtypes) AS compared_identity,
+          pg_catalog.md5(routine.prosrc) AS source_md5,
+          pg_catalog.format_type(NULLIF(routine.provariadic, 0), NULL)
+            AS variadic_type
+        FROM pg_catalog.pg_proc AS routine
+        WHERE routine.oid = $1::regprocedure
+      `,
+        [probeIdentity],
+      );
+      expect(after.rows[0]).toEqual({
+        ...before.rows[0],
+        variadic_type: "text",
+      });
+
+      const afterClient = await ownerPool.connect();
+      try {
+        expect(
+          await exactCatalogMatchesForTests(
+            afterClient,
+            withProbeBaseline,
+            ownerName,
+          ),
+        ).toBe(false);
+        const provariadicBlindMutant: ExactCatalog = {
+          ...withProbeBaseline,
+          functions: withProbeBaseline.functions.map((signature) =>
+            signature === baselineFunctionSignature
+              ? signature.replace("|u|<none>|0|", "|u|text|0|")
+              : signature,
+          ),
+        };
+        expect(provariadicBlindMutant.functions).not.toEqual(
+          withProbeBaseline.functions,
+        );
+        expect(
+          await exactCatalogMatchesForTests(
+            afterClient,
+            provariadicBlindMutant,
+            ownerName,
+          ),
+        ).toBe(true);
+      } finally {
+        afterClient.release();
+      }
+
+      let exactComparisonCount = 0;
+      let preparedRoleDdlCount = 0;
+      let modeledSqlCount = 0;
+      const instrumentedPool = {
+        async connect(): Promise<MigrationClient> {
+          const client = await ownerPool.connect();
+          const query = (async (text: string, values?: readonly unknown[]) => {
+            if (text.includes("signature_catalog AS")) {
+              exactComparisonCount += 1;
+              const runnerExpected = JSON.parse(
+                String(values?.[0]),
+              ) as ExactCatalog;
+              expect(runnerExpected.functions).not.toContain(
+                baselineFunctionSignature,
+              );
+              return client.query(text, [
+                JSON.stringify(withProbeBaseline),
+                values?.[1],
+              ]);
+            }
+            if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
+              preparedRoleDdlCount += 1;
+            }
+            if (text.includes("modeled_successor_inventory_version")) {
+              modeledSqlCount += 1;
+            }
+            return client.query(text, values as unknown[] | undefined);
+          }) as MigrationClient["query"];
+          return {
+            query,
+            release(error) {
+              client.release(error);
+            },
+          };
+        },
+      };
+      await expectMigrationRejection(
+        runMigrations(instrumentedPool, directory, []),
+        "managed_role_drift",
+      );
+      expect(exactComparisonCount).toBe(1);
+      expect(preparedRoleDdlCount).toBe(0);
+      expect(modeledSqlCount).toBe(0);
+      const preparedRoleResidue = await ownerPool.query<{
+        readonly count: string;
+      }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      expect(preparedRoleResidue.rows[0]?.count).toBe("0");
+    } finally {
+      if (probeCreated) {
+        await ownerPool.query(
+          "DROP FUNCTION IF EXISTS dasher_private.task8a_variadic_probe(text[])",
+        );
+        const residue = await ownerPool.query<{
+          readonly identity: string | null;
+        }>(
+          "SELECT pg_catalog.to_regprocedure('dasher_private.task8a_variadic_probe(text[])')::text AS identity",
+        );
+        expect(residue.rows[0]?.identity).toBeNull();
+      }
+      await rm(directory, { recursive: true, force: true });
+      await resetManagedSchemas();
+    }
+  }
+
+  it("rejects representative catalog and grantability drift before prepared-role or modeled SQL side effects", async () => {
+    await proveSoleVariadicCatalogDelta();
+    const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-drift-"));
+    let originalDatabaseComment: string | null | undefined;
+    const modeledFixture = new URL(
+      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
+      import.meta.url,
+    );
+    const driftCases: readonly {
+      readonly apply?: () => Promise<void>;
+      readonly cleanup?: () => Promise<void>;
+      readonly name: string;
+      readonly sql?: string;
+    }[] = [
+      {
+        name: "extra index",
+        sql: "CREATE INDEX task8a_extra_index ON dasher.users (created_at)",
+      },
+      {
+        name: "same-name INCLUDE shape",
+        sql: `
+          DROP INDEX dasher.invitations_creator_idx;
+          CREATE INDEX invitations_creator_idx
+            ON dasher.invitations (organization_id, created_by_user_id)
+            INCLUDE (created_at)
+        `,
+      },
+      {
+        name: "column collation",
+        sql: `
+          ALTER TABLE dasher.organizations
+          ALTER COLUMN display_name
+          TYPE varchar(200) COLLATE "C"
+        `,
+      },
+      {
+        name: "index collation",
+        sql: `
+          DROP INDEX dasher.invitations_email_created_idx;
+          CREATE INDEX invitations_email_created_idx
+            ON dasher.invitations (
+              organization_id,
+              normalized_email COLLATE "C",
+              created_at DESC
+            )
+        `,
+      },
+      {
+        name: "same-index clustered state",
+        apply: async () => {
+          const before = await ownerPool.query<{
+            readonly identity: string;
+          }>(`
+            SELECT namespace.nspname || '.' || index_relation.relname AS identity
+            FROM pg_catalog.pg_index AS index_row
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            WHERE namespace.nspname LIKE 'dasher%'
+              AND index_row.indisclustered
+            ORDER BY identity
+          `);
+          expect(before.rows).toEqual([]);
+          await ownerPool.query(
+            "ALTER TABLE dasher.invitations CLUSTER ON invitations_creator_idx",
+          );
+          const after = await ownerPool.query<{
+            readonly identity: string;
+          }>(`
+            SELECT namespace.nspname || '.' || index_relation.relname AS identity
+            FROM pg_catalog.pg_index AS index_row
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            WHERE namespace.nspname LIKE 'dasher%'
+              AND index_row.indisclustered
+            ORDER BY identity
+          `);
+          expect(after.rows).toEqual([
+            { identity: "dasher.invitations_creator_idx" },
+          ]);
+        },
+        cleanup: async () => {
+          await ownerPool.query(
+            "ALTER TABLE dasher.invitations SET WITHOUT CLUSTER",
+          );
+          const reset = await ownerPool.query<{ readonly count: string }>(`
+            SELECT pg_catalog.count(*)::text AS count
+            FROM pg_catalog.pg_index AS index_row
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            WHERE namespace.nspname LIKE 'dasher%'
+              AND index_row.indisclustered
+          `);
+          expect(reset.rows[0]?.count).toBe("0");
+        },
+      },
+      {
+        name: "trailing function default",
+        apply: async () => {
+          const before = await ownerPool.query<{
+            readonly default_count: number;
+            readonly definition: string;
+            readonly function_oid: string;
+          }>(`
+            SELECT routine.oid::text AS function_oid,
+              routine.pronargdefaults AS default_count,
+              pg_catalog.pg_get_functiondef(routine.oid) AS definition
+            FROM pg_catalog.pg_proc AS routine
+            WHERE routine.oid = 'dasher_private.context_allows(uuid, text)'::regprocedure
+          `);
+          const original = before.rows[0];
+          expect(original?.default_count).toBe(0);
+          const changedDefinition = original?.definition.replace(
+            /p_required_role text(?=\s*\))/u,
+            "p_required_role text DEFAULT 'viewer'::text",
+          );
+          expect(changedDefinition).toBeDefined();
+          expect(changedDefinition).not.toBe(original?.definition);
+          await ownerPool.query(changedDefinition ?? "");
+          const after = await ownerPool.query<{
+            readonly default_count: number;
+            readonly default_expression: string;
+            readonly function_oid: string;
+          }>(`
+            SELECT routine.oid::text AS function_oid,
+              routine.pronargdefaults AS default_count,
+              pg_catalog.pg_get_expr(
+                routine.proargdefaults,
+                0,
+                false
+              ) AS default_expression
+            FROM pg_catalog.pg_proc AS routine
+            WHERE routine.oid = 'dasher_private.context_allows(uuid, text)'::regprocedure
+          `);
+          expect(after.rows[0]).toEqual({
+            default_count: 1,
+            default_expression: "'viewer'::text",
+            function_oid: original?.function_oid,
+          });
+        },
+      },
+      {
+        name: "column comment",
+        sql: "COMMENT ON COLUMN dasher.users.user_id IS 'task8a-column-drift'",
+        cleanup: () =>
+          ownerPool
+            .query("COMMENT ON COLUMN dasher.users.user_id IS NULL")
+            .then(() => undefined),
+      },
+      {
+        name: "constraint comment",
+        sql: "COMMENT ON CONSTRAINT users_pkey ON dasher.users IS 'task8a-constraint-drift'",
+        cleanup: () =>
+          ownerPool
+            .query("COMMENT ON CONSTRAINT users_pkey ON dasher.users IS NULL")
+            .then(() => undefined),
+      },
+      {
+        name: "trigger comment",
+        sql: "COMMENT ON TRIGGER audit_events_immutable ON dasher.audit_events IS 'task8a-trigger-drift'",
+        cleanup: () =>
+          ownerPool
+            .query(
+              "COMMENT ON TRIGGER audit_events_immutable ON dasher.audit_events IS NULL",
+            )
+            .then(() => undefined),
+      },
+      {
+        name: "policy comment",
+        sql: "COMMENT ON POLICY organizations_select ON dasher.organizations IS 'task8a-policy-drift'",
+        cleanup: () =>
+          ownerPool
+            .query(
+              "COMMENT ON POLICY organizations_select ON dasher.organizations IS NULL",
+            )
+            .then(() => undefined),
+      },
+      {
+        name: "database comment",
+        apply: async () => {
+          const client = await ownerPool.connect();
+          try {
+            const original = await client.query<{
+              readonly comment: string | null;
+            }>(`
+              SELECT pg_catalog.shobj_description(
+                database_row.oid,
+                'pg_database'
+              ) AS comment
+              FROM pg_catalog.pg_database AS database_row
+              WHERE database_row.datname = pg_catalog.current_database()
+            `);
+            originalDatabaseComment = original.rows[0]?.comment ?? null;
+            await executeServerFormattedSql(
+              client,
+              "COMMENT ON DATABASE %I IS 'task8a-database-drift'",
+              [config.ownerDatabase],
+            );
+          } finally {
+            client.release();
+          }
+        },
+        cleanup: async () => {
+          const client = await ownerPool.connect();
+          try {
+            if (originalDatabaseComment === null) {
+              await executeServerFormattedSql(
+                client,
+                "COMMENT ON DATABASE %I IS NULL",
+                [config.ownerDatabase],
+              );
+            } else if (originalDatabaseComment !== undefined) {
+              await executeServerFormattedSql(
+                client,
+                "COMMENT ON DATABASE %I IS %L",
+                [config.ownerDatabase, originalDatabaseComment],
+              );
+            } else {
+              throw new Error("database comment cleanup lacks original value");
+            }
+            originalDatabaseComment = undefined;
+          } finally {
+            client.release();
+          }
+        },
+      },
+      {
+        name: "extra constraint",
+        sql: "ALTER TABLE dasher.users ADD CONSTRAINT task8a_extra_check CHECK (user_id IS NOT NULL)",
+      },
+      {
+        name: "extra trigger",
+        sql: "CREATE TRIGGER task8a_extra_trigger BEFORE UPDATE ON dasher.users FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()",
+      },
+      {
+        name: "third policy",
+        sql: "CREATE POLICY task8a_extra_policy ON dasher.organizations FOR SELECT TO dasher_app USING (true)",
+      },
+      {
+        name: "extra type",
+        sql: "CREATE TYPE dasher.task8a_extra_type AS ENUM ('extra')",
+      },
+      {
+        name: "extra procedure",
+        sql: "CREATE PROCEDURE dasher_private.task8a_extra_procedure() LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN NULL; END'",
+      },
+      {
+        name: "security invoker",
+        sql: "ALTER FUNCTION dasher_private.context_user_id() SECURITY INVOKER",
+      },
+      {
+        name: "immutable volatility",
+        sql: "ALTER FUNCTION dasher_private.context_user_id() IMMUTABLE",
+      },
+      {
+        name: "missing proconfig",
+        sql: "ALTER FUNCTION dasher_private.context_user_id() RESET ALL",
+      },
+      {
+        name: "altered body",
+        sql: `
+          CREATE OR REPLACE FUNCTION dasher_private.context_user_id()
+          RETURNS uuid
+          LANGUAGE plpgsql
+          STABLE
+          SECURITY DEFINER
+          SET search_path = pg_catalog
+          AS 'BEGIN RETURN NULL; END'
+        `,
+      },
+      {
+        name: "grant option",
+        sql: "GRANT EXECUTE ON FUNCTION dasher_private.context_user_id() TO dasher_app WITH GRANT OPTION",
+      },
+      {
+        name: "altered result",
+        sql: `
+          DROP FUNCTION dasher_private.context_user_id() CASCADE;
+          CREATE FUNCTION dasher_private.context_user_id()
+          RETURNS text
+          LANGUAGE plpgsql
+          STABLE
+          SECURITY DEFINER
+          SET search_path = pg_catalog
+          AS 'BEGIN RETURN NULL; END';
+          ALTER FUNCTION dasher_private.context_user_id()
+            OWNER TO dasher_security_definer;
+          REVOKE ALL ON FUNCTION dasher_private.context_user_id()
+            FROM PUBLIC, dasher_app;
+          GRANT EXECUTE ON FUNCTION dasher_private.context_user_id()
+            TO dasher_app
+        `,
+      },
+    ] as const;
+
+    try {
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+      ] as const) {
+        await writeFile(
+          join(directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await writeFile(
+        join(directory, "0003_immutable_content.sql"),
+        await readFile(modeledFixture),
+      );
+
+      for (const drift of driftCases) {
+        await resetManagedSchemas();
+        await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+        if (drift.apply !== undefined) {
+          await drift.apply();
+        } else if (drift.sql !== undefined) {
+          await ownerPool.query(drift.sql);
+        } else {
+          throw new Error(`missing PostgreSQL drift mutation: ${drift.name}`);
+        }
+        let preparedRoleDdlCount = 0;
+        let modeledSqlCount = 0;
+        const instrumentedPool = {
+          async connect(): Promise<MigrationClient> {
+            const client = await ownerPool.connect();
+            const query = (async (
+              text: string,
+              values?: readonly unknown[],
+            ) => {
+              if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
+                preparedRoleDdlCount += 1;
+              }
+              if (text.includes("modeled_successor_inventory_version")) {
+                modeledSqlCount += 1;
+              }
+              return client.query(text, values as unknown[] | undefined);
+            }) as MigrationClient["query"];
+            return {
+              query,
+              release(error) {
+                client.release(error);
+              },
+            };
+          },
+        };
+
+        try {
+          await expectMigrationRejection(
+            runMigrations(instrumentedPool, directory, []),
+            "managed_role_drift",
+          );
+          expect(preparedRoleDdlCount, drift.name).toBe(0);
+          expect(modeledSqlCount, drift.name).toBe(0);
+        } finally {
+          await drift.cleanup?.();
+        }
+      }
+    } finally {
+      if (originalDatabaseComment !== undefined) {
+        const client = await ownerPool.connect();
+        try {
+          if (originalDatabaseComment === null) {
+            await executeServerFormattedSql(
+              client,
+              "COMMENT ON DATABASE %I IS NULL",
+              [config.ownerDatabase],
+            );
+          } else {
+            await executeServerFormattedSql(
+              client,
+              "COMMENT ON DATABASE %I IS %L",
+              [config.ownerDatabase, originalDatabaseComment],
+            );
+          }
+        } finally {
+          client.release();
+        }
+      }
+      await rm(directory, { recursive: true, force: true });
+      await resetManagedSchemas();
+    }
+  }, 120_000);
+
+  it("serializes concurrent runners into exactly one apply and one skip", async () => {
+    const runnerAPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_runner_a",
+      max: 1,
+    });
+    const runnerBPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_runner_b",
+      max: 1,
+    });
+    let markRunnerAAcquired!: () => void;
+    let releaseRunnerA!: () => void;
+    const runnerAAcquired = new Promise<void>((resolve) => {
+      markRunnerAAcquired = resolve;
+    });
+    const runnerARelease = new Promise<void>((resolve) => {
+      releaseRunnerA = resolve;
+    });
+    const gatedRunnerAPool = {
+      async connect(): Promise<MigrationClient> {
+        const client = await runnerAPool.connect();
+        const query = (async (text: string, values?: readonly unknown[]) => {
+          const result = await client.query(
+            text,
+            values as unknown[] | undefined,
+          );
+          if (text.includes("pg_catalog.pg_advisory_lock(")) {
+            markRunnerAAcquired();
+            await runnerARelease;
+          }
+          return result;
+        }) as MigrationClient["query"];
+        return {
+          query,
+          release(error) {
+            client.release(error);
+          },
+        };
+      },
+    };
+
+    try {
+      const runnerA = runMigrations(
+        gatedRunnerAPool,
+        fixtureMigrationDirectory,
+        [],
+      );
+      const runnerASettled = runnerA.then(
+        (value) => ({ value, error: undefined }),
+        (error: unknown) => ({ value: undefined, error }),
+      );
+      await runnerAAcquired;
+
+      const runnerB = runMigrations(runnerBPool, fixtureMigrationDirectory, []);
+      const runnerBSettled = runnerB.then(
+        (value) => ({ value, error: undefined }),
+        (error: unknown) => ({ value: undefined, error }),
+      );
+
+      let observedWaiter = false;
+      for (let attempt = 0; attempt < 1_000; attempt += 1) {
+        const state = await ownerPool.query<{ readonly waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_stat_activity AS activity
+            JOIN pg_catalog.pg_locks AS lock_row ON lock_row.pid = activity.pid
+            WHERE activity.application_name = 'dasher_task8a_runner_b'
+              AND lock_row.locktype = 'advisory'
+              AND NOT lock_row.granted
+              AND activity.wait_event_type = 'Lock'
+          ) AS waiting
+        `);
+        if (state.rows[0]?.waiting === true) {
+          observedWaiter = true;
+          break;
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(observedWaiter).toBe(true);
+      releaseRunnerA();
+
+      const settled = await Promise.all([runnerASettled, runnerBSettled]);
+      expect(settled.map((entry) => entry.error)).toEqual([
+        undefined,
+        undefined,
+      ]);
+      const results = settled.map((entry) => entry.value!);
 
       expect(results.map((result) => result.appliedCount).sort()).toEqual([
         0, 2,
@@ -834,9 +1815,266 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(journal.rows[0]?.count).toBe("2");
     } finally {
+      releaseRunnerA();
+      await Promise.allSettled([runnerAPool.end(), runnerBPool.end()]);
       await resetManagedSchemas();
     }
   });
+
+  it("executes both retention initializer/writer gate winner orders and gated cleanup", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const initializerPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_initializer",
+      max: 1,
+    });
+    const writerPool = new Pool({
+      connectionString: config.ownerDsn,
+      application_name: "dasher_task8a_writer",
+      max: 1,
+    });
+    const subject = "task8a_synthetic_operator";
+    const observeWaiter = async (applicationName: string): Promise<void> => {
+      for (let attempt = 0; attempt < 1_000; attempt += 1) {
+        const state = await ownerPool.query<{ readonly waiting: boolean }>(
+          `
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS lock_row
+                ON lock_row.pid = activity.pid
+              WHERE activity.application_name = $1
+                AND lock_row.locktype = 'advisory'
+                AND NOT lock_row.granted
+                AND activity.wait_event_type = 'Lock'
+            ) AS waiting
+          `,
+          [applicationName],
+        );
+        if (state.rows[0]?.waiting === true) return;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      throw new Error("Task 8A barrier waiter was not observed");
+    };
+
+    try {
+      await ownerPool.query(harnessSql);
+      await ownerPool.query(
+        "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+        [subject],
+      );
+
+      const initializer = await initializerPool.connect();
+      const writer = await writerPool.connect();
+      try {
+        await initializer.query("BEGIN");
+        const initialized = await initializer.query<{
+          readonly revision: string;
+        }>("SELECT task8a_retention_barrier.initialize($1) AS revision", [
+          subject,
+        ]);
+        expect(initialized.rows[0]?.revision).toBe("1");
+
+        await writer.query("BEGIN");
+        const disableAfterInitializer = writer
+          .query(
+            "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
+            [subject],
+          )
+          .then(
+            () => ({ error: undefined }),
+            (error: unknown) => ({ error }),
+          );
+        await observeWaiter("dasher_task8a_writer");
+        const revalidated = await initializer.query<{
+          readonly revision: string;
+        }>("SELECT task8a_retention_barrier.revalidate($1) AS revision", [
+          subject,
+        ]);
+        expect(revalidated.rows[0]?.revision).toBe("1");
+        await initializer.query("COMMIT");
+        expect((await disableAfterInitializer).error).toBeUndefined();
+        await writer.query("COMMIT");
+
+        await initializer.query("BEGIN");
+        await expect(
+          initializer.query("SELECT task8a_retention_barrier.initialize($1)", [
+            subject,
+          ]),
+        ).rejects.toMatchObject({ code: "55000" });
+        await initializer.query("ROLLBACK");
+
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [subject],
+        );
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+          [subject],
+        );
+
+        await writer.query("BEGIN");
+        await writer.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 2, false)",
+          [subject],
+        );
+        await initializer.query("BEGIN");
+        const initializeAfterWriter = initializer
+          .query("SELECT task8a_retention_barrier.initialize($1)", [subject])
+          .then(
+            () => ({ error: undefined }),
+            (error: unknown) => ({ error }),
+          );
+        await observeWaiter("dasher_task8a_initializer");
+        await writer.query("COMMIT");
+        expect((await initializeAfterWriter).error).toMatchObject({
+          code: "55000",
+        });
+        await initializer.query("ROLLBACK");
+
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [subject],
+        );
+        const residue = await ownerPool.query<{ readonly count: string }>(
+          "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
+        );
+        expect(residue.rows[0]?.count).toBe("0");
+      } finally {
+        await Promise.allSettled([
+          initializer.query("ROLLBACK"),
+          writer.query("ROLLBACK"),
+        ]);
+        initializer.release();
+        writer.release();
+      }
+    } finally {
+      await Promise.allSettled([initializerPool.end(), writerPool.end()]);
+      await ownerPool.query(
+        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
+      );
+    }
+  }, 120_000);
+
+  it("denies ambiguous initializer bindings without leaving bound context", async () => {
+    const harnessSql = await readFile(
+      new URL(
+        "./fixtures/migrations-0003-allowlist/initializer-barrier/harness.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const normalPrincipalId = "80000000-0000-4000-8000-000000000001";
+    const conflictingPrincipalId = "80000000-0000-4000-8000-000000000002";
+
+    const expectNormalizedDenialWithoutContext = async (
+      subject: string,
+    ): Promise<void> => {
+      const client = await ownerPool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SAVEPOINT initializer_attempt");
+        await expect(
+          client.query("SELECT task8a_retention_barrier.initialize($1)", [
+            subject,
+          ]),
+        ).rejects.toMatchObject({ code: "55000", message: "task8a_denied" });
+        await client.query("ROLLBACK TO SAVEPOINT initializer_attempt");
+        const context = await client.query<{
+          readonly bound_principal_id: string;
+          readonly bound_revision: string;
+        }>(`
+          SELECT
+            COALESCE(
+              pg_catalog.current_setting(
+                'task8a.bound_principal_id',
+                true
+              ),
+              ''
+            ) AS bound_principal_id,
+            COALESCE(
+              pg_catalog.current_setting('task8a.bound_revision', true),
+              ''
+            ) AS bound_revision
+        `);
+        expect(context.rows[0]).toEqual({
+          bound_principal_id: "",
+          bound_revision: "",
+        });
+        await client.query("ROLLBACK");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
+    };
+
+    const cases = [
+      {
+        name: "different principals tied at the maximum revision",
+        subject: "task8a_tied_principals",
+        principalId: conflictingPrincipalId,
+        revision: 1,
+      },
+      {
+        name: "different principals at different revisions",
+        subject: "task8a_conflicting_principal_history",
+        principalId: conflictingPrincipalId,
+        revision: 2,
+      },
+      {
+        name: "duplicate rows for one principal and revision",
+        subject: "task8a_duplicate_revision",
+        principalId: normalPrincipalId,
+        revision: 1,
+      },
+    ] as const;
+
+    try {
+      await ownerPool.query(harnessSql);
+      for (const testCase of cases) {
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.append_revision($1, 1, true)",
+          [testCase.subject],
+        );
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.insert_adversarial_revision($1, $2, $3, true)",
+          [testCase.subject, testCase.principalId, testCase.revision],
+        );
+
+        await expectNormalizedDenialWithoutContext(testCase.subject);
+        await ownerPool.query(
+          "SELECT task8a_retention_barrier.cleanup_subject($1)",
+          [testCase.subject],
+        );
+        const subjectResidue = await ownerPool.query<{
+          readonly count: string;
+        }>(
+          `
+            SELECT pg_catalog.count(*)::text AS count
+            FROM task8a_retention_barrier.authority_revisions
+            WHERE binding_subject = $1
+          `,
+          [testCase.subject],
+        );
+        expect(subjectResidue.rows[0]?.count, testCase.name).toBe("0");
+      }
+
+      const totalResidue = await ownerPool.query<{ readonly count: string }>(
+        "SELECT pg_catalog.count(*)::text AS count FROM task8a_retention_barrier.authority_revisions",
+      );
+      expect(totalResidue.rows[0]?.count).toBe("0");
+    } finally {
+      await ownerPool.query(
+        "DROP SCHEMA IF EXISTS task8a_retention_barrier CASCADE",
+      );
+    }
+  }, 120_000);
 
   it("rejects either managed namespace as an adoption conflict", async () => {
     for (const schemaName of ["dasher", "dasher_meta"] as const) {
@@ -1705,33 +2943,33 @@ const expectedForeignKeys = [
 ] as const;
 
 const expectedIndexes = [
-  "audit_events|audit_events_actor_idx|btree|false|false|true|true|true|false|<none>|{organization_id,actor_user_id}|{uuid_ops,uuid_ops}|0 0",
-  "audit_events|audit_events_occurred_idx|btree|false|false|true|true|true|false|<none>|{organization_id,occurred_at,audit_event_id}|{uuid_ops,timestamptz_ops,uuid_ops}|0 0 0",
-  "audit_events|audit_events_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,audit_event_id}|{uuid_ops,uuid_ops}|0 0",
-  "audit_events|audit_events_pkey|btree|true|true|true|true|true|false|<none>|{audit_event_id}|{uuid_ops}|0",
-  "external_identities|external_identities_pkey|btree|true|true|true|true|true|false|<none>|{issuer,subject}|{text_ops,text_ops}|0 0",
-  "external_identities|external_identities_user_key|btree|true|false|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
-  "invitations|invitations_accepted_user_idx|btree|false|false|true|true|true|false|<none>|{accepted_user_id}|{uuid_ops}|0",
-  "invitations|invitations_creator_idx|btree|false|false|true|true|true|false|<none>|{organization_id,created_by_user_id}|{uuid_ops,uuid_ops}|0 0",
-  "invitations|invitations_email_created_idx|btree|false|false|true|true|true|false|<none>|{organization_id,normalized_email,created_at}|{uuid_ops,text_ops,timestamptz_ops}|0 0 3",
-  "invitations|invitations_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,invitation_id}|{uuid_ops,uuid_ops}|0 0",
-  "invitations|invitations_pkey|btree|true|true|true|true|true|false|<none>|{invitation_id}|{uuid_ops}|0",
-  "invitations|invitations_revoker_idx|btree|false|false|true|true|true|false|<none>|{organization_id,revoked_by_user_id}|{uuid_ops,uuid_ops}|0 0",
-  "invitations|invitations_token_key|btree|true|false|true|true|true|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
-  "memberships|memberships_active_authority_idx|btree|false|false|true|true|true|false|((state)::text = 'active'::text)|{organization_id,user_id,authority_revision}|{uuid_ops,uuid_ops,int8_ops}|0 0 0",
-  "memberships|memberships_org_membership_key|btree|true|false|true|true|true|false|<none>|{organization_id,membership_id}|{uuid_ops,uuid_ops}|0 0",
-  "memberships|memberships_org_user_key|btree|true|false|true|true|true|false|<none>|{organization_id,user_id}|{uuid_ops,uuid_ops}|0 0",
-  "memberships|memberships_pkey|btree|true|true|true|true|true|false|<none>|{membership_id}|{uuid_ops}|0",
-  "memberships|memberships_user_idx|btree|false|false|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
-  "organizations|organizations_pkey|btree|true|true|true|true|true|false|<none>|{organization_id}|{uuid_ops}|0",
-  "sessions|sessions_csrf_key|btree|true|false|true|true|true|false|<none>|{csrf_key_version,csrf_digest}|{int2_ops,bytea_ops}|0 0",
-  "sessions|sessions_live_user_idx|btree|false|false|true|true|true|false|<none>|{organization_id,user_id,revoked_at}|{uuid_ops,uuid_ops,timestamptz_ops}|0 0 0",
-  "sessions|sessions_org_id_key|btree|true|false|true|true|true|false|<none>|{organization_id,session_id}|{uuid_ops,uuid_ops}|0 0",
-  "sessions|sessions_pkey|btree|true|true|true|true|true|false|<none>|{session_id}|{uuid_ops}|0",
-  "sessions|sessions_replaced_by_idx|btree|false|false|true|true|true|false|<none>|{organization_id,replaced_by_session_id}|{uuid_ops,uuid_ops}|0 0",
-  "sessions|sessions_rotated_from_idx|btree|false|false|true|true|true|false|<none>|{organization_id,rotated_from_session_id}|{uuid_ops,uuid_ops}|0 0",
-  "sessions|sessions_token_key|btree|true|false|true|true|true|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
-  "users|users_pkey|btree|true|true|true|true|true|false|<none>|{user_id}|{uuid_ops}|0",
+  "audit_events|audit_events_actor_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,actor_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "audit_events|audit_events_occurred_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,occurred_at,audit_event_id}|{uuid_ops,timestamptz_ops,uuid_ops}|0 0 0",
+  "audit_events|audit_events_org_id_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,audit_event_id}|{uuid_ops,uuid_ops}|0 0",
+  "audit_events|audit_events_pkey|btree|true|true|true|true|true|false|false|<none>|{audit_event_id}|{uuid_ops}|0",
+  "external_identities|external_identities_pkey|btree|true|true|true|true|true|false|false|<none>|{issuer,subject}|{text_ops,text_ops}|0 0",
+  "external_identities|external_identities_user_key|btree|true|false|true|true|true|false|false|<none>|{user_id}|{uuid_ops}|0",
+  "invitations|invitations_accepted_user_idx|btree|false|false|true|true|true|false|false|<none>|{accepted_user_id}|{uuid_ops}|0",
+  "invitations|invitations_creator_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,created_by_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_email_created_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,normalized_email,created_at}|{uuid_ops,text_ops,timestamptz_ops}|0 0 3",
+  "invitations|invitations_org_id_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,invitation_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_pkey|btree|true|true|true|true|true|false|false|<none>|{invitation_id}|{uuid_ops}|0",
+  "invitations|invitations_revoker_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,revoked_by_user_id}|{uuid_ops,uuid_ops}|0 0",
+  "invitations|invitations_token_key|btree|true|false|true|true|true|false|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
+  "memberships|memberships_active_authority_idx|btree|false|false|true|true|true|false|false|((state)::text = 'active'::text)|{organization_id,user_id,authority_revision}|{uuid_ops,uuid_ops,int8_ops}|0 0 0",
+  "memberships|memberships_org_membership_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,membership_id}|{uuid_ops,uuid_ops}|0 0",
+  "memberships|memberships_org_user_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,user_id}|{uuid_ops,uuid_ops}|0 0",
+  "memberships|memberships_pkey|btree|true|true|true|true|true|false|false|<none>|{membership_id}|{uuid_ops}|0",
+  "memberships|memberships_user_idx|btree|false|false|true|true|true|false|false|<none>|{user_id}|{uuid_ops}|0",
+  "organizations|organizations_pkey|btree|true|true|true|true|true|false|false|<none>|{organization_id}|{uuid_ops}|0",
+  "sessions|sessions_csrf_key|btree|true|false|true|true|true|false|false|<none>|{csrf_key_version,csrf_digest}|{int2_ops,bytea_ops}|0 0",
+  "sessions|sessions_live_user_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,user_id,revoked_at}|{uuid_ops,uuid_ops,timestamptz_ops}|0 0 0",
+  "sessions|sessions_org_id_key|btree|true|false|true|true|true|false|false|<none>|{organization_id,session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_pkey|btree|true|true|true|true|true|false|false|<none>|{session_id}|{uuid_ops}|0",
+  "sessions|sessions_replaced_by_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,replaced_by_session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_rotated_from_idx|btree|false|false|true|true|true|false|false|<none>|{organization_id,rotated_from_session_id}|{uuid_ops,uuid_ops}|0 0",
+  "sessions|sessions_token_key|btree|true|false|true|true|true|false|false|<none>|{token_key_version,token_digest}|{int2_ops,bytea_ops}|0 0",
+  "users|users_pkey|btree|true|true|true|true|true|false|false|<none>|{user_id}|{uuid_ops}|0",
 ] as const;
 
 const ownerTableAcl =
@@ -3023,6 +4261,7 @@ describe.sequential(
         index_row.indisready::text || '|' ||
         (index_row.indnatts = index_row.indnkeyatts)::text || '|' ||
         index_row.indnullsnotdistinct::text || '|' ||
+        index_row.indisclustered::text || '|' ||
         COALESCE(
           pg_catalog.pg_get_expr(index_row.indpred, index_row.indrelid),
           '<none>'
