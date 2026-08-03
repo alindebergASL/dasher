@@ -18,6 +18,8 @@ import {
   MigrationContractError,
   bootstrapManagedRoles,
   discoverMigrations,
+  getCanonical0003ExactCatalogContractForTests,
+  getCanonical0004ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
   runMigrations,
@@ -101,7 +103,7 @@ type FailureStage =
 
 interface FailureInjection {
   readonly stage: FailureStage;
-  readonly transaction: 1 | 2 | 3;
+  readonly transaction: 1 | 2 | 3 | 4 | 5;
 }
 
 type ManagedRoleName =
@@ -131,6 +133,7 @@ interface ScriptedMigrationOptions {
   >;
   readonly normalReleaseThrows?: boolean;
   readonly operationError?: unknown;
+  readonly lifecycleCorrectionCatalogMatches?: boolean;
   readonly prefixObjectMatches?: boolean;
   readonly retentionRoleNames?: readonly string[];
   readonly rollbackFails?: boolean;
@@ -161,6 +164,7 @@ interface ScriptedMigrationClient {
   readonly dependencyRoleNames: readonly (readonly string[])[];
   readonly catalogContracts: readonly Record<string, readonly string[]>[];
   readonly journalRows: readonly Record<string, unknown>[];
+  readonly lifecycleCorrectionSideEffectPresent: boolean;
   readonly modeledSuccessorSideEffectPresent: boolean;
 }
 
@@ -239,12 +243,14 @@ function scriptedMigrationClient(
   const droppedPreparedRoles = new Set<string>();
   let modeledSuccessorSideEffectPresent = false;
   let canonicalSuccessorSideEffectPresent = false;
+  let lifecycleCorrectionSideEffectPresent = false;
   let transactionSnapshot:
     | {
         readonly canonicalSuccessorSideEffectPresent: boolean;
         readonly createdPreparedRoles: readonly string[];
         readonly droppedPreparedRoles: readonly string[];
         readonly journalRows: readonly (typeof journalRows)[number][];
+        readonly lifecycleCorrectionSideEffectPresent: boolean;
         readonly modeledSuccessorSideEffectPresent: boolean;
       }
     | undefined;
@@ -294,6 +300,7 @@ function scriptedMigrationClient(
         createdPreparedRoles: [...createdPreparedRoles],
         droppedPreparedRoles: [...droppedPreparedRoles],
         journalRows: journalRows.map((row) => ({ ...row })),
+        lifecycleCorrectionSideEffectPresent,
         modeledSuccessorSideEffectPresent,
       };
       command("BEGIN");
@@ -358,6 +365,8 @@ function scriptedMigrationClient(
           transactionSnapshot.modeledSuccessorSideEffectPresent;
         canonicalSuccessorSideEffectPresent =
           transactionSnapshot.canonicalSuccessorSideEffectPresent;
+        lifecycleCorrectionSideEffectPresent =
+          transactionSnapshot.lifecycleCorrectionSideEffectPresent;
         transactionSnapshot = undefined;
       }
       return result([]);
@@ -498,9 +507,16 @@ function scriptedMigrationClient(
       const isSuccessor = (contract.relations ?? []).some((signature) =>
         signature.includes("|dashboards|"),
       );
-      const explicitMatch = isSuccessor
-        ? (options.successorCatalogMatches ?? options.prefixObjectMatches)
-        : options.prefixObjectMatches;
+      const isLifecycleCorrection = (contract.types ?? []).some((signature) =>
+        signature.includes("|dashboard_creation_result|"),
+      );
+      const explicitMatch = isLifecycleCorrection
+        ? (options.lifecycleCorrectionCatalogMatches ??
+          options.successorCatalogMatches ??
+          options.prefixObjectMatches)
+        : isSuccessor
+          ? (options.successorCatalogMatches ?? options.prefixObjectMatches)
+          : options.prefixObjectMatches;
       if (explicitMatch === undefined) {
         throw new Error("scripted catalog matching must be explicit");
       }
@@ -683,7 +699,8 @@ function scriptedMigrationClient(
       text.startsWith("SELECT 1;") ||
       text.startsWith("SELECT 2;") ||
       text.includes("modeled_successor_inventory_version") ||
-      text.includes("-- Dasher immutable-content and lifecycle successor.")
+      text.includes("-- Dasher immutable-content and lifecycle successor.") ||
+      text.includes("-- Dasher lifecycle API correction successor.")
     ) {
       command("MIGRATION SQL");
       if (text.includes("modeled_successor_inventory_version")) {
@@ -693,6 +710,9 @@ function scriptedMigrationClient(
         text.includes("-- Dasher immutable-content and lifecycle successor.")
       ) {
         canonicalSuccessorSideEffectPresent = true;
+      }
+      if (text.includes("-- Dasher lifecycle API correction successor.")) {
+        lifecycleCorrectionSideEffectPresent = true;
       }
       failAt("migration");
       return result([]);
@@ -740,6 +760,9 @@ function scriptedMigrationClient(
     catalogContracts,
     get journalRows() {
       return journalRows;
+    },
+    get lifecycleCorrectionSideEffectPresent() {
+      return lifecycleCorrectionSideEffectPresent;
     },
     get modeledSuccessorSideEffectPresent() {
       return modeledSuccessorSideEffectPresent;
@@ -831,7 +854,7 @@ const transactionFailureCases = [
 
 function transactionCommands(
   scripted: ScriptedMigrationClient,
-  transaction: 1 | 2 | 3,
+  transaction: 1 | 2 | 3 | 4 | 5,
 ): readonly string[] {
   const prefix = `T${String(transaction)} `;
   return scripted.transactionCommands.filter((entry) =>
@@ -1010,6 +1033,39 @@ async function canonicalSuccessorSeries(): Promise<{
   return {
     directory,
     journalRows: migrations.slice(0, 2).map((migration) => ({
+      applied_by: "migration_owner",
+      checksum_sha256: migration.checksumSha256,
+      filename: migration.filename,
+      sequence: migration.sequence,
+    })),
+  };
+}
+
+async function canonicalLifecycleCorrectionSeries(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const directory = await temporaryDirectory();
+  for (const filename of [
+    "0001_identity_audit.sql",
+    "0002_security_boundary.sql",
+    "0003_immutable_content.sql",
+    "0004_lifecycle_api_correction.sql",
+  ] as const) {
+    await writeFile(
+      join(directory, filename),
+      await readFile(join(canonicalMigrationDirectory, filename)),
+    );
+  }
+  const migrations = await discoverMigrations(directory);
+  return {
+    directory,
+    journalRows: migrations.map((migration) => ({
       applied_by: "migration_owner",
       checksum_sha256: migration.checksumSha256,
       filename: migration.filename,
@@ -1458,6 +1514,253 @@ describe("prefix-aware managed roles and expected app logins", () => {
     });
     expect(scripted.journalRows).toHaveLength(3);
   });
+
+  it("applies fresh canonical 0001-to-0004, upgrades exact journal 3, and reruns journal 4 idempotently", async () => {
+    const freshSeries = await canonicalLifecycleCorrectionSeries();
+    const fresh = scriptedMigrationClient({ prefixObjectMatches: true });
+
+    await expect(
+      runMigrations(singleClientPool(fresh.client), freshSeries.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 4,
+      discoveredCount: 4,
+      previouslyAppliedCount: 0,
+    });
+    expect(fresh.journalRows).toHaveLength(4);
+    expect(fresh.canonicalSuccessorSideEffectPresent).toBe(true);
+    expect(fresh.lifecycleCorrectionSideEffectPresent).toBe(true);
+
+    await expect(
+      runMigrations(singleClientPool(fresh.client), freshSeries.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 0,
+      discoveredCount: 4,
+      previouslyAppliedCount: 4,
+    });
+    expect(fresh.journalRows).toHaveLength(4);
+
+    const upgrade = scriptedMigrationClient({
+      initialJournalRows: freshSeries.journalRows.slice(0, 3),
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+    await expect(
+      runMigrations(
+        singleClientPool(upgrade.client),
+        freshSeries.directory,
+        [],
+      ),
+    ).resolves.toEqual({
+      appliedCount: 1,
+      discoveredCount: 4,
+      previouslyAppliedCount: 3,
+    });
+    expect(upgrade.journalRows).toHaveLength(4);
+    expect(upgrade.canonicalSuccessorSideEffectPresent).toBe(false);
+    expect(upgrade.lifecycleCorrectionSideEffectPresent).toBe(true);
+    expect(
+      upgrade.queryTexts.findIndex((text) =>
+        text.includes("-- Dasher lifecycle API correction successor."),
+      ),
+    ).toBeGreaterThan(
+      upgrade.queryTexts.findIndex((text) =>
+        text.includes("signature_catalog"),
+      ),
+    );
+  });
+
+  it("keeps exact journal-3 and journal-4 catalog contracts independent and closes only the lifecycle deltas", async () => {
+    const journal3 = getCanonical0003ExactCatalogContractForTests(
+      "migration_owner",
+    ) as Record<string, readonly string[]>;
+    const journal4 = getCanonical0004ExactCatalogContractForTests(
+      "migration_owner",
+    ) as Record<string, readonly string[]>;
+
+    expect(journal3.types).not.toContainEqual(
+      expect.stringContaining("|dashboard_creation_result|"),
+    );
+    expect(journal3.functions).not.toContainEqual(
+      expect.stringContaining("context_csrf_allows"),
+    );
+    expect(journal3.functions).toContainEqual(
+      expect.stringContaining(
+        "dasher_api.create_dashboard(uuid, text, text, integer, boolean, uuid, uuid, text)|",
+      ),
+    );
+    expect(journal4.types).toContainEqual(
+      expect.stringContaining(
+        "|dashboard_creation_result|c|C|migration_owner|dashboard_creation_result|",
+      ),
+    );
+    expect(journal4.types).toContainEqual(
+      expect.stringMatching(
+        /dashboard_lineage_projection[^\n]*artifact_ownership_class text/iu,
+      ),
+    );
+    expect(journal4.types).not.toContainEqual(
+      expect.stringContaining("restored_at_utc"),
+    );
+    expect(journal4.functions).toContainEqual(
+      expect.stringContaining(
+        "dasher_private.context_csrf_allows(smallint, bytea)|f|boolean|plpgsql|v|true|false|false|false|u|<none>|0|<none>|dasher_security_definer|{search_path=pg_catalog}|30922f8dde74601248d8a06d124ca30f",
+      ),
+    );
+    expect(journal4.functions).not.toContainEqual(
+      expect.stringContaining(
+        "dasher_api.create_dashboard(uuid, text, text, integer, boolean, uuid, uuid, text)|",
+      ),
+    );
+    expect(journal4.functions).toContainEqual(
+      expect.stringContaining(
+        "dasher_api.create_dashboard(uuid, text, text, integer, boolean, uuid, uuid, smallint, bytea, text)|f|dasher.dashboard_creation_result",
+      ),
+    );
+    expect(
+      journal4.acls?.filter(
+        (acl) =>
+          acl ===
+            "relation|dasher.dashboard_cleanup_coordination|migration_owner|dasher_security_definer|SELECT|false" ||
+          acl ===
+            "relation|dasher.dashboard_legal_holds|migration_owner|dasher_security_definer|SELECT|false",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it.each([
+    ["SQL", "migration"],
+    ["journal insertion", "journal"],
+  ] as const)(
+    "rolls back failed 0004 %s to the exact three-row prefix, then retries",
+    async (_failureName, failureStage) => {
+      const series = await canonicalLifecycleCorrectionSeries();
+      const scripted = scriptedMigrationClient({
+        failure: { stage: failureStage, transaction: 2 },
+        initialJournalRows: series.journalRows.slice(0, 3),
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toBe(scripted.operationError);
+      expect(scripted.journalRows).toEqual(series.journalRows.slice(0, 3));
+      expect(scripted.lifecycleCorrectionSideEffectPresent).toBe(false);
+      expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 ROLLBACK");
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 4,
+        previouslyAppliedCount: 3,
+      });
+      expect(scripted.journalRows).toHaveLength(4);
+      expect(scripted.lifecycleCorrectionSideEffectPresent).toBe(true);
+    },
+  );
+
+  it("publishes exact journal-4 function, ACL, and relation dependencies without retaining old mutation identities", async () => {
+    const series = await canonicalLifecycleCorrectionSeries();
+    const scripted = scriptedMigrationClient({ prefixObjectMatches: true });
+    await runMigrations(
+      singleClientPool(scripted.client),
+      series.directory,
+      [],
+    );
+
+    const inventory = scripted.dependencyInventories.at(-1) ?? [];
+    expect(inventory).toContainEqual(
+      expect.objectContaining({
+        dependency_type: "o",
+        function_arguments: "smallint, bytea",
+        object_kind: "function",
+        object_name: "context_csrf_allows",
+        role_name: "dasher_security_definer",
+        schema_name: "dasher_private",
+      }),
+    );
+    expect(inventory).not.toContainEqual(
+      expect.objectContaining({
+        dependency_type: "a",
+        object_name: "context_csrf_allows",
+        role_name: "dasher_app",
+      }),
+    );
+    expect(inventory).not.toContainEqual(
+      expect.objectContaining({
+        function_arguments:
+          "uuid, text, text, integer, boolean, uuid, uuid, text",
+        object_name: "create_dashboard",
+      }),
+    );
+    expect(inventory).toContainEqual(
+      expect.objectContaining({
+        dependency_type: "a",
+        function_arguments:
+          "uuid, text, text, integer, boolean, uuid, uuid, smallint, bytea, text",
+        object_name: "create_dashboard",
+        privilege_type: "EXECUTE",
+        role_name: "dasher_app",
+      }),
+    );
+    expect(
+      inventory.filter(
+        (entry) =>
+          entry.dependency_type === "a" &&
+          entry.object_kind === "relation" &&
+          entry.privilege_type === "SELECT" &&
+          entry.role_name === "dasher_security_definer" &&
+          (entry.object_name === "dashboard_cleanup_coordination" ||
+            entry.object_name === "dashboard_legal_holds"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it.each([
+    {
+      name: "catalog",
+      options: { lifecycleCorrectionCatalogMatches: false },
+    },
+    {
+      name: "dependency",
+      options: { dependencyMatches: [false] },
+    },
+  ])(
+    "rejects exact journal-4 $name drift before SQL or cleanup mutation",
+    async ({ options }) => {
+      const series = await canonicalLifecycleCorrectionSeries();
+      const scripted = scriptedMigrationClient({
+        ...options,
+        initialJournalRows: series.journalRows,
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      });
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(scripted.queryTexts).not.toContainEqual(
+        expect.stringContaining(
+          "-- Dasher lifecycle API correction successor.",
+        ),
+      );
+      expect(
+        scripted.managedRoleEvents.some(
+          (event) => event.startsWith("CREATE ") || event.startsWith("DROP "),
+        ),
+      ).toBe(false);
+      expect(scripted.journalRows).toEqual(series.journalRows);
+    },
+  );
 
   it("holds one session gate and prepares both retention roles only after validating exact 0002", async () => {
     const series = await canonicalSuccessorSeries();
@@ -2099,6 +2402,117 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(scripted.journalRows).toEqual(series.journalRows);
     expect(scripted.modeledSuccessorSideEffectPresent).toBe(false);
     expect(scripted.managedRoleEvents).toEqual([]);
+  });
+
+  it("rejects missing, renamed, reordered, extra, mutated, and modeled-plus-0004 series before DDL or role mutation", async () => {
+    const canonicalBytes = new Map<string, Buffer>();
+    for (const filename of [
+      "0001_identity_audit.sql",
+      "0002_security_boundary.sql",
+      "0003_immutable_content.sql",
+      "0004_lifecycle_api_correction.sql",
+    ]) {
+      canonicalBytes.set(
+        filename,
+        await readFile(join(canonicalMigrationDirectory, filename)),
+      );
+    }
+    const cases: {
+      readonly name: string;
+      readonly files: readonly (readonly [string, Buffer | string])[];
+    }[] = [
+      {
+        name: "missing predecessor",
+        files: [
+          [
+            "0001_identity_audit.sql",
+            canonicalBytes.get("0001_identity_audit.sql")!,
+          ],
+          [
+            "0002_security_boundary.sql",
+            canonicalBytes.get("0002_security_boundary.sql")!,
+          ],
+          [
+            "0004_lifecycle_api_correction.sql",
+            canonicalBytes.get("0004_lifecycle_api_correction.sql")!,
+          ],
+        ],
+      },
+      {
+        name: "renamed 0004",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 3),
+          [
+            "0004_lifecycle_correction_renamed.sql",
+            canonicalBytes.get("0004_lifecycle_api_correction.sql")!,
+          ],
+        ],
+      },
+      {
+        name: "reordered bytes",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 2),
+          [
+            "0003_immutable_content.sql",
+            canonicalBytes.get("0004_lifecycle_api_correction.sql")!,
+          ],
+          [
+            "0004_lifecycle_api_correction.sql",
+            canonicalBytes.get("0003_immutable_content.sql")!,
+          ],
+        ],
+      },
+      {
+        name: "extra fifth",
+        files: [...canonicalBytes.entries(), ["0005_extra.sql", "SELECT 5;\n"]],
+      },
+      {
+        name: "mutated 0004",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 3),
+          [
+            "0004_lifecycle_api_correction.sql",
+            Buffer.concat([
+              canonicalBytes.get("0004_lifecycle_api_correction.sql")!,
+              Buffer.from("\n-- mutated\n"),
+            ]),
+          ],
+        ],
+      },
+      {
+        name: "modeled plus 0004",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 2),
+          [
+            "0003_immutable_content.sql",
+            await readFile(modeledSuccessorFixture),
+          ],
+          [
+            "0004_lifecycle_api_correction.sql",
+            canonicalBytes.get("0004_lifecycle_api_correction.sql")!,
+          ],
+        ],
+      },
+    ];
+
+    for (const candidate of cases) {
+      const directory = await temporaryDirectory();
+      for (const [filename, bytes] of candidate.files) {
+        await writeFile(join(directory, filename), bytes);
+      }
+      const scripted = scriptedMigrationClient();
+      await expect(
+        runMigrations(singleClientPool(scripted.client), directory, []),
+        candidate.name,
+      ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+      expect(scripted.transactionCommands, candidate.name).toEqual([
+        "SESSION ADVISORY LOCK",
+        "SESSION ADVISORY UNLOCK",
+      ]);
+      expect(scripted.managedRoleEvents, candidate.name).toEqual([]);
+      expect(scripted.journalRows, candidate.name).toEqual([]);
+      expect(scripted.lifecycleCorrectionSideEffectPresent).toBe(false);
+    }
   });
 
   it.each([

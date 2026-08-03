@@ -42,6 +42,11 @@ const canonicalSuccessorFiles = [
       "270ba6f5b8756425835ebb0df0ea8f8c4739b81202d2b4f2b48172a016db9c40",
     filename: "0003_immutable_content.sql",
   },
+  {
+    checksum:
+      "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
+    filename: "0004_lifecycle_api_correction.sql",
+  },
 ] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
@@ -5894,6 +5899,22 @@ export async function discoverMigrations(
   return migrations;
 }
 
+async function discoverMigrationSeriesForExecution(
+  directory: string,
+): Promise<readonly DiscoveredMigration[]> {
+  try {
+    return await discoverMigrations(directory);
+  } catch (error) {
+    if (
+      error instanceof MigrationContractError &&
+      error.code === "non_contiguous_sequence"
+    ) {
+      return reject("migration_file_mismatch");
+    }
+    throw error;
+  }
+}
+
 function checksumHex(migration: DiscoveredMigration): string {
   return createHash("sha256").update(migration.bytes).digest("hex");
 }
@@ -5912,12 +5933,29 @@ function hasExactCanonical0002Files(
   });
 }
 
+function hasExactCanonicalPrefixFiles(
+  migrations: readonly DiscoveredMigration[],
+): boolean {
+  return (
+    migrations.length <= canonicalSuccessorFiles.length &&
+    migrations.every((migration, index) => {
+      const expected = canonicalSuccessorFiles[index];
+      return (
+        expected !== undefined &&
+        migration.sequence === index + 1 &&
+        migration.filename === expected.filename &&
+        checksumHex(migration) === expected.checksum
+      );
+    })
+  );
+}
+
 type SuccessorIdentity = "canonical" | "modeled_probe" | "none";
 
 function assertKnownCanonicalFileIdentity(
   migrations: readonly DiscoveredMigration[],
 ): void {
-  const firstTwo = migrations.slice(0, 2);
+  const firstTwo = migrations.slice(0, Math.min(2, migrations.length));
   const canonicalNames = new Set<string>(
     modeledSuccessorFiles.slice(0, 2).map((entry) => entry.filename),
   );
@@ -5934,7 +5972,9 @@ function assertKnownCanonicalFileIdentity(
     return;
   }
 
-  for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
+  for (const [index, expected] of modeledSuccessorFiles
+    .slice(0, firstTwo.length)
+    .entries()) {
     const migration = migrations[index];
     if (
       migration === undefined ||
@@ -5952,7 +5992,10 @@ function successorIdentity(
   if (migrations.length < 3) {
     return "none";
   }
-  if (migrations.length !== modeledSuccessorFiles.length) {
+  if (
+    migrations.length !== modeledSuccessorFiles.length &&
+    migrations.length !== canonicalSuccessorFiles.length
+  ) {
     return reject("migration_file_mismatch");
   }
   for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
@@ -5976,9 +6019,15 @@ function successorIdentity(
   }
   const successorChecksum = checksumHex(successor);
   if (successorChecksum === canonicalSuccessorFiles[2].checksum) {
+    if (!hasExactCanonicalPrefixFiles(migrations)) {
+      return reject("migration_file_mismatch");
+    }
     return "canonical";
   }
-  if (successorChecksum === modeledSuccessorFiles[2].checksum) {
+  if (
+    migrations.length === modeledSuccessorFiles.length &&
+    successorChecksum === modeledSuccessorFiles[2].checksum
+  ) {
     return "modeled_probe";
   }
   return reject("migration_file_mismatch");
@@ -6512,6 +6561,151 @@ const canonicalFunctionBodyMd5 = {
   "dasher_api.initialize_context": "47b6069e7d2f976ed2be93a310e65303",
   "dasher_api.issue_session": "3ac5e71b88a4e2a911ebafb3cd97abc3",
 } as const;
+
+const lifecycleCorrectionFunctionCatalogRows = [
+  {
+    appExecutable: false,
+    identity: "dasher_private.context_csrf_allows(smallint, bytea)",
+    result: "boolean",
+    sourceMd5: "30922f8dde74601248d8a06d124ca30f",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.list_dashboards(integer)",
+    result: "SETOF dasher.dashboard_summary",
+    sourceMd5: "1be3141c913c4ca7611be718dfad0361",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.get_dashboard_summary(uuid)",
+    result: "dasher.dashboard_summary",
+    sourceMd5: "38e8543850618da21e061d9d1c295e1b",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.get_dashboard_head(uuid)",
+    result: "dasher.dashboard_version_projection",
+    sourceMd5: "51a1a2e05668a42febbaf942c56fdbe1",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.get_dashboard_version(uuid, uuid)",
+    result: "dasher.dashboard_version_projection",
+    sourceMd5: "b6388b299c126ddb74aef73b644b2126",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.get_dashboard_admin_status(uuid)",
+    result: "dasher.dashboard_admin_projection",
+    sourceMd5: "fc6f7a74081870ec1ddc38690a7284bb",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.get_dashboard_evidence(uuid, uuid)",
+    result: "SETOF dasher.dashboard_evidence_projection",
+    sourceMd5: "c7b6bff8f5bc3c9f32d27581710632b4",
+  },
+  {
+    appExecutable: true,
+    identity: "dasher_api.get_dashboard_lineage(uuid, uuid)",
+    result: "SETOF dasher.dashboard_lineage_projection",
+    sourceMd5: "9622a7905a98c65c2d2ab041c1da8b0f",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.create_dashboard(uuid, text, text, integer, boolean, uuid, uuid, smallint, bytea, text)",
+    result: "dasher.dashboard_creation_result",
+    sourceMd5: "5c2735c67382f3a68ecb505aa3f47140",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.create_evidence_record(uuid, uuid, uuid, uuid, uuid, text, text, bytea, timestamp with time zone, timestamp with time zone, uuid, smallint, bytea, text)",
+    result: "void",
+    sourceMd5: "d1e029658ffdbfea615d0b7128602046",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.create_dashboard_version(uuid, uuid, uuid, bytea, bytea, bytea, bytea, bigint, bigint, bytea, uuid[], uuid[], uuid[], uuid[], uuid, smallint, bytea, text)",
+    result: "uuid",
+    sourceMd5: "78f88480e729e34e1e7be97df647bca1",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.compare_and_swap_dashboard_head(uuid, uuid, uuid, bigint, uuid, smallint, bytea, text)",
+    result: "void",
+    sourceMd5: "925e661aff9ee00b73a9cebf0dd2becb",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.request_dashboard_promotion(uuid, uuid, bigint, bytea, uuid, smallint, bytea, text)",
+    result: "uuid",
+    sourceMd5: "939d920f14cbea2ce0e73e8bc326577c",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.decide_dashboard_promotion(uuid, bigint, text, uuid, uuid, smallint, bytea, text)",
+    result: "void",
+    sourceMd5: "de645ca64f222496c6fc02ab3df7131a",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.set_dashboard_archive(uuid, boolean, bigint, uuid, smallint, bytea, text)",
+    result: "void",
+    sourceMd5: "ffb2be1f612654fff85b81eab32d425d",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.delete_dashboard(uuid, bigint, uuid, smallint, bytea, text)",
+    result: "void",
+    sourceMd5: "e5038372051c303aa62a9068dd2cfc10",
+  },
+  {
+    appExecutable: true,
+    identity:
+      "dasher_api.restore_dashboard_as_new(uuid, uuid, bigint, uuid, uuid, uuid, text, bytea, uuid, smallint, bytea, text)",
+    result: "void",
+    sourceMd5: "61cbb1a04c0a597a6c0ce8186d53eac4",
+  },
+] as const;
+
+const lifecycleCorrectionReplacedFunctionNames = new Set([
+  "dasher_api.list_dashboards",
+  "dasher_api.get_dashboard_summary",
+  "dasher_api.get_dashboard_head",
+  "dasher_api.get_dashboard_version",
+  "dasher_api.get_dashboard_admin_status",
+  "dasher_api.get_dashboard_evidence",
+  "dasher_api.get_dashboard_lineage",
+  "dasher_api.create_dashboard",
+  "dasher_api.create_evidence_record",
+  "dasher_api.create_dashboard_version",
+  "dasher_api.compare_and_swap_dashboard_head",
+  "dasher_api.request_dashboard_promotion",
+  "dasher_api.decide_dashboard_promotion",
+  "dasher_api.set_dashboard_archive",
+  "dasher_api.delete_dashboard",
+  "dasher_api.restore_dashboard_as_new",
+]);
+
+function lifecycleCorrectionReplacesFunctionIdentity(
+  identity: string,
+): boolean {
+  const openParenthesis = identity.indexOf("(");
+  return (
+    openParenthesis > 0 &&
+    lifecycleCorrectionReplacedFunctionNames.has(
+      identity.slice(0, openParenthesis),
+    )
+  );
+}
 
 function catalogCollationIdentity(typeName: string): string {
   if (typeName === "name") {
@@ -20457,6 +20651,7 @@ function exactCatalogContract(
 ): CatalogSignatureContract {
   const hasSecurityBoundary = journalRows.length >= 2;
   const hasSuccessor = journalRows.length >= 3;
+  const hasLifecycleCorrection = journalRows.length >= 4;
   const schemas = ["dasher", "dasher_meta", "dasher_private"];
   if (hasSecurityBoundary) schemas.push("dasher_api");
   if (hasSuccessor) schemas.push("dasher_retention_api");
@@ -20596,10 +20791,26 @@ function exactCatalogContract(
   }
   if (hasSuccessor) {
     functions.push(
-      ...modeled0003StaticCatalogContract.functions.map((routine) => {
-        const identity = `${routine.schema}.${routine.name}(${canonical0003CatalogFunctionArguments(routine.identityArguments)})`;
-        return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${modeledVariadicType(routine)}|${String(routine.defaults.length)}|${modeledDefaults(routine)}|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(routine.source).digest("hex")}`;
-      }),
+      ...modeled0003StaticCatalogContract.functions
+        .filter(
+          (routine) =>
+            !hasLifecycleCorrection ||
+            !lifecycleCorrectionReplacedFunctionNames.has(
+              `${routine.schema}.${routine.name}`,
+            ),
+        )
+        .map((routine) => {
+          const identity = `${routine.schema}.${routine.name}(${canonical0003CatalogFunctionArguments(routine.identityArguments)})`;
+          return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${modeledVariadicType(routine)}|${String(routine.defaults.length)}|${modeledDefaults(routine)}|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(routine.source).digest("hex")}`;
+        }),
+    );
+  }
+  if (hasLifecycleCorrection) {
+    functions.push(
+      ...lifecycleCorrectionFunctionCatalogRows.map(
+        (routine) =>
+          `${routine.identity}|f|${routine.result}|plpgsql|v|true|false|false|${String(routine.result.startsWith("SETOF "))}|u|<none>|0|<none>|dasher_security_definer|{search_path=pg_catalog}|${routine.sourceMd5}`,
+      ),
     );
   }
 
@@ -20614,10 +20825,34 @@ function exactCatalogContract(
   );
   if (hasSuccessor) {
     types.push(
-      ...modeled0003StaticCatalogContract.types.map(
-        (typeRow) =>
-          `dasher|${typeRow.name}|${typeRow.kind}|${typeRow.category}|${ownerName}|${typeRow.relation}|<none>|false|<none>|{}|${pgTextArray(canonical0003CatalogTypeDefinition(typeRow.definition))}`,
-      ),
+      ...modeled0003StaticCatalogContract.types.map((typeRow) => {
+        const definition = canonical0003CatalogTypeDefinition(
+          typeRow.definition,
+        );
+        return `dasher|${typeRow.name}|${typeRow.kind}|${typeRow.category}|${ownerName}|${typeRow.relation}|<none>|false|<none>|{}|${pgTextArray(
+          hasLifecycleCorrection &&
+            typeRow.name === "dashboard_lineage_projection"
+            ? [...definition, "artifact_ownership_class text"]
+            : definition,
+        )}`;
+      }),
+    );
+  }
+  if (hasLifecycleCorrection) {
+    types.push(
+      `dasher|dashboard_creation_result|c|C|${ownerName}|dashboard_creation_result|<none>|false|<none>|{}|${pgTextArray(
+        [
+          "dashboard_id uuid",
+          "created_at timestamp with time zone",
+          "effective_expires_at timestamp with time zone",
+          "effective_ttl_seconds integer",
+          "used_organization_default boolean",
+          "lifecycle_policy_seeded boolean",
+          "lifecycle_policy_revision bigint",
+          "default_disposable_ttl_seconds integer",
+          "retention_policy_revision bigint",
+        ],
+      )}`,
     );
   }
 
@@ -20769,12 +21004,31 @@ function exactCatalogContract(
     );
   }
   if (hasSuccessor) {
-    for (const routine of modeled0003StaticCatalogContract.functions) {
+    for (const routine of modeled0003StaticCatalogContract.functions.filter(
+      (candidate) =>
+        !hasLifecycleCorrection ||
+        !lifecycleCorrectionReplacedFunctionNames.has(
+          `${candidate.schema}.${candidate.name}`,
+        ),
+    )) {
       const identity = `${routine.schema}.${routine.name}(${canonical0003CatalogFunctionArguments(routine.identityArguments)})`;
       const actualOwner =
         routine.owner === "migration_owner" ? ownerName : routine.owner;
       acls.push(
         aclSignature("function", identity, actualOwner, actualOwner, "EXECUTE"),
+      );
+    }
+  }
+  if (hasLifecycleCorrection) {
+    for (const routine of lifecycleCorrectionFunctionCatalogRows) {
+      acls.push(
+        aclSignature(
+          "function",
+          routine.identity,
+          "dasher_security_definer",
+          "dasher_security_definer",
+          "EXECUTE",
+        ),
       );
     }
   }
@@ -20831,6 +21085,31 @@ export function getCanonical0002ExactCatalogContractForTests(
 export function getCanonical0003ExactCatalogContractForTests(
   ownerName: string,
 ): unknown {
+  const journalRows = canonicalSuccessorFiles.slice(0, 3).map(
+    (file, index) =>
+      ({
+        applied_by: ownerName,
+        checksum_sha256: new Uint8Array(32),
+        filename: file.filename,
+        sequence: index + 1,
+      }) satisfies JournalRow,
+  );
+  return JSON.parse(
+    JSON.stringify(
+      exactCatalogContract(
+        journalRows,
+        [],
+        { database_name: "current_database", database_oid: "0" },
+        ownerName,
+      ),
+    ),
+  ) as unknown;
+}
+
+/** Test-only snapshot of the exact canonical-0004 catalog contract. */
+export function getCanonical0004ExactCatalogContractForTests(
+  ownerName: string,
+): unknown {
   const journalRows = canonicalSuccessorFiles.map(
     (file, index) =>
       ({
@@ -20867,6 +21146,34 @@ export async function exactCatalogMatchesForTests(
 
 /** Test-only execution of canonical-0003 role dependency closure. */
 export async function canonical0003DependencyInventoryMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+): Promise<boolean> {
+  const databaseIdentity = await readDatabaseIdentity(client);
+  const journalRows = canonicalSuccessorFiles.slice(0, 3).map(
+    (file, index) =>
+      ({
+        applied_by: ownerName,
+        checksum_sha256: new Uint8Array(32),
+        filename: file.filename,
+        sequence: index + 1,
+      }) satisfies JournalRow,
+  );
+  const expected = expectedDependencyInventory(
+    journalRows,
+    [],
+    databaseIdentity,
+    ownerName,
+  );
+  const result = await client.query<DependencyComparisonRow>(
+    managedDependencyInventorySql,
+    [allManagedRoleNames, inventoryJson(expected)],
+  );
+  return result.rows.length === 1 && result.rows[0]?.matches === true;
+}
+
+/** Test-only execution of canonical-0004 role dependency closure. */
+export async function canonical0004DependencyInventoryMatchesForTests(
   client: MigrationClient,
   ownerName: string,
 ): Promise<boolean> {
@@ -21085,6 +21392,11 @@ function expectedDependencyInventory(
     (row) =>
       row.sequence === 3 && row.filename === "0003_immutable_content.sql",
   );
+  const hasLifecycleCorrection = journalRows.some(
+    (row) =>
+      row.sequence === 4 &&
+      row.filename === "0004_lifecycle_api_correction.sql",
+  );
   if (hasSuccessor) {
     const functionIdentityParts = (
       identity: string,
@@ -21112,7 +21424,11 @@ function expectedDependencyInventory(
       };
     };
 
-    for (const row of modeled0003StaticCatalogContract.ownershipDependencyRows) {
+    for (const row of modeled0003StaticCatalogContract.ownershipDependencyRows.filter(
+      (candidate) =>
+        !hasLifecycleCorrection ||
+        !lifecycleCorrectionReplacesFunctionIdentity(candidate.identity),
+    )) {
       const identity = functionIdentityParts(row.identity);
       entries.push(
         dependencyEntry({
@@ -21131,7 +21447,12 @@ function expectedDependencyInventory(
       );
     }
 
-    for (const row of modeled0003StaticCatalogContract.aclDependencyRows) {
+    for (const row of modeled0003StaticCatalogContract.aclDependencyRows.filter(
+      (candidate) =>
+        !hasLifecycleCorrection ||
+        candidate.objectKind !== "function" ||
+        !lifecycleCorrectionReplacesFunctionIdentity(candidate.identity),
+    )) {
       let functionArguments: string | null = null;
       let objectName: string;
       let schemaName: string;
@@ -21208,6 +21529,65 @@ function expectedDependencyInventory(
           subobject_name: null,
         }),
       );
+    }
+
+    if (hasLifecycleCorrection) {
+      for (const routine of lifecycleCorrectionFunctionCatalogRows) {
+        const identity = functionIdentityParts(routine.identity);
+        entries.push(
+          dependencyEntry({
+            catalog_name: "pg_proc",
+            database_oid: databaseIdentity.database_oid,
+            dependency_type: "o",
+            function_arguments: identity.arguments,
+            grantor_name: null,
+            object_kind: "function",
+            object_name: identity.name,
+            privilege_type: null,
+            role_name: "dasher_security_definer",
+            schema_name: identity.schema,
+            subobject_name: null,
+          }),
+        );
+        if (routine.appExecutable) {
+          entries.push(
+            dependencyEntry({
+              catalog_name: "pg_proc",
+              database_oid: databaseIdentity.database_oid,
+              dependency_type: "a",
+              function_arguments: identity.arguments,
+              grantor_name: "dasher_security_definer",
+              object_kind: "function",
+              object_name: identity.name,
+              privilege_type: "EXECUTE",
+              role_name: "dasher_app",
+              schema_name: identity.schema,
+              subobject_name: null,
+            }),
+          );
+        }
+      }
+
+      for (const relationName of [
+        "dashboard_cleanup_coordination",
+        "dashboard_legal_holds",
+      ]) {
+        entries.push(
+          dependencyEntry({
+            catalog_name: "pg_class",
+            database_oid: databaseIdentity.database_oid,
+            dependency_type: "a",
+            function_arguments: null,
+            grantor_name: ownerName,
+            object_kind: "relation",
+            object_name: relationName,
+            privilege_type: "SELECT",
+            role_name: "dasher_security_definer",
+            schema_name: "dasher",
+            subobject_name: null,
+          }),
+        );
+      }
     }
   }
 
@@ -21520,7 +21900,7 @@ export async function resetPreparedRetentionRoles(
       throw error;
     }
     sessionGateHeld = true;
-    const migrations = await discoverMigrations(directory);
+    const migrations = await discoverMigrationSeriesForExecution(directory);
     assertKnownCanonicalFileIdentity(migrations);
     const successor = successorIdentity(migrations);
     if (
@@ -21608,14 +21988,14 @@ export async function runMigrations(
       throw error;
     }
     sessionGateHeld = true;
-    const migrations = await discoverMigrations(directory);
+    const migrations = await discoverMigrationSeriesForExecution(directory);
     assertKnownCanonicalFileIdentity(migrations);
     const successor = successorIdentity(migrations);
     if (successor === "modeled_probe") {
       return reject("migration_file_mismatch");
     }
     const successorPresent = successor === "canonical";
-    const exactCanonicalFiles = hasExactCanonical0002Files(migrations);
+    const exactCanonicalFiles = hasExactCanonicalPrefixFiles(migrations);
 
     let prefix = await runMigrationTransaction(
       client,
@@ -21706,6 +22086,7 @@ export async function runMigrations(
 
     const prefixTarget = successorPresent ? 2 : migrations.length;
     let appliedPrefix = false;
+    let appliedSuccessor = false;
     if (prefix.journalRows.length < prefixTarget) {
       await applyThrough(prefixTarget);
       appliedPrefix = true;
@@ -21748,8 +22129,19 @@ export async function runMigrations(
         false,
       );
       await applyThrough(3);
+      appliedSuccessor = true;
+    }
+
+    if (
+      successorPresent &&
+      migrations.length === 4 &&
+      prefix.journalRows.length === 3
+    ) {
+      await applyThrough(4);
+      appliedSuccessor = true;
     } else if (
       !appliedPrefix &&
+      !appliedSuccessor &&
       prefix.journalRows.length === migrations.length
     ) {
       await applyThrough(migrations.length);

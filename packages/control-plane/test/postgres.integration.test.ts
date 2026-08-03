@@ -23,9 +23,11 @@ import {
 } from "../src/index.js";
 import {
   canonical0003DependencyInventoryMatchesForTests,
+  canonical0004DependencyInventoryMatchesForTests,
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
   getCanonical0003ExactCatalogContractForTests,
+  getCanonical0004ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
 } from "../src/migrator.js";
@@ -1856,7 +1858,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("installs canonical 0001 through 0003, closes the exact catalog, and reruns idempotently", async () => {
+  it("installs fresh canonical 0001 through 0004, reruns idempotently, and upgrades an independently exact journal 3", async () => {
     try {
       await resetManagedSchemas();
       const first = await runMigrations(
@@ -1865,8 +1867,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         [],
       );
       expect(first).toEqual({
-        appliedCount: 3,
-        discoveredCount: 3,
+        appliedCount: 4,
+        discoveredCount: 4,
         previouslyAppliedCount: 0,
       });
       const second = await runMigrations(
@@ -1876,8 +1878,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(second).toEqual({
         appliedCount: 0,
-        discoveredCount: 3,
-        previouslyAppliedCount: 3,
+        discoveredCount: 4,
+        previouslyAppliedCount: 4,
       });
 
       const client = await ownerPool.connect();
@@ -1892,12 +1894,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         expect(
           await exactCatalogMatchesForTests(
             client,
-            getCanonical0003ExactCatalogContractForTests(ownerName),
+            getCanonical0004ExactCatalogContractForTests(ownerName),
             ownerName,
           ),
         ).toBe(true);
         expect(
-          await canonical0003DependencyInventoryMatchesForTests(
+          await canonical0004DependencyInventoryMatchesForTests(
             client,
             ownerName,
           ),
@@ -1937,8 +1939,376 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           filename: "0003_immutable_content.sql",
           sequence: 3,
         },
+        {
+          checksum:
+            "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
+          filename: "0004_lifecycle_api_correction.sql",
+          sequence: 4,
+        },
+      ]);
+
+      await resetManagedSchemas();
+      const canonical0003Directory = await mkdtemp(
+        join(tmpdir(), "dasher-canonical-0003-pg-"),
+      );
+      try {
+        for (const filename of [
+          "0001_identity_audit.sql",
+          "0002_security_boundary.sql",
+          "0003_immutable_content.sql",
+        ] as const) {
+          await writeFile(
+            join(canonical0003Directory, filename),
+            await readFile(join(canonicalMigrationDirectory, filename)),
+          );
+        }
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 3,
+          discoveredCount: 3,
+          previouslyAppliedCount: 0,
+        });
+        const prefixClient = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await prefixClient.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await exactCatalogMatchesForTests(
+              prefixClient,
+              getCanonical0003ExactCatalogContractForTests(ownerName),
+              ownerName,
+            ),
+          ).toBe(true);
+          expect(
+            await canonical0003DependencyInventoryMatchesForTests(
+              prefixClient,
+              ownerName,
+            ),
+          ).toBe(true);
+        } finally {
+          prefixClient.release();
+        }
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 4,
+          previouslyAppliedCount: 3,
+        });
+      } finally {
+        await rm(canonical0003Directory, { recursive: true, force: true });
+      }
+    } finally {
+      await resetManagedSchemas();
+    }
+  }, 120_000);
+
+  it.each(["catalog", "journal"] as const)(
+    "rolls back exact 0004 after an injected post-DDL %s failure and retries from exact journal 3",
+    async (failureStage) => {
+      const canonical0003Directory = await mkdtemp(
+        join(tmpdir(), "dasher-rollback-0004-pg-"),
+      );
+      const expectedJournal = [
+        {
+          checksum:
+            "d44b7d6e4cb34026cbfb0156b7be29ded3ac2ab6944f2759b04aa5b848f3e81a",
+          filename: "0001_identity_audit.sql",
+          sequence: 1,
+        },
+        {
+          checksum:
+            "395fb6fe5eb3802a86c64ff7d55a31f677edc79a45666ddd5d0237af122a47b9",
+          filename: "0002_security_boundary.sql",
+          sequence: 2,
+        },
+        {
+          checksum:
+            "270ba6f5b8756425835ebb0df0ea8f8c4739b81202d2b4f2b48172a016db9c40",
+          filename: "0003_immutable_content.sql",
+          sequence: 3,
+        },
+        {
+          checksum:
+            "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
+          filename: "0004_lifecycle_api_correction.sql",
+          sequence: 4,
+        },
+      ] as const;
+      let exact0004SqlExecutions = 0;
+      let sequence4JournalAttempts = 0;
+      let injected = false;
+
+      const expectExactClosure = async (sequence: 3 | 4): Promise<void> => {
+        const client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await exactCatalogMatchesForTests(
+              client,
+              sequence === 3
+                ? getCanonical0003ExactCatalogContractForTests(ownerName)
+                : getCanonical0004ExactCatalogContractForTests(ownerName),
+              ownerName,
+            ),
+          ).toBe(true);
+          expect(
+            sequence === 3
+              ? await canonical0003DependencyInventoryMatchesForTests(
+                  client,
+                  ownerName,
+                )
+              : await canonical0004DependencyInventoryMatchesForTests(
+                  client,
+                  ownerName,
+                ),
+          ).toBe(true);
+        } finally {
+          client.release();
+        }
+      };
+
+      const expectExactJournal = async (count: 3 | 4): Promise<void> => {
+        const journal = await ownerPool.query<{
+          readonly checksum: string;
+          readonly filename: string;
+          readonly sequence: number;
+        }>(`
+          SELECT
+            sequence,
+            filename,
+            pg_catalog.encode(checksum_sha256, 'hex') AS checksum
+          FROM dasher_meta.schema_migrations
+          ORDER BY sequence
+        `);
+        expect(journal.rows).toEqual(expectedJournal.slice(0, count));
+      };
+
+      const instrumentedPool = {
+        async connect(): Promise<MigrationClient> {
+          const client = await ownerPool.connect();
+          const query = (async (text: string, values?: readonly unknown[]) => {
+            if (
+              text.includes("-- Dasher lifecycle API correction successor.")
+            ) {
+              const result = await client.query(
+                text,
+                values as unknown[] | undefined,
+              );
+              exact0004SqlExecutions += 1;
+              return result;
+            }
+            if (
+              text.includes("INSERT INTO dasher_meta.schema_migrations") &&
+              values?.[0] === 4
+            ) {
+              sequence4JournalAttempts += 1;
+              if (failureStage === "journal") {
+                injected = true;
+                throw new Error("injected exact 0004 journal failure");
+              }
+            }
+            if (
+              failureStage === "catalog" &&
+              exact0004SqlExecutions === 1 &&
+              text.includes("signature_catalog AS (") &&
+              typeof values?.[0] === "string"
+            ) {
+              const expected = JSON.parse(values[0]) as {
+                readonly types?: readonly string[];
+              };
+              if (
+                expected.types?.some((signature) =>
+                  signature.includes("|dashboard_creation_result|"),
+                ) === true
+              ) {
+                injected = true;
+                return { rows: [{ matches: false }] };
+              }
+            }
+            return client.query(text, values as unknown[] | undefined);
+          }) as MigrationClient["query"];
+          return {
+            query,
+            release(error) {
+              client.release(error);
+            },
+          };
+        },
+      };
+
+      try {
+        for (const filename of [
+          "0001_identity_audit.sql",
+          "0002_security_boundary.sql",
+          "0003_immutable_content.sql",
+        ] as const) {
+          await writeFile(
+            join(canonical0003Directory, filename),
+            await readFile(join(canonicalMigrationDirectory, filename)),
+          );
+        }
+        await resetManagedSchemas();
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 3,
+          discoveredCount: 3,
+          previouslyAppliedCount: 0,
+        });
+        await expectExactClosure(3);
+        await expectExactJournal(3);
+
+        await expect(
+          runMigrations(instrumentedPool, canonicalMigrationDirectory, []),
+        ).rejects.toBeDefined();
+        expect(injected).toBe(true);
+        expect(exact0004SqlExecutions).toBe(1);
+        expect(sequence4JournalAttempts).toBe(1);
+
+        await expectExactClosure(3);
+        await expectExactJournal(3);
+        const rolledBackDeltas = await ownerPool.query<{
+          readonly correction_attribute_count: string;
+          readonly correction_select_grant_count: string;
+          readonly csrf_helper: string | null;
+          readonly new_create_dashboard: string | null;
+          readonly old_create_dashboard: string | null;
+        }>(`
+          SELECT
+            pg_catalog.to_regprocedure(
+              'dasher_private.context_csrf_allows(smallint,bytea)'
+            )::text AS csrf_helper,
+            pg_catalog.to_regprocedure(
+              'dasher_api.create_dashboard(uuid,text,text,integer,boolean,uuid,uuid,text)'
+            )::text AS old_create_dashboard,
+            pg_catalog.to_regprocedure(
+              'dasher_api.create_dashboard(uuid,text,text,integer,boolean,uuid,uuid,smallint,bytea,text)'
+            )::text AS new_create_dashboard,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM pg_catalog.pg_type AS type_row
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = type_row.typnamespace
+              JOIN pg_catalog.pg_attribute AS attribute
+                ON attribute.attrelid = type_row.typrelid
+              WHERE namespace.nspname = 'dasher'
+                AND type_row.typname = 'dashboard_creation_result'
+                AND attribute.attnum > 0
+                AND NOT attribute.attisdropped
+                AND attribute.attname IN (
+                  'lifecycle_policy_seeded',
+                  'effective_expires_at'
+                )
+            ) AS correction_attribute_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM pg_catalog.pg_class AS relation
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                  relation.relacl,
+                  pg_catalog.acldefault('r', relation.relowner)
+                )
+              ) AS privilege
+              JOIN pg_catalog.pg_roles AS grantee
+                ON grantee.oid = privilege.grantee
+              WHERE namespace.nspname = 'dasher'
+                AND relation.relname IN (
+                  'dashboard_cleanup_coordination',
+                  'dashboard_legal_holds'
+                )
+                AND grantee.rolname = 'dasher_security_definer'
+                AND privilege.privilege_type = 'SELECT'
+            ) AS correction_select_grant_count
+        `);
+        expect(rolledBackDeltas.rows[0]).toEqual({
+          correction_attribute_count: "0",
+          correction_select_grant_count: "0",
+          csrf_helper: null,
+          new_create_dashboard: null,
+          old_create_dashboard:
+            "dasher_api.create_dashboard(uuid,text,text,integer,boolean,uuid,uuid,text)",
+        });
+
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 4,
+          previouslyAppliedCount: 3,
+        });
+        await expectExactClosure(4);
+        await expectExactJournal(4);
+      } finally {
+        await rm(canonical0003Directory, { recursive: true, force: true });
+        await resetManagedSchemas();
+      }
+    },
+    120_000,
+  );
+
+  it("serializes concurrent fresh-4 and exact 3-to-4 runners through the session gate", async () => {
+    const canonical0003Directory = await mkdtemp(
+      join(tmpdir(), "dasher-concurrent-0003-pg-"),
+    );
+    try {
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+        "0003_immutable_content.sql",
+      ] as const) {
+        await writeFile(
+          join(canonical0003Directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+
+      await resetManagedSchemas();
+      const fresh = await Promise.all([
+        runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        runMigrations(ownerPool, canonicalMigrationDirectory, []),
+      ]);
+      expect(
+        fresh
+          .map((result) => [result.previouslyAppliedCount, result.appliedCount])
+          .sort((left, right) => left[0]! - right[0]!),
+      ).toEqual([
+        [0, 4],
+        [4, 0],
+      ]);
+
+      await resetManagedSchemas();
+      await runMigrations(ownerPool, canonical0003Directory, []);
+      const upgrades = await Promise.all([
+        runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        runMigrations(ownerPool, canonicalMigrationDirectory, []),
+      ]);
+      expect(
+        upgrades
+          .map((result) => [result.previouslyAppliedCount, result.appliedCount])
+          .sort((left, right) => left[0]! - right[0]!),
+      ).toEqual([
+        [3, 1],
+        [4, 0],
       ]);
     } finally {
+      await rm(canonical0003Directory, { recursive: true, force: true });
       await resetManagedSchemas();
     }
   }, 120_000);
@@ -2085,8 +2455,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await expect(
           runMigrations(ownerPool, canonicalMigrationDirectory, []),
         ).resolves.toEqual({
-          appliedCount: 1,
-          discoveredCount: 3,
+          appliedCount: 2,
+          discoveredCount: 4,
           previouslyAppliedCount: 2,
         });
       } finally {
@@ -13659,3 +14029,825 @@ describe.sequential(
     });
   },
 );
+
+describe.sequential("Task 8B.3 lifecycle API correction", () => {
+  let actor: Task4Actor;
+  let durableDashboardId: string;
+  let durableDashboardAuditId: string;
+  let versionId: string;
+  let snapshotId: string;
+  let evidenceId: string;
+
+  beforeAll(async () => {
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+    await createTemporaryAppLogin(ownerPool, config.appDsn, config.appUsername);
+    appLoginCreated = true;
+    await runMigrations(ownerPool, canonicalMigrationDirectory, [
+      config.appUsername,
+    ]);
+    appPool = new Pool({ connectionString: config.appDsn, max: 4 });
+    const client = await appPool.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      actor = await createTask4Actor(client, "admin");
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+
+  it("publishes only the hard-cut identities and exact ACL surface", async () => {
+    const oldMutations = [
+      "dasher_api.create_dashboard(uuid,text,text,integer,boolean,uuid,uuid,text)",
+      "dasher_api.create_evidence_record(uuid,uuid,uuid,uuid,uuid,text,text,bytea,timestamp with time zone,timestamp with time zone,uuid,text)",
+      "dasher_api.create_dashboard_version(uuid,uuid,uuid,bytea,bytea,bytea,bytea,bigint,bigint,bytea,uuid[],uuid[],uuid[],uuid[],uuid,text)",
+      "dasher_api.compare_and_swap_dashboard_head(uuid,uuid,uuid,bigint,uuid,text)",
+      "dasher_api.request_dashboard_promotion(uuid,uuid,bigint,bytea,uuid,text)",
+      "dasher_api.decide_dashboard_promotion(uuid,bigint,text,uuid,uuid,text)",
+      "dasher_api.set_dashboard_archive(uuid,boolean,bigint,uuid,text)",
+      "dasher_api.delete_dashboard(uuid,bigint,uuid,text)",
+      "dasher_api.restore_dashboard_as_new(uuid,uuid,bigint,uuid,uuid,uuid,text,bytea,uuid,text)",
+    ] as const;
+    const newMutations = [
+      "dasher_api.create_dashboard(uuid,text,text,integer,boolean,uuid,uuid,smallint,bytea,text)",
+      "dasher_api.create_evidence_record(uuid,uuid,uuid,uuid,uuid,text,text,bytea,timestamp with time zone,timestamp with time zone,uuid,smallint,bytea,text)",
+      "dasher_api.create_dashboard_version(uuid,uuid,uuid,bytea,bytea,bytea,bytea,bigint,bigint,bytea,uuid[],uuid[],uuid[],uuid[],uuid,smallint,bytea,text)",
+      "dasher_api.compare_and_swap_dashboard_head(uuid,uuid,uuid,bigint,uuid,smallint,bytea,text)",
+      "dasher_api.request_dashboard_promotion(uuid,uuid,bigint,bytea,uuid,smallint,bytea,text)",
+      "dasher_api.decide_dashboard_promotion(uuid,bigint,text,uuid,uuid,smallint,bytea,text)",
+      "dasher_api.set_dashboard_archive(uuid,boolean,bigint,uuid,smallint,bytea,text)",
+      "dasher_api.delete_dashboard(uuid,bigint,uuid,smallint,bytea,text)",
+      "dasher_api.restore_dashboard_as_new(uuid,uuid,bigint,uuid,uuid,uuid,text,bytea,uuid,smallint,bytea,text)",
+    ] as const;
+    const identities = await ownerPool.query<{
+      readonly identity: string;
+      readonly resolved: string | null;
+    }>(
+      `
+        SELECT identity, pg_catalog.to_regprocedure(identity)::text AS resolved
+        FROM pg_catalog.unnest($1::text[]) WITH ORDINALITY
+          AS candidate(identity, ordinal)
+        ORDER BY ordinal
+      `,
+      [[...oldMutations, ...newMutations]],
+    );
+    expect(
+      identities.rows.slice(0, 9).every((row) => row.resolved === null),
+    ).toBe(true);
+    expect(identities.rows.slice(9).every((row) => row.resolved !== null)).toBe(
+      true,
+    );
+
+    const correctedPublicFunctions = [
+      "dasher_api.list_dashboards(integer)",
+      "dasher_api.get_dashboard_summary(uuid)",
+      "dasher_api.get_dashboard_head(uuid)",
+      "dasher_api.get_dashboard_version(uuid,uuid)",
+      "dasher_api.get_dashboard_admin_status(uuid)",
+      "dasher_api.get_dashboard_evidence(uuid,uuid)",
+      "dasher_api.get_dashboard_lineage(uuid,uuid)",
+      ...newMutations,
+    ];
+    const routineAcls = await ownerPool.query<{
+      readonly grantees: string[];
+      readonly identity: string;
+    }>(
+      `
+        SELECT
+          candidate.identity,
+          pg_catalog.array_agg(
+            COALESCE(grantee.rolname::text, 'PUBLIC')
+            ORDER BY COALESCE(grantee.rolname::text, 'PUBLIC')
+          ) AS grantees
+        FROM pg_catalog.unnest($1::text[]) AS candidate(identity)
+        JOIN pg_catalog.pg_proc AS routine
+          ON routine.oid = pg_catalog.to_regprocedure(candidate.identity)
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+          COALESCE(routine.proacl, pg_catalog.acldefault('f', routine.proowner))
+        ) AS privilege
+        LEFT JOIN pg_catalog.pg_roles AS grantee
+          ON grantee.oid = privilege.grantee
+        WHERE privilege.privilege_type = 'EXECUTE'
+        GROUP BY candidate.identity
+        ORDER BY candidate.identity
+      `,
+      [
+        [
+          ...correctedPublicFunctions,
+          "dasher_private.context_csrf_allows(smallint,bytea)",
+        ],
+      ],
+    );
+    const helperAcl = routineAcls.rows.find((row) =>
+      row.identity.includes("context_csrf_allows"),
+    );
+    expect(routineAcls.rows).toHaveLength(17);
+    expect(helperAcl?.grantees).toEqual(["dasher_security_definer"]);
+    for (const row of routineAcls.rows.filter(
+      (candidate) => !candidate.identity.includes("context_csrf_allows"),
+    )) {
+      expect(row.grantees, row.identity).toEqual([
+        "dasher_app",
+        "dasher_security_definer",
+      ]);
+    }
+
+    const grants = await ownerPool.query<{
+      readonly app_relation_acl_count: string;
+      readonly cleanup_select: boolean;
+      readonly holds_select: boolean;
+    }>(`
+      SELECT
+        pg_catalog.has_table_privilege(
+          'dasher_security_definer',
+          'dasher.dashboard_cleanup_coordination',
+          'SELECT'
+        ) AS cleanup_select,
+        pg_catalog.has_table_privilege(
+          'dasher_security_definer',
+          'dasher.dashboard_legal_holds',
+          'SELECT'
+        ) AS holds_select,
+        (
+          SELECT pg_catalog.count(*)::text
+          FROM pg_catalog.pg_class AS relation
+          JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = relation.relnamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privilege
+          JOIN pg_catalog.pg_roles AS grantee
+            ON grantee.oid = privilege.grantee
+          WHERE namespace.nspname = 'dasher'
+            AND relation.relkind IN ('r', 'p')
+            AND grantee.rolname = 'dasher_app'
+        ) AS app_relation_acl_count
+    `);
+    expect(grants.rows[0]).toEqual({
+      app_relation_acl_count: "0",
+      cleanup_select: true,
+      holds_select: true,
+    });
+
+    const client = await ownerPool.connect();
+    try {
+      const ownerName = (
+        await client.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        )
+      ).rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("PostgreSQL did not return the session owner");
+      }
+      expect(
+        await canonical0004DependencyInventoryMatchesForTests(
+          client,
+          ownerName,
+        ),
+      ).toBe(true);
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+
+  it("returns exact creation facts and normalizes wrong-CSRF and audit collisions without residue", async () => {
+    const client = await appPool!.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      const disposableDashboardId = randomUUID();
+      const disposableAuditId = randomUUID();
+      const disposable = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query<{
+            readonly created_at: Date;
+            readonly dashboard_id: string;
+            readonly default_disposable_ttl_seconds: number;
+            readonly effective_expires_at: Date;
+            readonly effective_ttl_seconds: number;
+            readonly lifecycle_policy_revision: string;
+            readonly lifecycle_policy_seeded: boolean;
+            readonly retention_policy_revision: string;
+            readonly used_organization_default: boolean;
+          }>(
+            `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Disposable lifecycle result', 'disposable', NULL,
+                true, $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b3-integration'
+              )
+            `,
+            [
+              disposableDashboardId,
+              randomUUID(),
+              disposableAuditId,
+              actor.csrfDigest,
+            ],
+          ),
+      );
+      expect(disposable.rows[0]).toMatchObject({
+        dashboard_id: disposableDashboardId,
+        default_disposable_ttl_seconds: 86_400,
+        effective_ttl_seconds: 86_400,
+        lifecycle_policy_revision: "1",
+        lifecycle_policy_seeded: true,
+        retention_policy_revision: "1",
+        used_organization_default: true,
+      });
+      expect(
+        disposable.rows[0]!.effective_expires_at.getTime() -
+          disposable.rows[0]!.created_at.getTime(),
+      ).toBe(86_400_000);
+
+      durableDashboardId = randomUUID();
+      durableDashboardAuditId = randomUUID();
+      const durable = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query<{
+            readonly dashboard_id: string;
+            readonly effective_expires_at: Date | null;
+            readonly effective_ttl_seconds: number | null;
+            readonly lifecycle_policy_seeded: boolean;
+            readonly used_organization_default: boolean;
+          }>(
+            `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Durable lifecycle result', 'durable', NULL,
+                false, $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b3-integration'
+              )
+            `,
+            [
+              durableDashboardId,
+              randomUUID(),
+              durableDashboardAuditId,
+              actor.csrfDigest,
+            ],
+          ),
+      );
+      expect(durable.rows[0]).toMatchObject({
+        dashboard_id: durableDashboardId,
+        effective_expires_at: null,
+        effective_ttl_seconds: null,
+        lifecycle_policy_seeded: false,
+        used_organization_default: false,
+      });
+
+      const wrongCsrfDashboard = randomUUID();
+      const wrongCsrfAudit = randomUUID();
+      await expectDasherBoundaryError(
+        runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+          client.query(
+            `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Wrong CSRF', 'durable', NULL, false,
+                $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b3-integration'
+              )
+            `,
+            [wrongCsrfDashboard, randomUUID(), wrongCsrfAudit, randomBytes(32)],
+          ),
+        ),
+        "P1001",
+        "dasher_denied",
+      );
+
+      const collisionDashboard = randomUUID();
+      await expectDasherBoundaryError(
+        runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+          client.query(
+            `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Audit collision', 'durable', NULL, false,
+                $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b3-integration'
+              )
+            `,
+            [
+              collisionDashboard,
+              randomUUID(),
+              durableDashboardAuditId,
+              actor.csrfDigest,
+            ],
+          ),
+        ),
+        "P1002",
+        "dasher_conflict",
+      );
+      const residue = await ownerPool.query<{
+        readonly collision_dashboard_count: string;
+        readonly wrong_audit_count: string;
+        readonly wrong_dashboard_count: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text FROM dasher.dashboards
+             WHERE dashboard_id = $1::uuid) AS wrong_dashboard_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+             WHERE audit_event_id = $2::uuid) AS wrong_audit_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.dashboards
+             WHERE dashboard_id = $3::uuid) AS collision_dashboard_count
+        `,
+        [wrongCsrfDashboard, wrongCsrfAudit, collisionDashboard],
+      );
+      expect(residue.rows[0]).toEqual({
+        collision_dashboard_count: "0",
+        wrong_audit_count: "0",
+        wrong_dashboard_count: "0",
+      });
+
+      const summary = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query(
+            "SELECT * FROM dasher_api.get_dashboard_summary($1::uuid)",
+            [durableDashboardId],
+          ),
+      );
+      expect(Object.keys(summary.rows[0] ?? {})).toEqual([
+        "dashboard_id",
+        "title",
+        "current_kind",
+        "lifecycle_state",
+        "lifecycle_revision",
+        "effective_expires_at",
+        "head_version_id",
+      ]);
+      const listed = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () => client.query("SELECT * FROM dasher_api.list_dashboards(100)"),
+      );
+      expect(Object.keys(listed.rows[0] ?? {})).toEqual([
+        "dashboard_id",
+        "title",
+        "current_kind",
+        "lifecycle_state",
+        "lifecycle_revision",
+        "effective_expires_at",
+        "head_version_id",
+      ]);
+      const admin = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query(
+            "SELECT * FROM dasher_api.get_dashboard_admin_status($1::uuid)",
+            [durableDashboardId],
+          ),
+      );
+      expect(admin.rows[0]).toMatchObject({
+        active_hold_count: "0",
+        cleanup_step: null,
+        dashboard_id: durableDashboardId,
+      });
+
+      await client.query("BEGIN");
+      try {
+        await setTask4ContextGucs(
+          client,
+          { ...actor, organizationId: randomUUID() },
+          randomUUID(),
+        );
+        await expectDasherBoundaryError(
+          client.query(
+            "SELECT * FROM dasher_api.get_dashboard_summary($1::uuid)",
+            [durableDashboardId],
+          ),
+          "P1001",
+          "dasher_denied",
+        );
+      } finally {
+        await client.query("ROLLBACK");
+      }
+
+      const forgedMutationDashboardId = randomUUID();
+      const forgedMutationRequestId = randomUUID();
+      const forgedMutationAuditId = randomUUID();
+      await client.query("BEGIN");
+      try {
+        await setTask4ContextGucs(
+          client,
+          { ...actor, organizationId: randomUUID() },
+          randomUUID(),
+        );
+        await expectDasherBoundaryError(
+          client.query(
+            `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Forged organization mutation', 'durable', NULL,
+                false, $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b3-integration'
+              )
+            `,
+            [
+              forgedMutationDashboardId,
+              forgedMutationRequestId,
+              forgedMutationAuditId,
+              actor.csrfDigest,
+            ],
+          ),
+          "P1001",
+          "dasher_denied",
+        );
+      } finally {
+        await client.query("ROLLBACK");
+      }
+      const forgedMutationResidue = await ownerPool.query<{
+        readonly audit_count: string;
+        readonly dashboard_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.dashboards
+              WHERE dashboard_id = $1::uuid
+            ) AS dashboard_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.audit_events
+              WHERE audit_event_id = $2::uuid
+            ) AS audit_count
+        `,
+        [forgedMutationDashboardId, forgedMutationAuditId],
+      );
+      expect(forgedMutationResidue.rows[0]).toEqual({
+        audit_count: "0",
+        dashboard_count: "0",
+      });
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+
+  it("returns flat scalar and SETOF projection shapes and exposes shared artifacts only through exact target access claims", async () => {
+    snapshotId = randomUUID();
+    versionId = randomUUID();
+    evidenceId = randomUUID();
+    const ownedArtifactId = randomUUID();
+    const sharedArtifactId = randomUUID();
+    const retentionOnlyArtifactId = randomUUID();
+    const crossDashboardArtifactId = randomUUID();
+    const crossDashboardId = randomUUID();
+    const crossVersionId = randomUUID();
+    const holdId = randomUUID();
+    const canonicalSpec = Buffer.from("{}", "utf8");
+    const snapshotBytes = Buffer.from("task8b3-snapshot", "utf8");
+    const seedClient = await ownerPool.connect();
+    try {
+      await executeServerFormattedSql(
+        seedClient,
+        `
+        INSERT INTO dasher.dashboards (
+          organization_id, dashboard_id, title, created_by_user_id, created_at,
+          created_kind, current_kind, lifecycle_state, lifecycle_revision,
+          capability_epoch, cache_epoch, retention_policy_revision,
+          tombstone_lineage_id
+        ) VALUES (
+          %1$L::uuid, %2$L::uuid, 'Cross-claim dashboard', %3$L::uuid,
+          clock_timestamp(), 'durable', 'durable', 'draft', 0, 0, 0, 1,
+          %4$L::uuid
+        );
+        INSERT INTO dasher.source_snapshots (
+          organization_id, snapshot_id, source_kind, canonical_bytes,
+          content_sha256, observed_at, retrieved_at, created_at
+        ) VALUES (
+          %1$L::uuid, %5$L::uuid, 'synthetic_fixture',
+          pg_catalog.decode(%6$L, 'hex'),
+          pg_catalog.sha256(pg_catalog.decode(%6$L, 'hex')),
+          clock_timestamp(), clock_timestamp(),
+          clock_timestamp()
+        );
+        INSERT INTO dasher.dashboard_versions (
+          organization_id, dashboard_id, version_id, parent_version_id,
+          canonical_spec_bytes, canonical_spec_sha256, validation_state,
+          validation_sha256, planner_provenance_sha256, policy_revision,
+          registry_revision, calculation_graph_sha256, created_by_user_id,
+          created_at
+        ) VALUES
+          (%1$L::uuid, %7$L::uuid, %8$L::uuid, NULL,
+           pg_catalog.decode(%9$L, 'hex'),
+           pg_catalog.sha256(pg_catalog.decode(%9$L, 'hex')), 'validated',
+           pg_catalog.decode(%10$L, 'hex'), pg_catalog.decode(%10$L, 'hex'),
+           1, 1, pg_catalog.decode(%10$L, 'hex'), %3$L::uuid,
+           clock_timestamp()),
+          (%1$L::uuid, %2$L::uuid, %11$L::uuid, NULL,
+           pg_catalog.decode(%9$L, 'hex'),
+           pg_catalog.sha256(pg_catalog.decode(%9$L, 'hex')), 'validated',
+           pg_catalog.decode(%10$L, 'hex'), pg_catalog.decode(%10$L, 'hex'),
+           1, 1, pg_catalog.decode(%10$L, 'hex'), %3$L::uuid,
+           clock_timestamp());
+        INSERT INTO dasher.dashboard_version_snapshots (
+          organization_id, dashboard_id, version_id, snapshot_id
+        ) VALUES (%1$L::uuid, %7$L::uuid, %8$L::uuid, %5$L::uuid);
+        INSERT INTO dasher.snapshot_reference_claims (
+          organization_id, snapshot_id, reference_claim_id, dashboard_id,
+          version_id, claim_kind, hold_id, created_at
+        ) VALUES (
+          %1$L::uuid, %5$L::uuid, %8$L::uuid, %7$L::uuid, %8$L::uuid,
+          'access_bearing', NULL, clock_timestamp()
+        );
+        INSERT INTO dasher.evidence_records (
+          organization_id, evidence_id, snapshot_id, evidence_kind,
+          coordinates, transformation, content_sha256, observed_at,
+          retrieved_at, created_at
+        ) VALUES (
+          %1$L::uuid, %12$L::uuid, %5$L::uuid, 'source_record', 'fixture:0',
+          'identity', pg_catalog.decode(%10$L, 'hex'),
+          clock_timestamp(), clock_timestamp(),
+          clock_timestamp()
+        );
+        INSERT INTO dasher.dashboard_version_evidence (
+          organization_id, dashboard_id, version_id, evidence_id
+        ) VALUES (%1$L::uuid, %7$L::uuid, %8$L::uuid, %12$L::uuid);
+        INSERT INTO dasher.evidence_reference_claims (
+          organization_id, evidence_id, reference_claim_id, dashboard_id,
+          version_id, claim_kind, hold_id, created_at
+        ) VALUES (
+          %1$L::uuid, %12$L::uuid, %12$L::uuid, %7$L::uuid, %8$L::uuid,
+          'access_bearing', NULL, clock_timestamp()
+        );
+        INSERT INTO dasher.dashboard_legal_holds (
+          organization_id, dashboard_id, hold_id, case_matter_reference,
+          placed_by_principal_id, placed_authority_revision, placed_actor,
+          placed_reason_sha256, placed_at, retention_policy_revision
+        ) VALUES (
+          %1$L::uuid, %7$L::uuid, %13$L::uuid, 'task8b3-retention-only',
+          %3$L::uuid, 1, 'integration', pg_catalog.decode(%10$L, 'hex'),
+          clock_timestamp(), 1
+        );
+        INSERT INTO dasher.dashboard_artifacts (
+          organization_id, artifact_id, dashboard_id, version_id,
+          ownership_class, artifact_kind, metadata_sha256, content_sha256,
+          created_at
+        ) VALUES
+          (%1$L::uuid, %14$L::uuid, %7$L::uuid, %8$L::uuid,
+           'dashboard_owned', 'projection', pg_catalog.decode(%10$L, 'hex'),
+           pg_catalog.decode(%10$L, 'hex'), clock_timestamp()),
+          (%1$L::uuid, %15$L::uuid, NULL, NULL, 'shared', 'projection',
+           pg_catalog.decode(%10$L, 'hex'), pg_catalog.decode(%10$L, 'hex'),
+           clock_timestamp()),
+          (%1$L::uuid, %16$L::uuid, NULL, NULL, 'shared', 'projection',
+           pg_catalog.decode(%10$L, 'hex'), pg_catalog.decode(%10$L, 'hex'),
+           clock_timestamp()),
+          (%1$L::uuid, %17$L::uuid, NULL, NULL, 'shared', 'projection',
+           pg_catalog.decode(%10$L, 'hex'), pg_catalog.decode(%10$L, 'hex'),
+           clock_timestamp());
+        INSERT INTO dasher.artifact_reference_claims (
+          organization_id, artifact_id, reference_claim_id, dashboard_id,
+          version_id, claim_kind, hold_id, created_at
+        ) VALUES
+          (%1$L::uuid, %14$L::uuid, %14$L::uuid, %7$L::uuid, %8$L::uuid,
+           'access_bearing', NULL, clock_timestamp()),
+          (%1$L::uuid, %15$L::uuid, %15$L::uuid, %7$L::uuid, %8$L::uuid,
+           'access_bearing', NULL, clock_timestamp()),
+          (%1$L::uuid, %16$L::uuid, %16$L::uuid, %7$L::uuid, %8$L::uuid,
+           'retention_only', %13$L::uuid, clock_timestamp()),
+          (%1$L::uuid, %17$L::uuid, %17$L::uuid, %2$L::uuid, %11$L::uuid,
+           'access_bearing', NULL, clock_timestamp())
+      `,
+        [
+          actor.organizationId,
+          crossDashboardId,
+          actor.userId,
+          randomUUID(),
+          snapshotId,
+          snapshotBytes.toString("hex"),
+          durableDashboardId,
+          versionId,
+          canonicalSpec.toString("hex"),
+          randomBytes(32).toString("hex"),
+          crossVersionId,
+          evidenceId,
+          holdId,
+          ownedArtifactId,
+          sharedArtifactId,
+          retentionOnlyArtifactId,
+          crossDashboardArtifactId,
+        ],
+      );
+    } finally {
+      seedClient.release();
+    }
+
+    const client = await appPool!.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      await runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+        client.query(
+          `
+            SELECT dasher_api.compare_and_swap_dashboard_head(
+              $1::uuid, NULL, $2::uuid, 0, $3::uuid, 1::smallint,
+              $4::bytea, 'task8b3-integration'
+            )
+          `,
+          [durableDashboardId, versionId, randomUUID(), actor.csrfDigest],
+        ),
+      );
+
+      for (const [sql, parameters, expectedFields] of [
+        [
+          "SELECT * FROM dasher_api.get_dashboard_head($1::uuid)",
+          [durableDashboardId],
+          [
+            "dashboard_id",
+            "version_id",
+            "parent_version_id",
+            "canonical_spec_bytes",
+            "canonical_spec_sha256",
+            "validation_state",
+            "validation_sha256",
+            "planner_provenance_sha256",
+            "policy_revision",
+            "registry_revision",
+            "calculation_graph_sha256",
+            "created_at",
+          ],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_version($1::uuid, $2::uuid)",
+          [durableDashboardId, versionId],
+          [
+            "dashboard_id",
+            "version_id",
+            "parent_version_id",
+            "canonical_spec_bytes",
+            "canonical_spec_sha256",
+            "validation_state",
+            "validation_sha256",
+            "planner_provenance_sha256",
+            "policy_revision",
+            "registry_revision",
+            "calculation_graph_sha256",
+            "created_at",
+          ],
+        ],
+      ] as const) {
+        const result = await runContextOperation(
+          client,
+          actor.sessionDigest,
+          randomUUID(),
+          () => client.query(sql, [...parameters]),
+        );
+        expect(Object.keys(result.rows[0] ?? {})).toEqual(expectedFields);
+      }
+      const evidence = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query(
+            "SELECT * FROM dasher_api.get_dashboard_evidence($1::uuid, $2::uuid)",
+            [durableDashboardId, versionId],
+          ),
+      );
+      expect(Object.keys(evidence.rows[0] ?? {})).toEqual([
+        "dashboard_id",
+        "version_id",
+        "evidence_id",
+        "evidence_kind",
+        "content_sha256",
+        "observed_at",
+        "retrieved_at",
+      ]);
+      const lineage = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query<{
+            readonly artifact_id: string;
+            readonly artifact_ownership_class: string;
+          }>(
+            "SELECT * FROM dasher_api.get_dashboard_lineage($1::uuid, $2::uuid)",
+            [durableDashboardId, versionId],
+          ),
+      );
+      expect(Object.keys(lineage.rows[0] ?? {})).toEqual([
+        "dashboard_id",
+        "version_id",
+        "parent_version_id",
+        "snapshot_id",
+        "evidence_id",
+        "artifact_id",
+        "artifact_ownership_class",
+      ]);
+      expect(
+        lineage.rows
+          .map((row) => [row.artifact_id, row.artifact_ownership_class])
+          .sort(),
+      ).toEqual(
+        [
+          [ownedArtifactId, "dashboard_owned"],
+          [sharedArtifactId, "shared"],
+        ].sort(),
+      );
+      expect(lineage.rows.map((row) => row.artifact_id)).not.toContain(
+        retentionOnlyArtifactId,
+      );
+      expect(lineage.rows.map((row) => row.artifact_id)).not.toContain(
+        crossDashboardArtifactId,
+      );
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+
+  it("denies archived durable evidence append with no residue while preserving archived reads", async () => {
+    const client = await appPool!.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      await runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+        client.query(
+          `
+            SELECT dasher_api.set_dashboard_archive(
+              $1::uuid, true, 1, $2::uuid, 1::smallint, $3::bytea,
+              'task8b3-integration'
+            )
+          `,
+          [durableDashboardId, randomUUID(), actor.csrfDigest],
+        ),
+      );
+      const rejectedEvidenceId = randomUUID();
+      const rejectedAuditId = randomUUID();
+      await expectDasherBoundaryError(
+        runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+          client.query(
+            `
+              SELECT dasher_api.create_evidence_record(
+                $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
+                'source_record', 'fixture:archived', $6::bytea,
+                clock_timestamp(), clock_timestamp(), $7::uuid,
+                1::smallint, $8::bytea, 'task8b3-integration'
+              )
+            `,
+            [
+              durableDashboardId,
+              versionId,
+              rejectedEvidenceId,
+              snapshotId,
+              randomUUID(),
+              randomBytes(32),
+              rejectedAuditId,
+              actor.csrfDigest,
+            ],
+          ),
+        ),
+        "P1001",
+        "dasher_denied",
+      );
+      const residue = await ownerPool.query<{
+        readonly audit_count: string;
+        readonly evidence_count: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text FROM dasher.evidence_records
+             WHERE evidence_id = $1::uuid) AS evidence_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+             WHERE audit_event_id = $2::uuid) AS audit_count
+        `,
+        [rejectedEvidenceId, rejectedAuditId],
+      );
+      expect(residue.rows[0]).toEqual({
+        audit_count: "0",
+        evidence_count: "0",
+      });
+      const archivedRead = await runContextOperation(
+        client,
+        actor.sessionDigest,
+        randomUUID(),
+        () =>
+          client.query<{ readonly evidence_id: string }>(
+            "SELECT * FROM dasher_api.get_dashboard_evidence($1::uuid, $2::uuid)",
+            [durableDashboardId, versionId],
+          ),
+      );
+      expect(archivedRead.rows.map((row) => row.evidence_id)).toEqual([
+        evidenceId,
+      ]);
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+});
