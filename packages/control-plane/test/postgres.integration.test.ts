@@ -22,8 +22,10 @@ import {
   type PgCompatiblePool,
 } from "../src/index.js";
 import {
+  canonical0003DependencyInventoryMatchesForTests,
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
+  getCanonical0003ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
 } from "../src/migrator.js";
@@ -54,6 +56,7 @@ const task8aHarnessTargetDashboard = "83000000-0000-4000-8000-000000000010";
 
 let ownerPool: Pool;
 let appPool: Pool | undefined;
+let canonical0002MigrationDirectory = canonicalMigrationDirectory;
 let disposableStateConfirmed = false;
 let appLoginCreated = false;
 let canonicalFirstRun:
@@ -120,10 +123,13 @@ async function resetManagedSchemas(): Promise<void> {
   try {
     await client.query(`
       DROP SCHEMA IF EXISTS fixture_role_owned CASCADE;
+      DROP SCHEMA IF EXISTS dasher_retention_api CASCADE;
       DROP SCHEMA IF EXISTS dasher_api CASCADE;
       DROP SCHEMA IF EXISTS dasher_private CASCADE;
       DROP SCHEMA IF EXISTS dasher CASCADE;
-      DROP SCHEMA IF EXISTS dasher_meta CASCADE
+      DROP SCHEMA IF EXISTS dasher_meta CASCADE;
+      DROP ROLE IF EXISTS dasher_retention_operator;
+      DROP ROLE IF EXISTS dasher_retention_definer
     `);
     const managedAppRole = await client.query<{ readonly exists: boolean }>(
       "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'dasher_app') AS exists",
@@ -1117,7 +1123,12 @@ beforeAll(async () => {
           EXISTS (
             SELECT 1
             FROM pg_catalog.pg_roles
-            WHERE rolname IN ('dasher_app', 'dasher_security_definer')
+            WHERE rolname IN (
+              'dasher_app',
+              'dasher_security_definer',
+              'dasher_retention_definer',
+              'dasher_retention_operator'
+            )
           ) AS managed_role_exists,
           EXISTS (
             SELECT 1
@@ -1153,6 +1164,19 @@ beforeAll(async () => {
     expect(row?.app_login_exists).toBe(false);
     expect(row?.managed_namespace_exists).toBe(false);
     disposableStateConfirmed = true;
+
+    canonical0002MigrationDirectory = await mkdtemp(
+      join(tmpdir(), "dasher-canonical-0002-pg-"),
+    );
+    for (const filename of [
+      "0001_identity_audit.sql",
+      "0002_security_boundary.sql",
+    ] as const) {
+      await writeFile(
+        join(canonical0002MigrationDirectory, filename),
+        await readFile(join(canonicalMigrationDirectory, filename)),
+      );
+    }
   } finally {
     client.release();
   }
@@ -1208,6 +1232,8 @@ afterAll(async () => {
         WHERE rolname IN (
           'dasher_app',
           'dasher_security_definer',
+          'dasher_retention_definer',
+          'dasher_retention_operator',
           $1,
           $2,
           $3
@@ -1266,6 +1292,13 @@ afterAll(async () => {
       public_schema_acl_restored: true,
     });
   } finally {
+    if (canonical0002MigrationDirectory !== canonicalMigrationDirectory) {
+      await rm(canonical0002MigrationDirectory, {
+        force: true,
+        recursive: true,
+      });
+      canonical0002MigrationDirectory = canonicalMigrationDirectory;
+    }
     await ownerPool.end();
   }
 });
@@ -1823,19 +1856,284 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("keeps only the exact prepared pair after modeled-0003 catalog failure, retries, and explicitly resets", async () => {
+  it("installs canonical 0001 through 0003, closes the exact catalog, and reruns idempotently", async () => {
+    try {
+      await resetManagedSchemas();
+      const first = await runMigrations(
+        ownerPool,
+        canonicalMigrationDirectory,
+        [],
+      );
+      expect(first).toEqual({
+        appliedCount: 3,
+        discoveredCount: 3,
+        previouslyAppliedCount: 0,
+      });
+      const second = await runMigrations(
+        ownerPool,
+        canonicalMigrationDirectory,
+        [],
+      );
+      expect(second).toEqual({
+        appliedCount: 0,
+        discoveredCount: 3,
+        previouslyAppliedCount: 3,
+      });
+
+      const client = await ownerPool.connect();
+      try {
+        const owner = await client.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        );
+        const ownerName = owner.rows[0]?.owner_name;
+        if (ownerName === undefined) {
+          throw new Error("PostgreSQL did not return the session owner");
+        }
+        expect(
+          await exactCatalogMatchesForTests(
+            client,
+            getCanonical0003ExactCatalogContractForTests(ownerName),
+            ownerName,
+          ),
+        ).toBe(true);
+        expect(
+          await canonical0003DependencyInventoryMatchesForTests(
+            client,
+            ownerName,
+          ),
+        ).toBe(true);
+      } finally {
+        client.release();
+      }
+
+      const journal = await ownerPool.query<{
+        readonly checksum: string;
+        readonly filename: string;
+        readonly sequence: number;
+      }>(`
+        SELECT
+          sequence,
+          filename,
+          pg_catalog.encode(checksum_sha256, 'hex') AS checksum
+        FROM dasher_meta.schema_migrations
+        ORDER BY sequence
+      `);
+      expect(journal.rows).toEqual([
+        {
+          checksum:
+            "d44b7d6e4cb34026cbfb0156b7be29ded3ac2ab6944f2759b04aa5b848f3e81a",
+          filename: "0001_identity_audit.sql",
+          sequence: 1,
+        },
+        {
+          checksum:
+            "395fb6fe5eb3802a86c64ff7d55a31f677edc79a45666ddd5d0237af122a47b9",
+          filename: "0002_security_boundary.sql",
+          sequence: 2,
+        },
+        {
+          checksum:
+            "270ba6f5b8756425835ebb0df0ea8f8c4739b81202d2b4f2b48172a016db9c40",
+          filename: "0003_immutable_content.sql",
+          sequence: 3,
+        },
+      ]);
+    } finally {
+      await resetManagedSchemas();
+    }
+  }, 120_000);
+
+  it.each(["SQL", "catalog", "ACL", "journal"] as const)(
+    "rolls back injected canonical %s failure to exact 0002 plus the dependency-free prepared pair",
+    async (failureStage) => {
+      let injected = false;
+      const instrumentedPool = {
+        async connect(): Promise<MigrationClient> {
+          const client = await ownerPool.connect();
+          const query = (async (text: string, values?: readonly unknown[]) => {
+            if (
+              !injected &&
+              failureStage === "SQL" &&
+              text.includes(
+                "-- Dasher immutable-content and lifecycle successor.",
+              )
+            ) {
+              injected = true;
+              throw new Error("injected canonical SQL failure");
+            }
+            if (
+              !injected &&
+              failureStage === "journal" &&
+              text.includes("INSERT INTO dasher_meta.schema_migrations") &&
+              values?.[0] === 3
+            ) {
+              injected = true;
+              throw new Error("injected canonical journal failure");
+            }
+            if (
+              !injected &&
+              failureStage === "catalog" &&
+              text.includes("signature_catalog AS (") &&
+              typeof values?.[0] === "string"
+            ) {
+              const expected = JSON.parse(values[0]) as {
+                readonly relations?: readonly string[];
+              };
+              if (expected.relations?.length === 32) {
+                injected = true;
+                return { rows: [{ matches: false }] };
+              }
+            }
+            if (
+              !injected &&
+              failureStage === "ACL" &&
+              text.includes("target_roles AS (") &&
+              typeof values?.[1] === "string"
+            ) {
+              const expected = JSON.parse(values[1]) as readonly {
+                readonly object_name?: string;
+                readonly role_name?: string;
+              }[];
+              if (
+                expected.some(
+                  (entry) =>
+                    entry.role_name === "dasher_retention_definer" &&
+                    entry.object_name === "dasher_retention_api",
+                )
+              ) {
+                injected = true;
+                return { rows: [{ matches: false }] };
+              }
+            }
+            return client.query(text, values as unknown[] | undefined);
+          }) as MigrationClient["query"];
+          return {
+            query,
+            release(error) {
+              client.release(error);
+            },
+          };
+        },
+      };
+
+      try {
+        await resetManagedSchemas();
+        await expect(
+          runMigrations(ownerPool, canonical0002MigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 2,
+          discoveredCount: 2,
+          previouslyAppliedCount: 0,
+        });
+        await expect(
+          runMigrations(instrumentedPool, canonicalMigrationDirectory, []),
+        ).rejects.toBeDefined();
+        expect(injected).toBe(true);
+
+        const residue = await ownerPool.query<{
+          readonly dependency_count: string;
+          readonly journal_count: string;
+          readonly successor_relation: string | null;
+        }>(`
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher_meta.schema_migrations
+            ) AS journal_count,
+            pg_catalog.to_regclass('dasher.dashboards')::text
+              AS successor_relation,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM pg_catalog.pg_shdepend AS dependency
+              JOIN pg_catalog.pg_roles AS role
+                ON role.oid = dependency.refobjid
+              WHERE role.rolname IN (
+                'dasher_retention_definer',
+                'dasher_retention_operator'
+              )
+                AND dependency.refclassid =
+                  'pg_catalog.pg_authid'::regclass
+                AND dependency.deptype IN ('a', 'o', 'r')
+            ) AS dependency_count
+        `);
+        expect(residue.rows[0]).toEqual({
+          dependency_count: "0",
+          journal_count: "2",
+          successor_relation: null,
+        });
+
+        const client = await ownerPool.connect();
+        try {
+          const owner = await client.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          );
+          const ownerName = owner.rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await exactCatalogMatchesForTests(
+              client,
+              getCanonical0002ExactCatalogContractForTests(ownerName),
+              ownerName,
+            ),
+          ).toBe(true);
+        } finally {
+          client.release();
+        }
+
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 3,
+          previouslyAppliedCount: 2,
+        });
+      } finally {
+        await resetManagedSchemas();
+      }
+    },
+    120_000,
+  );
+
+  it("rejects modeled 0003 before bootstrap, retry SQL, or reset DDL", async () => {
     const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-pg-"));
     const modeledFixture = new URL(
       "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
       import.meta.url,
     );
+    let injectCanonicalSqlFailure = false;
     let modeledSqlExecutions = 0;
+    let preparedRoleDdlCount = 0;
+    let sequence3JournalInsertions = 0;
+    let dropRoleStatements = 0;
     const instrumentedPool = {
       async connect(): Promise<MigrationClient> {
         const client = await ownerPool.connect();
         const query = (async (text: string, values?: readonly unknown[]) => {
+          if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
+            preparedRoleDdlCount += 1;
+          }
           if (text.includes("modeled_successor_inventory_version")) {
             modeledSqlExecutions += 1;
+          }
+          if (
+            text.includes("INSERT INTO dasher_meta.schema_migrations") &&
+            values?.[0] === 3
+          ) {
+            sequence3JournalInsertions += 1;
+          }
+          if (text.trim().startsWith("DROP ROLE dasher_retention_")) {
+            dropRoleStatements += 1;
+          }
+          if (
+            injectCanonicalSqlFailure &&
+            text.includes(
+              "-- Dasher immutable-content and lifecycle successor.",
+            )
+          ) {
+            injectCanonicalSqlFailure = false;
+            throw new Error("injected canonical SQL failure");
           }
           return client.query(text, values as unknown[] | undefined);
         }) as MigrationClient["query"];
@@ -1850,14 +2148,14 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
 
     try {
       await resetManagedSchemas();
-      await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+      await runMigrations(ownerPool, canonical0002MigrationDirectory, []);
       for (const filename of [
         "0001_identity_audit.sql",
         "0002_security_boundary.sql",
       ] as const) {
         await writeFile(
           join(directory, filename),
-          await readFile(join(canonicalMigrationDirectory, filename)),
+          await readFile(join(canonical0002MigrationDirectory, filename)),
         );
       }
       await writeFile(
@@ -1865,13 +2163,13 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await readFile(modeledFixture),
       );
 
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        await expectMigrationRejection(
-          runMigrations(instrumentedPool, directory, []),
-          "managed_role_drift",
-        );
-        expect(modeledSqlExecutions).toBe(attempt);
-      }
+      await expectMigrationRejection(
+        runMigrations(instrumentedPool, directory, []),
+        "migration_file_mismatch",
+      );
+      expect(preparedRoleDdlCount).toBe(0);
+      expect(modeledSqlExecutions).toBe(0);
+      expect(sequence3JournalInsertions).toBe(0);
 
       const rolledBackModeledState = await ownerPool.query<{
         readonly journal_count: string;
@@ -1890,6 +2188,40 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         journal_count: "2",
         probe_relation: null,
       });
+
+      const pure0002Roles = await ownerPool.query<{
+        readonly count: string;
+      }>(`
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname IN (
+          'dasher_retention_definer',
+          'dasher_retention_operator'
+        )
+      `);
+      expect(pure0002Roles.rows[0]?.count).toBe("0");
+
+      injectCanonicalSqlFailure = true;
+      await expect(
+        runMigrations(instrumentedPool, canonicalMigrationDirectory, []),
+      ).rejects.toThrow("injected canonical SQL failure");
+      expect(injectCanonicalSqlFailure).toBe(false);
+      expect(preparedRoleDdlCount).toBe(2);
+      expect(sequence3JournalInsertions).toBe(0);
+
+      await expectMigrationRejection(
+        runMigrations(instrumentedPool, directory, []),
+        "migration_file_mismatch",
+      );
+      expect(preparedRoleDdlCount).toBe(2);
+      expect(modeledSqlExecutions).toBe(0);
+      expect(sequence3JournalInsertions).toBe(0);
+
+      await expectMigrationRejection(
+        resetPreparedRetentionRoles(instrumentedPool, directory, []),
+        "migration_file_mismatch",
+      );
+      expect(dropRoleStatements).toBe(0);
 
       const prepared = await ownerPool.query<{
         readonly attributes_match: boolean;
@@ -2028,7 +2360,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           await expectMigrationRejection(
             resetPreparedRetentionRoles(
               resetProbePool,
-              canonicalMigrationDirectory,
+              canonical0002MigrationDirectory,
               [],
             ),
             "managed_role_drift",
@@ -2041,7 +2373,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
 
       await resetPreparedRetentionRoles(
         ownerPool,
-        canonicalMigrationDirectory,
+        canonical0002MigrationDirectory,
         [],
       );
       const residue = await ownerPool.query<{ readonly count: string }>(`
@@ -2065,7 +2397,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       if (preparedCount.rows[0]?.count === "2") {
         await resetPreparedRetentionRoles(
           ownerPool,
-          canonicalMigrationDirectory,
+          canonical0002MigrationDirectory,
           [],
         );
       }
@@ -2076,10 +2408,6 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
 
   async function proveSoleVariadicCatalogDelta(): Promise<void> {
     const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-variadic-"));
-    const modeledFixture = new URL(
-      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
-      import.meta.url,
-    );
     const probeIdentity = "dasher_private.task8a_variadic_probe(text[])";
     const probeSource = "SELECT pg_catalog.cardinality($1)";
     let probeCreated = false;
@@ -2091,16 +2419,18 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       ] as const) {
         await writeFile(
           join(directory, filename),
-          await readFile(join(canonicalMigrationDirectory, filename)),
+          await readFile(join(canonical0002MigrationDirectory, filename)),
         );
       }
       await writeFile(
         join(directory, "0003_immutable_content.sql"),
-        await readFile(modeledFixture),
+        await readFile(
+          join(canonicalMigrationDirectory, "0003_immutable_content.sql"),
+        ),
       );
 
       await resetManagedSchemas();
-      await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+      await runMigrations(ownerPool, canonical0002MigrationDirectory, []);
       const owner = await ownerPool.query<{ readonly owner_name: string }>(
         "SELECT session_user::text AS owner_name",
       );
@@ -2242,7 +2572,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
 
       let exactComparisonCount = 0;
       let preparedRoleDdlCount = 0;
-      let modeledSqlCount = 0;
+      let successorSqlCount = 0;
       const instrumentedPool = {
         async connect(): Promise<MigrationClient> {
           const client = await ownerPool.connect();
@@ -2263,8 +2593,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
               preparedRoleDdlCount += 1;
             }
-            if (text.includes("modeled_successor_inventory_version")) {
-              modeledSqlCount += 1;
+            if (
+              text.includes(
+                "-- Dasher immutable-content and lifecycle successor.",
+              )
+            ) {
+              successorSqlCount += 1;
             }
             return client.query(text, values as unknown[] | undefined);
           }) as MigrationClient["query"];
@@ -2282,7 +2616,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(exactComparisonCount).toBe(1);
       expect(preparedRoleDdlCount).toBe(0);
-      expect(modeledSqlCount).toBe(0);
+      expect(successorSqlCount).toBe(0);
       const preparedRoleResidue = await ownerPool.query<{
         readonly count: string;
       }>(`
@@ -2311,14 +2645,10 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   }
 
-  it("rejects representative catalog and grantability drift before prepared-role or modeled SQL side effects", async () => {
+  it("rejects representative catalog and grantability drift before prepared-role or successor SQL side effects", async () => {
     await proveSoleVariadicCatalogDelta();
     const directory = await mkdtemp(join(tmpdir(), "dasher-task-8a-drift-"));
     let originalDatabaseComment: string | null | undefined;
-    const modeledFixture = new URL(
-      "./fixtures/migrations-0003-allowlist/modeled-successor/0003_immutable_content.sql",
-      import.meta.url,
-    );
     const driftCases: readonly {
       readonly apply?: () => Promise<void>;
       readonly cleanup?: () => Promise<void>;
@@ -2618,17 +2948,19 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       ] as const) {
         await writeFile(
           join(directory, filename),
-          await readFile(join(canonicalMigrationDirectory, filename)),
+          await readFile(join(canonical0002MigrationDirectory, filename)),
         );
       }
       await writeFile(
         join(directory, "0003_immutable_content.sql"),
-        await readFile(modeledFixture),
+        await readFile(
+          join(canonicalMigrationDirectory, "0003_immutable_content.sql"),
+        ),
       );
 
       for (const drift of driftCases) {
         await resetManagedSchemas();
-        await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+        await runMigrations(ownerPool, canonical0002MigrationDirectory, []);
         if (drift.apply !== undefined) {
           await drift.apply();
         } else if (drift.sql !== undefined) {
@@ -2637,7 +2969,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           throw new Error(`missing PostgreSQL drift mutation: ${drift.name}`);
         }
         let preparedRoleDdlCount = 0;
-        let modeledSqlCount = 0;
+        let successorSqlCount = 0;
         const instrumentedPool = {
           async connect(): Promise<MigrationClient> {
             const client = await ownerPool.connect();
@@ -2648,8 +2980,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
               if (text.trim().startsWith("CREATE ROLE dasher_retention_")) {
                 preparedRoleDdlCount += 1;
               }
-              if (text.includes("modeled_successor_inventory_version")) {
-                modeledSqlCount += 1;
+              if (
+                text.includes(
+                  "-- Dasher immutable-content and lifecycle successor.",
+                )
+              ) {
+                successorSqlCount += 1;
               }
               return client.query(text, values as unknown[] | undefined);
             }) as MigrationClient["query"];
@@ -2668,7 +3004,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             "managed_role_drift",
           );
           expect(preparedRoleDdlCount, drift.name).toBe(0);
-          expect(modeledSqlCount, drift.name).toBe(0);
+          expect(successorSqlCount, drift.name).toBe(0);
         } finally {
           await drift.cleanup?.();
         }
@@ -6626,12 +6962,12 @@ describe.sequential(
       appLoginCreated = true;
       canonicalFirstRun = await runMigrations(
         ownerPool,
-        canonicalMigrationDirectory,
+        canonical0002MigrationDirectory,
         [config.appUsername],
       );
       canonicalSecondRun = await runMigrations(
         ownerPool,
-        canonicalMigrationDirectory,
+        canonical0002MigrationDirectory,
         [config.appUsername],
       );
       appPool = new Pool({ connectionString: config.appDsn, max: 4 });
@@ -6678,7 +7014,9 @@ describe.sequential(
     });
 
     it("pins the exact Task 4 functions, owners, execution properties, returns, ACLs, and source", async () => {
-      const migrations = await discoverMigrations(canonicalMigrationDirectory);
+      const migrations = await discoverMigrations(
+        canonical0002MigrationDirectory,
+      );
       const source = migrations[1]?.sql ?? "";
       const sourceBodies = new Map<string, string>();
       const sourcePattern =
