@@ -2940,6 +2940,12 @@ const securityBoundaryMigration = {
   checksum: "395fb6fe5eb3802a86c64ff7d55a31f677edc79a45666ddd5d0237af122a47b9",
 } as const;
 
+const immutableContentMigration = {
+  sequence: 3,
+  filename: "0003_immutable_content.sql",
+  checksum: "270ba6f5b8756425835ebb0df0ea8f8c4739b81202d2b4f2b48172a016db9c40",
+} as const;
+
 const task4FunctionIdentities = [
   "dasher_api.accept_invitation",
   "dasher_api.change_membership_role",
@@ -2959,8 +2965,8 @@ const task4FunctionIdentities = [
   "dasher_private.context_user_id",
 ] as const;
 
-describe("Task 3 and Task 4 canonical migration golden guard", () => {
-  it("pins exactly immutable 0001 and 0002 filenames and source-byte checksums", async () => {
+describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
+  it("pins exactly immutable 0001, 0002, and 0003 filenames and source-byte checksums", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -2969,7 +2975,11 @@ describe("Task 3 and Task 4 canonical migration golden guard", () => {
         filename: migration.filename,
         checksum: Buffer.from(migration.checksumSha256).toString("hex"),
       })),
-    ).toEqual([identityAuditMigration, securityBoundaryMigration]);
+    ).toEqual([
+      identityAuditMigration,
+      securityBoundaryMigration,
+      immutableContentMigration,
+    ]);
   });
 
   it("contains no extension, credential, or UUID-generation source", async () => {
@@ -2982,9 +2992,144 @@ describe("Task 3 and Task 4 canonical migration golden guard", () => {
     }
   });
 
+  it("closes canonical 0003 source over every frozen catalog identity and function body", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const sql = migrations[2]?.sql ?? "";
+    const contract = modeled0003CatalogMatrix;
+    const relationNames = new Set<string>(
+      contract.relationCatalog.map((relation) => relation.name),
+    );
+    const occurrences = (fragment: string): number =>
+      sql.split(fragment).length - 1;
+
+    expect(Buffer.byteLength(sql)).toBe(482_279);
+    expect(
+      [...sql.matchAll(/\bCREATE TABLE ([a-z_]+[.][a-z_]+) \(/gu)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(
+      contract.relationCatalog.map(
+        (relation) => `${relation.schema}.${relation.name}`,
+      ),
+    );
+    expect(
+      [...sql.matchAll(/\bCREATE TYPE ([a-z_]+[.][a-z_]+) AS \(/gu)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(
+      contract.types
+        .filter((type) => !relationNames.has(type.name))
+        .map((type) => `${type.schema}.${type.name}`),
+    );
+
+    for (const relation of contract.relationCatalog) {
+      expect(
+        occurrences(
+          `ALTER TABLE ${relation.schema}.${relation.name} ENABLE ROW LEVEL SECURITY;`,
+        ),
+        `${relation.name} ENABLE RLS`,
+      ).toBe(1);
+      expect(
+        occurrences(
+          `ALTER TABLE ${relation.schema}.${relation.name} FORCE ROW LEVEL SECURITY;`,
+        ),
+        `${relation.name} FORCE RLS`,
+      ).toBe(1);
+    }
+    for (const constraint of contract.constraints) {
+      expect(
+        occurrences(
+          `ADD CONSTRAINT ${constraint.name} ${constraint.definition};`,
+        ),
+        constraint.name,
+      ).toBe(1);
+    }
+    for (const index of contract.indexes.filter((index) => !index.primary)) {
+      const expected =
+        `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${index.name} ` +
+        `ON dasher.${index.relation} USING btree (${index.keyExpressions.join(", ")})` +
+        `${index.predicate === null ? "" : ` WHERE ${index.predicate}`};`;
+      expect(occurrences(expected), index.name).toBe(1);
+    }
+    for (const trigger of contract.triggers) {
+      expect(occurrences(`${trigger.definition};`), trigger.name).toBe(1);
+    }
+    for (const policy of contract.policies) {
+      const expected = [
+        `CREATE POLICY ${policy.name}`,
+        `ON dasher.${policy.relation}`,
+        "AS PERMISSIVE",
+        `FOR ${policy.command}`,
+        `TO ${policy.roles.join(", ")}`,
+        ...(policy.using === null ? [] : [`USING (${policy.using})`]),
+        ...(policy.withCheck === null
+          ? []
+          : [`WITH CHECK (${policy.withCheck})`]),
+        ";",
+      ].join("\n");
+      expect(occurrences(expected), policy.name).toBe(1);
+    }
+    for (const routine of contract.functions) {
+      const identity = `${routine.schema}.${routine.name}(${routine.identityArguments})`;
+      const expected = [
+        `CREATE FUNCTION ${identity}`,
+        `RETURNS ${routine.returns}`,
+        `LANGUAGE ${routine.language}`,
+        routine.volatility,
+        ...(routine.securityDefiner ? ["SECURITY DEFINER"] : []),
+        "SET search_path = pg_catalog",
+        `AS $function$${routine.source}$function$;`,
+      ].join("\n");
+      expect(occurrences(expected), identity).toBe(1);
+      expect(routine.defaults, `${identity} defaults`).toEqual([]);
+      expect(routine.variadic, `${identity} variadic`).toBe(false);
+    }
+    for (const acl of contract.relationAcls) {
+      expect(
+        occurrences(
+          `GRANT ${acl.privilege} ON TABLE dasher.${acl.relationName} TO ${acl.role};`,
+        ),
+        `${acl.role} ${acl.relationName} ${acl.privilege}`,
+      ).toBe(1);
+    }
+    for (const acl of contract.aclDependencyRows.filter(
+      (row) => row.objectKind === "schema",
+    )) {
+      expect(
+        occurrences(
+          `GRANT ${acl.privilege} ON SCHEMA ${acl.identity} TO ${acl.grantee};`,
+        ),
+        `${acl.grantee} ${acl.identity} ${acl.privilege}`,
+      ).toBe(1);
+    }
+    for (const acl of contract.catalogColumnAcls) {
+      expect(
+        occurrences(
+          `GRANT ${acl.privilege} (${acl.columnName}) ON TABLE ${acl.schema}.${acl.relationName} TO ${acl.grantee};`,
+        ),
+        `${acl.grantee} ${acl.relationName}.${acl.columnName} ${acl.privilege}`,
+      ).toBe(1);
+    }
+    for (const relation of contract.relationCatalog) {
+      expect(
+        occurrences(
+          `REVOKE ALL ON TYPE ${relation.schema}.${relation.name} FROM PUBLIC, dasher_app, dasher_security_definer, dasher_retention_definer, dasher_retention_operator;`,
+        ),
+        `${relation.name} composite type ACL closure`,
+      ).toBe(1);
+    }
+
+    expect(sql).not.toMatch(
+      /\bCREATE\s+(?:ROLE|USER|EXTENSION|DATABASE|SEQUENCE|VIEW|MATERIALIZED\s+VIEW)\b/iu,
+    );
+    expect(sql.match(/\bCREATE FUNCTION\b/gu)).toHaveLength(26);
+    expect(sql.match(/\bCREATE POLICY\b/gu)).toHaveLength(75);
+    expect(sql.match(/\bCREATE TRIGGER\b/gu)).toHaveLength(23);
+  });
+
   it("pins the exact Task 4 function set and closes every persistent function search path", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
-    const functionDefinitions = migrations.flatMap((migration) =>
+    const functionDefinitions = migrations.slice(0, 2).flatMap((migration) =>
       migration.sql
         .split(/(?=CREATE FUNCTION )/gu)
         .slice(1)
@@ -3111,15 +3256,19 @@ describe("Task 3 and Task 4 canonical migration golden guard", () => {
 });
 
 describe("Task 8A noncanonical modeled-0003 inventory", () => {
-  it("keeps the real canonical directory exactly at immutable 0001 and 0002", async () => {
+  it("keeps the modeled probe separate from the exact canonical 0003 identity", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(migrations.map((migration) => migration.filename)).toEqual([
       identityAuditMigration.filename,
       securityBoundaryMigration.filename,
+      immutableContentMigration.filename,
     ]);
-    expect(migrations.some((migration) => migration.sequence === 3)).toBe(
-      false,
+    expect(
+      Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
+    ).toBe(immutableContentMigration.checksum);
+    expect(immutableContentMigration.checksum).not.toBe(
+      "2feea09a7459e86bc64a34d728b191437b06439be4092daf0ac4ead586f43524",
     );
   });
 

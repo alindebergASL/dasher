@@ -143,6 +143,7 @@ interface ScriptedMigrationOptions {
 }
 
 interface ScriptedMigrationClient {
+  readonly canonicalSuccessorSideEffectPresent: boolean;
   readonly client: MigrationClient;
   readonly destructiveReleaseError: Error;
   readonly normalReleaseError: Error;
@@ -237,8 +238,10 @@ function scriptedMigrationClient(
   const createdPreparedRoles = new Set<string>();
   const droppedPreparedRoles = new Set<string>();
   let modeledSuccessorSideEffectPresent = false;
+  let canonicalSuccessorSideEffectPresent = false;
   let transactionSnapshot:
     | {
+        readonly canonicalSuccessorSideEffectPresent: boolean;
         readonly createdPreparedRoles: readonly string[];
         readonly droppedPreparedRoles: readonly string[];
         readonly journalRows: readonly (typeof journalRows)[number][];
@@ -287,6 +290,7 @@ function scriptedMigrationClient(
     if (text === "BEGIN") {
       currentTransaction += 1;
       transactionSnapshot = {
+        canonicalSuccessorSideEffectPresent,
         createdPreparedRoles: [...createdPreparedRoles],
         droppedPreparedRoles: [...droppedPreparedRoles],
         journalRows: journalRows.map((row) => ({ ...row })),
@@ -352,6 +356,8 @@ function scriptedMigrationClient(
         }
         modeledSuccessorSideEffectPresent =
           transactionSnapshot.modeledSuccessorSideEffectPresent;
+        canonicalSuccessorSideEffectPresent =
+          transactionSnapshot.canonicalSuccessorSideEffectPresent;
         transactionSnapshot = undefined;
       }
       return result([]);
@@ -676,11 +682,17 @@ function scriptedMigrationClient(
       text.startsWith("CREATE TABLE dasher.fixture_extension") ||
       text.startsWith("SELECT 1;") ||
       text.startsWith("SELECT 2;") ||
-      text.includes("modeled_successor_inventory_version")
+      text.includes("modeled_successor_inventory_version") ||
+      text.includes("-- Dasher immutable-content and lifecycle successor.")
     ) {
       command("MIGRATION SQL");
       if (text.includes("modeled_successor_inventory_version")) {
         modeledSuccessorSideEffectPresent = true;
+      }
+      if (
+        text.includes("-- Dasher immutable-content and lifecycle successor.")
+      ) {
+        canonicalSuccessorSideEffectPresent = true;
       }
       failAt("migration");
       return result([]);
@@ -701,6 +713,9 @@ function scriptedMigrationClient(
   }) as MigrationClient["query"];
 
   return {
+    get canonicalSuccessorSideEffectPresent() {
+      return canonicalSuccessorSideEffectPresent;
+    },
     client: {
       query,
       release(error) {
@@ -959,6 +974,38 @@ async function modeledSuccessorSeries(): Promise<{
     join(directory, "0003_immutable_content.sql"),
     await readFile(modeledSuccessorFixture),
   );
+  const migrations = await discoverMigrations(directory);
+  return {
+    directory,
+    journalRows: migrations.slice(0, 2).map((migration) => ({
+      applied_by: "migration_owner",
+      checksum_sha256: migration.checksumSha256,
+      filename: migration.filename,
+      sequence: migration.sequence,
+    })),
+  };
+}
+
+async function canonicalSuccessorSeries(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const directory = await temporaryDirectory();
+  for (const filename of [
+    "0001_identity_audit.sql",
+    "0002_security_boundary.sql",
+    "0003_immutable_content.sql",
+  ] as const) {
+    await writeFile(
+      join(directory, filename),
+      await readFile(join(canonicalMigrationDirectory, filename)),
+    );
+  }
   const migrations = await discoverMigrations(directory);
   return {
     directory,
@@ -1388,8 +1435,32 @@ describe("discoverMigrations", () => {
 });
 
 describe("prefix-aware managed roles and expected app logins", () => {
+  it("applies the clean canonical 0001-to-0003 series and reruns idempotently", async () => {
+    const series = await canonicalSuccessorSeries();
+    const scripted = scriptedMigrationClient({ prefixObjectMatches: true });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 3,
+      discoveredCount: 3,
+      previouslyAppliedCount: 0,
+    });
+    expect(scripted.journalRows).toHaveLength(3);
+    expect(scripted.canonicalSuccessorSideEffectPresent).toBe(true);
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 0,
+      discoveredCount: 3,
+      previouslyAppliedCount: 3,
+    });
+    expect(scripted.journalRows).toHaveLength(3);
+  });
+
   it("holds one session gate and prepares both retention roles only after validating exact 0002", async () => {
-    const series = await modeledSuccessorSeries();
+    const series = await canonicalSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
       prefixObjectMatches: true,
@@ -1988,8 +2059,8 @@ describe("prefix-aware managed roles and expected app logins", () => {
     }
   });
 
-  it("accepts the exact dependency-free prepared residue and retries the same modeled file without adoption", async () => {
-    const series = await modeledSuccessorSeries();
+  it("accepts the exact dependency-free prepared residue and retries the canonical successor without adoption", async () => {
+    const series = await canonicalSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
       prefixObjectMatches: true,
@@ -2006,8 +2077,28 @@ describe("prefix-aware managed roles and expected app logins", () => {
       "CREATE dasher_retention_definer",
     );
     expect(scripted.queryTexts).toContainEqual(
-      expect.stringContaining("modeled_successor_inventory_version"),
+      expect.stringContaining(
+        "-- Dasher immutable-content and lifecycle successor.",
+      ),
     );
+  });
+
+  it("rejects the exact modeled probe from pure 0002 before role, SQL, or journal side effects", async () => {
+    const series = await modeledSuccessorSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(scripted.transactionCommands).toEqual([
+      "SESSION ADVISORY LOCK",
+      "SESSION ADVISORY UNLOCK",
+    ]);
+    expect(scripted.journalRows).toEqual(series.journalRows);
+    expect(scripted.modeledSuccessorSideEffectPresent).toBe(false);
+    expect(scripted.managedRoleEvents).toEqual([]);
   });
 
   it.each([
@@ -2023,8 +2114,8 @@ describe("prefix-aware managed roles and expected app logins", () => {
         "dasher_retention_unexpected",
       ],
     },
-  ])("rejects $name before modeled SQL", async ({ roleNames }) => {
-    const series = await modeledSuccessorSeries();
+  ])("rejects $name before canonical SQL", async ({ roleNames }) => {
+    const series = await canonicalSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
       retentionRoleNames: roleNames,
@@ -2034,7 +2125,9 @@ describe("prefix-aware managed roles and expected app logins", () => {
       runMigrations(singleClientPool(scripted.client), series.directory, []),
     ).rejects.toMatchObject({ code: "managed_role_drift" });
     expect(scripted.queryTexts).not.toContainEqual(
-      expect.stringContaining("modeled_successor_inventory_version"),
+      expect.stringContaining(
+        "-- Dasher immutable-content and lifecycle successor.",
+      ),
     );
     expect(scripted.managedRoleEvents).not.toContain(
       "CREATE dasher_retention_operator",
@@ -2060,7 +2153,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
   ])(
     "rejects prepared definer $name drift before SQL",
     async ({ overrides }) => {
-      const series = await modeledSuccessorSeries();
+      const series = await canonicalSuccessorSeries();
       const scripted = scriptedMigrationClient({
         initialJournalRows: series.journalRows,
         retentionRoleNames: [
@@ -2078,13 +2171,15 @@ describe("prefix-aware managed roles and expected app logins", () => {
         runMigrations(singleClientPool(scripted.client), series.directory, []),
       ).rejects.toMatchObject({ code: "managed_role_drift" });
       expect(scripted.queryTexts).not.toContainEqual(
-        expect.stringContaining("modeled_successor_inventory_version"),
+        expect.stringContaining(
+          "-- Dasher immutable-content and lifecycle successor.",
+        ),
       );
     },
   );
 
   it("rejects prepared-role membership, dependency, and premature-object drift before SQL", async () => {
-    const series = await modeledSuccessorSeries();
+    const series = await canonicalSuccessorSeries();
     for (const options of [
       {
         membershipRows: [
@@ -2114,7 +2209,9 @@ describe("prefix-aware managed roles and expected app logins", () => {
         runMigrations(singleClientPool(scripted.client), series.directory, []),
       ).rejects.toMatchObject({ code: "managed_role_drift" });
       expect(scripted.queryTexts).not.toContainEqual(
-        expect.stringContaining("modeled_successor_inventory_version"),
+        expect.stringContaining(
+          "-- Dasher immutable-content and lifecycle successor.",
+        ),
       );
     }
   });
@@ -2214,8 +2311,8 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(scripted.managedRoleEvents).toEqual([]);
   });
 
-  it("leaves the exact committed pair after modeled SQL failure and accepts a same-file retry", async () => {
-    const series = await modeledSuccessorSeries();
+  it("leaves the exact committed pair after canonical SQL failure and accepts a same-file retry", async () => {
+    const series = await canonicalSuccessorSeries();
     const scripted = scriptedMigrationClient({
       failure: { stage: "migration", transaction: 3 },
       initialJournalRows: series.journalRows,
@@ -2251,26 +2348,82 @@ describe("prefix-aware managed roles and expected app logins", () => {
     ).toHaveLength(2);
   });
 
-  it("rolls back modeled SQL and journal when the successor catalog matrix drifts", async () => {
+  it.each([
+    {
+      name: "SQL",
+      options: {
+        failure: { stage: "migration", transaction: 3 },
+      } satisfies ScriptedMigrationOptions,
+    },
+    {
+      name: "catalog",
+      options: {
+        successorCatalogMatches: false,
+      } satisfies ScriptedMigrationOptions,
+    },
+    {
+      name: "ACL dependency",
+      options: {
+        dependencyMatches: [true, true, true, true, false],
+      } satisfies ScriptedMigrationOptions,
+    },
+    {
+      name: "journal",
+      options: {
+        failure: { stage: "journal", transaction: 3 },
+      } satisfies ScriptedMigrationOptions,
+    },
+  ])(
+    "rolls back canonical tenant SQL and journal after injected $name failure",
+    async ({ options }) => {
+      const series = await canonicalSuccessorSeries();
+      const scripted = scriptedMigrationClient({
+        ...options,
+        initialJournalRows: series.journalRows,
+        prefixObjectMatches: true,
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toBeDefined();
+      expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 COMMIT");
+      expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+      expect(scripted.journalRows).toEqual(series.journalRows);
+      expect(scripted.canonicalSuccessorSideEffectPresent).toBe(false);
+      expect(
+        scripted.managedRoleEvents.filter((event) =>
+          event.startsWith("CREATE dasher_retention_"),
+        ),
+      ).toEqual([
+        "CREATE dasher_retention_definer",
+        "CREATE dasher_retention_operator",
+      ]);
+      expect(
+        scripted.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects the modeled probe with exact prepared-role residue before SQL and preserves state", async () => {
     const series = await modeledSuccessorSeries();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
-      prefixObjectMatches: true,
-      successorCatalogMatches: false,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
     });
 
     await expect(
       runMigrations(singleClientPool(scripted.client), series.directory, []),
-    ).rejects.toMatchObject({ code: "managed_role_drift" });
-    expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 COMMIT");
-    expect(transactionCommands(scripted, 3)).toContain("T3 MIGRATION SQL");
-    expect(transactionCommands(scripted, 3)).toContain("T3 JOURNAL INSERT");
-    expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(scripted.transactionCommands).toEqual([
+      "SESSION ADVISORY LOCK",
+      "SESSION ADVISORY UNLOCK",
+    ]);
     expect(scripted.journalRows).toEqual(series.journalRows);
     expect(scripted.modeledSuccessorSideEffectPresent).toBe(false);
-    expect(scripted.managedRoleEvents).not.toContain(
-      "DROP dasher_retention_operator",
-    );
+    expect(scripted.managedRoleEvents).toEqual([]);
   });
 
   it("explicitly resets only the exact owner-validated dependency-free pair in safe order", async () => {
@@ -2335,7 +2488,7 @@ describe("prefix-aware managed roles and expected app logins", () => {
 
     await writeFile(
       join(series.directory, "0003_immutable_content.sql"),
-      "SELECT 3003;\n",
+      await readFile(modeledSuccessorFixture),
     );
     const different = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
