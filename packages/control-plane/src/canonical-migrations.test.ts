@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 
@@ -6,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   discoverMigrations,
+  getCanonical0004ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
 } from "./migrator.js";
 import {
@@ -2946,6 +2948,12 @@ const immutableContentMigration = {
   checksum: "270ba6f5b8756425835ebb0df0ea8f8c4739b81202d2b4f2b48172a016db9c40",
 } as const;
 
+const lifecycleApiCorrectionMigration = {
+  sequence: 4,
+  filename: "0004_lifecycle_api_correction.sql",
+  checksum: "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
+} as const;
+
 const task4FunctionIdentities = [
   "dasher_api.accept_invitation",
   "dasher_api.change_membership_role",
@@ -2966,7 +2974,7 @@ const task4FunctionIdentities = [
 ] as const;
 
 describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
-  it("pins exactly immutable 0001, 0002, and 0003 filenames and source-byte checksums", async () => {
+  it("pins immutable 0001-0003 and exact canonical 0004 source bytes", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -2979,7 +2987,9 @@ describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
       identityAuditMigration,
       securityBoundaryMigration,
       immutableContentMigration,
+      lifecycleApiCorrectionMigration,
     ]);
+    expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
   });
 
   it("contains no extension, credential, or UUID-generation source", async () => {
@@ -3263,6 +3273,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       identityAuditMigration.filename,
       securityBoundaryMigration.filename,
       immutableContentMigration.filename,
+      lifecycleApiCorrectionMigration.filename,
     ]);
     expect(
       Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
@@ -6799,5 +6810,554 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
     for (const fixtureId of Object.values(modeled0003FixtureIds)) {
       expect(fixtureId).toMatch(/^[1-9]0000000-0000-4000-8000-000000000001$/u);
     }
+  });
+});
+
+function lifecycleCorrectionFunctionSource(
+  sql: string,
+  qualifiedName: string,
+): string {
+  const escapedName = qualifiedName.replaceAll(".", "[.]");
+  const expression = new RegExp(
+    `CREATE(?: OR REPLACE)? FUNCTION ${escapedName}\\([\\s\\S]*?AS \\$function\\$([\\s\\S]*?)\\$function\\$;`,
+    "u",
+  );
+  return expression.exec(sql)?.[1] ?? "";
+}
+
+function normalizedSql(source: string): string {
+  return source.replace(/\s+/gu, " ").trim();
+}
+
+function normalizedIdentitySql(source: string): string {
+  return normalizedSql(source).replace(/\(\s+/gu, "(").replace(/\s+\)/gu, ")");
+}
+
+function hasExactLifecycleHelperLockProtocol(source: string): boolean {
+  const trustedBinding = source.indexOf(
+    "SELECT\n    session_row.organization_id,\n    session_row.rotated_from_session_id,\n    session_row.replaced_by_session_id",
+  );
+  const advisoryLock = source.indexOf("pg_advisory_xact_lock(");
+  const membershipLock = source.indexOf(
+    "FROM dasher.memberships AS membership\n  WHERE membership.membership_id = v_context_membership_id",
+  );
+  const sessionLock = source.indexOf(
+    "FROM dasher.sessions AS session_row\n  WHERE session_row.organization_id = v_trusted_organization_id",
+    membershipLock,
+  );
+  const databaseTime = source.indexOf("v_now := pg_catalog.clock_timestamp();");
+  const postWaitRevalidation = source.indexOf("RETURN EXISTS (", databaseTime);
+  return (
+    trustedBinding >= 0 &&
+    trustedBinding < advisoryLock &&
+    advisoryLock < membershipLock &&
+    membershipLock < sessionLock &&
+    sessionLock < databaseTime &&
+    databaseTime < postWaitRevalidation &&
+    containsFragmentsInOrder(source.slice(trustedBinding, advisoryLock), [
+      "session_row.session_id = v_context_session_id",
+      "session_row.organization_id = v_context_organization_id",
+      "session_row.user_id = v_context_user_id",
+      "session_row.token_key_version = v_context_session_key_version",
+      "session_row.token_digest = v_context_session_digest",
+      "membership.membership_id = v_context_membership_id",
+      "membership.authority_revision = v_context_authority_revision",
+      "v_trusted_organization_id IS DISTINCT FROM v_context_organization_id",
+    ]) &&
+    source.includes("'dasher:task4-organization:v1:'::text") &&
+    source.includes("20260730::bigint") &&
+    source.slice(membershipLock, sessionLock).includes("FOR UPDATE;") &&
+    containsFragmentsInOrder(source.slice(sessionLock, databaseTime), [
+      "session_row.session_id = v_context_session_id",
+      "session_row.session_id = v_rotated_from_session_id",
+      "session_row.session_id = v_replaced_by_session_id",
+      "ORDER BY session_row.organization_id, session_row.session_id",
+      "FOR UPDATE;",
+    ]) &&
+    containsFragmentsInOrder(source.slice(postWaitRevalidation), [
+      "session_row.session_id = v_context_session_id",
+      "session_row.organization_id = v_trusted_organization_id",
+      "session_row.user_id = v_context_user_id",
+      "session_row.authority_revision = v_context_authority_revision",
+      "session_row.token_key_version = v_context_session_key_version",
+      "session_row.token_digest = v_context_session_digest",
+      "session_row.csrf_key_version = p_current_csrf_key_version",
+      "session_row.csrf_digest = p_current_csrf_digest",
+      "session_row.replaced_by_session_id IS NULL",
+      "session_row.revoked_at IS NULL",
+      "v_now < session_row.idle_expires_at",
+      "v_now < session_row.absolute_expires_at",
+      "membership.membership_id = v_context_membership_id",
+      "membership.organization_id = v_trusted_organization_id",
+      "membership.user_id = v_context_user_id",
+      "membership.state = 'active'",
+      "membership.authority_revision = v_context_authority_revision",
+    ]) &&
+    source.includes("EXCEPTION\n  WHEN OTHERS THEN\n    RETURN false;")
+  );
+}
+
+function hasExactLifecycleAuditHandler(source: string): boolean {
+  const handler = normalizedSql(source.slice(source.indexOf("EXCEPTION")));
+  return (
+    handler.includes(
+      "WHEN unique_violation THEN GET STACKED DIAGNOSTICS v_constraint_name = CONSTRAINT_NAME; IF v_constraint_name IN ( 'audit_events_pkey', 'audit_events_org_id_key' ) THEN RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict'; END IF; RAISE; WHEN foreign_key_violation OR check_violation OR not_null_violation OR invalid_text_representation THEN RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied'; END",
+    ) && !/deadlock|serialization|query_canceled|commit/iu.test(handler)
+  );
+}
+
+const lifecycleMutationContracts = [
+  {
+    name: "create_dashboard",
+    role: "editor",
+    oldArguments: "uuid, text, text, integer, boolean, uuid, uuid, text",
+    newArguments:
+      "uuid, text, text, integer, boolean, uuid, uuid, smallint, bytea, text",
+    csrf: "$8, $9",
+  },
+  {
+    name: "create_evidence_record",
+    role: "editor",
+    oldArguments:
+      "uuid, uuid, uuid, uuid, uuid, text, text, bytea, timestamptz, timestamptz, uuid, text",
+    newArguments:
+      "uuid, uuid, uuid, uuid, uuid, text, text, bytea, timestamptz, timestamptz, uuid, smallint, bytea, text",
+    csrf: "$12, $13",
+  },
+  {
+    name: "create_dashboard_version",
+    role: "editor",
+    oldArguments:
+      "uuid, uuid, uuid, bytea, bytea, bytea, bytea, bigint, bigint, bytea, uuid[], uuid[], uuid[], uuid[], uuid, text",
+    newArguments:
+      "uuid, uuid, uuid, bytea, bytea, bytea, bytea, bigint, bigint, bytea, uuid[], uuid[], uuid[], uuid[], uuid, smallint, bytea, text",
+    csrf: "$16, $17",
+  },
+  {
+    name: "compare_and_swap_dashboard_head",
+    role: "editor",
+    oldArguments: "uuid, uuid, uuid, bigint, uuid, text",
+    newArguments: "uuid, uuid, uuid, bigint, uuid, smallint, bytea, text",
+    csrf: "$6, $7",
+  },
+  {
+    name: "request_dashboard_promotion",
+    role: "editor",
+    oldArguments: "uuid, uuid, bigint, bytea, uuid, text",
+    newArguments: "uuid, uuid, bigint, bytea, uuid, smallint, bytea, text",
+    csrf: "$6, $7",
+  },
+  {
+    name: "decide_dashboard_promotion",
+    role: "admin",
+    oldArguments: "uuid, bigint, text, uuid, uuid, text",
+    newArguments: "uuid, bigint, text, uuid, uuid, smallint, bytea, text",
+    csrf: "$6, $7",
+  },
+  {
+    name: "set_dashboard_archive",
+    role: "admin",
+    oldArguments: "uuid, boolean, bigint, uuid, text",
+    newArguments: "uuid, boolean, bigint, uuid, smallint, bytea, text",
+    csrf: "$5, $6",
+  },
+  {
+    name: "delete_dashboard",
+    role: "admin",
+    oldArguments: "uuid, bigint, uuid, text",
+    newArguments: "uuid, bigint, uuid, smallint, bytea, text",
+    csrf: "$4, $5",
+  },
+  {
+    name: "restore_dashboard_as_new",
+    role: "admin",
+    oldArguments:
+      "uuid, uuid, bigint, uuid, uuid, uuid, text, bytea, uuid, text",
+    newArguments:
+      "uuid, uuid, bigint, uuid, uuid, uuid, text, bytea, uuid, smallint, bytea, text",
+    csrf: "$10, $11",
+  },
+] as const;
+
+describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
+  it("pins all four exact source identities while leaving the modeled probe at three", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    expect(migrations).toHaveLength(4);
+    expect(
+      migrations.map((migration) =>
+        Buffer.from(migration.checksumSha256).toString("hex"),
+      ),
+    ).toEqual([
+      identityAuditMigration.checksum,
+      securityBoundaryMigration.checksum,
+      immutableContentMigration.checksum,
+      lifecycleApiCorrectionMigration.checksum,
+    ]);
+    expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
+    expect(modeled0003Functions.length).toBeGreaterThan(0);
+    expect(
+      modeled0003CatalogMatrix.functions.some(
+        (routine) => String(routine.name) === "context_csrf_allows",
+      ),
+    ).toBe(false);
+  });
+
+  it("binds every corrected routine identity to the frozen PostgreSQL body hash", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    const contract = getCanonical0004ExactCatalogContractForTests(
+      "migration_owner",
+    ) as { readonly functions: readonly string[] };
+    const names = [
+      "dasher_private.context_csrf_allows",
+      "dasher_api.list_dashboards",
+      "dasher_api.get_dashboard_summary",
+      "dasher_api.get_dashboard_head",
+      "dasher_api.get_dashboard_version",
+      "dasher_api.get_dashboard_admin_status",
+      "dasher_api.get_dashboard_evidence",
+      "dasher_api.get_dashboard_lineage",
+      ...lifecycleMutationContracts.map(
+        (mutation) => `dasher_api.${mutation.name}`,
+      ),
+    ];
+    expect(new Set(names).size).toBe(17);
+    for (const name of names) {
+      const source = lifecycleCorrectionFunctionSource(sql, name);
+      const expectedRows = contract.functions.filter((row) =>
+        row.startsWith(`${name}(`),
+      );
+      expect(expectedRows, name).toHaveLength(1);
+      expect(expectedRows[0], name).toMatch(
+        new RegExp(`${createHash("md5").update(source).digest("hex")}$`, "u"),
+      );
+    }
+  });
+
+  it("derives trusted organization authority before the canonical lock sequence and fully revalidates after waiting", async () => {
+    const sql = (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql;
+    const source = lifecycleCorrectionFunctionSource(
+      sql ?? "",
+      "dasher_private.context_csrf_allows",
+    );
+    expect(hasExactLifecycleHelperLockProtocol(source)).toBe(true);
+    expect(normalizedSql(sql ?? "")).toContain(
+      "REVOKE ALL ON FUNCTION dasher_private.context_csrf_allows(smallint, bytea) FROM PUBLIC, dasher_app, dasher_retention_definer, dasher_retention_operator;",
+    );
+    expect(sql).not.toContain(
+      "GRANT EXECUTE ON FUNCTION dasher_private.context_csrf_allows",
+    );
+
+    const weakened = [
+      source.replace(
+        "session_row.token_digest = v_context_session_digest",
+        "true",
+      ),
+      source.replace("v_trusted_organization_id IS DISTINCT FROM", "false AND"),
+      source.replace("FOR UPDATE;", "FOR SHARE;"),
+      source.replace(
+        "ORDER BY session_row.organization_id, session_row.session_id",
+        "ORDER BY session_row.session_id DESC",
+      ),
+      source.replace("session_row.csrf_digest = p_current_csrf_digest", "true"),
+      source.replace(
+        "v_now := pg_catalog.clock_timestamp();",
+        "v_now := statement_timestamp();",
+      ),
+      source.replace(
+        "WHEN OTHERS THEN\n    RETURN false;",
+        "WHEN OTHERS THEN\n    RAISE;",
+      ),
+    ];
+    for (const mutant of weakened) {
+      expect(mutant).not.toBe(source);
+      expect(hasExactLifecycleHelperLockProtocol(mutant)).toBe(false);
+    }
+  });
+
+  it("hard-cuts all nine mutations with helper-first CSRF, retained roles, ACL closure, and exact audit normalization", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    const normalized = normalizedIdentitySql(sql);
+    for (const contract of lifecycleMutationContracts) {
+      const qualifiedName = `dasher_api.${contract.name}`;
+      const source = lifecycleCorrectionFunctionSource(sql, qualifiedName);
+      const helperGate = source.indexOf(
+        `IF NOT dasher_private.context_csrf_allows(${contract.csrf}) THEN`,
+      );
+      const roleGate = source.indexOf(
+        `IF NOT dasher_private.context_allows(v_organization_id, '${contract.role}')`,
+      );
+      expect(source, contract.name).not.toBe("");
+      expect(helperGate, `${contract.name} helper`).toBeGreaterThanOrEqual(0);
+      expect(roleGate, `${contract.name} role`).toBeGreaterThan(helperGate);
+      expect(normalized, `${contract.name} predecessor drop`).toContain(
+        `DROP FUNCTION ${qualifiedName}(${contract.oldArguments}) RESTRICT;`,
+      );
+      expect(normalized, `${contract.name} successor identity`).toContain(
+        `CREATE FUNCTION ${qualifiedName}(${contract.newArguments})`,
+      );
+      expect(normalized, `${contract.name} owner`).toContain(
+        `ALTER FUNCTION ${qualifiedName}(${contract.newArguments}) OWNER TO dasher_security_definer;`,
+      );
+      expect(normalized, `${contract.name} revoke`).toContain(
+        `REVOKE ALL ON FUNCTION ${qualifiedName}(${contract.newArguments}) FROM PUBLIC, dasher_app, dasher_retention_definer, dasher_retention_operator;`,
+      );
+      expect(normalized, `${contract.name} grant`).toContain(
+        `GRANT EXECUTE ON FUNCTION ${qualifiedName}(${contract.newArguments}) TO dasher_app;`,
+      );
+      expect(source).toContain("v_constraint_name text;");
+      expect(hasExactLifecycleAuditHandler(source), contract.name).toBe(true);
+
+      const missingHelper = source.replace(
+        `IF NOT dasher_private.context_csrf_allows(${contract.csrf}) THEN`,
+        "IF false THEN",
+      );
+      expect(missingHelper).not.toBe(source);
+      expect(missingHelper).not.toContain(
+        `IF NOT dasher_private.context_csrf_allows(${contract.csrf}) THEN`,
+      );
+      const broadenedCollision = source.replace(
+        "'audit_events_org_id_key'",
+        "'unrelated_unique_key'",
+      );
+      expect(hasExactLifecycleAuditHandler(broadenedCollision)).toBe(false);
+      const swallowedUnknown = source.replace(
+        "    RAISE;\n  WHEN foreign_key_violation",
+        "    RETURN;\n  WHEN foreign_key_violation",
+      );
+      expect(hasExactLifecycleAuditHandler(swallowedUnknown)).toBe(false);
+    }
+    expect(sql.match(/\bDROP FUNCTION dasher_api[.]/gu)).toHaveLength(9);
+    expect(sql).not.toContain(" CASCADE");
+  });
+
+  it("requires live viewer context on all six non-admin public read projections and admin context on the bounded admin projection", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    for (const name of [
+      "list_dashboards",
+      "get_dashboard_summary",
+      "get_dashboard_head",
+      "get_dashboard_version",
+      "get_dashboard_evidence",
+      "get_dashboard_lineage",
+    ]) {
+      const source = lifecycleCorrectionFunctionSource(
+        sql,
+        `dasher_api.${name}`,
+      );
+      const normalized = normalizedSql(source);
+      const gate = normalized.indexOf(
+        "IF NOT dasher_private.context_allows( dasher_private.context_organization_id(), 'viewer' ) THEN",
+      );
+      expect(gate, name).toBeGreaterThanOrEqual(0);
+      expect(normalized.indexOf("FROM dasher."), name).toBeGreaterThan(gate);
+      expect(
+        /context_allows\([^)]*(?:content|title|component|spec)/iu.test(source),
+        name,
+      ).toBe(false);
+      const mutant = source.replace("'viewer'", "'viewer_removed'");
+      expect(mutant).not.toBe(source);
+      expect(normalizedSql(mutant)).not.toContain(
+        "IF NOT dasher_private.context_allows( dasher_private.context_organization_id(), 'viewer' ) THEN",
+      );
+    }
+    const admin = lifecycleCorrectionFunctionSource(
+      sql,
+      "dasher_api.get_dashboard_admin_status",
+    );
+    expect(normalizedSql(admin)).toContain(
+      "dasher_private.context_allows( dasher_private.context_organization_id(), 'admin' )",
+    );
+    expect(admin).not.toContain("'viewer'");
+  });
+
+  it("uses direct expanded scalar and SETOF projections with exact field order and nonleaking misses", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    for (const name of [
+      "get_dashboard_summary",
+      "get_dashboard_head",
+      "get_dashboard_version",
+      "get_dashboard_admin_status",
+    ]) {
+      const source = lifecycleCorrectionFunctionSource(
+        sql,
+        `dasher_api.${name}`,
+      );
+      expect(source, name).not.toContain("SELECT ROW(");
+      expect(source, name).toContain("INTO v_result");
+      expect(source, name).toContain("IF NOT FOUND THEN");
+      expect(source, name).toContain(
+        "ERRCODE = 'P1001', MESSAGE = 'dasher_denied'",
+      );
+    }
+
+    const setReturning = [
+      {
+        name: "list_dashboards",
+        fields:
+          "SELECT dashboard_id, title, current_kind, lifecycle_state, lifecycle_revision, effective_expires_at, head_version_id FROM",
+      },
+      {
+        name: "get_dashboard_evidence",
+        fields:
+          "SELECT link.dashboard_id, link.version_id, evidence.evidence_id, evidence.evidence_kind, evidence.content_sha256, evidence.observed_at, evidence.retrieved_at FROM",
+      },
+      {
+        name: "get_dashboard_lineage",
+        fields:
+          "SELECT version.dashboard_id, version.version_id, version.parent_version_id, snapshot.snapshot_id, evidence.evidence_id, artifact.artifact_id, artifact.ownership_class FROM",
+      },
+    ] as const;
+    for (const contract of setReturning) {
+      const source = lifecycleCorrectionFunctionSource(
+        sql,
+        `dasher_api.${contract.name}`,
+      );
+      expect(normalizedSql(source), contract.name).toContain(contract.fields);
+      const hasDirectProjection = (candidate: string): boolean =>
+        !/RETURN QUERY\s+SELECT ROW\(/u.test(candidate);
+      expect(hasDirectProjection(source), contract.name).toBe(true);
+      if (contract.name !== "list_dashboards") {
+        expect(source, contract.name).toContain("IF NOT FOUND THEN");
+      }
+      const wrapperMutant = source.replace(
+        "RETURN QUERY\n    SELECT ",
+        "RETURN QUERY\n    SELECT ROW(",
+      );
+      expect(wrapperMutant).not.toBe(source);
+      expect(wrapperMutant).toContain("RETURN QUERY\n    SELECT ROW(");
+      expect(hasDirectProjection(wrapperMutant)).toBe(false);
+    }
+  });
+
+  it("returns exact database-derived creation facts and atomically denies archived evidence writes", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    const creationTypeContract =
+      "CREATE TYPE dasher.dashboard_creation_result AS ( dashboard_id uuid, created_at timestamptz, effective_expires_at timestamptz, effective_ttl_seconds integer, used_organization_default boolean, lifecycle_policy_seeded boolean, lifecycle_policy_revision bigint, default_disposable_ttl_seconds integer, retention_policy_revision bigint );";
+    expect(normalizedSql(sql)).toContain(creationTypeContract);
+    const reorderedType = normalizedSql(sql).replace(
+      "dashboard_id uuid, created_at timestamptz",
+      "created_at timestamptz, dashboard_id uuid",
+    );
+    expect(reorderedType).not.toContain(creationTypeContract);
+    const create = lifecycleCorrectionFunctionSource(
+      sql,
+      "dasher_api.create_dashboard",
+    );
+    expect(create).toContain(
+      "GET DIAGNOSTICS v_policy_insert_count = ROW_COUNT;",
+    );
+    expect(create).toContain("v_policy_insert_count NOT IN (0, 1)");
+    expect(create.match(/v_now := clock_timestamp\(\);/gu)).toHaveLength(1);
+    expect(create).toContain("v_effective_expires_at, v_effective_expires_at");
+    expect(create).toContain("v_policy_insert_count = 1");
+    expect(create).toContain("v_policy_row_revision");
+    expect(create).toContain("v_default_ttl_seconds");
+    expect(create).toContain("v_policy_revision");
+
+    const evidence = lifecycleCorrectionFunctionSource(
+      sql,
+      "dasher_api.create_evidence_record",
+    );
+    expect(
+      evidence.match(
+        /dashboard[.]current_kind = 'durable'[\s\S]{0,100}?dashboard[.]lifecycle_state IN \('draft', 'active'\)/gu,
+      ),
+    ).toHaveLength(2);
+    expect(evidence).not.toMatch(
+      /current_kind = 'durable'[\s\S]{0,120}?lifecycle_state IN \([^)]*'archived'/gu,
+    );
+    const archivedAdmissionMutant = evidence.replace(
+      "OR (dashboard.current_kind = 'durable'\n        AND dashboard.lifecycle_state IN ('draft', 'active')",
+      "OR (dashboard.current_kind = 'durable'\n        AND dashboard.lifecycle_state IN ('draft', 'active', 'archived')",
+    );
+    expect(archivedAdmissionMutant).not.toBe(evidence);
+    expect(archivedAdmissionMutant).toMatch(
+      /current_kind = 'durable'[\s\S]{0,120}?lifecycle_state IN \([^)]*'archived'/gu,
+    );
+    expect(
+      evidence.indexOf("INSERT INTO dasher.evidence_records"),
+    ).toBeGreaterThan(evidence.lastIndexOf("v_now := clock_timestamp();"));
+  });
+
+  it("binds lineage ownership to exact target access-bearing claims and adds only the two projection SELECT grants", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    const lineage = lifecycleCorrectionFunctionSource(
+      sql,
+      "dasher_api.get_dashboard_lineage",
+    );
+    expect(
+      lineage.match(/artifact[.]ownership_class = 'dashboard_owned'/gu),
+    ).toHaveLength(3);
+    expect(
+      lineage.match(/artifact[.]ownership_class = 'shared'/gu),
+    ).toHaveLength(3);
+    expect(
+      lineage.match(/relevance_claim[.]claim_kind = 'access_bearing'/gu),
+    ).toHaveLength(3);
+    expect(lineage.match(/relevance_claim[.]hold_id IS NULL/gu)).toHaveLength(
+      3,
+    );
+    expect(lineage).toContain("artifact_claim.claim_kind = 'access_bearing'");
+    expect(lineage).toContain("artifact_claim.hold_id IS NULL");
+    expect(lineage).toContain(
+      "artifact_claim.organization_id = version.organization_id",
+    );
+    expect(lineage).toContain(
+      "artifact_claim.dashboard_id = version.dashboard_id",
+    );
+    expect(lineage).toContain("artifact_claim.version_id = version.version_id");
+    expect(lineage).not.toContain("claim_kind = 'retention_only'");
+    expect(lineage).toContain("artifact.ownership_class");
+    const retentionExposureMutant = lineage.replace(
+      "relevance_claim.claim_kind = 'access_bearing'",
+      "relevance_claim.claim_kind IN ('access_bearing', 'retention_only')",
+    );
+    expect(retentionExposureMutant).not.toBe(lineage);
+    expect(
+      retentionExposureMutant.match(
+        /relevance_claim[.]claim_kind = 'access_bearing'/gu,
+      ),
+    ).toHaveLength(2);
+
+    const relationGrants = [
+      ...sql.matchAll(
+        /GRANT SELECT ON TABLE dasher[.]([a-z_]+)\s+TO dasher_security_definer;/gu,
+      ),
+    ].map((match) => match[1]);
+    expect(relationGrants).toEqual([
+      "dashboard_cleanup_coordination",
+      "dashboard_legal_holds",
+    ]);
+    expect(sql.match(/\bGRANT SELECT ON TABLE\b/gu)).toHaveLength(2);
+    const expandedGrantMutant = `${sql}\nGRANT SELECT ON TABLE dasher.dashboards TO dasher_security_definer;\n`;
+    expect(
+      expandedGrantMutant.match(/\bGRANT SELECT ON TABLE\b/gu),
+    ).toHaveLength(3);
+    expect(sql).not.toMatch(/GRANT (?:INSERT|UPDATE|DELETE) ON TABLE/iu);
+  });
+
+  it("contains no out-of-scope migration mechanism or privilege expansion", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "";
+    expect(sql).not.toMatch(
+      /\bCASCADE\b|\bEXECUTE\s+format\b|\bBEGIN;|\bCOMMIT;/iu,
+    );
+    expect(sql).not.toMatch(
+      /CREATE\s+EXTENSION|CREATE\s+ROLE|ALTER\s+POLICY|CREATE\s+POLICY/iu,
+    );
+    expect(sql).not.toMatch(
+      /hmac|proof_guc|csrf_proof|set_config\([^)]*csrf/iu,
+    );
+    expect(sql).not.toMatch(
+      /GRANT\s+(?:INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER)\s+ON\s+TABLE[^;]+TO\s+dasher_app/iu,
+    );
+    expect(sql).not.toMatch(/GRANT\s+EXECUTE[^;]+dasher_retention_api/iu);
+    expect(sql).not.toMatch(/postgres(?:ql)?:\/\/|PASSWORD\s+'|sk-proj/iu);
   });
 });
