@@ -52,6 +52,11 @@ const canonicalSuccessorFiles = [
       "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
     filename: "0005_security_definer_cleanup_coordination.sql",
   },
+  {
+    checksum:
+      "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
+    filename: "0006_lifecycle_access_retention_guard_correction.sql",
+  },
 ] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
@@ -5093,7 +5098,7 @@ interface DatabaseIdentityRow {
   readonly database_oid: string;
 }
 
-interface ExpectedAppLoginRow {
+interface ExpectedLoginRow {
   readonly bypass_rls: boolean | null;
   readonly can_create_database: boolean | null;
   readonly can_create_role: boolean | null;
@@ -5237,7 +5242,7 @@ function isConcurrentManagedRoleCreateError(error: unknown): boolean {
   );
 }
 
-function validateExpectedAppLoginRoleNames(
+function validateExpectedLoginRoleNames(
   roleNames: readonly string[],
 ): readonly string[] {
   if (!Array.isArray(roleNames)) {
@@ -5252,8 +5257,8 @@ function validateExpectedAppLoginRoleNames(
         roleName.length === 0 ||
         new TextEncoder().encode(roleName).byteLength > 63 ||
         /[\u0000-\u001f\u007f-\u009f]/u.test(roleName) ||
-        managedRoleNames.includes(
-          roleName as (typeof managedRoleNames)[number],
+        allManagedRoleNames.includes(
+          roleName as (typeof allManagedRoleNames)[number],
         ),
     ) ||
     new Set(validated).size !== validated.length
@@ -5262,6 +5267,24 @@ function validateExpectedAppLoginRoleNames(
   }
 
   return validated.sort();
+}
+
+function validateExpectedLoginRoleNameAllowlists(
+  expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
+): {
+  readonly app: readonly string[];
+  readonly retention: readonly string[];
+} {
+  const app = validateExpectedLoginRoleNames(expectedAppLoginRoleNames);
+  const retention = validateExpectedLoginRoleNames(
+    expectedRetentionLoginRoleNames,
+  );
+  const appRoleNames = new Set(app);
+  if (retention.some((roleName) => appRoleNames.has(roleName))) {
+    return reject("managed_role_drift");
+  }
+  return { app, retention };
 }
 
 function retainSanitizedRollbackDiagnostic(
@@ -5616,12 +5639,16 @@ async function readDatabaseIdentity(
   return row;
 }
 
-async function assertExpectedAppLogins(
+async function assertExpectedLogins(
   client: MigrationClient,
-  expectedAppLoginRoleNames: readonly string[],
+  expectedLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
+  markerKind: "app-login" | "retention-login",
 ): Promise<void> {
-  const result = await client.query<ExpectedAppLoginRow>(
+  if (expectedLoginRoleNames.length === 0) {
+    return;
+  }
+  const result = await client.query<ExpectedLoginRow>(
     `
       WITH expected(role_name) AS (
         SELECT pg_catalog.unnest($1::text[])
@@ -5655,12 +5682,13 @@ async function assertExpectedAppLogins(
         ON role.rolname = expected.role_name
       JOIN pg_catalog.pg_database AS database_row
         ON database_row.datname = pg_catalog.current_database()
+      WHERE $2::text IN ('app-login', 'retention-login')
     `,
-    [expectedAppLoginRoleNames],
+    [expectedLoginRoleNames, markerKind],
   );
 
-  const expectedRoleNames = new Set(expectedAppLoginRoleNames);
-  const rowsByRoleName = new Map<string, ExpectedAppLoginRow>();
+  const expectedRoleNames = new Set(expectedLoginRoleNames);
+  const rowsByRoleName = new Map<string, ExpectedLoginRow>();
   for (const row of result.rows) {
     if (
       !expectedRoleNames.has(row.role_name) ||
@@ -5693,7 +5721,7 @@ async function assertExpectedAppLogins(
       row.has_settings ||
       row.current_database_oid !== databaseIdentity.database_oid ||
       row.comment !==
-        `dasher:app-login:v1:database-oid:${databaseIdentity.database_oid}`
+        `dasher:${markerKind}:v1:database-oid:${databaseIdentity.database_oid}`
     ) {
       return reject("managed_role_drift");
     }
@@ -5703,10 +5731,12 @@ async function assertExpectedAppLogins(
 async function assertRoleMemberships(
   client: MigrationClient,
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
 ): Promise<void> {
   const targetRoleNames = [
     ...allManagedRoleNames,
     ...expectedAppLoginRoleNames,
+    ...expectedRetentionLoginRoleNames,
   ];
   const result = await client.query<RoleMembershipRow>(
     `
@@ -5737,11 +5767,20 @@ async function assertRoleMemberships(
       ]),
     )
     .sort();
-  const expected = expectedAppLoginRoleNames
-    .map((roleName) =>
+  const expected = [
+    ...expectedAppLoginRoleNames.map((roleName) =>
       JSON.stringify(["dasher_app", roleName, false, true, false]),
-    )
-    .sort();
+    ),
+    ...expectedRetentionLoginRoleNames.map((roleName) =>
+      JSON.stringify([
+        "dasher_retention_operator",
+        roleName,
+        false,
+        true,
+        false,
+      ]),
+    ),
+  ].sort();
 
   if (!arraysEqual(actual, expected)) {
     return reject("managed_role_drift");
@@ -5771,6 +5810,7 @@ async function baseManagedRolesAreMissing(
 async function assertRoleAndLoginState(
   client: MigrationClient,
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
   createMissingManagedRoles: boolean,
 ): Promise<DatabaseIdentityRow> {
   for (const managedRole of managedRoles) {
@@ -5786,12 +5826,23 @@ async function assertRoleAndLoginState(
   }
 
   const databaseIdentity = await readDatabaseIdentity(client);
-  await assertExpectedAppLogins(
+  await assertExpectedLogins(
     client,
     expectedAppLoginRoleNames,
     databaseIdentity,
+    "app-login",
   );
-  await assertRoleMemberships(client, expectedAppLoginRoleNames);
+  await assertExpectedLogins(
+    client,
+    expectedRetentionLoginRoleNames,
+    databaseIdentity,
+    "retention-login",
+  );
+  await assertRoleMemberships(
+    client,
+    expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
+  );
   return databaseIdentity;
 }
 
@@ -5802,7 +5853,7 @@ async function bootstrapManagedRolesWithState(
 ): Promise<void> {
   await runMigrationTransaction(client, state, async () => {
     await assertExecutor(client);
-    await assertRoleAndLoginState(client, expectedAppLoginRoleNames, true);
+    await assertRoleAndLoginState(client, expectedAppLoginRoleNames, [], true);
   });
 }
 
@@ -5810,7 +5861,7 @@ export async function bootstrapManagedRoles(
   client: MigrationClient,
   expectedAppLoginRoleNames: readonly string[],
 ): Promise<void> {
-  const validatedRoleNames = validateExpectedAppLoginRoleNames(
+  const validatedRoleNames = validateExpectedLoginRoleNames(
     expectedAppLoginRoleNames,
   );
   await bootstrapManagedRolesWithState(
@@ -20648,16 +20699,194 @@ function canonical0003CatalogPolicyExpressions(policy: {
 const cleanupCoordinationSecurityDefinerInsertWithCheck =
   "((CURRENT_USER = 'dasher_security_definer'::name) AND (organization_id = dasher_private.context_organization_id()))";
 
+interface CanonicalPhase6FunctionSources {
+  readonly adminStatus: string;
+  readonly policies: readonly CanonicalPhase6PolicySource[];
+  readonly retentionMutation: string;
+}
+
+interface CanonicalPhase6PolicySource {
+  readonly catalogUsing: string;
+  readonly catalogCommand: "d" | "r";
+  readonly command: "DELETE" | "SELECT";
+  readonly domain: "evidence" | "snapshot";
+  readonly name: string;
+  readonly permissive: true;
+  readonly relation: "evidence_records" | "source_snapshots";
+  readonly resourceId: "evidence_id" | "snapshot_id";
+  readonly roles: readonly ["dasher_retention_definer"];
+  readonly using: string;
+  readonly withCheck: null;
+}
+
+const canonicalPhase6PolicySpecifications = [
+  {
+    catalogCommand: "r",
+    command: "SELECT",
+    domain: "snapshot",
+    name: "source_snapshots_retention_select",
+    relation: "source_snapshots",
+    resourceId: "snapshot_id",
+  },
+  {
+    catalogCommand: "d",
+    command: "DELETE",
+    domain: "snapshot",
+    name: "source_snapshots_retention_delete",
+    relation: "source_snapshots",
+    resourceId: "snapshot_id",
+  },
+  {
+    catalogCommand: "r",
+    command: "SELECT",
+    domain: "evidence",
+    name: "evidence_records_retention_select",
+    relation: "evidence_records",
+    resourceId: "evidence_id",
+  },
+  {
+    catalogCommand: "d",
+    command: "DELETE",
+    domain: "evidence",
+    name: "evidence_records_retention_delete",
+    relation: "evidence_records",
+    resourceId: "evidence_id",
+  },
+] as const;
+
+const canonicalPhase6PolicyIdentities = new Set(
+  canonicalPhase6PolicySpecifications.map(
+    (policy) => `dasher.${policy.relation}.${policy.name}`,
+  ),
+);
+
+function canonicalPhase6CatalogPolicyUsing(
+  policy: (typeof canonicalPhase6PolicySpecifications)[number],
+): string {
+  const baseline = canonical0003CatalogPolicyExpressions({
+    name: policy.name,
+    relation: policy.relation,
+    using: null,
+    withCheck: null,
+  }).using;
+  if (baseline === null) {
+    throw new Error(`missing canonical policy baseline: ${policy.name}`);
+  }
+  const finalizedResourceMarker = `(EXISTS ( SELECT 1\n   FROM (dasher.${policy.domain}_deletion_finalizers target_finalizer`;
+  const finalizedResourceIndex = baseline.indexOf(finalizedResourceMarker);
+  if (
+    finalizedResourceIndex < 0 ||
+    baseline.indexOf(
+      finalizedResourceMarker,
+      finalizedResourceIndex + finalizedResourceMarker.length,
+    ) >= 0
+  ) {
+    throw new Error(`invalid canonical policy baseline: ${policy.name}`);
+  }
+
+  // PostgreSQL 16.14 pg_get_expr() form. Only the phase-3 finalized-resource
+  // suffix is replaced; the exact normalized claim prefix remains unchanged.
+  const finalizedResourceSuffix = `(EXISTS ( SELECT 1
+   FROM (dasher.${policy.domain}_deletion_finalizers target_finalizer
+     JOIN dasher.dashboard_cleanup_coordination target_cleanup ON ((target_cleanup.organization_id = target_finalizer.organization_id)))
+  WHERE ((target_finalizer.organization_id = ${policy.relation}.organization_id) AND (target_finalizer.${policy.resourceId} = ${policy.relation}.${policy.resourceId}) AND (target_cleanup.organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid) AND (target_cleanup.dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid) AND (target_cleanup.current_step = 'purge_finalizing'::text) AND (target_cleanup.expected_lifecycle_revision = (current_setting('dasher.retention_expected_lifecycle_revision'::text, true))::bigint) AND (octet_length(target_cleanup.completion_proof_sha256) = 32) AND (target_cleanup.lease_owner IS NULL) AND (target_cleanup.lease_expires_at IS NULL) AND (target_finalizer.state = 'deleted'::text) AND (target_finalizer.proof_sha256 = target_finalizer.expected_claim_set_sha256) AND (target_finalizer.bytes_deleted_at IS NOT NULL) AND (target_finalizer.bytes_deleted_at >= target_finalizer.intent_at) AND (target_finalizer.expected_claim_set_sha256 = sha256((((uuid_send(${policy.relation}.organization_id) || uuid_send((current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)) || uuid_send(${policy.relation}.${policy.resourceId})) || convert_to('${policy.domain}|expected_claim_set=empty'::text, 'UTF8'::name)))) AND (NOT (EXISTS ( SELECT 1
+           FROM dasher.${policy.domain}_reference_claims remaining_claim
+          WHERE ((remaining_claim.organization_id = ${policy.relation}.organization_id) AND (remaining_claim.${policy.resourceId} = ${policy.relation}.${policy.resourceId}))))))))))`;
+  return `${baseline.slice(0, finalizedResourceIndex)}${finalizedResourceSuffix}`;
+}
+
+function canonicalPhase6FunctionSource(sql: string, identity: string): string {
+  const declaration = `CREATE OR REPLACE FUNCTION ${identity}`;
+  const declarationIndex = sql.indexOf(declaration);
+  if (
+    declarationIndex < 0 ||
+    sql.indexOf(declaration, declarationIndex + declaration.length) >= 0
+  ) {
+    return reject("migration_file_mismatch");
+  }
+  const bodyStartMarker = "AS $function$";
+  const bodyStart = sql.indexOf(bodyStartMarker, declarationIndex);
+  const bodyEnd = sql.indexOf(
+    "$function$;",
+    bodyStart + bodyStartMarker.length,
+  );
+  if (bodyStart < 0 || bodyEnd < 0) {
+    return reject("migration_file_mismatch");
+  }
+  return sql.slice(bodyStart + bodyStartMarker.length, bodyEnd);
+}
+
+function canonicalPhase6FunctionSources(
+  sql: string,
+): CanonicalPhase6FunctionSources {
+  const policyPattern =
+    /^CREATE POLICY ([a-z_]+)\nON dasher[.]([a-z_]+)\nAS (PERMISSIVE)\nFOR (SELECT|DELETE)\nTO (dasher_retention_definer)\nUSING \((.+)\)\n;$/gmu;
+  const policyMatches = [...sql.matchAll(policyPattern)];
+  if (policyMatches.length !== canonicalPhase6PolicySpecifications.length) {
+    return reject("migration_file_mismatch");
+  }
+  const policies = canonicalPhase6PolicySpecifications.map((expected) => {
+    const match = policyMatches.find(
+      (candidate) =>
+        candidate[1] === expected.name &&
+        candidate[2] === expected.relation &&
+        candidate[4] === expected.command,
+    );
+    const using = match?.[6];
+    if (
+      match === undefined ||
+      match[3] !== "PERMISSIVE" ||
+      match[5] !== "dasher_retention_definer" ||
+      using === undefined ||
+      using.length === 0
+    ) {
+      return reject("migration_file_mismatch");
+    }
+    return {
+      ...expected,
+      catalogUsing: canonicalPhase6CatalogPolicyUsing(expected),
+      permissive: true,
+      roles: ["dasher_retention_definer"],
+      using,
+      withCheck: null,
+    } satisfies CanonicalPhase6PolicySource;
+  });
+  return {
+    adminStatus: canonicalPhase6FunctionSource(
+      sql,
+      "dasher_api.get_dashboard_admin_status(uuid)",
+    ),
+    policies,
+    retentionMutation: canonicalPhase6FunctionSource(
+      sql,
+      "dasher_private.enforce_retention_mutation()",
+    ),
+  };
+}
+
 function exactCatalogContract(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
+  phase6Sources?: CanonicalPhase6FunctionSources,
 ): CatalogSignatureContract {
   const hasSecurityBoundary = journalRows.length >= 2;
   const hasSuccessor = journalRows.length >= 3;
   const hasLifecycleCorrection = journalRows.length >= 4;
   const hasCleanupCoordinationCorrection = journalRows.length >= 5;
+  const hasLifecycleAccessRetentionGuardCorrection = journalRows.some(
+    (row) =>
+      row.sequence === 6 &&
+      row.filename === "0006_lifecycle_access_retention_guard_correction.sql",
+  );
+  if (
+    hasLifecycleAccessRetentionGuardCorrection &&
+    phase6Sources === undefined
+  ) {
+    throw new Error("canonical phase-6 function sources are required");
+  }
   const schemas = ["dasher", "dasher_meta", "dasher_private"];
   if (hasSecurityBoundary) schemas.push("dasher_api");
   if (hasSuccessor) schemas.push("dasher_retention_api");
@@ -20761,7 +20990,13 @@ function exactCatalogContract(
   if (hasSuccessor) {
     triggers.push(
       ...modeled0003StaticCatalogContract.triggers.map((trigger) => {
-        return `dasher|${trigger.relationName}|${trigger.name}|${trigger.enabled}|true|true|${String((trigger.events as readonly string[]).includes("INSERT"))}|${String((trigger.events as readonly string[]).includes("DELETE"))}|${String((trigger.events as readonly string[]).includes("UPDATE"))}|false|${trigger.functionIdentity}|${trigger.functionSource}|${canonical0003CatalogTriggerDefinition(trigger.definition)}`;
+        const functionSource =
+          hasLifecycleAccessRetentionGuardCorrection &&
+          trigger.functionIdentity ===
+            "dasher_private.enforce_retention_mutation()"
+            ? phase6Sources!.retentionMutation
+            : trigger.functionSource;
+        return `dasher|${trigger.relationName}|${trigger.name}|${trigger.enabled}|true|true|${String((trigger.events as readonly string[]).includes("INSERT"))}|${String((trigger.events as readonly string[]).includes("DELETE"))}|${String((trigger.events as readonly string[]).includes("UPDATE"))}|false|${trigger.functionIdentity}|${functionSource}|${canonical0003CatalogTriggerDefinition(trigger.definition)}`;
       }),
     );
   }
@@ -20774,10 +21009,26 @@ function exactCatalogContract(
     : [];
   if (hasSuccessor) {
     policies.push(
-      ...modeled0003StaticCatalogContract.policies.map((policy) => {
-        const expressions = canonical0003CatalogPolicyExpressions(policy);
-        return `dasher|${policy.relation}|${policy.name}|${String(policy.permissive)}|${policy.catalogCommand}|${pgTextArray(policy.roles)}|${expressions.using ?? "<none>"}|${expressions.withCheck ?? "<none>"}`;
-      }),
+      ...modeled0003StaticCatalogContract.policies
+        .filter(
+          (policy) =>
+            !hasLifecycleAccessRetentionGuardCorrection ||
+            !canonicalPhase6PolicyIdentities.has(
+              `dasher.${policy.relation}.${policy.name}`,
+            ),
+        )
+        .map((policy) => {
+          const expressions = canonical0003CatalogPolicyExpressions(policy);
+          return `dasher|${policy.relation}|${policy.name}|${String(policy.permissive)}|${policy.catalogCommand}|${pgTextArray(policy.roles)}|${expressions.using ?? "<none>"}|${expressions.withCheck ?? "<none>"}`;
+        }),
+    );
+  }
+  if (hasLifecycleAccessRetentionGuardCorrection) {
+    policies.push(
+      ...phase6Sources!.policies.map(
+        (policy) =>
+          `dasher|${policy.relation}|${policy.name}|${String(policy.permissive)}|${policy.catalogCommand}|${pgTextArray(policy.roles)}|${policy.catalogUsing}|<none>`,
+      ),
     );
   }
   if (hasCleanupCoordinationCorrection) {
@@ -20812,16 +21063,25 @@ function exactCatalogContract(
         )
         .map((routine) => {
           const identity = `${routine.schema}.${routine.name}(${canonical0003CatalogFunctionArguments(routine.identityArguments)})`;
-          return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${modeledVariadicType(routine)}|${String(routine.defaults.length)}|${modeledDefaults(routine)}|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(routine.source).digest("hex")}`;
+          const source =
+            hasLifecycleAccessRetentionGuardCorrection &&
+            identity === "dasher_private.enforce_retention_mutation()"
+              ? phase6Sources!.retentionMutation
+              : routine.source;
+          return `${identity}|f|${routine.returns}|${routine.language}|v|${String(routine.securityDefiner)}|false|false|${String(routine.returns.startsWith("SETOF "))}|u|${modeledVariadicType(routine)}|${String(routine.defaults.length)}|${modeledDefaults(routine)}|${routine.owner === "migration_owner" ? ownerName : routine.owner}|${pgTextArray(routine.proconfig)}|${createHash("md5").update(source).digest("hex")}`;
         }),
     );
   }
   if (hasLifecycleCorrection) {
     functions.push(
-      ...lifecycleCorrectionFunctionCatalogRows.map(
-        (routine) =>
-          `${routine.identity}|f|${routine.result}|plpgsql|v|true|false|false|${String(routine.result.startsWith("SETOF "))}|u|<none>|0|<none>|dasher_security_definer|{search_path=pg_catalog}|${routine.sourceMd5}`,
-      ),
+      ...lifecycleCorrectionFunctionCatalogRows.map((routine) => {
+        const sourceMd5 =
+          hasLifecycleAccessRetentionGuardCorrection &&
+          routine.identity === "dasher_api.get_dashboard_admin_status(uuid)"
+            ? createHash("md5").update(phase6Sources!.adminStatus).digest("hex")
+            : routine.sourceMd5;
+        return `${routine.identity}|f|${routine.result}|plpgsql|v|true|false|false|${String(routine.result.startsWith("SETOF "))}|u|<none>|0|<none>|dasher_security_definer|{search_path=pg_catalog}|${sourceMd5}`;
+      }),
     );
   }
 
@@ -20988,8 +21248,10 @@ function exactCatalogContract(
   const dependencyEntries = expectedDependencyInventory(
     journalRows,
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
     databaseIdentity,
     ownerName,
+    phase6Sources,
   );
   for (const dependency of dependencyEntries) {
     if (dependency.dependency_type !== "a") continue;
@@ -21085,6 +21347,7 @@ export function getCanonical0002ExactCatalogContractForTests(
       exactCatalogContract(
         journalRows,
         [],
+        [],
         { database_name: "current_database", database_oid: "0" },
         ownerName,
       ),
@@ -21109,6 +21372,7 @@ export function getCanonical0003ExactCatalogContractForTests(
     JSON.stringify(
       exactCatalogContract(
         journalRows,
+        [],
         [],
         { database_name: "current_database", database_oid: "0" },
         ownerName,
@@ -21135,6 +21399,7 @@ export function getCanonical0004ExactCatalogContractForTests(
       exactCatalogContract(
         journalRows,
         [],
+        [],
         { database_name: "current_database", database_oid: "0" },
         ownerName,
       ),
@@ -21145,6 +21410,33 @@ export function getCanonical0004ExactCatalogContractForTests(
 /** Test-only snapshot of the exact canonical-0005 catalog contract. */
 export function getCanonical0005ExactCatalogContractForTests(
   ownerName: string,
+): unknown {
+  const journalRows = canonicalSuccessorFiles.slice(0, 5).map(
+    (file, index) =>
+      ({
+        applied_by: ownerName,
+        checksum_sha256: new Uint8Array(32),
+        filename: file.filename,
+        sequence: index + 1,
+      }) satisfies JournalRow,
+  );
+  return JSON.parse(
+    JSON.stringify(
+      exactCatalogContract(
+        journalRows,
+        [],
+        [],
+        { database_name: "current_database", database_oid: "0" },
+        ownerName,
+      ),
+    ),
+  ) as unknown;
+}
+
+/** Test-only snapshot of the exact canonical-0006 catalog contract. */
+export function getCanonical0006ExactCatalogContractForTests(
+  ownerName: string,
+  migrationSql: string,
 ): unknown {
   const journalRows = canonicalSuccessorFiles.map(
     (file, index) =>
@@ -21160,8 +21452,10 @@ export function getCanonical0005ExactCatalogContractForTests(
       exactCatalogContract(
         journalRows,
         [],
+        [],
         { database_name: "current_database", database_oid: "0" },
         ownerName,
+        canonicalPhase6FunctionSources(migrationSql),
       ),
     ),
   ) as unknown;
@@ -21198,6 +21492,7 @@ export async function canonical0003DependencyInventoryMatchesForTests(
   const expected = expectedDependencyInventory(
     journalRows,
     [],
+    [],
     databaseIdentity,
     ownerName,
   );
@@ -21226,6 +21521,7 @@ export async function canonical0004DependencyInventoryMatchesForTests(
   const expected = expectedDependencyInventory(
     journalRows,
     [],
+    [],
     databaseIdentity,
     ownerName,
   );
@@ -21242,6 +21538,36 @@ export async function canonical0005DependencyInventoryMatchesForTests(
   ownerName: string,
 ): Promise<boolean> {
   const databaseIdentity = await readDatabaseIdentity(client);
+  const journalRows = canonicalSuccessorFiles.slice(0, 5).map(
+    (file, index) =>
+      ({
+        applied_by: ownerName,
+        checksum_sha256: new Uint8Array(32),
+        filename: file.filename,
+        sequence: index + 1,
+      }) satisfies JournalRow,
+  );
+  const expected = expectedDependencyInventory(
+    journalRows,
+    [],
+    [],
+    databaseIdentity,
+    ownerName,
+  );
+  const result = await client.query<DependencyComparisonRow>(
+    managedDependencyInventorySql,
+    [allManagedRoleNames, inventoryJson(expected)],
+  );
+  return result.rows.length === 1 && result.rows[0]?.matches === true;
+}
+
+/** Test-only execution of canonical-0006 role dependency closure. */
+export async function canonical0006DependencyInventoryMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  migrationSql: string,
+): Promise<boolean> {
+  const databaseIdentity = await readDatabaseIdentity(client);
   const journalRows = canonicalSuccessorFiles.map(
     (file, index) =>
       ({
@@ -21254,8 +21580,10 @@ export async function canonical0005DependencyInventoryMatchesForTests(
   const expected = expectedDependencyInventory(
     journalRows,
     [],
+    [],
     databaseIdentity,
     ownerName,
+    canonicalPhase6FunctionSources(migrationSql),
   );
   const result = await client.query<DependencyComparisonRow>(
     managedDependencyInventorySql,
@@ -21266,9 +21594,11 @@ export async function canonical0005DependencyInventoryMatchesForTests(
 
 async function assertCanonicalPrefixObjects(
   client: MigrationClient,
+  migrations: readonly DiscoveredMigration[],
   journalRows: readonly JournalRow[],
   exactCanonicalFiles: boolean,
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
 ): Promise<void> {
@@ -21279,8 +21609,16 @@ async function assertCanonicalPrefixObjects(
   const expected = exactCatalogContract(
     journalRows,
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
     databaseIdentity,
     ownerName,
+    journalRows.some(
+      (row) =>
+        row.sequence === 6 &&
+        row.filename === "0006_lifecycle_access_retention_guard_correction.sql",
+    )
+      ? canonicalPhase6FunctionSources(migrations[5]?.sql ?? "")
+      : undefined,
   );
   const result = await client.query<DependencyComparisonRow>(
     exactManagedCatalogInventorySql,
@@ -21330,25 +21668,29 @@ function dependencyEntry(
 function expectedDependencyInventory(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
+  phase6Sources?: CanonicalPhase6FunctionSources,
 ): readonly ManagedDependencyInventoryEntry[] {
-  const entries: ManagedDependencyInventoryEntry[] =
-    expectedAppLoginRoleNames.map((roleName) =>
-      dependencyEntry({
-        catalog_name: "pg_database",
-        database_oid: "0",
-        dependency_type: "a",
-        function_arguments: null,
-        grantor_name: ownerName,
-        object_kind: "database",
-        object_name: databaseIdentity.database_name,
-        privilege_type: "CONNECT",
-        role_name: roleName,
-        schema_name: null,
-        subobject_name: null,
-      }),
-    );
+  const entries: ManagedDependencyInventoryEntry[] = [
+    ...expectedAppLoginRoleNames,
+    ...expectedRetentionLoginRoleNames,
+  ].map((roleName) =>
+    dependencyEntry({
+      catalog_name: "pg_database",
+      database_oid: "0",
+      dependency_type: "a",
+      function_arguments: null,
+      grantor_name: ownerName,
+      object_kind: "database",
+      object_name: databaseIdentity.database_name,
+      privilege_type: "CONNECT",
+      role_name: roleName,
+      schema_name: null,
+      subobject_name: null,
+    }),
+  );
   const hasSecurityBoundary = journalRows.some(
     (row) =>
       row.sequence === 2 && row.filename === "0002_security_boundary.sql",
@@ -21466,6 +21808,11 @@ function expectedDependencyInventory(
       row.sequence === 5 &&
       row.filename === "0005_security_definer_cleanup_coordination.sql",
   );
+  const hasLifecycleAccessRetentionGuardCorrection = journalRows.some(
+    (row) =>
+      row.sequence === 6 &&
+      row.filename === "0006_lifecycle_access_retention_guard_correction.sql",
+  );
   if (hasSuccessor) {
     const functionIdentityParts = (
       identity: string,
@@ -21571,6 +21918,12 @@ function expectedDependencyInventory(
       ) {
         throw new Error(`invalid modeled policy dependency: ${row.identity}`);
       }
+      if (
+        hasLifecycleAccessRetentionGuardCorrection &&
+        canonicalPhase6PolicyIdentities.has(row.identity)
+      ) {
+        continue;
+      }
       const expressions = canonical0003CatalogPolicyExpressions({
         name: policyName,
         relation: relationName,
@@ -21598,6 +21951,35 @@ function expectedDependencyInventory(
           subobject_name: null,
         }),
       );
+    }
+
+    if (hasLifecycleAccessRetentionGuardCorrection) {
+      if (phase6Sources === undefined) {
+        throw new Error("canonical phase-6 policy sources are required");
+      }
+      for (const policy of phase6Sources.policies) {
+        entries.push(
+          dependencyEntry({
+            catalog_name: "pg_policy",
+            database_oid: databaseIdentity.database_oid,
+            dependency_type: "r",
+            function_arguments: null,
+            grantor_name: null,
+            object_kind: "policy",
+            object_name: policy.relation,
+            policy_command: policy.catalogCommand,
+            policy_name: policy.name,
+            policy_permissive: policy.permissive,
+            policy_roles: policy.roles,
+            policy_using_expression: policy.catalogUsing,
+            policy_with_check_expression: policy.withCheck,
+            privilege_type: null,
+            role_name: "dasher_retention_definer",
+            schema_name: "dasher",
+            subobject_name: null,
+          }),
+        );
+      }
     }
 
     if (hasLifecycleCorrection) {
@@ -21706,6 +22088,24 @@ function expectedDependencyInventory(
           }),
         );
       }
+    }
+
+    if (hasLifecycleAccessRetentionGuardCorrection) {
+      entries.push(
+        dependencyEntry({
+          catalog_name: "pg_class",
+          database_oid: databaseIdentity.database_oid,
+          dependency_type: "a",
+          function_arguments: null,
+          grantor_name: ownerName,
+          object_kind: "column",
+          object_name: "dashboards",
+          privilege_type: "UPDATE",
+          role_name: "dasher_retention_definer",
+          schema_name: "dasher",
+          subobject_name: "head_version_id",
+        }),
+      );
     }
   }
 
@@ -21853,18 +22253,23 @@ async function assertDependencyInventory(
   client: MigrationClient,
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
+  phase6Sources?: CanonicalPhase6FunctionSources,
 ): Promise<void> {
   const targetRoleNames = [
     ...allManagedRoleNames,
     ...expectedAppLoginRoleNames,
+    ...expectedRetentionLoginRoleNames,
   ];
   const expected = expectedDependencyInventory(
     journalRows,
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
     databaseIdentity,
     ownerName,
+    phase6Sources,
   );
   const result = await client.query<DependencyComparisonRow>(
     managedDependencyInventorySql,
@@ -21888,6 +22293,7 @@ async function validateMigrationPrefix(
   client: MigrationClient,
   migrations: readonly DiscoveredMigration[],
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
   exactCanonicalFiles: boolean,
   successorPresent: boolean,
 ): Promise<ValidatedMigrationPrefix> {
@@ -21899,7 +22305,10 @@ async function validateMigrationPrefix(
     await assertNoAdoptionConflict(client);
     await assertPreparedRetentionRolesAbsent(client);
     if (baseRolesMissing) {
-      if (expectedAppLoginRoleNames.length !== 0) {
+      if (
+        expectedAppLoginRoleNames.length !== 0 ||
+        expectedRetentionLoginRoleNames.length !== 0
+      ) {
         return reject("managed_role_drift");
       }
       return {
@@ -21914,12 +22323,14 @@ async function validateMigrationPrefix(
     const databaseIdentity = await assertRoleAndLoginState(
       client,
       expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
       false,
     );
     await assertDependencyInventory(
       client,
       [],
       expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
       databaseIdentity,
       ownerName,
     );
@@ -21950,13 +22361,16 @@ async function validateMigrationPrefix(
   const databaseIdentity = await assertRoleAndLoginState(
     client,
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
     false,
   );
   await assertCanonicalPrefixObjects(
     client,
+    migrations,
     journalRows,
     exactCanonicalFiles,
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
     databaseIdentity,
     ownerName,
   );
@@ -21964,8 +22378,16 @@ async function validateMigrationPrefix(
     client,
     journalRows,
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
     databaseIdentity,
     ownerName,
+    journalRows.some(
+      (row) =>
+        row.sequence === 6 &&
+        row.filename === "0006_lifecycle_access_retention_guard_correction.sql",
+    )
+      ? canonicalPhase6FunctionSources(migrations[5]?.sql ?? "")
+      : undefined,
   );
   return {
     baseRolesMissing: false,
@@ -21997,9 +22419,11 @@ export async function resetPreparedRetentionRoles(
   pool: MigrationPool,
   directory: string,
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
 ): Promise<void> {
-  const validatedRoleNames = validateExpectedAppLoginRoleNames(
+  const validatedRoleNames = validateExpectedLoginRoleNameAllowlists(
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
   );
   const client = await pool.connect();
   const state: MigrationClientState = {
@@ -22035,7 +22459,8 @@ export async function resetPreparedRetentionRoles(
         const prefix = await validateMigrationPrefix(
           client,
           migrations,
-          validatedRoleNames,
+          validatedRoleNames.app,
+          validatedRoleNames.retention,
           true,
           true,
         );
@@ -22085,9 +22510,11 @@ export async function runMigrations(
   pool: MigrationPool,
   directory: string,
   expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
 ): Promise<MigrationRunResult> {
-  const validatedRoleNames = validateExpectedAppLoginRoleNames(
+  const validatedRoleNames = validateExpectedLoginRoleNameAllowlists(
     expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
   );
   const client = await pool.connect();
   const state: MigrationClientState = {
@@ -22122,7 +22549,8 @@ export async function runMigrations(
         validateMigrationPrefix(
           client,
           migrations,
-          validatedRoleNames,
+          validatedRoleNames.app,
+          validatedRoleNames.retention,
           exactCanonicalFiles,
           successorPresent,
         ),
@@ -22138,7 +22566,12 @@ export async function runMigrations(
           await assertExecutor(client);
           await assertNoAdoptionConflict(client);
           await assertPreparedRetentionRolesAbsent(client);
-          await assertRoleAndLoginState(client, validatedRoleNames, true);
+          await assertRoleAndLoginState(
+            client,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
+            true,
+          );
         },
         false,
       );
@@ -22152,7 +22585,8 @@ export async function runMigrations(
           const before = await validateMigrationPrefix(
             client,
             migrations,
-            validatedRoleNames,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
             exactCanonicalFiles,
             successorPresent,
           );
@@ -22189,7 +22623,8 @@ export async function runMigrations(
           const after = await validateMigrationPrefix(
             client,
             migrations,
-            validatedRoleNames,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
             exactCanonicalFiles,
             successorPresent,
           );
@@ -22218,7 +22653,8 @@ export async function runMigrations(
           const before = await validateMigrationPrefix(
             client,
             migrations,
-            validatedRoleNames,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
             exactCanonicalFiles,
             successorPresent,
           );
@@ -22233,13 +22669,15 @@ export async function runMigrations(
           }
           const databaseIdentity = await assertRoleAndLoginState(
             client,
-            validatedRoleNames,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
             false,
           );
           await assertDependencyInventory(
             client,
             before.journalRows,
-            validatedRoleNames,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
             databaseIdentity,
             before.ownerName,
           );

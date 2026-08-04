@@ -154,6 +154,119 @@ export async function dropTemporaryAppLogin(
   }
 }
 
+export async function createTemporaryRetentionLogin(
+  ownerPool: Pool,
+  retentionDsn: string,
+  retentionUsername: string,
+): Promise<void> {
+  if (!/^dasher_test_task8d_[a-z0-9_]+$/u.test(retentionUsername)) {
+    throw new Error("temporary retention login identifier was not preflighted");
+  }
+
+  const parsedDsn = new URL(retentionDsn);
+  const password = decodeURIComponent(parsedDsn.password);
+  const databaseName = parsedDsn.pathname.slice(1);
+  const client = await ownerPool.connect();
+  try {
+    await client.query("BEGIN");
+    try {
+      const statement = await client.query<{ readonly sql: string }>(
+        `
+          SELECT pg_catalog.format(
+            'CREATE ROLE %s WITH LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %s'::text,
+            pg_catalog.format('%I'::text, $1::text),
+            pg_catalog.format('%L'::text, $2::text)
+          ) AS sql
+        `,
+        [retentionUsername, password],
+      );
+      const sql = statement.rows[0]?.sql;
+      if (typeof sql !== "string" || sql.length === 0) {
+        throw new Error("PostgreSQL did not quote the retention login SQL");
+      }
+      await client.query(sql);
+      const databaseIdentity = await client.query<{
+        readonly database_name: string;
+        readonly database_oid: string;
+      }>(`
+        SELECT
+          database_row.datname::text AS database_name,
+          database_row.oid::text AS database_oid
+        FROM pg_catalog.pg_database AS database_row
+        WHERE database_row.datname = pg_catalog.current_database()
+      `);
+      const databaseRow = databaseIdentity.rows[0];
+      if (
+        databaseIdentity.rows.length !== 1 ||
+        databaseRow === undefined ||
+        databaseRow.database_name !== databaseName
+      ) {
+        throw new Error(
+          "temporary retention login database identity did not match preflight",
+        );
+      }
+      await executeServerFormattedSql(client, "COMMENT ON ROLE %I IS %L", [
+        retentionUsername,
+        `dasher:retention-login:v1:database-oid:${databaseRow.database_oid}`,
+      ]);
+      await executeServerFormattedSql(
+        client,
+        "GRANT dasher_retention_operator TO %I WITH INHERIT FALSE, SET TRUE, ADMIN FALSE",
+        [retentionUsername],
+      );
+      await executeServerFormattedSql(
+        client,
+        "GRANT CONNECT ON DATABASE %I TO %I",
+        [databaseName, retentionUsername],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    client.release();
+  }
+}
+
+export async function dropTemporaryRetentionLogin(
+  ownerPool: Pool,
+  databaseName: string,
+  retentionUsername: string,
+): Promise<void> {
+  if (!/^dasher_test_task8d_[a-z0-9_]+$/u.test(retentionUsername)) {
+    throw new Error("temporary retention login identifier was not preflighted");
+  }
+
+  const client = await ownerPool.connect();
+  try {
+    await client.query(
+      `
+        SELECT pg_catalog.pg_terminate_backend(activity.pid)
+        FROM pg_catalog.pg_stat_activity AS activity
+        WHERE activity.usename = $1
+          AND activity.pid <> pg_catalog.pg_backend_pid()
+      `,
+      [retentionUsername],
+    );
+    await executeServerFormattedSql(
+      client,
+      "REVOKE dasher_retention_operator FROM %I",
+      [retentionUsername],
+    );
+    await executeServerFormattedSql(
+      client,
+      "REVOKE CONNECT ON DATABASE %I FROM %I",
+      [databaseName, retentionUsername],
+    );
+    await executeServerFormattedSql(client, "DROP ROLE %I", [
+      retentionUsername,
+    ]);
+  } finally {
+    client.release();
+  }
+}
+
 export function borrowedClientPool(
   client: PoolClient,
   rejectJournalInsert = false,
