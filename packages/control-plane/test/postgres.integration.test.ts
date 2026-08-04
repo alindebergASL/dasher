@@ -27,11 +27,13 @@ import {
   canonical0003DependencyInventoryMatchesForTests,
   canonical0004DependencyInventoryMatchesForTests,
   canonical0005DependencyInventoryMatchesForTests,
+  canonical0006DependencyInventoryMatchesForTests,
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
   getCanonical0003ExactCatalogContractForTests,
   getCanonical0004ExactCatalogContractForTests,
   getCanonical0005ExactCatalogContractForTests,
+  getCanonical0006ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
 } from "../src/migrator.js";
@@ -40,7 +42,9 @@ import {
   canonicalMigrationDirectory,
   checksumDriftMigrationDirectory,
   createTemporaryAppLogin,
+  createTemporaryRetentionLogin,
   dropTemporaryAppLogin,
+  dropTemporaryRetentionLogin,
   executeServerFormattedSql,
   expectMigrationRejection,
   fixtureMigrationDirectory,
@@ -59,6 +63,8 @@ const task8aHarnessLifecycleLock = 2_026_080_208;
 const task8aHarnessTargetOrganizationA = "83000000-0000-4000-8000-000000000001";
 const task8aHarnessTargetOrganizationB = "83000000-0000-4000-8000-000000000002";
 const task8aHarnessTargetDashboard = "83000000-0000-4000-8000-000000000010";
+const task8dOrganizationId = "8d000000-0000-4000-8000-000000000001";
+const task8dRetentionUsername = "dasher_test_task8d_retention";
 
 let ownerPool: Pool;
 let appPool: Pool | undefined;
@@ -973,19 +979,159 @@ async function managedDependencyCount(databaseOid: string): Promise<string> {
   return result.rows[0]?.count ?? "missing";
 }
 
+async function withTask8dDefinerContext<T>(
+  connect: () => Promise<PoolClient>,
+  prepare: (client: PoolClient) => Promise<void>,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await connect();
+  let operationFailed = false;
+  let operationError: unknown;
+  let operationResult!: T;
+  let cleanupFailed = false;
+  let cleanupError: unknown;
+  let releaseFailed = false;
+  let releaseError: unknown;
+
+  try {
+    await prepare(client);
+    operationResult = await operation(client);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+
+  try {
+    await client.query("ROLLBACK");
+  } catch (error) {
+    cleanupFailed = true;
+    cleanupError = error;
+  }
+  try {
+    await client.query("RESET ROLE");
+  } catch (error) {
+    if (!cleanupFailed) {
+      cleanupFailed = true;
+      cleanupError = error;
+    }
+  }
+
+  const releaseDisposition = operationFailed
+    ? operationError instanceof Error
+      ? operationError
+      : true
+    : cleanupFailed
+      ? cleanupError instanceof Error
+        ? cleanupError
+        : true
+      : undefined;
+  try {
+    client.release(releaseDisposition);
+  } catch (error) {
+    releaseFailed = true;
+    releaseError = error;
+  }
+
+  if (operationFailed) {
+    throw operationError;
+  }
+  if (cleanupFailed && releaseFailed) {
+    throw new AggregateError(
+      [cleanupError, releaseError],
+      "Task 8D definer-context cleanup and client release both failed",
+    );
+  }
+  if (cleanupFailed) {
+    throw cleanupError;
+  }
+  if (releaseFailed) {
+    throw releaseError;
+  }
+  return operationResult;
+}
+
 async function dropSiblingDatabase(
   databaseName: string,
   databaseOid: string,
-): Promise<void> {
-  await ownerPool.query(
+): Promise<{ readonly forcedTerminationCount: number }> {
+  const identity = await ownerPool.query<{ readonly database_oid: string }>(
     `
-      SELECT pg_catalog.pg_terminate_backend(activity.pid)
+      SELECT database_row.oid::text AS database_oid
+      FROM pg_catalog.pg_database AS database_row
+      WHERE database_row.datname = $1
+    `,
+    [databaseName],
+  );
+  if (
+    identity.rows.length !== 1 ||
+    identity.rows[0]?.database_oid !== databaseOid
+  ) {
+    throw new Error("sibling database name/OID identity changed before drop");
+  }
+
+  // pg-pool removes idle clients from its internal list before their asynchronous
+  // client.end() callbacks fire, so Pool.end() can resolve while PostgreSQL still
+  // reports the closing backend. Give graceful shutdown a bounded opportunity
+  // before retaining the forced-termination fallback for genuinely stuck clients.
+  let backendsAbsent = false;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const activeBackends = await ownerPool.query<{
+      readonly count: string;
+    }>(
+      `
+        SELECT pg_catalog.count(*)::text AS count
+        FROM pg_catalog.pg_stat_activity AS activity
+        WHERE activity.datname = $1
+          AND activity.pid <> pg_catalog.pg_backend_pid()
+      `,
+      [databaseName],
+    );
+    if (activeBackends.rows[0]?.count === "0") {
+      backendsAbsent = true;
+      break;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+
+  let forcedTerminationCount = 0;
+  if (!backendsAbsent) {
+    const terminated = await ownerPool.query<{
+      readonly pid: string;
+      readonly terminated: boolean;
+    }>(
+      `
+        SELECT
+          activity.pid::text AS pid,
+          pg_catalog.pg_terminate_backend(activity.pid, $2::bigint)
+            AS terminated
+        FROM pg_catalog.pg_stat_activity AS activity
+        WHERE activity.datname = $1
+          AND activity.pid <> pg_catalog.pg_backend_pid()
+      `,
+      [databaseName, 5_000],
+    );
+    forcedTerminationCount = terminated.rows.length;
+    if (
+      terminated.rows.some(
+        (row) => row.pid.length === 0 || row.terminated !== true,
+      )
+    ) {
+      throw new Error("PostgreSQL did not confirm sibling backend termination");
+    }
+  }
+
+  const remainingBackends = await ownerPool.query<{ readonly count: string }>(
+    `
+      SELECT pg_catalog.count(*)::text AS count
       FROM pg_catalog.pg_stat_activity AS activity
       WHERE activity.datname = $1
         AND activity.pid <> pg_catalog.pg_backend_pid()
     `,
     [databaseName],
   );
+  if (remainingBackends.rows[0]?.count !== "0") {
+    throw new Error("sibling database still had backends before drop");
+  }
 
   const client = await ownerPool.connect();
   try {
@@ -1019,6 +1165,7 @@ async function dropSiblingDatabase(
     database_exists: false,
     dependency_count: "0",
   });
+  return { forcedTerminationCount };
 }
 
 async function schemaPresence(): Promise<{
@@ -1862,7 +2009,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("installs fresh canonical 0001 through 0005, reruns idempotently, and proves exact 0003-to-0004 and 0004-to-0005 upgrades", async () => {
+  it("installs fresh canonical 0001 through 0006, reruns idempotently, and proves exact phase upgrades", async () => {
     try {
       await resetManagedSchemas();
       const first = await runMigrations(
@@ -1871,8 +2018,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         [],
       );
       expect(first).toEqual({
-        appliedCount: 5,
-        discoveredCount: 5,
+        appliedCount: 6,
+        discoveredCount: 6,
         previouslyAppliedCount: 0,
       });
       const second = await runMigrations(
@@ -1882,8 +2029,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(second).toEqual({
         appliedCount: 0,
-        discoveredCount: 5,
-        previouslyAppliedCount: 5,
+        discoveredCount: 6,
+        previouslyAppliedCount: 6,
       });
 
       const client = await ownerPool.connect();
@@ -1898,14 +2045,30 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         expect(
           await exactCatalogMatchesForTests(
             client,
-            getCanonical0005ExactCatalogContractForTests(ownerName),
+            getCanonical0006ExactCatalogContractForTests(
+              ownerName,
+              await readFile(
+                join(
+                  canonicalMigrationDirectory,
+                  "0006_lifecycle_access_retention_guard_correction.sql",
+                ),
+                "utf8",
+              ),
+            ),
             ownerName,
           ),
         ).toBe(true);
         expect(
-          await canonical0005DependencyInventoryMatchesForTests(
+          await canonical0006DependencyInventoryMatchesForTests(
             client,
             ownerName,
+            await readFile(
+              join(
+                canonicalMigrationDirectory,
+                "0006_lifecycle_access_retention_guard_correction.sql",
+              ),
+              "utf8",
+            ),
           ),
         ).toBe(true);
       } finally {
@@ -1954,6 +2117,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
           filename: "0005_security_definer_cleanup_coordination.sql",
           sequence: 5,
+        },
+        {
+          checksum:
+            "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
+          filename: "0006_lifecycle_access_retention_guard_correction.sql",
+          sequence: 6,
         },
       ]);
 
@@ -2047,12 +2216,57 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         } finally {
           correctionClient.release();
         }
+        await writeFile(
+          join(
+            canonical0003Directory,
+            "0005_security_definer_cleanup_coordination.sql",
+          ),
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0005_security_definer_cleanup_coordination.sql",
+            ),
+          ),
+        );
         await expect(
-          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+          runMigrations(ownerPool, canonical0003Directory, []),
         ).resolves.toEqual({
           appliedCount: 1,
           discoveredCount: 5,
           previouslyAppliedCount: 4,
+        });
+        const phase5Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase5Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await exactCatalogMatchesForTests(
+              phase5Client,
+              getCanonical0005ExactCatalogContractForTests(ownerName),
+              ownerName,
+            ),
+          ).toBe(true);
+          expect(
+            await canonical0005DependencyInventoryMatchesForTests(
+              phase5Client,
+              ownerName,
+            ),
+          ).toBe(true);
+        } finally {
+          phase5Client.release();
+        }
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 6,
+          previouslyAppliedCount: 5,
         });
       } finally {
         await rm(canonical0003Directory, { recursive: true, force: true });
@@ -2214,10 +2428,20 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       });
       expect(await readDeleteResidue()).toEqual(cleanDeleteBaseline);
 
+      await writeFile(
+        join(
+          canonical0004Directory,
+          "0005_security_definer_cleanup_coordination.sql",
+        ),
+        await readFile(
+          join(
+            canonicalMigrationDirectory,
+            "0005_security_definer_cleanup_coordination.sql",
+          ),
+        ),
+      );
       await expect(
-        runMigrations(ownerPool, canonicalMigrationDirectory, [
-          config.appUsername,
-        ]),
+        runMigrations(ownerPool, canonical0004Directory, [config.appUsername]),
       ).resolves.toEqual({
         appliedCount: 1,
         discoveredCount: 5,
@@ -2930,7 +3154,351 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     120_000,
   );
 
-  it("serializes concurrent fresh-5 and exact 4-to-5 runners through the session gate", async () => {
+  it.each(["catalog", "journal"] as const)(
+    "rolls back actual 0006 PostgreSQL DDL after an injected post-DDL %s failure and retries exact 0005-to-0006 authority atomically",
+    async (failureStage) => {
+      const canonical0005Directory = await mkdtemp(
+        join(tmpdir(), "dasher-rollback-0006-pg-"),
+      );
+      const exact0006Sql = await readFile(
+        join(
+          canonicalMigrationDirectory,
+          "0006_lifecycle_access_retention_guard_correction.sql",
+        ),
+        "utf8",
+      );
+      const expectedJournal = [
+        {
+          checksum:
+            "d44b7d6e4cb34026cbfb0156b7be29ded3ac2ab6944f2759b04aa5b848f3e81a",
+          filename: "0001_identity_audit.sql",
+          sequence: 1,
+        },
+        {
+          checksum:
+            "395fb6fe5eb3802a86c64ff7d55a31f677edc79a45666ddd5d0237af122a47b9",
+          filename: "0002_security_boundary.sql",
+          sequence: 2,
+        },
+        {
+          checksum:
+            "270ba6f5b8756425835ebb0df0ea8f8c4739b81202d2b4f2b48172a016db9c40",
+          filename: "0003_immutable_content.sql",
+          sequence: 3,
+        },
+        {
+          checksum:
+            "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
+          filename: "0004_lifecycle_api_correction.sql",
+          sequence: 4,
+        },
+        {
+          checksum:
+            "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
+          filename: "0005_security_definer_cleanup_coordination.sql",
+          sequence: 5,
+        },
+        {
+          checksum:
+            "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
+          filename: "0006_lifecycle_access_retention_guard_correction.sql",
+          sequence: 6,
+        },
+      ] as const;
+      let exact0006SqlExecutions = 0;
+      let sequence6JournalAttempts = 0;
+      let injected = false;
+
+      const expectExactClosure = async (sequence: 5 | 6): Promise<void> => {
+        const client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await exactCatalogMatchesForTests(
+              client,
+              sequence === 5
+                ? getCanonical0005ExactCatalogContractForTests(ownerName)
+                : getCanonical0006ExactCatalogContractForTests(
+                    ownerName,
+                    exact0006Sql,
+                  ),
+              ownerName,
+            ),
+          ).toBe(true);
+          expect(
+            sequence === 5
+              ? await canonical0005DependencyInventoryMatchesForTests(
+                  client,
+                  ownerName,
+                )
+              : await canonical0006DependencyInventoryMatchesForTests(
+                  client,
+                  ownerName,
+                  exact0006Sql,
+                ),
+          ).toBe(true);
+        } finally {
+          client.release();
+        }
+      };
+
+      const expectExactJournal = async (count: 5 | 6): Promise<void> => {
+        const journal = await ownerPool.query<{
+          readonly checksum: string;
+          readonly filename: string;
+          readonly sequence: number;
+        }>(`
+          SELECT
+            sequence,
+            filename,
+            pg_catalog.encode(checksum_sha256, 'hex') AS checksum
+          FROM dasher_meta.schema_migrations
+          ORDER BY sequence
+        `);
+        expect(journal.rows).toEqual(expectedJournal.slice(0, count));
+      };
+
+      const readPhase6AuthorityState = async () => {
+        const columnAcl = await ownerPool.query<{
+          readonly count: string;
+        }>(`
+          SELECT pg_catalog.count(*)::text AS count
+          FROM pg_catalog.pg_attribute AS attribute
+          CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl)
+            AS privilege
+          JOIN pg_catalog.pg_roles AS grantee
+            ON grantee.oid = privilege.grantee
+          WHERE attribute.attrelid = 'dasher.dashboards'::regclass
+            AND attribute.attname = 'head_version_id'
+            AND grantee.rolname = 'dasher_retention_definer'
+            AND privilege.privilege_type = 'UPDATE'
+        `);
+        const policies = await ownerPool.query<{
+          readonly command: string;
+          readonly name: string;
+          readonly permissive: boolean;
+          readonly relation: string;
+          readonly roles: string[];
+          readonly usingExpression: string;
+          readonly withCheckExpression: string | null;
+        }>(`
+          SELECT
+            relation.relname::text AS relation,
+            policy.polname::text AS name,
+            policy.polpermissive AS permissive,
+            policy.polcmd::text AS command,
+            ARRAY(
+              SELECT COALESCE(role.rolname::text, 'PUBLIC')
+              FROM pg_catalog.unnest(policy.polroles) AS role_oid(oid)
+              LEFT JOIN pg_catalog.pg_roles AS role ON role.oid = role_oid.oid
+              ORDER BY COALESCE(role.rolname::text, 'PUBLIC')
+            ) AS roles,
+            pg_catalog.pg_get_expr(policy.polqual, policy.polrelid)
+              AS "usingExpression",
+            pg_catalog.pg_get_expr(policy.polwithcheck, policy.polrelid)
+              AS "withCheckExpression"
+          FROM pg_catalog.pg_policy AS policy
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = policy.polrelid
+          JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'dasher'
+            AND (
+              (relation.relname = 'source_snapshots'
+                AND policy.polname IN (
+                  'source_snapshots_retention_select',
+                  'source_snapshots_retention_delete'
+                ))
+              OR
+              (relation.relname = 'evidence_records'
+                AND policy.polname IN (
+                  'evidence_records_retention_select',
+                  'evidence_records_retention_delete'
+                ))
+            )
+          ORDER BY relation.relname, policy.polname
+        `);
+        const functions = await ownerPool.query<{
+          readonly identityArguments: string;
+          readonly name: string;
+          readonly schema: string;
+          readonly source: string;
+        }>(`
+          SELECT
+            namespace.nspname::text AS schema,
+            routine.proname::text AS name,
+            pg_catalog.pg_get_function_identity_arguments(routine.oid)
+              AS "identityArguments",
+            routine.prosrc AS source
+          FROM pg_catalog.pg_proc AS routine
+          JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = routine.pronamespace
+          WHERE routine.oid IN (
+            'dasher_api.get_dashboard_admin_status(uuid)'::regprocedure,
+            'dasher_private.enforce_retention_mutation()'::regprocedure
+          )
+          ORDER BY namespace.nspname, routine.proname
+        `);
+        return {
+          columnAclCount: columnAcl.rows[0]?.count,
+          functions: functions.rows,
+          policies: policies.rows,
+        };
+      };
+
+      const instrumentedPool = {
+        async connect(): Promise<MigrationClient> {
+          const client = await ownerPool.connect();
+          const query = (async (text: string, values?: readonly unknown[]) => {
+            if (
+              text.includes(
+                "GRANT UPDATE (head_version_id) ON TABLE dasher.dashboards",
+              )
+            ) {
+              const result = await client.query(
+                text,
+                values as unknown[] | undefined,
+              );
+              exact0006SqlExecutions += 1;
+              return result;
+            }
+            if (
+              text.includes("INSERT INTO dasher_meta.schema_migrations") &&
+              values?.[0] === 6
+            ) {
+              sequence6JournalAttempts += 1;
+              if (failureStage === "journal") {
+                injected = true;
+                throw new Error("injected exact 0006 journal failure");
+              }
+            }
+            if (
+              failureStage === "catalog" &&
+              exact0006SqlExecutions === 1 &&
+              text.includes("signature_catalog AS (") &&
+              typeof values?.[0] === "string" &&
+              values[0].includes("snapshot|expected_claim_set=empty")
+            ) {
+              injected = true;
+              return { rows: [{ matches: false }] };
+            }
+            return client.query(text, values as unknown[] | undefined);
+          }) as MigrationClient["query"];
+          return {
+            query,
+            release(error) {
+              client.release(error);
+            },
+          };
+        },
+      };
+
+      try {
+        for (const filename of [
+          "0001_identity_audit.sql",
+          "0002_security_boundary.sql",
+          "0003_immutable_content.sql",
+          "0004_lifecycle_api_correction.sql",
+          "0005_security_definer_cleanup_coordination.sql",
+        ] as const) {
+          await writeFile(
+            join(canonical0005Directory, filename),
+            await readFile(join(canonicalMigrationDirectory, filename)),
+          );
+        }
+        await resetManagedSchemas();
+        await expect(
+          runMigrations(ownerPool, canonical0005Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 5,
+          discoveredCount: 5,
+          previouslyAppliedCount: 0,
+        });
+        await expectExactClosure(5);
+        await expectExactJournal(5);
+        const phase5AuthorityState = await readPhase6AuthorityState();
+        expect(phase5AuthorityState.columnAclCount).toBe("0");
+        expect(
+          phase5AuthorityState.policies.map(
+            (policy) => `${policy.relation}.${policy.name}`,
+          ),
+        ).toEqual([
+          "evidence_records.evidence_records_retention_delete",
+          "evidence_records.evidence_records_retention_select",
+          "source_snapshots.source_snapshots_retention_delete",
+          "source_snapshots.source_snapshots_retention_select",
+        ]);
+        expect(
+          phase5AuthorityState.functions.map(
+            (routine) =>
+              `${routine.schema}.${routine.name}(${routine.identityArguments})`,
+          ),
+        ).toEqual([
+          "dasher_api.get_dashboard_admin_status(uuid)",
+          "dasher_private.enforce_retention_mutation()",
+        ]);
+
+        await writeFile(
+          join(
+            canonical0005Directory,
+            "0006_lifecycle_access_retention_guard_correction.sql",
+          ),
+          exact0006Sql,
+        );
+
+        await expect(
+          runMigrations(instrumentedPool, canonical0005Directory, []),
+        ).rejects.toBeDefined();
+        expect(injected).toBe(true);
+        expect(exact0006SqlExecutions).toBe(1);
+        expect(sequence6JournalAttempts).toBe(1);
+
+        await expectExactClosure(5);
+        await expectExactJournal(5);
+        expect(await readPhase6AuthorityState()).toEqual(phase5AuthorityState);
+
+        await expect(
+          runMigrations(ownerPool, canonical0005Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 6,
+          previouslyAppliedCount: 5,
+        });
+        await expectExactClosure(6);
+        await expectExactJournal(6);
+        const phase6AuthorityState = await readPhase6AuthorityState();
+        expect(phase6AuthorityState.columnAclCount).toBe("1");
+        expect(phase6AuthorityState.policies).toHaveLength(4);
+        expect(phase6AuthorityState.functions).toHaveLength(2);
+        for (const [index, policy] of phase6AuthorityState.policies.entries()) {
+          expect(policy.usingExpression).not.toBe(
+            phase5AuthorityState.policies[index]?.usingExpression,
+          );
+        }
+        for (const [
+          index,
+          routine,
+        ] of phase6AuthorityState.functions.entries()) {
+          expect(routine.source).not.toBe(
+            phase5AuthorityState.functions[index]?.source,
+          );
+        }
+      } finally {
+        await rm(canonical0005Directory, { recursive: true, force: true });
+        await resetManagedSchemas();
+      }
+    },
+    120_000,
+  );
+
+  it("serializes concurrent fresh-6 and exact 4-to-6 runners through the session gate", async () => {
     const canonical0004Directory = await mkdtemp(
       join(tmpdir(), "dasher-concurrent-0004-pg-"),
     );
@@ -2957,8 +3525,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [0, 5],
-        [5, 0],
+        [0, 6],
+        [6, 0],
       ]);
 
       await resetManagedSchemas();
@@ -2972,8 +3540,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [4, 1],
-        [5, 0],
+        [4, 2],
+        [6, 0],
       ]);
     } finally {
       await rm(canonical0004Directory, { recursive: true, force: true });
@@ -3123,8 +3691,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await expect(
           runMigrations(ownerPool, canonicalMigrationDirectory, []),
         ).resolves.toEqual({
-          appliedCount: 3,
-          discoveredCount: 5,
+          appliedCount: 4,
+          discoveredCount: 6,
           previouslyAppliedCount: 2,
         });
       } finally {
@@ -6886,6 +7454,119 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
+  it("confirms forced termination of a tracked sibling backend before dropping only that database", async () => {
+    const databaseName = "dasher_t4_" + siblingDatabaseNonce + "_forced_drop";
+    let sibling:
+      | {
+          readonly databaseOid: string;
+          readonly pool: Pool;
+        }
+      | undefined;
+    let siblingClient: PoolClient | undefined;
+    let ownerGuard: PoolClient | undefined;
+    let siblingTerminationError: Error | undefined;
+    let operationError: unknown;
+    const cleanupErrors: unknown[] = [];
+
+    try {
+      sibling = await createSiblingDatabase(databaseName);
+      siblingClient = await sibling.pool.connect();
+      ownerGuard = await ownerPool.connect();
+      siblingClient.on("error", (error) => {
+        siblingTerminationError ??= error;
+      });
+      const siblingBackend = await siblingClient.query<{
+        readonly database_oid: string;
+      }>(
+        "SELECT (SELECT oid::text FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database()) AS database_oid",
+      );
+      expect(siblingBackend.rows[0]?.database_oid).toBe(sibling.databaseOid);
+      const ownerBackend = await ownerGuard.query<{
+        readonly database_name: string;
+        readonly pid: number;
+      }>(
+        "SELECT pg_catalog.current_database()::text AS database_name, pg_catalog.pg_backend_pid() AS pid",
+      );
+
+      const dropped = await dropSiblingDatabase(
+        databaseName,
+        sibling.databaseOid,
+      );
+      expect(dropped).toEqual({ forcedTerminationCount: 1 });
+      expect(await databaseOidByName(databaseName)).toBeUndefined();
+      const disconnectedQuery = await settleDatabasePromise(
+        siblingClient.query("SELECT 1"),
+      );
+      expect(disconnectedQuery.status).toBe("rejected");
+      if (
+        disconnectedQuery.status === "rejected" &&
+        disconnectedQuery.reason instanceof Error
+      ) {
+        siblingTerminationError ??= disconnectedQuery.reason;
+      }
+      expect(siblingTerminationError).toBeInstanceOf(Error);
+      const terminationDiagnostic =
+        (siblingTerminationError?.name ?? "") +
+        ":" +
+        (siblingTerminationError?.message ?? "");
+      expect(terminationDiagnostic).not.toContain("postgres://");
+      expect(terminationDiagnostic).not.toContain("password");
+      expect(
+        await ownerGuard.query(
+          "SELECT pg_catalog.pg_backend_pid() AS pid, pg_catalog.current_database()::text AS database_name",
+        ),
+      ).toMatchObject({
+        rows: [ownerBackend.rows[0]],
+      });
+    } catch (error) {
+      operationError = error;
+    } finally {
+      if (siblingClient !== undefined) {
+        try {
+          siblingClient.release(siblingTerminationError ?? true);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (sibling !== undefined) {
+        try {
+          await sibling.pool.end();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (ownerGuard !== undefined) {
+        try {
+          ownerGuard.release();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      try {
+        const residualOid = await databaseOidByName(databaseName);
+        if (residualOid !== undefined) {
+          await dropSiblingDatabase(databaseName, residualOid);
+        }
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (operationError !== undefined && cleanupErrors.length !== 0) {
+      throw new AggregateError(
+        [operationError, ...cleanupErrors],
+        "forced sibling-database operation and cleanup failed",
+      );
+    }
+    if (operationError !== undefined) throw operationError;
+    if (cleanupErrors.length !== 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        "forced sibling-database cleanup failed",
+      );
+    }
+  });
+
   it("rejects a managed-role-owned object in a sibling database and removes all residue", async () => {
     const databaseName = `dasher_t4_${siblingDatabaseNonce}_owned`;
     let sibling:
@@ -7344,9 +8025,13 @@ async function readForeignKeys(
 async function expectPostgresDenial(
   client: PoolClient,
   sql: string,
+  parameters?: readonly unknown[],
 ): Promise<void> {
   try {
-    await client.query(sql);
+    await client.query(
+      sql,
+      parameters === undefined ? undefined : [...parameters],
+    );
   } catch (error) {
     expect(error).toMatchObject({ code: "42501" });
     return;
@@ -14888,9 +15573,16 @@ describe.sequential("Task 8B.3 lifecycle API correction", () => {
         throw new Error("PostgreSQL did not return the session owner");
       }
       expect(
-        await canonical0005DependencyInventoryMatchesForTests(
+        await canonical0006DependencyInventoryMatchesForTests(
           client,
           ownerName,
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0006_lifecycle_access_retention_guard_correction.sql",
+            ),
+            "utf8",
+          ),
         ),
       ).toBe(true);
     } finally {
@@ -16080,6 +16772,2467 @@ describe.sequential("Task 8C lifecycle repository", () => {
       await client.query("RESET ROLE");
     } finally {
       client.release();
+    }
+  }, 120_000);
+});
+
+describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
+  const admin: Task4Actor = {
+    csrfDigest: Buffer.alloc(32, 0x8d),
+    identityIssuer: "https://task8d-fixture.test",
+    identitySubject: "task8d-admin",
+    membershipId: "8d000000-0000-4000-8000-000000000011",
+    organizationId: task8dOrganizationId,
+    sessionDigest: Buffer.alloc(32, 0x8e),
+    sessionId: "8d000000-0000-4000-8000-000000000012",
+    userId: "8d000000-0000-4000-8000-000000000010",
+  };
+  const editor: Task4Actor = {
+    csrfDigest: Buffer.alloc(32, 0x9d),
+    identityIssuer: "https://task8d-fixture.test",
+    identitySubject: "task8d-editor",
+    membershipId: "8d000000-0000-4000-8000-000000000021",
+    organizationId: task8dOrganizationId,
+    sessionDigest: Buffer.alloc(32, 0x9e),
+    sessionId: "8d000000-0000-4000-8000-000000000022",
+    userId: "8d000000-0000-4000-8000-000000000020",
+  };
+  const expiryDashboardId = "8d000000-0000-4000-8000-00000000d101";
+  const expiryVersionId = "8d000000-0000-4000-8000-00000000d102";
+  const expirySnapshotId = "8d000000-0000-4000-8000-00000000d103";
+  const expiryEvidenceId = "8d000000-0000-4000-8000-00000000d104";
+  const expiryArtifactId = "8d000000-0000-4000-8000-00000000d105";
+  let retentionPool: Pool | undefined;
+  let retentionLoginCreated = false;
+
+  async function issueFixedActor(
+    client: PoolClient,
+    actor: Task4Actor,
+    role: "admin" | "editor",
+    auditEventId: string,
+    requestId: string,
+  ): Promise<void> {
+    await ownerPool.query(
+      "INSERT INTO dasher.users (user_id) VALUES ($1::uuid)",
+      [actor.userId],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.external_identities (issuer, subject, user_id)
+       VALUES ($1, $2, $3::uuid)`,
+      [actor.identityIssuer, actor.identitySubject, actor.userId],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.memberships (
+         membership_id, organization_id, user_id, role, state,
+         authority_revision
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'active', 1)`,
+      [actor.membershipId, actor.organizationId, actor.userId, role],
+    );
+    await client.query(
+      `
+        SELECT * FROM dasher_api.issue_session(
+          $1, $2, $3::uuid, $4::uuid, 1::smallint, $5::bytea,
+          1::smallint, $6::bytea, $7::uuid, $8::uuid,
+          'task8d-lifecycle-gate'
+        )
+      `,
+      [
+        actor.identityIssuer,
+        actor.identitySubject,
+        actor.membershipId,
+        actor.sessionId,
+        actor.sessionDigest,
+        actor.csrfDigest,
+        auditEventId,
+        requestId,
+      ],
+    );
+  }
+
+  async function createFixedDashboard(
+    client: PoolClient,
+    actor: Task4Actor,
+    fixture: Readonly<{
+      auditEventId: string;
+      dashboardId: string;
+      requestId: string;
+      tombstoneLineageId: string;
+      ttlSeconds: number | null;
+      useOrganizationDefault: boolean;
+    }>,
+  ) {
+    return runContextOperation(
+      client,
+      actor.sessionDigest,
+      fixture.requestId,
+      () =>
+        client.query<{
+          readonly created_at: Date;
+          readonly dashboard_id: string;
+          readonly default_disposable_ttl_seconds: number;
+          readonly effective_expires_at: Date;
+          readonly effective_ttl_seconds: number;
+          readonly lifecycle_policy_revision: string;
+          readonly lifecycle_policy_seeded: boolean;
+          readonly retention_policy_revision: string;
+          readonly used_organization_default: boolean;
+        }>(
+          `
+            SELECT * FROM dasher_api.create_dashboard(
+              $1::uuid, $2, 'disposable', $3::integer, $4::boolean,
+              $5::uuid, $6::uuid, 1::smallint, $7::bytea,
+              'task8d-lifecycle-gate'
+            )
+          `,
+          [
+            fixture.dashboardId,
+            `Task 8D ${fixture.dashboardId}`,
+            fixture.ttlSeconds,
+            fixture.useOrganizationDefault,
+            fixture.tombstoneLineageId,
+            fixture.auditEventId,
+            actor.csrfDigest,
+          ],
+        ),
+    );
+  }
+
+  async function callRetention(
+    sql: string,
+    parameters: readonly unknown[],
+  ): Promise<void> {
+    const client = await retentionPool!.connect();
+    let operationError: unknown;
+    let roleSet = false;
+    try {
+      await client.query("SET ROLE dasher_retention_operator");
+      roleSet = true;
+      await client.query(sql, [...parameters]);
+    } catch (error) {
+      operationError = error;
+    } finally {
+      if (roleSet) {
+        try {
+          await client.query("RESET ROLE");
+        } catch (error) {
+          operationError ??= error;
+        }
+      }
+      client.release(
+        operationError instanceof Error ? operationError : undefined,
+      );
+    }
+    if (operationError !== undefined) {
+      throw operationError;
+    }
+  }
+
+  async function setTask8dDashboardBoundary(
+    column: "effective_expires_at" | "purge_after",
+    boundary: "now" | "five_minutes_from_now",
+  ): Promise<void> {
+    const expression =
+      boundary === "now"
+        ? "statement_timestamp()"
+        : "statement_timestamp() + interval '5 minutes'";
+    const boundaryAssignment =
+      column === "effective_expires_at"
+        ? `created_at = ${expression} - interval '1 hour',
+           original_expires_at = ${expression},
+           effective_expires_at = ${expression}`
+        : `access_revoked_at = ${expression} - interval '24 hours',
+           purge_after = ${expression}`;
+    const client = await ownerPool.connect();
+    let operationError: unknown;
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "ALTER TABLE dasher.dashboards DISABLE TRIGGER dashboards_transition_guard",
+      );
+      await client.query(
+        `UPDATE dasher.dashboards SET ${boundaryAssignment}
+         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+        [task8dOrganizationId, expiryDashboardId],
+      );
+      await client.query(
+        "ALTER TABLE dasher.dashboards ENABLE TRIGGER dashboards_transition_guard",
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      operationError = error;
+      await client.query("ROLLBACK");
+    } finally {
+      try {
+        const trigger = await client.query<{ readonly enabled: string }>(`
+          SELECT trigger.tgenabled AS enabled
+          FROM pg_catalog.pg_trigger AS trigger
+          WHERE trigger.tgrelid = 'dasher.dashboards'::regclass
+            AND trigger.tgname = 'dashboards_transition_guard'
+            AND NOT trigger.tgisinternal
+        `);
+        if (trigger.rows[0]?.enabled !== "O") {
+          await client.query(
+            "ALTER TABLE dasher.dashboards ENABLE TRIGGER dashboards_transition_guard",
+          );
+          throw new Error("Task 8D restored a disabled dashboard guard");
+        }
+      } catch (error) {
+        operationError ??= error;
+      }
+      client.release(
+        operationError instanceof Error ? operationError : undefined,
+      );
+    }
+    if (operationError !== undefined) {
+      throw operationError;
+    }
+  }
+
+  beforeAll(async () => {
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+    await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+    await createTemporaryAppLogin(ownerPool, config.appDsn, config.appUsername);
+    appLoginCreated = true;
+
+    const retentionDsn = new URL(config.ownerDsn);
+    retentionDsn.username = task8dRetentionUsername;
+    await createTemporaryRetentionLogin(
+      ownerPool,
+      retentionDsn.toString(),
+      task8dRetentionUsername,
+    );
+    retentionLoginCreated = true;
+    await expect(
+      runMigrations(
+        ownerPool,
+        canonicalMigrationDirectory,
+        [config.appUsername],
+        [task8dRetentionUsername],
+      ),
+    ).resolves.toEqual({
+      appliedCount: 0,
+      discoveredCount: 6,
+      previouslyAppliedCount: 6,
+    });
+    appPool = new Pool({ connectionString: config.appDsn, max: 4 });
+    retentionPool = new Pool({
+      connectionString: retentionDsn.toString(),
+      max: 2,
+    });
+
+    await ownerPool.query(
+      `
+        INSERT INTO dasher.organizations (organization_id, display_name)
+        VALUES ($1::uuid, 'Task 8D authoritative lifecycle organization')
+      `,
+      [task8dOrganizationId],
+    );
+    const client = await appPool.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      await issueFixedActor(
+        client,
+        admin,
+        "admin",
+        "8d000000-0000-4000-8000-000000000013",
+        "8d000000-0000-4000-8000-000000000014",
+      );
+      await issueFixedActor(
+        client,
+        editor,
+        "editor",
+        "8d000000-0000-4000-8000-000000000023",
+        "8d000000-0000-4000-8000-000000000024",
+      );
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+    await ownerPool.query(
+      `
+        INSERT INTO dasher.retention_service_principal_allowlist (
+          retention_service_principal_id, principal_revision, binding_kind,
+          binding_subject, authority_scope, scope_organization_id,
+          can_initialize, can_materialize_expiry, can_place_hold,
+          can_release_hold, can_claim_cleanup, can_record_attempt, can_purge,
+          enabled, created_at, predecessor_revision, predecessor_sha256,
+          revision_sha256, migration_provenance
+        ) VALUES (
+          '8d000000-0000-4000-8000-000000000030'::uuid, 1,
+          'postgres_session_user', $1::name, 'platform_operator', NULL,
+          true, true, true, true, true, true, true, true,
+          clock_timestamp(), NULL, NULL,
+          pg_catalog.decode(pg_catalog.repeat('8d', 32), 'hex'),
+          'task8d-production-operator-fixture'
+        )
+      `,
+      [task8dRetentionUsername],
+    );
+  }, 120_000);
+
+  afterAll(async () => {
+    let cleanupError: unknown;
+    try {
+      const journal = await ownerPool.query<{
+        readonly checksum: string;
+        readonly filename: string;
+      }>(`
+        SELECT filename, pg_catalog.encode(checksum_sha256, 'hex') AS checksum
+        FROM dasher_meta.schema_migrations
+        ORDER BY filename
+      `);
+      expect(journal.rows.map((row) => row.filename)).toEqual([
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+        "0003_immutable_content.sql",
+        "0004_lifecycle_api_correction.sql",
+        "0005_security_definer_cleanup_coordination.sql",
+        "0006_lifecycle_access_retention_guard_correction.sql",
+      ]);
+      expect(journal.rows[4]?.checksum).toBe(
+        "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
+      );
+      expect(journal.rows[5]?.checksum).toBe(
+        "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
+      );
+      const owner = await ownerPool.connect();
+      try {
+        const ownerName = (
+          await owner.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          )
+        ).rows[0]?.owner_name;
+        if (ownerName === undefined) {
+          throw new Error("Task 8D could not resolve the database owner");
+        }
+        expect(
+          await canonical0006DependencyInventoryMatchesForTests(
+            owner,
+            ownerName,
+            await readFile(
+              join(
+                canonicalMigrationDirectory,
+                "0006_lifecycle_access_retention_guard_correction.sql",
+              ),
+              "utf8",
+            ),
+          ),
+        ).toBe(true);
+      } finally {
+        owner.release();
+      }
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    try {
+      if (retentionPool !== undefined) {
+        const pool = retentionPool;
+        retentionPool = undefined;
+        await pool.end();
+      }
+      if (retentionLoginCreated) {
+        await dropTemporaryRetentionLogin(
+          ownerPool,
+          config.ownerDatabase,
+          task8dRetentionUsername,
+        );
+        retentionLoginCreated = false;
+      }
+      await closeAppPoolBeforeLoginTeardown();
+      if (appLoginCreated) {
+        await dropTemporaryAppLogin(
+          ownerPool,
+          config.appDatabase,
+          config.appUsername,
+        );
+        appLoginCreated = false;
+      }
+      await resetManagedSchemas();
+      const residue = await ownerPool.query<{
+        readonly backend_count: string;
+        readonly prepared_count: string;
+        readonly role_count: string;
+        readonly task8d_schema_count: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text
+             FROM pg_catalog.pg_stat_activity
+             WHERE usename = $1) AS backend_count,
+            (SELECT pg_catalog.count(*)::text
+             FROM pg_catalog.pg_prepared_xacts
+             WHERE gid LIKE 'task8d%') AS prepared_count,
+            (SELECT pg_catalog.count(*)::text
+             FROM pg_catalog.pg_roles
+             WHERE rolname = $1) AS role_count,
+            (SELECT pg_catalog.count(*)::text
+             FROM pg_catalog.pg_namespace
+             WHERE nspname LIKE 'task8d%') AS task8d_schema_count
+        `,
+        [task8dRetentionUsername],
+      );
+      expect(residue.rows[0]).toEqual({
+        backend_count: "0",
+        prepared_count: "0",
+        role_count: "0",
+        task8d_schema_count: "0",
+      });
+      expect(await schemaPresence()).toEqual({
+        dasher: false,
+        dasherMeta: false,
+      });
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (cleanupError !== undefined) {
+      throw cleanupError;
+    }
+  }, 120_000);
+
+  it.each(["ROLLBACK", "RESET ROLE"] as const)(
+    "rejects a successful definer operation when %s cleanup fails and destroys all client state",
+    async (failedCleanupCommand) => {
+      const cleanupError = new Error(
+        `synthetic ${failedCleanupCommand.toLowerCase()} cleanup failure`,
+      );
+      const queryTexts: string[] = [];
+      const releaseArguments: (Error | boolean | undefined)[] = [];
+      let transactionOpen = false;
+      let roleActive = false;
+      let released = false;
+      const client = {
+        async query(text: string) {
+          queryTexts.push(text);
+          if (text === "BEGIN") transactionOpen = true;
+          if (text === "SET ROLE dasher_retention_definer") roleActive = true;
+          if (text === failedCleanupCommand) throw cleanupError;
+          if (text === "ROLLBACK") transactionOpen = false;
+          if (text === "RESET ROLE") roleActive = false;
+          return { rows: [] };
+        },
+        release(error?: Error | boolean) {
+          releaseArguments.push(error);
+          released = true;
+          if (error !== undefined) {
+            transactionOpen = false;
+            roleActive = false;
+          }
+        },
+      } as unknown as PoolClient;
+
+      let failure: unknown;
+      try {
+        await withTask8dDefinerContext(
+          async () => client,
+          async (connected) => {
+            await connected.query("BEGIN");
+            await connected.query("SET ROLE dasher_retention_definer");
+          },
+          async () => "successful operation",
+        );
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBe(cleanupError);
+      expect(queryTexts.slice(-2)).toEqual(["ROLLBACK", "RESET ROLE"]);
+      expect(releaseArguments).toEqual([cleanupError]);
+      expect(released).toBe(true);
+      expect(transactionOpen).toBe(false);
+      expect(roleActive).toBe(false);
+      const diagnostic = `${String(failure)}\n${
+        failure instanceof Error ? (failure.stack ?? "") : ""
+      }`;
+      expect(diagnostic).not.toContain("postgres://");
+      expect(diagnostic).not.toContain("password");
+    },
+  );
+
+  it("surfaces both cleanup and release failures after a successful definer operation", async () => {
+    const cleanupError = new Error("synthetic rollback cleanup failure");
+    const releaseError = new Error("synthetic client release failure");
+    const client = {
+      async query(text: string) {
+        if (text === "ROLLBACK") throw cleanupError;
+        return { rows: [] };
+      },
+      release(error?: Error | boolean) {
+        expect(error).toBe(cleanupError);
+        throw releaseError;
+      },
+    } as unknown as PoolClient;
+
+    let failure: unknown;
+    try {
+      await withTask8dDefinerContext(
+        async () => client,
+        async (connected) => {
+          await connected.query("BEGIN");
+          await connected.query("SET ROLE dasher_retention_definer");
+        },
+        async () => "successful operation",
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      cleanupError,
+      releaseError,
+    ]);
+    const diagnostic = `${String(failure)}\n${
+      failure instanceof Error ? (failure.stack ?? "") : ""
+    }`;
+    expect(diagnostic).not.toContain("postgres://");
+    expect(diagnostic).not.toContain("password");
+  });
+
+  it("serializes the first policy seed exactly once and enforces only the four TTL presets", async () => {
+    const first = await appPool!.connect();
+    const second = await appPool!.connect();
+    try {
+      await first.query("SET ROLE dasher_app");
+      await second.query("SET ROLE dasher_app");
+      const firstCreation = settleDatabasePromise(
+        createFixedDashboard(first, admin, {
+          auditEventId: "8d000000-0000-4000-8000-00000000a101",
+          dashboardId: expiryDashboardId,
+          requestId: "8d000000-0000-4000-8000-00000000a102",
+          tombstoneLineageId: "8d000000-0000-4000-8000-00000000a103",
+          ttlSeconds: 3_600,
+          useOrganizationDefault: false,
+        }),
+      );
+      const secondCreation = settleDatabasePromise(
+        createFixedDashboard(second, editor, {
+          auditEventId: "8d000000-0000-4000-8000-00000000a111",
+          dashboardId: "8d000000-0000-4000-8000-00000000d111",
+          requestId: "8d000000-0000-4000-8000-00000000a112",
+          tombstoneLineageId: "8d000000-0000-4000-8000-00000000a113",
+          ttlSeconds: 86_400,
+          useOrganizationDefault: false,
+        }),
+      );
+      const creations = await Promise.all([firstCreation, secondCreation]);
+      expect(creations.every((result) => result.status === "fulfilled")).toBe(
+        true,
+      );
+      const creationRows = creations.map((result) => {
+        if (result.status !== "fulfilled") throw result.reason;
+        return result.value.rows[0]!;
+      });
+      expect(
+        creationRows.filter((row) => row.lifecycle_policy_seeded),
+      ).toHaveLength(1);
+      expect(creationRows.map((row) => row.lifecycle_policy_revision)).toEqual([
+        "1",
+        "1",
+      ]);
+
+      for (const [ordinal, ttlSeconds] of [604_800, 2_592_000].entries()) {
+        const suffix = ordinal === 0 ? "121" : "131";
+        const created = await createFixedDashboard(first, admin, {
+          auditEventId: `8d000000-0000-4000-8000-00000000a${suffix}`,
+          dashboardId: `8d000000-0000-4000-8000-00000000d${suffix}`,
+          requestId: `8d000000-0000-4000-8000-00000000b${suffix}`,
+          tombstoneLineageId: `8d000000-0000-4000-8000-00000000c${suffix}`,
+          ttlSeconds,
+          useOrganizationDefault: false,
+        });
+        expect(created.rows[0]?.effective_ttl_seconds).toBe(ttlSeconds);
+        expect(created.rows[0]?.used_organization_default).toBe(false);
+      }
+
+      for (const [ordinal, ttlSeconds] of [3_599, 7_200, 2_592_001].entries()) {
+        const suffix = 140 + ordinal;
+        await expectDasherBoundaryError(
+          createFixedDashboard(first, admin, {
+            auditEventId: `8d000000-0000-4000-8000-00000000a${suffix}`,
+            dashboardId: `8d000000-0000-4000-8000-00000000d${suffix}`,
+            requestId: `8d000000-0000-4000-8000-00000000b${suffix}`,
+            tombstoneLineageId: `8d000000-0000-4000-8000-00000000c${suffix}`,
+            ttlSeconds,
+            useOrganizationDefault: false,
+          }),
+          "P1001",
+          "dasher_denied",
+        );
+      }
+
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.dashboard_lifecycle_policies (
+            organization_id, policy_revision,
+            default_disposable_ttl_seconds, retention_policy_revision,
+            created_at, created_by_user_id, provenance
+          ) VALUES ($1::uuid, 2, 604800, 2, clock_timestamp(), $2::uuid,
+            'task8d-latest-policy')
+        `,
+        [task8dOrganizationId, admin.userId],
+      );
+      const defaulted = await createFixedDashboard(second, editor, {
+        auditEventId: "8d000000-0000-4000-8000-00000000a151",
+        dashboardId: "8d000000-0000-4000-8000-00000000d151",
+        requestId: "8d000000-0000-4000-8000-00000000b151",
+        tombstoneLineageId: "8d000000-0000-4000-8000-00000000c151",
+        ttlSeconds: null,
+        useOrganizationDefault: true,
+      });
+      expect(defaulted.rows[0]).toMatchObject({
+        default_disposable_ttl_seconds: 604_800,
+        effective_ttl_seconds: 604_800,
+        lifecycle_policy_revision: "2",
+        lifecycle_policy_seeded: false,
+        retention_policy_revision: "2",
+        used_organization_default: true,
+      });
+      await expectPostgresDenial(
+        first,
+        "UPDATE dasher.dashboard_lifecycle_policies SET policy_revision = policy_revision",
+      );
+
+      const facts = await ownerPool.query<{
+        readonly audit_count: string;
+        readonly dashboard_count: string;
+        readonly event_count: string;
+        readonly policy_count: string;
+        readonly publication_exports: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text
+             FROM dasher.dashboard_lifecycle_policies
+             WHERE organization_id = $1::uuid) AS policy_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.dashboards
+             WHERE organization_id = $1::uuid) AS dashboard_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+             WHERE organization_id = $1::uuid
+               AND action = 'dashboard.created') AS audit_count,
+            (SELECT pg_catalog.count(*)::text
+             FROM dasher.dashboard_lifecycle_events
+             WHERE organization_id = $1::uuid) AS event_count,
+            (SELECT pg_catalog.count(*)::text
+             FROM pg_catalog.unnest(ARRAY[
+               'dasher.publications', 'dasher.claims',
+               'dasher.decision_snapshots', 'dasher.recipes',
+               'dasher.alerts', 'dasher.schedules'
+             ]) AS absent(identity)
+             WHERE pg_catalog.to_regclass(absent.identity) IS NOT NULL
+            ) AS publication_exports
+        `,
+        [task8dOrganizationId],
+      );
+      expect(facts.rows[0]).toEqual({
+        audit_count: "5",
+        dashboard_count: "5",
+        event_count: "0",
+        policy_count: "2",
+        publication_exports: "0",
+      });
+    } finally {
+      await first.query("RESET ROLE");
+      await second.query("RESET ROLE");
+      first.release();
+      second.release();
+    }
+  }, 120_000);
+
+  it("keeps pre-expiry projections visible, then denies five user projections and admin status, omits lists, and blocks raw tables at inclusive expiry", async () => {
+    const client = await appPool!.connect();
+    try {
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.source_snapshots (
+            organization_id, snapshot_id, source_kind, canonical_bytes,
+            content_sha256, observed_at, retrieved_at, created_at
+          ) VALUES ($1::uuid, $2::uuid, 'synthetic_fixture',
+            pg_catalog.convert_to('task8d-expiry', 'UTF8'),
+            pg_catalog.sha256(pg_catalog.convert_to('task8d-expiry', 'UTF8')),
+            clock_timestamp(), clock_timestamp(), clock_timestamp())
+        `,
+        [task8dOrganizationId, expirySnapshotId],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.dashboard_versions (
+            organization_id, dashboard_id, version_id, parent_version_id,
+            canonical_spec_bytes, canonical_spec_sha256, validation_state,
+            validation_sha256, planner_provenance_sha256, policy_revision,
+            registry_revision, calculation_graph_sha256, created_by_user_id,
+            created_at
+          ) VALUES ($1::uuid, $2::uuid, $3::uuid, NULL,
+            pg_catalog.convert_to('{}', 'UTF8'),
+            pg_catalog.sha256(pg_catalog.convert_to('{}', 'UTF8')),
+            'validated', pg_catalog.decode(pg_catalog.repeat('11', 32), 'hex'),
+            pg_catalog.decode(pg_catalog.repeat('12', 32), 'hex'), 2, 1, NULL,
+            $4::uuid, clock_timestamp())
+        `,
+        [
+          task8dOrganizationId,
+          expiryDashboardId,
+          expiryVersionId,
+          admin.userId,
+        ],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.dashboard_version_snapshots
+            (organization_id, dashboard_id, version_id, snapshot_id)
+          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid)
+        `,
+        [
+          task8dOrganizationId,
+          expiryDashboardId,
+          expiryVersionId,
+          expirySnapshotId,
+        ],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.snapshot_reference_claims (
+            organization_id, snapshot_id, reference_claim_id, dashboard_id,
+            version_id, claim_kind, hold_id, created_at
+          ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $3::uuid,
+            'access_bearing', NULL, clock_timestamp())
+        `,
+        [
+          task8dOrganizationId,
+          expirySnapshotId,
+          expiryVersionId,
+          expiryDashboardId,
+        ],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.evidence_records (
+            organization_id, evidence_id, snapshot_id, evidence_kind,
+            coordinates, transformation, content_sha256, observed_at,
+            retrieved_at, created_at
+          ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'typed_value',
+            'task8d:expiry', 'identity',
+            pg_catalog.decode(pg_catalog.repeat('13', 32), 'hex'),
+            clock_timestamp(), clock_timestamp(), clock_timestamp())
+        `,
+        [task8dOrganizationId, expiryEvidenceId, expirySnapshotId],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.dashboard_version_evidence
+            (organization_id, dashboard_id, version_id, evidence_id)
+          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid)
+        `,
+        [
+          task8dOrganizationId,
+          expiryDashboardId,
+          expiryVersionId,
+          expiryEvidenceId,
+        ],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.evidence_reference_claims (
+            organization_id, evidence_id, reference_claim_id, dashboard_id,
+            version_id, claim_kind, hold_id, created_at
+          ) VALUES ($1::uuid, $2::uuid, $2::uuid, $3::uuid, $4::uuid,
+            'access_bearing', NULL, clock_timestamp())
+        `,
+        [
+          task8dOrganizationId,
+          expiryEvidenceId,
+          expiryDashboardId,
+          expiryVersionId,
+        ],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.dashboard_artifacts (
+            organization_id, artifact_id, dashboard_id, version_id,
+            ownership_class, artifact_kind, metadata_sha256,
+            content_sha256, created_at
+          ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid,
+            'dashboard_owned', 'task8d_fixture',
+            pg_catalog.decode(pg_catalog.repeat('14', 32), 'hex'),
+            pg_catalog.decode(pg_catalog.repeat('15', 32), 'hex'),
+            clock_timestamp())
+        `,
+        [
+          task8dOrganizationId,
+          expiryArtifactId,
+          expiryDashboardId,
+          expiryVersionId,
+        ],
+      );
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.artifact_reference_claims (
+            organization_id, artifact_id, reference_claim_id, dashboard_id,
+            version_id, claim_kind, hold_id, created_at
+          ) VALUES ($1::uuid, $2::uuid, $2::uuid, $3::uuid, $4::uuid,
+            'access_bearing', NULL, clock_timestamp())
+        `,
+        [
+          task8dOrganizationId,
+          expiryArtifactId,
+          expiryDashboardId,
+          expiryVersionId,
+        ],
+      );
+      await setTask8dDashboardBoundary(
+        "effective_expires_at",
+        "five_minutes_from_now",
+      );
+      await client.query("SET ROLE dasher_app");
+      await runContextOperation(
+        client,
+        admin.sessionDigest,
+        "8d000000-0000-4000-8000-00000000e100",
+        () =>
+          client.query(
+            `SELECT dasher_api.compare_and_swap_dashboard_head(
+              $1::uuid, NULL, $2::uuid, 0, $3::uuid, 1::smallint,
+              $4::bytea, 'task8d-lifecycle-gate')`,
+            [
+              expiryDashboardId,
+              expiryVersionId,
+              "8d000000-0000-4000-8000-00000000e101",
+              admin.csrfDigest,
+            ],
+          ),
+      );
+      for (const [sql, parameters] of [
+        [
+          "SELECT * FROM dasher_api.get_dashboard_summary($1::uuid)",
+          [expiryDashboardId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_head($1::uuid)",
+          [expiryDashboardId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_version($1::uuid, $2::uuid)",
+          [expiryDashboardId, expiryVersionId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_evidence($1::uuid, $2::uuid)",
+          [expiryDashboardId, expiryVersionId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_lineage($1::uuid, $2::uuid)",
+          [expiryDashboardId, expiryVersionId],
+        ],
+      ] as const) {
+        const visible = await runContextOperation(
+          client,
+          admin.sessionDigest,
+          "8d000000-0000-4000-8000-00000000e102",
+          () => client.query(sql, [...parameters]),
+        );
+        expect(visible.rows.length).toBeGreaterThan(0);
+      }
+
+      await setTask8dDashboardBoundary("effective_expires_at", "now");
+      for (const [sql, parameters] of [
+        [
+          "SELECT * FROM dasher_api.get_dashboard_summary($1::uuid)",
+          [expiryDashboardId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_head($1::uuid)",
+          [expiryDashboardId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_version($1::uuid, $2::uuid)",
+          [expiryDashboardId, expiryVersionId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_evidence($1::uuid, $2::uuid)",
+          [expiryDashboardId, expiryVersionId],
+        ],
+        [
+          "SELECT * FROM dasher_api.get_dashboard_lineage($1::uuid, $2::uuid)",
+          [expiryDashboardId, expiryVersionId],
+        ],
+      ] as const) {
+        await expectDasherBoundaryError(
+          runContextOperation(
+            client,
+            admin.sessionDigest,
+            "8d000000-0000-4000-8000-00000000e103",
+            () => client.query(sql, [...parameters]),
+          ),
+          "P1001",
+          "dasher_denied",
+        );
+      }
+      const listed = await runContextOperation(
+        client,
+        admin.sessionDigest,
+        "8d000000-0000-4000-8000-00000000e104",
+        () => client.query("SELECT * FROM dasher_api.list_dashboards(100)"),
+      );
+      expect(
+        listed.rows.some((row) => row.dashboard_id === expiryDashboardId),
+      ).toBe(false);
+      for (const table of [
+        "dashboard_versions",
+        "dashboard_version_snapshots",
+        "dashboard_version_evidence",
+        "evidence_records",
+        "source_snapshots",
+      ] as const) {
+        await expectPostgresDenial(
+          client,
+          `SELECT count(*) FROM dasher.${table}`,
+        );
+      }
+      const expiredDashboardAdminStatus = runContextOperation(
+        client,
+        admin.sessionDigest,
+        "8d000000-0000-4000-8000-00000000e105",
+        () =>
+          client.query(
+            "SELECT * FROM dasher_api.get_dashboard_admin_status($1::uuid)",
+            [expiryDashboardId],
+          ),
+      );
+      await expectDasherBoundaryError(
+        expiredDashboardAdminStatus,
+        "P1001",
+        "dasher_denied",
+      );
+    } finally {
+      await client.query("RESET ROLE");
+      client.release();
+    }
+  }, 120_000);
+
+  it("adds only non-grantable retention-definer head update authority and keeps direct mutation closed", async () => {
+    const privilege = await ownerPool.query<{
+      readonly app_head_update: boolean;
+      readonly grantable: boolean;
+      readonly public_head_update: boolean;
+      readonly retention_dashboard_columns: string[];
+      readonly retention_head_update: boolean;
+      readonly retention_table_update: boolean;
+      readonly operator_head_update: boolean;
+    }>(`
+      SELECT
+        pg_catalog.has_column_privilege(
+          'dasher_retention_definer', 'dasher.dashboards',
+          'head_version_id', 'UPDATE'
+        ) AS retention_head_update,
+        pg_catalog.has_table_privilege(
+          'dasher_retention_definer', 'dasher.dashboards', 'UPDATE'
+        ) AS retention_table_update,
+        pg_catalog.has_column_privilege(
+          'dasher_retention_operator', 'dasher.dashboards',
+          'head_version_id', 'UPDATE'
+        ) AS operator_head_update,
+        pg_catalog.has_column_privilege(
+          'dasher_app', 'dasher.dashboards', 'head_version_id', 'UPDATE'
+        ) AS app_head_update,
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privilege
+          WHERE relation.oid = 'dasher.dashboards'::regclass
+            AND privilege.grantee = 0
+            AND privilege.privilege_type = 'UPDATE'
+          UNION ALL
+          SELECT 1
+          FROM pg_catalog.pg_attribute AS public_attribute
+          CROSS JOIN LATERAL pg_catalog.aclexplode(public_attribute.attacl)
+            AS privilege
+          WHERE public_attribute.attrelid = 'dasher.dashboards'::regclass
+            AND public_attribute.attname = 'head_version_id'
+            AND privilege.grantee = 0
+            AND privilege.privilege_type = 'UPDATE'
+        ) AS public_head_update,
+        (
+          SELECT privilege.is_grantable
+          FROM pg_catalog.pg_attribute AS attribute
+          CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+          JOIN pg_catalog.pg_roles AS grantee
+            ON grantee.oid = privilege.grantee
+          WHERE attribute.attrelid = 'dasher.dashboards'::regclass
+            AND attribute.attname = 'head_version_id'
+            AND grantee.rolname = 'dasher_retention_definer'
+            AND privilege.privilege_type = 'UPDATE'
+        ) AS grantable,
+        ARRAY(
+          SELECT attribute.attname::text
+          FROM pg_catalog.pg_attribute AS attribute
+          CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+          JOIN pg_catalog.pg_roles AS grantee
+            ON grantee.oid = privilege.grantee
+          WHERE attribute.attrelid = 'dasher.dashboards'::regclass
+            AND attribute.attnum > 0 AND NOT attribute.attisdropped
+            AND grantee.rolname = 'dasher_retention_definer'
+            AND privilege.privilege_type = 'UPDATE'
+          ORDER BY attribute.attname
+        ) AS retention_dashboard_columns
+    `);
+    expect(privilege.rows[0]).toEqual({
+      app_head_update: false,
+      grantable: false,
+      operator_head_update: false,
+      public_head_update: false,
+      retention_dashboard_columns: [
+        "access_revoked_at",
+        "cache_epoch",
+        "capability_epoch",
+        "head_version_id",
+        "lifecycle_revision",
+        "lifecycle_state",
+        "purge_after",
+        "purge_started_at",
+        "purged_at",
+        "revocation_reason",
+      ],
+      retention_head_update: true,
+      retention_table_update: false,
+    });
+
+    const membership = await ownerPool.query<{ readonly path_count: string }>(
+      `
+        WITH RECURSIVE membership_path(role_id) AS (
+          SELECT role.oid
+          FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = ANY($1::text[])
+          UNION
+          SELECT membership.roleid
+          FROM membership_path AS path
+          JOIN pg_catalog.pg_auth_members AS membership
+            ON membership.member = path.role_id
+        )
+        SELECT pg_catalog.count(*)::text AS path_count
+        FROM membership_path AS path
+        JOIN pg_catalog.pg_roles AS role ON role.oid = path.role_id
+        WHERE role.rolname = 'dasher_retention_definer'
+      `,
+      [["dasher_retention_operator", task8dRetentionUsername]],
+    );
+    expect(membership.rows[0]?.path_count).toBe("0");
+
+    const restricted = await retentionPool!.connect();
+    try {
+      await expectPostgresDenial(
+        restricted,
+        "SET ROLE dasher_retention_definer",
+      );
+      await restricted.query("SET ROLE dasher_retention_operator");
+      await restricted.query("BEGIN");
+      await restricted.query(
+        "SELECT pg_catalog.set_config('dasher.retention_phase', 'authorized', true)",
+      );
+      await restricted.query(
+        "SELECT pg_catalog.set_config('dasher.retention_capability', 'purge', true)",
+      );
+      await restricted.query(
+        "SELECT pg_catalog.set_config('dasher.retention_target_organization_id', $1, true)",
+        [task8dOrganizationId],
+      );
+      await restricted.query(
+        "SELECT pg_catalog.set_config('dasher.retention_target_dashboard_id', $1, true)",
+        [expiryDashboardId],
+      );
+      await expectPostgresDenial(
+        restricted,
+        `UPDATE dasher.dashboards SET head_version_id = NULL
+         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+        [task8dOrganizationId, expiryDashboardId],
+      );
+      await restricted.query("ROLLBACK");
+    } finally {
+      await restricted.query("ROLLBACK");
+      await restricted.query("RESET ROLE");
+      restricted.release();
+    }
+
+    const app = await appPool!.connect();
+    try {
+      await app.query("SET ROLE dasher_app");
+      await expectPostgresDenial(
+        app,
+        `UPDATE dasher.dashboards SET head_version_id = NULL
+         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+        [task8dOrganizationId, expiryDashboardId],
+      );
+    } finally {
+      await app.query("RESET ROLE");
+      app.release();
+    }
+
+    const managedDefiner = await ownerPool.connect();
+    try {
+      await managedDefiner.query("SET ROLE dasher_retention_definer");
+      const direct = await managedDefiner.query(
+        `UPDATE dasher.dashboards SET head_version_id = NULL
+         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid
+         RETURNING dashboard_id`,
+        [task8dOrganizationId, expiryDashboardId],
+      );
+      expect(direct.rowCount).toBe(0);
+    } finally {
+      await managedDefiner.query("RESET ROLE");
+      managedDefiner.release();
+    }
+    const preserved = await ownerPool.query<{
+      readonly head_version_id: string;
+      readonly purge_started_at: null;
+    }>(
+      `SELECT head_version_id::text AS head_version_id, purge_started_at
+       FROM dasher.dashboards
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(preserved.rows[0]).toEqual({
+      head_version_id: expiryVersionId,
+      purge_started_at: null,
+    });
+  }, 120_000);
+
+  it("materializes one exact expiry revocation idempotently and rejects invalid operator context", async () => {
+    await callRetention(
+      `SELECT dasher_retention_api.materialize_dashboard_expiry(
+        $1::uuid, 1, $2::uuid, 'task8d-expiry', $3::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000e110",
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.materialize_dashboard_expiry(
+        $1::uuid, 1, $2::uuid, 'task8d-expiry-retry', $3::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000e111",
+        task8dOrganizationId,
+      ],
+    );
+    const materialized = await ownerPool.query(
+      `
+        SELECT
+          dashboard.lifecycle_state, dashboard.lifecycle_revision::text,
+          dashboard.capability_epoch::text, dashboard.cache_epoch::text,
+          dashboard.revocation_reason,
+          dashboard.access_revoked_at IS NOT NULL AS access_revoked,
+          dashboard.purge_after = dashboard.access_revoked_at + interval '24 hours'
+            AS exact_purge_after,
+          (SELECT pg_catalog.count(*)::text FROM dasher.dashboard_tombstones
+           WHERE organization_id = dashboard.organization_id
+             AND tombstone_lineage_id = dashboard.tombstone_lineage_id)
+            AS tombstone_count,
+          (SELECT pg_catalog.count(*)::text
+           FROM dasher.dashboard_cleanup_coordination
+           WHERE organization_id = dashboard.organization_id
+             AND dashboard_id = dashboard.dashboard_id
+             AND current_step = 'access_revoked'
+             AND expected_lifecycle_revision = 2) AS cleanup_count,
+          (SELECT pg_catalog.count(*)::text
+           FROM dasher.dashboard_lifecycle_events
+           WHERE lifecycle_event_id IN ($3::uuid, $4::uuid)) AS event_count,
+          (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+           WHERE audit_event_id IN ($3::uuid, $4::uuid)) AS audit_count,
+          (SELECT pg_catalog.array_agg(event_kind ORDER BY ledger_sequence)
+           FROM dasher.backup_deletion_ledger
+           WHERE organization_id = dashboard.organization_id
+             AND tombstone_lineage_id = dashboard.tombstone_lineage_id)
+            AS ledger_events
+        FROM dasher.dashboards AS dashboard
+        WHERE dashboard.organization_id = $1::uuid
+          AND dashboard.dashboard_id = $2::uuid
+      `,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000e110",
+        "8d000000-0000-4000-8000-00000000e111",
+      ],
+    );
+    expect(materialized.rows[0]).toMatchObject({
+      access_revoked: true,
+      audit_count: "1",
+      cache_epoch: "1",
+      capability_epoch: "1",
+      cleanup_count: "1",
+      event_count: "1",
+      exact_purge_after: true,
+      ledger_events: ["access_revoked"],
+      lifecycle_revision: "2",
+      lifecycle_state: "access_revoked",
+      revocation_reason: "expired",
+      tombstone_count: "1",
+    });
+
+    await ownerPool.query(
+      `
+        INSERT INTO dasher.dashboard_restore_lineage (
+          organization_id, dashboard_id, version_id,
+          source_tombstone_lineage_id, source_version_id,
+          retention_policy_revision, actor_user_id, authority_revision,
+          occurred_at, provenance_sha256
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $3::uuid,
+          2, $5::uuid, 1, clock_timestamp(),
+          pg_catalog.decode(pg_catalog.repeat('16', 32), 'hex'))
+      `,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        expiryVersionId,
+        "8d000000-0000-4000-8000-00000000a103",
+        admin.userId,
+      ],
+    );
+
+    const restricted = await retentionPool!.connect();
+    try {
+      await restricted.query("SET ROLE dasher_retention_operator");
+      await restricted.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      await expectDasherBoundaryError(
+        restricted.query(
+          `SELECT dasher_retention_api.materialize_dashboard_expiry(
+            $1::uuid, 2, $2::uuid, 'task8d-isolation', $3::uuid)`,
+          [
+            expiryDashboardId,
+            "8d000000-0000-4000-8000-00000000e120",
+            task8dOrganizationId,
+          ],
+        ),
+        "P1001",
+        "dasher_denied",
+      );
+      await restricted.query("ROLLBACK");
+      await restricted.query("BEGIN");
+      await restricted.query(
+        "SELECT pg_catalog.set_config('dasher.retention_phase', 'forged', true)",
+      );
+      await expectDasherBoundaryError(
+        restricted.query(
+          `SELECT dasher_retention_api.materialize_dashboard_expiry(
+            $1::uuid, 2, $2::uuid, 'task8d-reserved', $3::uuid)`,
+          [
+            expiryDashboardId,
+            "8d000000-0000-4000-8000-00000000e121",
+            task8dOrganizationId,
+          ],
+        ),
+        "P1001",
+        "dasher_denied",
+      );
+      await restricted.query("ROLLBACK");
+    } finally {
+      await restricted.query("ROLLBACK");
+      await restricted.query("RESET ROLE");
+      restricted.release();
+    }
+  }, 120_000);
+
+  it("keeps corrected forced-RLS source and evidence finalizer visibility resource-exact and fail-closed", async () => {
+    const organizationB = "8d000000-0000-4000-8000-000000000002";
+    const targetDashboard = "8d000000-0000-4000-8000-00000000d201";
+    const otherDashboard = "8d000000-0000-4000-8000-00000000d202";
+    const organizationBDashboard = "8d000000-0000-4000-8000-00000000d203";
+    const targetVersion = "8d000000-0000-4000-8000-00000000d211";
+    const otherVersion = "8d000000-0000-4000-8000-00000000d212";
+    const snapshots = Array.from(
+      { length: 9 },
+      (_, index) =>
+        `8d000000-0000-4000-8000-${(0xd221 + index)
+          .toString(16)
+          .padStart(12, "0")}`,
+    );
+    const evidence = Array.from(
+      { length: 9 },
+      (_, index) =>
+        `8d000000-0000-4000-8000-${(0xd231 + index)
+          .toString(16)
+          .padStart(12, "0")}`,
+    );
+    const validPrincipal = "8d000000-0000-4000-8000-00000000da01";
+    const stalePrincipal = "8d000000-0000-4000-8000-00000000da02";
+    const ownerIdentity = await ownerPool.query<{
+      readonly owner_name: string;
+    }>("SELECT session_user::text AS owner_name");
+    const ownerName = ownerIdentity.rows[0]?.owner_name;
+    if (ownerName === undefined) {
+      throw new Error("Task 8D adversarial probe could not resolve its owner");
+    }
+
+    await ownerPool.query(
+      `INSERT INTO dasher.organizations (organization_id, display_name)
+       VALUES ($1::uuid, 'Task 8D adversarial sibling organization')`,
+      [organizationB],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboards (
+         organization_id, dashboard_id, title, created_by_user_id, created_at,
+         created_kind, current_kind, original_expires_at,
+         effective_expires_at, lifecycle_state, lifecycle_revision,
+         capability_epoch, cache_epoch, access_revoked_at, revocation_reason,
+         purge_after, purge_started_at, purged_at, retention_policy_revision,
+         promoted_at, archived_at, head_version_id, tombstone_lineage_id,
+         restored_from_tombstone_lineage_id
+       )
+       SELECT fixture.organization_id, fixture.dashboard_id,
+         'Task 8D forced-RLS adversarial dashboard', $4::uuid,
+         statement_timestamp() - interval '2 days',
+         'disposable', 'disposable',
+         statement_timestamp() - interval '47 hours',
+         statement_timestamp() - interval '47 hours',
+         'purge_eligible', 40, 2, 2,
+         statement_timestamp() - interval '30 hours', 'expired',
+         statement_timestamp() - interval '6 hours',
+         statement_timestamp() - interval '1 hour', NULL, 2,
+         NULL, NULL, NULL, fixture.tombstone_lineage_id, NULL
+       FROM (VALUES
+         ($1::uuid, $2::uuid,
+          '8d000000-0000-4000-8000-00000000db01'::uuid),
+         ($1::uuid, $3::uuid,
+          '8d000000-0000-4000-8000-00000000db02'::uuid),
+         ($5::uuid, $6::uuid,
+          '8d000000-0000-4000-8000-00000000db03'::uuid)
+       ) AS fixture(organization_id, dashboard_id, tombstone_lineage_id)`,
+      [
+        task8dOrganizationId,
+        targetDashboard,
+        otherDashboard,
+        admin.userId,
+        organizationB,
+        organizationBDashboard,
+      ],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboard_cleanup_coordination (
+         organization_id, dashboard_id, current_step, lease_owner,
+         lease_expires_at, expected_lifecycle_revision, next_attempt_at,
+         completion_proof_sha256
+       ) VALUES
+         ($1::uuid, $2::uuid, 'purge_finalizing', NULL, NULL, 40,
+          statement_timestamp(),
+          pg_catalog.sha256(pg_catalog.convert_to('task8d-target-proof', 'UTF8'))),
+         ($1::uuid, $3::uuid, 'purge_finalizing', NULL, NULL, 40,
+          statement_timestamp(),
+          pg_catalog.sha256(pg_catalog.convert_to('task8d-other-proof', 'UTF8'))),
+         ($4::uuid, $5::uuid, 'purge_finalizing', NULL, NULL, 40,
+          statement_timestamp(),
+          pg_catalog.sha256(pg_catalog.convert_to('task8d-org-b-proof', 'UTF8')))`,
+      [
+        task8dOrganizationId,
+        targetDashboard,
+        otherDashboard,
+        organizationB,
+        organizationBDashboard,
+      ],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboard_versions (
+         organization_id, dashboard_id, version_id, parent_version_id,
+         canonical_spec_bytes, canonical_spec_sha256, validation_state,
+         validation_sha256, planner_provenance_sha256, policy_revision,
+         registry_revision, calculation_graph_sha256, created_by_user_id,
+         created_at
+       ) SELECT $1::uuid, fixture.dashboard_id, fixture.version_id, NULL,
+           pg_catalog.convert_to('{}', 'UTF8'),
+           pg_catalog.sha256(pg_catalog.convert_to('{}', 'UTF8')),
+           'validated', pg_catalog.decode(pg_catalog.repeat('21', 32), 'hex'),
+           pg_catalog.decode(pg_catalog.repeat('22', 32), 'hex'), 1, 1,
+           NULL, $4::uuid, statement_timestamp()
+         FROM (VALUES ($2::uuid, $3::uuid), ($5::uuid, $6::uuid))
+           AS fixture(dashboard_id, version_id)`,
+      [
+        task8dOrganizationId,
+        targetDashboard,
+        targetVersion,
+        admin.userId,
+        otherDashboard,
+        otherVersion,
+      ],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.source_snapshots (
+         organization_id, snapshot_id, source_kind, canonical_bytes,
+         content_sha256, observed_at, retrieved_at, created_at
+       ) SELECT $1::uuid, candidate.snapshot_id, 'synthetic_fixture',
+           pg_catalog.convert_to(candidate.snapshot_id::text, 'UTF8'),
+           pg_catalog.sha256(
+             pg_catalog.convert_to(candidate.snapshot_id::text, 'UTF8')),
+           statement_timestamp(), statement_timestamp(), statement_timestamp()
+         FROM pg_catalog.unnest($2::uuid[]) AS candidate(snapshot_id)`,
+      [task8dOrganizationId, snapshots],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.source_snapshots (
+         organization_id, snapshot_id, source_kind, canonical_bytes,
+         content_sha256, observed_at, retrieved_at, created_at
+       ) VALUES ($1::uuid, $2::uuid, 'synthetic_fixture',
+         pg_catalog.convert_to('cross-org-reused-snapshot', 'UTF8'),
+         pg_catalog.sha256(
+           pg_catalog.convert_to('cross-org-reused-snapshot', 'UTF8')),
+         statement_timestamp(), statement_timestamp(), statement_timestamp())`,
+      [organizationB, snapshots[0]],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.evidence_records (
+         organization_id, evidence_id, snapshot_id, evidence_kind,
+         coordinates, transformation, content_sha256, observed_at,
+         retrieved_at, created_at
+       ) SELECT $1::uuid, evidence_candidate.evidence_id,
+           snapshot_candidate.snapshot_id,
+           'source_record', 'task8d', 'identity',
+           pg_catalog.sha256(
+             pg_catalog.convert_to(evidence_candidate.evidence_id::text, 'UTF8')),
+           statement_timestamp(), statement_timestamp(), statement_timestamp()
+         FROM pg_catalog.unnest($2::uuid[]) WITH ORDINALITY
+           AS evidence_candidate(evidence_id, position)
+         JOIN pg_catalog.unnest($3::uuid[]) WITH ORDINALITY
+           AS snapshot_candidate(snapshot_id, position)
+           USING (position)`,
+      [task8dOrganizationId, evidence, snapshots],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.evidence_records (
+         organization_id, evidence_id, snapshot_id, evidence_kind,
+         coordinates, transformation, content_sha256, observed_at,
+         retrieved_at, created_at
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'source_record',
+         'task8d-cross-org', 'identity',
+         pg_catalog.sha256(
+           pg_catalog.convert_to('cross-org-reused-evidence', 'UTF8')),
+         statement_timestamp(), statement_timestamp(), statement_timestamp())`,
+      [organizationB, evidence[0], snapshots[0]],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.snapshot_reference_claims (
+         organization_id, snapshot_id, reference_claim_id, dashboard_id,
+         version_id, claim_kind, hold_id, created_at
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
+         'access_bearing', NULL, statement_timestamp())`,
+      [
+        task8dOrganizationId,
+        snapshots[1],
+        "8d000000-0000-4000-8000-00000000dc01",
+        targetDashboard,
+        targetVersion,
+      ],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.evidence_reference_claims (
+         organization_id, evidence_id, reference_claim_id, dashboard_id,
+         version_id, claim_kind, hold_id, created_at
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
+         'access_bearing', NULL, statement_timestamp())`,
+      [
+        task8dOrganizationId,
+        evidence[1],
+        "8d000000-0000-4000-8000-00000000dc02",
+        targetDashboard,
+        targetVersion,
+      ],
+    );
+    await ownerPool.query(
+      `WITH candidates(resource_id, dashboard_id, state, domain_tag) AS (
+         VALUES
+           ($2::uuid, $3::uuid, 'deleted'::text,
+            'snapshot|expected_claim_set=empty'::text),
+           ($4::uuid, $5::uuid, 'deleted'::text,
+            'snapshot|expected_claim_set=empty'::text),
+           ($6::uuid, $3::uuid, 'deleted'::text,
+            'evidence|expected_claim_set=empty'::text),
+           ($7::uuid, $3::uuid, 'eligible'::text,
+            'snapshot|expected_claim_set=empty'::text)
+       ), hashed AS (
+         SELECT resource_id, state,
+           pg_catalog.sha256(pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.uuid_send(dashboard_id)
+             || pg_catalog.uuid_send(resource_id)
+             || pg_catalog.convert_to(domain_tag, 'UTF8')) AS expected_hash
+         FROM candidates
+       )
+       INSERT INTO dasher.snapshot_deletion_finalizers (
+         organization_id, snapshot_id, state, intent_at,
+         expected_claim_set_sha256, lease_owner, lease_expires_at,
+         proof_sha256, bytes_deleted_at
+       ) SELECT $1::uuid, resource_id, state,
+           statement_timestamp() - interval '1 hour', expected_hash,
+           NULL, NULL, expected_hash,
+           CASE WHEN state = 'deleted' THEN statement_timestamp() ELSE NULL END
+         FROM hashed`,
+      [
+        task8dOrganizationId,
+        snapshots[0],
+        targetDashboard,
+        snapshots[2],
+        otherDashboard,
+        snapshots[4],
+        snapshots[5],
+      ],
+    );
+    await ownerPool.query(
+      `WITH candidates(resource_id, dashboard_id, state, domain_tag) AS (
+         VALUES
+           ($2::uuid, $3::uuid, 'deleted'::text,
+            'evidence|expected_claim_set=empty'::text),
+           ($4::uuid, $5::uuid, 'deleted'::text,
+            'evidence|expected_claim_set=empty'::text),
+           ($6::uuid, $3::uuid, 'deleted'::text,
+            'snapshot|expected_claim_set=empty'::text),
+           ($7::uuid, $3::uuid, 'eligible'::text,
+            'evidence|expected_claim_set=empty'::text)
+       ), hashed AS (
+         SELECT resource_id, state,
+           pg_catalog.sha256(pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.uuid_send(dashboard_id)
+             || pg_catalog.uuid_send(resource_id)
+             || pg_catalog.convert_to(domain_tag, 'UTF8')) AS expected_hash
+         FROM candidates
+       )
+       INSERT INTO dasher.evidence_deletion_finalizers (
+         organization_id, evidence_id, state, intent_at,
+         expected_claim_set_sha256, lease_owner, lease_expires_at,
+         proof_sha256, bytes_deleted_at
+       ) SELECT $1::uuid, resource_id, state,
+           statement_timestamp() - interval '1 hour', expected_hash,
+           NULL, NULL, expected_hash,
+           CASE WHEN state = 'deleted' THEN statement_timestamp() ELSE NULL END
+         FROM hashed`,
+      [
+        task8dOrganizationId,
+        evidence[0],
+        targetDashboard,
+        evidence[2],
+        otherDashboard,
+        evidence[4],
+        evidence[5],
+      ],
+    );
+    for (const [organizationId, dashboardId] of [
+      [organizationB, organizationBDashboard],
+    ] as const) {
+      await ownerPool.query(
+        `WITH snapshot_hash AS (
+           SELECT pg_catalog.sha256(pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.uuid_send($2::uuid)
+             || pg_catalog.uuid_send($3::uuid)
+             || pg_catalog.convert_to(
+               'snapshot|expected_claim_set=empty', 'UTF8')) AS value
+         ), evidence_hash AS (
+           SELECT pg_catalog.sha256(pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.uuid_send($2::uuid)
+             || pg_catalog.uuid_send($4::uuid)
+             || pg_catalog.convert_to(
+               'evidence|expected_claim_set=empty', 'UTF8')) AS value
+         ), inserted_snapshot AS (
+           INSERT INTO dasher.snapshot_deletion_finalizers (
+             organization_id, snapshot_id, state, intent_at,
+             expected_claim_set_sha256, proof_sha256, bytes_deleted_at
+           ) SELECT $1::uuid, $3::uuid, 'deleted',
+               statement_timestamp() - interval '1 hour', value, value,
+               statement_timestamp()
+             FROM snapshot_hash
+         )
+         INSERT INTO dasher.evidence_deletion_finalizers (
+           organization_id, evidence_id, state, intent_at,
+           expected_claim_set_sha256, proof_sha256, bytes_deleted_at
+         ) SELECT $1::uuid, $4::uuid, 'deleted',
+             statement_timestamp() - interval '1 hour', value, value,
+             statement_timestamp()
+           FROM evidence_hash`,
+        [organizationId, dashboardId, snapshots[0], evidence[0]],
+      );
+    }
+    await ownerPool.query(
+      `INSERT INTO dasher.retention_service_principal_allowlist (
+         retention_service_principal_id, principal_revision, binding_kind,
+         binding_subject, authority_scope, scope_organization_id,
+         can_initialize, can_materialize_expiry, can_place_hold,
+         can_release_hold, can_claim_cleanup, can_record_attempt, can_purge,
+         enabled, created_at, predecessor_revision, predecessor_sha256,
+         revision_sha256, migration_provenance
+       ) VALUES
+         ($1::uuid, 1, 'postgres_session_user', $3::name,
+          'platform_operator', NULL, true, true, true, true, true, true, true,
+          true, statement_timestamp(), NULL, NULL,
+          pg_catalog.decode(pg_catalog.repeat('31', 32), 'hex'),
+          'task8d-forced-rls-valid'),
+         ($2::uuid, 1, 'postgres_session_user', $3::name,
+          'platform_operator', NULL, true, true, true, true, true, true, true,
+          true, statement_timestamp(), NULL, NULL,
+          pg_catalog.decode(pg_catalog.repeat('32', 32), 'hex'),
+          'task8d-forced-rls-stale'),
+         ($2::uuid, 2, 'postgres_session_user', $3::name,
+          'platform_operator', NULL, true, true, true, true, true, true, true,
+          false, statement_timestamp(), 1,
+          pg_catalog.decode(pg_catalog.repeat('32', 32), 'hex'),
+          pg_catalog.decode(pg_catalog.repeat('33', 32), 'hex'),
+          'task8d-forced-rls-disabled-later')`,
+      [validPrincipal, stalePrincipal, ownerName],
+    );
+
+    type ContextOverrides = Readonly<{
+      authorityScope?: string;
+      capability?: string;
+      dashboardId?: string;
+      expectedRevision?: string;
+      organizationId?: string;
+      phase?: string;
+      principalId?: string;
+      principalRevision?: string;
+    }>;
+    const withDefinerContext = async <T>(
+      operation: (client: PoolClient) => Promise<T>,
+      overrides: ContextOverrides = {},
+    ): Promise<T> =>
+      withTask8dDefinerContext(
+        () => ownerPool.connect(),
+        async (client) => {
+          await client.query("BEGIN");
+          await client.query("SET ROLE dasher_retention_definer");
+          await client.query(
+            `SELECT
+             pg_catalog.set_config('dasher.retention_phase', $1, true),
+             pg_catalog.set_config('dasher.retention_principal_id', $2, true),
+             pg_catalog.set_config('dasher.retention_principal_revision', $3, true),
+             pg_catalog.set_config('dasher.retention_authority_scope', $4, true),
+             pg_catalog.set_config('dasher.retention_capability', $5, true),
+             pg_catalog.set_config('dasher.retention_target_organization_id', $6, true),
+             pg_catalog.set_config('dasher.retention_target_dashboard_id', $7, true),
+             pg_catalog.set_config('dasher.retention_expected_lifecycle_revision', $8, true)`,
+            [
+              overrides.phase ?? "authorized",
+              overrides.principalId ?? validPrincipal,
+              overrides.principalRevision ?? "1",
+              overrides.authorityScope ?? "platform_operator",
+              overrides.capability ?? "purge",
+              overrides.organizationId ?? task8dOrganizationId,
+              overrides.dashboardId ?? targetDashboard,
+              overrides.expectedRevision ?? "40",
+            ],
+          );
+        },
+        operation,
+      );
+    const finalizedVisibility = (overrides: ContextOverrides = {}) =>
+      withDefinerContext(async (client) => {
+        const visible = await client.query<{
+          readonly evidence_count: string;
+          readonly snapshot_count: string;
+        }>(
+          `SELECT
+               (SELECT pg_catalog.count(*)::text
+                FROM dasher.source_snapshots
+                WHERE organization_id = $1::uuid
+                  AND snapshot_id = $2::uuid) AS snapshot_count,
+               (SELECT pg_catalog.count(*)::text
+                FROM dasher.evidence_records
+                WHERE organization_id = $1::uuid
+                  AND evidence_id = $3::uuid) AS evidence_count`,
+          [task8dOrganizationId, snapshots[0], evidence[0]],
+        );
+        return visible.rows[0]!;
+      }, overrides);
+
+    const exactVisible = await withDefinerContext(async (client) => {
+      const rows = await client.query<{
+        readonly evidence_ids: string[];
+        readonly snapshot_ids: string[];
+      }>(
+        `SELECT
+           ARRAY(SELECT snapshot_id::text FROM dasher.source_snapshots
+             WHERE organization_id = $1::uuid
+               AND snapshot_id = ANY($2::uuid[])
+             ORDER BY snapshot_id) AS snapshot_ids,
+           ARRAY(SELECT evidence_id::text FROM dasher.evidence_records
+             WHERE organization_id = $1::uuid
+               AND evidence_id = ANY($3::uuid[])
+             ORDER BY evidence_id) AS evidence_ids`,
+        [task8dOrganizationId, snapshots, evidence],
+      );
+      return rows.rows[0]!;
+    });
+    expect(exactVisible).toEqual({
+      evidence_ids: [evidence[0], evidence[1]],
+      snapshot_ids: [snapshots[0], snapshots[1]],
+    });
+
+    const invalidDeletes = await withDefinerContext(async (client) => {
+      const evidenceDelete = await client.query(
+        `DELETE FROM dasher.evidence_records
+         WHERE organization_id = $1::uuid
+           AND evidence_id = ANY($2::uuid[])
+         RETURNING evidence_id`,
+        [task8dOrganizationId, evidence.slice(2, 6)],
+      );
+      const snapshotDelete = await client.query(
+        `DELETE FROM dasher.source_snapshots
+         WHERE organization_id = $1::uuid
+           AND snapshot_id = ANY($2::uuid[])
+         RETURNING snapshot_id`,
+        [task8dOrganizationId, snapshots.slice(2, 6)],
+      );
+      const crossOrganizationEvidenceDelete = await client.query(
+        `DELETE FROM dasher.evidence_records
+         WHERE organization_id = $1::uuid AND evidence_id = $2::uuid
+         RETURNING evidence_id`,
+        [organizationB, evidence[0]],
+      );
+      const crossOrganizationSnapshotDelete = await client.query(
+        `DELETE FROM dasher.source_snapshots
+         WHERE organization_id = $1::uuid AND snapshot_id = $2::uuid
+         RETURNING snapshot_id`,
+        [organizationB, snapshots[0]],
+      );
+      return {
+        crossOrganizationEvidence: crossOrganizationEvidenceDelete.rowCount,
+        crossOrganizationSnapshot: crossOrganizationSnapshotDelete.rowCount,
+        evidence: evidenceDelete.rowCount,
+        snapshots: snapshotDelete.rowCount,
+      };
+    });
+    expect(invalidDeletes).toEqual({
+      crossOrganizationEvidence: 0,
+      crossOrganizationSnapshot: 0,
+      evidence: 0,
+      snapshots: 0,
+    });
+
+    const validDeletes = await withDefinerContext(async (client) => {
+      const evidenceDelete = await client.query(
+        `DELETE FROM dasher.evidence_records
+         WHERE organization_id = $1::uuid AND evidence_id = $2::uuid
+         RETURNING evidence_id`,
+        [task8dOrganizationId, evidence[0]],
+      );
+      const snapshotDelete = await client.query(
+        `DELETE FROM dasher.source_snapshots
+         WHERE organization_id = $1::uuid AND snapshot_id = $2::uuid
+         RETURNING snapshot_id`,
+        [task8dOrganizationId, snapshots[0]],
+      );
+      const finalizers = await client.query<{
+        readonly evidence_states: string[];
+        readonly snapshot_states: string[];
+      }>(
+        `SELECT
+           ARRAY(SELECT state FROM dasher.evidence_deletion_finalizers
+             WHERE organization_id = $1::uuid AND evidence_id = $2::uuid)
+             AS evidence_states,
+           ARRAY(SELECT state FROM dasher.snapshot_deletion_finalizers
+             WHERE organization_id = $1::uuid AND snapshot_id = $3::uuid)
+             AS snapshot_states`,
+        [task8dOrganizationId, evidence[0], snapshots[0]],
+      );
+      return {
+        evidence: evidenceDelete.rowCount,
+        finalizers: finalizers.rows[0],
+        snapshot: snapshotDelete.rowCount,
+      };
+    });
+    expect(validDeletes).toEqual({
+      evidence: 1,
+      finalizers: {
+        evidence_states: ["deleted"],
+        snapshot_states: ["deleted"],
+      },
+      snapshot: 1,
+    });
+
+    for (const [table, id] of [
+      ["source_snapshots", snapshots[1]],
+      ["evidence_records", evidence[1]],
+    ] as const) {
+      await expectDasherBoundaryError(
+        withDefinerContext(async (client) => {
+          const idColumn =
+            table === "source_snapshots" ? "snapshot_id" : "evidence_id";
+          await client.query(
+            `DELETE FROM dasher.${table}
+             WHERE organization_id = $1::uuid AND ${idColumn} = $2::uuid`,
+            [task8dOrganizationId, id],
+          );
+        }),
+        "P1001",
+        "dasher_denied",
+      );
+    }
+
+    for (const overrides of [
+      { dashboardId: otherDashboard },
+      { organizationId: organizationB, dashboardId: organizationBDashboard },
+      { phase: "forged" },
+      { capability: "release_hold" },
+      { authorityScope: "tenant_legal_admin" },
+      { principalId: stalePrincipal, principalRevision: "1" },
+      { principalId: stalePrincipal, principalRevision: "2" },
+      { principalRevision: "99" },
+    ] satisfies readonly ContextOverrides[]) {
+      expect(await finalizedVisibility(overrides)).toEqual({
+        evidence_count: "0",
+        snapshot_count: "0",
+      });
+    }
+
+    const setCleanup = async (assignment: string): Promise<void> => {
+      await ownerPool.query(
+        `UPDATE dasher.dashboard_cleanup_coordination
+         SET ${assignment}
+         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+        [task8dOrganizationId, targetDashboard],
+      );
+    };
+    const restoreCleanup = () =>
+      setCleanup(
+        `current_step = 'purge_finalizing', lease_owner = NULL,
+         lease_expires_at = NULL, expected_lifecycle_revision = 40,
+         completion_proof_sha256 = pg_catalog.sha256(
+           pg_catalog.convert_to('task8d-target-proof', 'UTF8'))`,
+      );
+    for (const assignment of [
+      "current_step = 'final_proof_ready'",
+      "expected_lifecycle_revision = 41",
+      "completion_proof_sha256 = NULL",
+      "completion_proof_sha256 = pg_catalog.decode(pg_catalog.repeat('41', 31), 'hex')",
+      "lease_owner = 'task8d_adversary', lease_expires_at = statement_timestamp() + interval '1 hour'",
+    ]) {
+      await setCleanup(assignment);
+      expect(await finalizedVisibility()).toEqual({
+        evidence_count: "0",
+        snapshot_count: "0",
+      });
+      await restoreCleanup();
+    }
+    await ownerPool.query(
+      `DELETE FROM dasher.dashboard_cleanup_coordination
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, targetDashboard],
+    );
+    expect(await finalizedVisibility()).toEqual({
+      evidence_count: "0",
+      snapshot_count: "0",
+    });
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboard_cleanup_coordination (
+         organization_id, dashboard_id, current_step, lease_owner,
+         lease_expires_at, expected_lifecycle_revision, next_attempt_at,
+         completion_proof_sha256
+       ) VALUES ($1::uuid, $2::uuid, 'purge_finalizing', NULL, NULL, 40,
+         statement_timestamp(),
+         pg_catalog.sha256(pg_catalog.convert_to('task8d-target-proof', 'UTF8')))`,
+      [task8dOrganizationId, targetDashboard],
+    );
+
+    await expectPostgresError(
+      ownerPool.query(
+        `WITH expected AS (
+           SELECT pg_catalog.sha256(pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.uuid_send($2::uuid)
+             || pg_catalog.uuid_send($3::uuid)
+             || pg_catalog.convert_to(
+               'snapshot|expected_claim_set=empty', 'UTF8')) AS value
+         )
+         INSERT INTO dasher.snapshot_deletion_finalizers (
+           organization_id, snapshot_id, state, intent_at,
+           expected_claim_set_sha256, proof_sha256, bytes_deleted_at
+         ) SELECT $1::uuid, $3::uuid, 'deleted', statement_timestamp(),
+             value, pg_catalog.decode(pg_catalog.repeat('ff', 32), 'hex'),
+             statement_timestamp()
+           FROM expected`,
+        [task8dOrganizationId, targetDashboard, snapshots[7]],
+      ),
+      "23514",
+    );
+    await expectPostgresError(
+      ownerPool.query(
+        `WITH expected AS (
+           SELECT pg_catalog.sha256(pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.uuid_send($2::uuid)
+             || pg_catalog.uuid_send($3::uuid)
+             || pg_catalog.convert_to(
+               'evidence|expected_claim_set=empty', 'UTF8')) AS value
+         )
+         INSERT INTO dasher.evidence_deletion_finalizers (
+           organization_id, evidence_id, state, intent_at,
+           expected_claim_set_sha256, proof_sha256, bytes_deleted_at
+         ) SELECT $1::uuid, $3::uuid, 'deleted', statement_timestamp(),
+             value, value, statement_timestamp() - interval '1 second'
+           FROM expected`,
+        [task8dOrganizationId, targetDashboard, evidence[8]],
+      ),
+      "23514",
+    );
+
+    const lockVisibility = await withDefinerContext(async (client) => {
+      const lockedSnapshots = await client.query<{ readonly id: string }>(
+        `SELECT snapshot_id::text AS id FROM dasher.source_snapshots
+         WHERE organization_id = $1::uuid
+           AND snapshot_id = ANY($2::uuid[])
+         ORDER BY snapshot_id FOR UPDATE`,
+        [task8dOrganizationId, snapshots.slice(0, 2)],
+      );
+      const lockedEvidence = await client.query<{ readonly id: string }>(
+        `SELECT evidence_id::text AS id FROM dasher.evidence_records
+         WHERE organization_id = $1::uuid
+           AND evidence_id = ANY($2::uuid[])
+         ORDER BY evidence_id FOR UPDATE`,
+        [task8dOrganizationId, evidence.slice(0, 2)],
+      );
+      return {
+        evidence: lockedEvidence.rows.map((row) => row.id),
+        snapshots: lockedSnapshots.rows.map((row) => row.id),
+      };
+    });
+    expect(lockVisibility).toEqual({
+      evidence: [evidence[1]],
+      snapshots: [snapshots[1]],
+    });
+    await expectDasherBoundaryError(
+      withDefinerContext(async (client) => {
+        await client.query(
+          `UPDATE dasher.source_snapshots SET organization_id = organization_id
+           WHERE organization_id = $1::uuid AND snapshot_id = $2::uuid`,
+          [task8dOrganizationId, snapshots[1]],
+        );
+      }),
+      "P1001",
+      "dasher_denied",
+    );
+    await expectDasherBoundaryError(
+      withDefinerContext(async (client) => {
+        await client.query(
+          `UPDATE dasher.evidence_records SET organization_id = organization_id
+           WHERE organization_id = $1::uuid AND evidence_id = $2::uuid`,
+          [task8dOrganizationId, evidence[1]],
+        );
+      }),
+      "P1001",
+      "dasher_denied",
+    );
+
+    const physical = await ownerPool.query<{
+      readonly evidence_count: string;
+      readonly snapshot_count: string;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text FROM dasher.source_snapshots
+          WHERE organization_id = $1::uuid
+            AND snapshot_id = ANY($2::uuid[])) AS snapshot_count,
+         (SELECT pg_catalog.count(*)::text FROM dasher.evidence_records
+          WHERE organization_id = $1::uuid
+            AND evidence_id = ANY($3::uuid[])) AS evidence_count`,
+      [task8dOrganizationId, snapshots, evidence],
+    );
+    expect(physical.rows[0]).toEqual({
+      evidence_count: "9",
+      snapshot_count: "9",
+    });
+  }, 120_000);
+
+  it("keeps independent legal holds exact and purges only after the inclusive unheld boundary", async () => {
+    const holdA = "8d000000-0000-4000-8000-00000000f101";
+    const holdB = "8d000000-0000-4000-8000-00000000f102";
+    const reasonA = Buffer.alloc(32, 0xa1);
+    const reasonB = Buffer.alloc(32, 0xb1);
+    await callRetention(
+      `SELECT dasher_retention_api.place_dashboard_legal_hold(
+        $1::uuid, $2::uuid, 'task8d-matter-a', $3::bytea, 2,
+        $4::uuid, 'task8d-hold-a', $5::uuid)`,
+      [
+        expiryDashboardId,
+        holdA,
+        reasonA,
+        "8d000000-0000-4000-8000-00000000f111",
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.place_dashboard_legal_hold(
+        $1::uuid, $2::uuid, 'task8d-matter-b', $3::bytea, 3,
+        $4::uuid, 'task8d-hold-b', $5::uuid)`,
+      [
+        expiryDashboardId,
+        holdB,
+        reasonB,
+        "8d000000-0000-4000-8000-00000000f112",
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.release_dashboard_legal_hold(
+        $1::uuid, $2::uuid, $3::bytea, 4, $4::uuid,
+        'task8d-release-a', $5::uuid)`,
+      [
+        expiryDashboardId,
+        holdA,
+        reasonA,
+        "8d000000-0000-4000-8000-00000000f113",
+        task8dOrganizationId,
+      ],
+    );
+    const independent = await ownerPool.query<{
+      readonly active_holds: string;
+      readonly hold_a_claims: string;
+      readonly hold_a_released: boolean;
+      readonly hold_b_claims: string;
+      readonly hold_b_released: boolean;
+    }>(
+      `
+        SELECT
+          (SELECT pg_catalog.count(*)::text
+           FROM dasher.dashboard_legal_holds
+           WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid
+             AND released_at IS NULL) AS active_holds,
+          (SELECT released_at IS NOT NULL FROM dasher.dashboard_legal_holds
+           WHERE organization_id = $1::uuid AND hold_id = $3::uuid)
+            AS hold_a_released,
+          (SELECT released_at IS NOT NULL FROM dasher.dashboard_legal_holds
+           WHERE organization_id = $1::uuid AND hold_id = $4::uuid)
+            AS hold_b_released,
+          (SELECT pg_catalog.count(*)::text FROM (
+             SELECT hold_id FROM dasher.snapshot_reference_claims
+             WHERE organization_id = $1::uuid AND hold_id = $3::uuid
+             UNION ALL SELECT hold_id FROM dasher.evidence_reference_claims
+             WHERE organization_id = $1::uuid AND hold_id = $3::uuid
+             UNION ALL SELECT hold_id FROM dasher.artifact_reference_claims
+             WHERE organization_id = $1::uuid AND hold_id = $3::uuid
+           ) AS claims) AS hold_a_claims,
+          (SELECT pg_catalog.count(*)::text FROM (
+             SELECT hold_id FROM dasher.snapshot_reference_claims
+             WHERE organization_id = $1::uuid AND hold_id = $4::uuid
+             UNION ALL SELECT hold_id FROM dasher.evidence_reference_claims
+             WHERE organization_id = $1::uuid AND hold_id = $4::uuid
+             UNION ALL SELECT hold_id FROM dasher.artifact_reference_claims
+             WHERE organization_id = $1::uuid AND hold_id = $4::uuid
+           ) AS claims) AS hold_b_claims
+      `,
+      [task8dOrganizationId, expiryDashboardId, holdA, holdB],
+    );
+    expect(independent.rows[0]).toEqual({
+      active_holds: "1",
+      hold_a_claims: "0",
+      hold_a_released: true,
+      hold_b_claims: "3",
+      hold_b_released: false,
+    });
+
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, 5, $2::bytea, interval '1 minute', $3::uuid,
+        'task8d-quarantine', $4::uuid)`,
+      [
+        expiryDashboardId,
+        Buffer.alloc(32, 0xc1),
+        "8d000000-0000-4000-8000-00000000f114",
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+        $1::uuid, $2::uuid, 'quarantined', 'succeeded', 0, 0, 0,
+        $3::bytea, $4::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f120",
+        Buffer.alloc(32, 0xc2),
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, 6, NULL, interval '1 minute', $2::uuid,
+        'task8d-held', $3::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f115",
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+        $1::uuid, $2::uuid, 'prepare_finalizers', 'held', 0, 0, 2,
+        $3::bytea, $4::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f121",
+        Buffer.alloc(32, 0xc3),
+        task8dOrganizationId,
+      ],
+    );
+    await expectDasherBoundaryError(
+      (async () => {
+        await callRetention(
+          `SELECT dasher_retention_api.purge_dashboard(
+            $1::uuid, 6, NULL, $2::uuid, 'task8d-held-purge', $3::uuid)`,
+          [
+            expiryDashboardId,
+            "8d000000-0000-4000-8000-00000000f116",
+            task8dOrganizationId,
+          ],
+        );
+      })(),
+      "P1001",
+      "dasher_denied",
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.release_dashboard_legal_hold(
+        $1::uuid, $2::uuid, $3::bytea, 6, $4::uuid,
+        'task8d-release-b', $5::uuid)`,
+      [
+        expiryDashboardId,
+        holdB,
+        reasonB,
+        "8d000000-0000-4000-8000-00000000f117",
+        task8dOrganizationId,
+      ],
+    );
+    await ownerPool.query(
+      `UPDATE dasher.dashboard_cleanup_coordination
+       SET next_attempt_at = statement_timestamp()
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    await setTask8dDashboardBoundary("purge_after", "five_minutes_from_now");
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, 7, NULL, interval '1 minute', $2::uuid,
+        'task8d-before-purge', $3::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f118",
+        task8dOrganizationId,
+      ],
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+        $1::uuid, $2::uuid, 'prepare_finalizers', 'succeeded', 0, 0, 0,
+        $3::bytea, $4::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f122",
+        Buffer.alloc(32, 0xc4),
+        task8dOrganizationId,
+      ],
+    );
+    const beforeBoundary = await ownerPool.query(
+      `SELECT lifecycle_state, lifecycle_revision::text
+       FROM dasher.dashboards
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(beforeBoundary.rows[0]).toEqual({
+      lifecycle_revision: "7",
+      lifecycle_state: "quarantined",
+    });
+    await setTask8dDashboardBoundary("purge_after", "now");
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, 7, NULL, interval '1 minute', $2::uuid,
+        'task8d-at-purge', $3::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f119",
+        task8dOrganizationId,
+      ],
+    );
+    const beforePurge = await ownerPool.query<{
+      readonly head_version_id: string;
+      readonly lifecycle_revision: string;
+      readonly purge_started_at: null;
+    }>(
+      `SELECT head_version_id::text AS head_version_id,
+         lifecycle_revision::text AS lifecycle_revision, purge_started_at
+       FROM dasher.dashboards
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(beforePurge.rows[0]).toEqual({
+      head_version_id: expiryVersionId,
+      lifecycle_revision: "8",
+      purge_started_at: null,
+    });
+
+    const purgeProof = Buffer.alloc(32, 0xd1);
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const state = await ownerPool.query<{ readonly purged: boolean }>(
+        `SELECT purged_at IS NOT NULL AS purged FROM dasher.dashboards
+         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+        [task8dOrganizationId, expiryDashboardId],
+      );
+      if (state.rows[0]?.purged === true) break;
+      const identifier = `8d000000-0000-4000-8000-${(0xf200 + attempt)
+        .toString(16)
+        .padStart(12, "0")}`;
+      await callRetention(
+        `SELECT dasher_retention_api.purge_dashboard(
+          $1::uuid, 8, $2::bytea, $3::uuid, 'task8d-purge', $4::uuid)`,
+        [
+          expiryDashboardId,
+          attempt === 0 ? null : purgeProof,
+          identifier,
+          task8dOrganizationId,
+        ],
+      );
+      if (attempt === 0) {
+        const started = await ownerPool.query<{
+          readonly head_version_id: string | null;
+          readonly lifecycle_revision: string;
+          readonly purge_started: boolean;
+          readonly version_exists: boolean;
+        }>(
+          `SELECT head_version_id::text AS head_version_id,
+             purge_started_at IS NOT NULL AS purge_started,
+             lifecycle_revision::text AS lifecycle_revision,
+             EXISTS (
+               SELECT 1 FROM dasher.dashboard_versions AS version
+               WHERE version.organization_id = dashboard.organization_id
+                 AND version.dashboard_id = dashboard.dashboard_id
+                 AND version.version_id = $3::uuid
+             ) AS version_exists
+           FROM dasher.dashboards AS dashboard
+           WHERE dashboard.organization_id = $1::uuid
+             AND dashboard.dashboard_id = $2::uuid`,
+          [task8dOrganizationId, expiryDashboardId, expiryVersionId],
+        );
+        expect(started.rows[0]).toEqual({
+          head_version_id: null,
+          lifecycle_revision: "8",
+          purge_started: true,
+          version_exists: true,
+        });
+      }
+    }
+    const purged = await ownerPool.query<{
+      readonly artifact_count: string;
+      readonly evidence_claim_dashboards: string[];
+      readonly evidence_count: string;
+      readonly evidence_finalizer_proof_valid: boolean;
+      readonly evidence_finalizer_states: string[];
+      readonly ledger_events: string[];
+      readonly lifecycle_revision: string;
+      readonly lifecycle_state: string;
+      readonly lineage_count: string;
+      readonly purged: boolean;
+      readonly resource_count: string;
+      readonly snapshot_claim_dashboards: string[];
+      readonly snapshot_count: string;
+      readonly snapshot_finalizer_proof_valid: boolean;
+      readonly snapshot_finalizer_states: string[];
+      readonly version_count: string;
+    }>(
+      `
+        SELECT dashboard.lifecycle_state,
+          dashboard.lifecycle_revision::text,
+          dashboard.purged_at IS NOT NULL AS purged,
+          (SELECT pg_catalog.array_agg(event_kind ORDER BY ledger_sequence)
+           FROM dasher.backup_deletion_ledger
+           WHERE organization_id = dashboard.organization_id
+             AND tombstone_lineage_id = dashboard.tombstone_lineage_id)
+            AS ledger_events,
+          (SELECT pg_catalog.count(*)::text FROM dasher.dashboard_versions
+           WHERE organization_id = dashboard.organization_id
+             AND dashboard_id = dashboard.dashboard_id) AS version_count,
+          (SELECT pg_catalog.count(*)::text FROM dasher.evidence_records
+           WHERE organization_id = dashboard.organization_id
+             AND evidence_id = $3::uuid) AS evidence_count,
+          ARRAY(SELECT claim.dashboard_id::text
+            FROM dasher.evidence_reference_claims AS claim
+            WHERE claim.organization_id = dashboard.organization_id
+              AND claim.evidence_id = $3::uuid
+            ORDER BY claim.dashboard_id) AS evidence_claim_dashboards,
+          ARRAY(SELECT finalizer.state
+            FROM dasher.evidence_deletion_finalizers AS finalizer
+            WHERE finalizer.organization_id = dashboard.organization_id
+              AND finalizer.evidence_id = $3::uuid
+            ORDER BY finalizer.state) AS evidence_finalizer_states,
+          (SELECT pg_catalog.bool_and(
+              finalizer.proof_sha256 = finalizer.expected_claim_set_sha256
+              AND finalizer.bytes_deleted_at IS NOT NULL
+              AND finalizer.bytes_deleted_at >= finalizer.intent_at)
+            FROM dasher.evidence_deletion_finalizers AS finalizer
+            WHERE finalizer.organization_id = dashboard.organization_id
+              AND finalizer.evidence_id = $3::uuid)
+            AS evidence_finalizer_proof_valid,
+          (SELECT pg_catalog.count(*)::text FROM dasher.source_snapshots
+           WHERE organization_id = dashboard.organization_id
+             AND snapshot_id = $4::uuid) AS snapshot_count,
+          ARRAY(SELECT claim.dashboard_id::text
+            FROM dasher.snapshot_reference_claims AS claim
+            WHERE claim.organization_id = dashboard.organization_id
+              AND claim.snapshot_id = $4::uuid
+            ORDER BY claim.dashboard_id) AS snapshot_claim_dashboards,
+          ARRAY(SELECT finalizer.state
+            FROM dasher.snapshot_deletion_finalizers AS finalizer
+            WHERE finalizer.organization_id = dashboard.organization_id
+              AND finalizer.snapshot_id = $4::uuid
+            ORDER BY finalizer.state) AS snapshot_finalizer_states,
+          (SELECT pg_catalog.bool_and(
+              finalizer.proof_sha256 = finalizer.expected_claim_set_sha256
+              AND finalizer.bytes_deleted_at IS NOT NULL
+              AND finalizer.bytes_deleted_at >= finalizer.intent_at)
+            FROM dasher.snapshot_deletion_finalizers AS finalizer
+            WHERE finalizer.organization_id = dashboard.organization_id
+              AND finalizer.snapshot_id = $4::uuid)
+            AS snapshot_finalizer_proof_valid,
+          (SELECT pg_catalog.count(*)::text FROM dasher.dashboard_artifacts
+           WHERE organization_id = dashboard.organization_id
+             AND artifact_id = $5::uuid) AS artifact_count,
+          (SELECT pg_catalog.count(*)::text FROM dasher.dashboard_restore_lineage
+           WHERE organization_id = dashboard.organization_id
+             AND dashboard_id = dashboard.dashboard_id) AS lineage_count,
+          ((SELECT pg_catalog.count(*) FROM dasher.dashboard_versions
+            WHERE organization_id = dashboard.organization_id
+              AND dashboard_id = dashboard.dashboard_id)
+           + (SELECT pg_catalog.count(*) FROM dasher.evidence_records
+              WHERE organization_id = dashboard.organization_id
+                AND evidence_id = $3::uuid)
+           + (SELECT pg_catalog.count(*) FROM dasher.source_snapshots
+              WHERE organization_id = dashboard.organization_id
+                AND snapshot_id = $4::uuid)
+           + (SELECT pg_catalog.count(*) FROM dasher.dashboard_artifacts
+              WHERE organization_id = dashboard.organization_id
+                AND artifact_id = $5::uuid)
+           + (SELECT pg_catalog.count(*) FROM dasher.dashboard_restore_lineage
+              WHERE organization_id = dashboard.organization_id
+                AND dashboard_id = dashboard.dashboard_id))::text AS resource_count
+        FROM dasher.dashboards AS dashboard
+        WHERE dashboard.organization_id = $1::uuid
+          AND dashboard.dashboard_id = $2::uuid
+      `,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        expiryEvidenceId,
+        expirySnapshotId,
+        expiryArtifactId,
+      ],
+    );
+    expect(purged.rows[0]).toEqual({
+      artifact_count: "0",
+      evidence_claim_dashboards: [],
+      evidence_count: "0",
+      evidence_finalizer_proof_valid: true,
+      evidence_finalizer_states: ["deleted"],
+      ledger_events: ["access_revoked", "purged"],
+      lifecycle_revision: "9",
+      lifecycle_state: "cleaned",
+      lineage_count: "0",
+      purged: true,
+      resource_count: "0",
+      snapshot_claim_dashboards: [],
+      snapshot_count: "0",
+      snapshot_finalizer_proof_valid: true,
+      snapshot_finalizer_states: ["deleted"],
+      version_count: "0",
+    });
+    await expectPostgresError(
+      ownerPool.query(
+        `UPDATE dasher.backup_deletion_ledger SET proof_sha256 = proof_sha256
+         WHERE organization_id = $1::uuid`,
+        [task8dOrganizationId],
+      ),
+      "55000",
+    );
+    await expectPostgresError(
+      ownerPool.query(
+        `DELETE FROM dasher.backup_deletion_ledger
+         WHERE organization_id = $1::uuid`,
+        [task8dOrganizationId],
+      ),
+      "55000",
+    );
+  }, 120_000);
+
+  it("rejects latest-disabled operator authority without fallback and keeps retention execution closed", async () => {
+    const privileges = await ownerPool.query<{
+      readonly app_can_initialize: boolean;
+      readonly operator_can_initialize: boolean;
+      readonly security_can_initialize: boolean;
+    }>(`
+      SELECT
+        pg_catalog.has_function_privilege(
+          'dasher_app',
+          'dasher_retention_api.initialize_operator_context(uuid,text,uuid,text,uuid)',
+          'EXECUTE'
+        ) AS app_can_initialize,
+        pg_catalog.has_function_privilege(
+          'dasher_retention_operator',
+          'dasher_retention_api.initialize_operator_context(uuid,text,uuid,text,uuid)',
+          'EXECUTE'
+        ) AS operator_can_initialize,
+        pg_catalog.has_function_privilege(
+          'dasher_security_definer',
+          'dasher_retention_api.initialize_operator_context(uuid,text,uuid,text,uuid)',
+          'EXECUTE'
+        ) AS security_can_initialize
+    `);
+    expect(privileges.rows[0]).toEqual({
+      app_can_initialize: false,
+      operator_can_initialize: false,
+      security_can_initialize: false,
+    });
+
+    await ownerPool.query(
+      `
+        INSERT INTO dasher.retention_service_principal_allowlist (
+          retention_service_principal_id, principal_revision, binding_kind,
+          binding_subject, authority_scope, scope_organization_id,
+          can_initialize, can_materialize_expiry, can_place_hold,
+          can_release_hold, can_claim_cleanup, can_record_attempt, can_purge,
+          enabled, created_at, predecessor_revision, predecessor_sha256,
+          revision_sha256, migration_provenance
+        ) VALUES (
+          '8d000000-0000-4000-8000-000000000030'::uuid, 2,
+          'postgres_session_user', $1::name, 'platform_operator', NULL,
+          true, true, true, true, true, true, true, false,
+          clock_timestamp(), 1,
+          pg_catalog.decode(pg_catalog.repeat('8d', 32), 'hex'),
+          pg_catalog.decode(pg_catalog.repeat('8e', 32), 'hex'),
+          'task8d-production-operator-disabled-successor'
+        )
+      `,
+      [task8dRetentionUsername],
+    );
+    await expectDasherBoundaryError(
+      callRetention(
+        `SELECT dasher_retention_api.purge_dashboard(
+          $1::uuid, 9, NULL, $2::uuid, 'task8d-disabled-latest', $3::uuid)`,
+        [
+          expiryDashboardId,
+          "8d000000-0000-4000-8000-00000000f301",
+          task8dOrganizationId,
+        ],
+      ),
+      "P1001",
+      "dasher_denied",
+    );
+
+    const app = await appPool!.connect();
+    try {
+      await app.query("SET ROLE dasher_app");
+      await expectPostgresDenial(
+        app,
+        `SELECT dasher_retention_api.initialize_operator_context(
+          $1::uuid, 'purge', $2::uuid, 'task8d-app-denied', $3::uuid)`,
+        [
+          expiryDashboardId,
+          "8d000000-0000-4000-8000-00000000f302",
+          task8dOrganizationId,
+        ],
+      );
+    } finally {
+      await app.query("RESET ROLE");
+      app.release();
     }
   }, 120_000);
 });

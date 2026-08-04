@@ -20,6 +20,8 @@ import {
   discoverMigrations,
   getCanonical0003ExactCatalogContractForTests,
   getCanonical0004ExactCatalogContractForTests,
+  getCanonical0005ExactCatalogContractForTests,
+  getCanonical0006ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
   runMigrations,
@@ -95,6 +97,7 @@ function catalogContractMismatchDimensions(
 type FailureStage =
   | "advisory"
   | "begin"
+  | "catalog"
   | "commit"
   | "journal"
   | "migration"
@@ -103,7 +106,7 @@ type FailureStage =
 
 interface FailureInjection {
   readonly stage: FailureStage;
-  readonly transaction: 1 | 2 | 3 | 4 | 5;
+  readonly transaction: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 }
 
 type ManagedRoleName =
@@ -116,6 +119,7 @@ interface ScriptedMigrationOptions {
   readonly dependencyMatches?: readonly boolean[];
   readonly destructiveReleaseThrows?: boolean;
   readonly expectedLoginRows?: readonly Record<string, unknown>[];
+  readonly expectedRetentionLoginRows?: readonly Record<string, unknown>[];
   readonly failure?: FailureInjection;
   readonly initialJournalRows?: readonly {
     readonly applied_by: string;
@@ -134,6 +138,8 @@ interface ScriptedMigrationOptions {
   readonly normalReleaseThrows?: boolean;
   readonly operationError?: unknown;
   readonly lifecycleCorrectionCatalogMatches?: boolean;
+  readonly phase6CatalogCandidate?: Readonly<Record<string, readonly string[]>>;
+  readonly phase6CatalogMatches?: boolean;
   readonly prefixObjectMatches?: boolean;
   readonly retentionRoleNames?: readonly string[];
   readonly rollbackFails?: boolean;
@@ -165,6 +171,10 @@ interface ScriptedMigrationClient {
   readonly catalogContracts: readonly Record<string, readonly string[]>[];
   readonly journalRows: readonly Record<string, unknown>[];
   readonly lifecycleCorrectionSideEffectPresent: boolean;
+  readonly phase6CorrectionSideEffectPresent: boolean;
+  readonly phase6FunctionReplacements: readonly string[];
+  readonly phase6PolicyReplacements: readonly string[];
+  readonly phase6ColumnAclPresent: boolean;
   readonly modeledSuccessorSideEffectPresent: boolean;
 }
 
@@ -244,6 +254,10 @@ function scriptedMigrationClient(
   let modeledSuccessorSideEffectPresent = false;
   let canonicalSuccessorSideEffectPresent = false;
   let lifecycleCorrectionSideEffectPresent = false;
+  let phase6CorrectionSideEffectPresent = false;
+  let phase6FunctionReplacements: string[] = [];
+  let phase6PolicyReplacements: string[] = [];
+  let phase6ColumnAclPresent = false;
   let transactionSnapshot:
     | {
         readonly canonicalSuccessorSideEffectPresent: boolean;
@@ -251,6 +265,10 @@ function scriptedMigrationClient(
         readonly droppedPreparedRoles: readonly string[];
         readonly journalRows: readonly (typeof journalRows)[number][];
         readonly lifecycleCorrectionSideEffectPresent: boolean;
+        readonly phase6CorrectionSideEffectPresent: boolean;
+        readonly phase6FunctionReplacements: readonly string[];
+        readonly phase6PolicyReplacements: readonly string[];
+        readonly phase6ColumnAclPresent: boolean;
         readonly modeledSuccessorSideEffectPresent: boolean;
       }
     | undefined;
@@ -301,6 +319,10 @@ function scriptedMigrationClient(
         droppedPreparedRoles: [...droppedPreparedRoles],
         journalRows: journalRows.map((row) => ({ ...row })),
         lifecycleCorrectionSideEffectPresent,
+        phase6CorrectionSideEffectPresent,
+        phase6FunctionReplacements: [...phase6FunctionReplacements],
+        phase6PolicyReplacements: [...phase6PolicyReplacements],
+        phase6ColumnAclPresent,
         modeledSuccessorSideEffectPresent,
       };
       command("BEGIN");
@@ -367,6 +389,15 @@ function scriptedMigrationClient(
           transactionSnapshot.canonicalSuccessorSideEffectPresent;
         lifecycleCorrectionSideEffectPresent =
           transactionSnapshot.lifecycleCorrectionSideEffectPresent;
+        phase6CorrectionSideEffectPresent =
+          transactionSnapshot.phase6CorrectionSideEffectPresent;
+        phase6FunctionReplacements = [
+          ...transactionSnapshot.phase6FunctionReplacements,
+        ];
+        phase6PolicyReplacements = [
+          ...transactionSnapshot.phase6PolicyReplacements,
+        ];
+        phase6ColumnAclPresent = transactionSnapshot.phase6ColumnAclPresent;
         transactionSnapshot = undefined;
       }
       return result([]);
@@ -395,7 +426,11 @@ function scriptedMigrationClient(
       ]);
     }
     if (text.includes("WITH expected(role_name) AS")) {
-      return result(options.expectedLoginRows ?? []);
+      return result(
+        values?.[1] === "retention-login"
+          ? (options.expectedRetentionLoginRows ?? [])
+          : (options.expectedLoginRows ?? []),
+      );
     }
     if (text.includes("role.rolname LIKE 'dasher\\_retention\\_%'")) {
       const roleNames = [
@@ -510,15 +545,31 @@ function scriptedMigrationClient(
       const isLifecycleCorrection = (contract.types ?? []).some((signature) =>
         signature.includes("|dashboard_creation_result|"),
       );
-      const explicitMatch = isLifecycleCorrection
-        ? (options.lifecycleCorrectionCatalogMatches ??
+      const isPhase6Correction = (contract.functions ?? []).some((signature) =>
+        signature.endsWith("059c7ab3e72146897a750ff61e115e44"),
+      );
+      const phase6CandidateMatches =
+        isPhase6Correction && options.phase6CatalogCandidate !== undefined
+          ? isDeepStrictEqual(contract, options.phase6CatalogCandidate)
+          : undefined;
+      const explicitMatch = isPhase6Correction
+        ? (phase6CandidateMatches ??
+          options.phase6CatalogMatches ??
+          options.lifecycleCorrectionCatalogMatches ??
           options.successorCatalogMatches ??
           options.prefixObjectMatches)
-        : isSuccessor
-          ? (options.successorCatalogMatches ?? options.prefixObjectMatches)
-          : options.prefixObjectMatches;
+        : isLifecycleCorrection
+          ? (options.lifecycleCorrectionCatalogMatches ??
+            options.successorCatalogMatches ??
+            options.prefixObjectMatches)
+          : isSuccessor
+            ? (options.successorCatalogMatches ?? options.prefixObjectMatches)
+            : options.prefixObjectMatches;
       if (explicitMatch === undefined) {
         throw new Error("scripted catalog matching must be explicit");
+      }
+      if (isPhase6Correction) {
+        failAt("catalog");
       }
       return result([
         {
@@ -700,7 +751,13 @@ function scriptedMigrationClient(
       text.startsWith("SELECT 2;") ||
       text.includes("modeled_successor_inventory_version") ||
       text.includes("-- Dasher immutable-content and lifecycle successor.") ||
-      text.includes("-- Dasher lifecycle API correction successor.")
+      text.includes("-- Dasher lifecycle API correction successor.") ||
+      text.includes(
+        "-- Dasher security-definer cleanup-coordination authority correction.",
+      ) ||
+      text.startsWith(
+        "CREATE OR REPLACE FUNCTION dasher_api.get_dashboard_admin_status(uuid)",
+      )
     ) {
       command("MIGRATION SQL");
       if (text.includes("modeled_successor_inventory_version")) {
@@ -713,6 +770,25 @@ function scriptedMigrationClient(
       }
       if (text.includes("-- Dasher lifecycle API correction successor.")) {
         lifecycleCorrectionSideEffectPresent = true;
+      }
+      if (
+        text.startsWith(
+          "CREATE OR REPLACE FUNCTION dasher_api.get_dashboard_admin_status(uuid)",
+        )
+      ) {
+        phase6CorrectionSideEffectPresent = true;
+        phase6FunctionReplacements = [
+          ...text.matchAll(
+            /^CREATE OR REPLACE FUNCTION ([a-z_]+[.][a-z_]+\([^\n]*\))$/gmu,
+          ),
+        ].map((match) => match[1]!);
+        phase6PolicyReplacements = [
+          ...text.matchAll(/^CREATE POLICY ([a-z_]+)$/gmu),
+        ].map((match) => match[1]!);
+        phase6ColumnAclPresent =
+          /GRANT UPDATE \(head_version_id\) ON TABLE dasher[.]dashboards\s+TO dasher_retention_definer;/u.test(
+            text,
+          );
       }
       failAt("migration");
       return result([]);
@@ -763,6 +839,18 @@ function scriptedMigrationClient(
     },
     get lifecycleCorrectionSideEffectPresent() {
       return lifecycleCorrectionSideEffectPresent;
+    },
+    get phase6CorrectionSideEffectPresent() {
+      return phase6CorrectionSideEffectPresent;
+    },
+    get phase6FunctionReplacements() {
+      return phase6FunctionReplacements;
+    },
+    get phase6PolicyReplacements() {
+      return phase6PolicyReplacements;
+    },
+    get phase6ColumnAclPresent() {
+      return phase6ColumnAclPresent;
     },
     get modeledSuccessorSideEffectPresent() {
       return modeledSuccessorSideEffectPresent;
@@ -854,7 +942,7 @@ const transactionFailureCases = [
 
 function transactionCommands(
   scripted: ScriptedMigrationClient,
-  transaction: 1 | 2 | 3 | 4 | 5,
+  transaction: FailureInjection["transaction"],
 ): readonly string[] {
   const prefix = `T${String(transaction)} `;
   return scripted.transactionCommands.filter((entry) =>
@@ -902,6 +990,7 @@ function expectFailureCommandOrder(
   const failureCommand = {
     advisory: "ADVISORY LOCK",
     begin: "BEGIN",
+    catalog: "CATALOG VALIDATION",
     commit: "COMMIT",
     journal: "JOURNAL INSERT",
     migration: "MIGRATION SQL",
@@ -1074,6 +1163,41 @@ async function canonicalLifecycleCorrectionSeries(): Promise<{
   };
 }
 
+async function canonicalPhase6Series(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const directory = await temporaryDirectory();
+  for (const filename of [
+    "0001_identity_audit.sql",
+    "0002_security_boundary.sql",
+    "0003_immutable_content.sql",
+    "0004_lifecycle_api_correction.sql",
+    "0005_security_definer_cleanup_coordination.sql",
+    "0006_lifecycle_access_retention_guard_correction.sql",
+  ] as const) {
+    await writeFile(
+      join(directory, filename),
+      await readFile(join(canonicalMigrationDirectory, filename)),
+    );
+  }
+  const migrations = await discoverMigrations(directory);
+  return {
+    directory,
+    journalRows: migrations.map((migration) => ({
+      applied_by: "migration_owner",
+      checksum_sha256: migration.checksumSha256,
+      filename: migration.filename,
+      sequence: migration.sequence,
+    })),
+  };
+}
+
 async function canonical0002Series(): Promise<{
   readonly directory: string;
   readonly journalRows: readonly {
@@ -1128,6 +1252,17 @@ function expectedLoginRow(
   };
 }
 
+function expectedRetentionLoginRow(
+  roleName = "dasher_test_task8d_retention",
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return expectedLoginRow({
+    comment: "dasher:retention-login:v1:database-oid:16384",
+    role_name: roleName,
+    ...overrides,
+  });
+}
+
 function expectedMembershipRowFor(
   roleName: string,
 ): Readonly<Record<string, unknown>> {
@@ -1137,6 +1272,15 @@ function expectedMembershipRowFor(
     inherit_option: false,
     member_role_name: roleName,
     set_option: true,
+  };
+}
+
+function expectedRetentionMembershipRowFor(
+  roleName: string,
+): Readonly<Record<string, unknown>> {
+  return {
+    ...expectedMembershipRowFor(roleName),
+    granted_role_name: "dasher_retention_operator",
   };
 }
 
@@ -1663,6 +1807,512 @@ describe("prefix-aware managed roles and expected app logins", () => {
       });
       expect(scripted.journalRows).toHaveLength(4);
       expect(scripted.lifecycleCorrectionSideEffectPresent).toBe(true);
+    },
+  );
+
+  it("applies exact five-file state through the full directory once and reruns phase 6 as a no-op", async () => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows.slice(0, 5),
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+    const phase6Sql = await readFile(
+      join(
+        canonicalMigrationDirectory,
+        "0006_lifecycle_access_retention_guard_correction.sql",
+      ),
+      "utf8",
+    );
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 1,
+      discoveredCount: 6,
+      previouslyAppliedCount: 5,
+    });
+    expect(scripted.journalRows).toEqual(series.journalRows);
+    expect(scripted.phase6CorrectionSideEffectPresent).toBe(true);
+    expect(scripted.phase6FunctionReplacements).toEqual([
+      "dasher_api.get_dashboard_admin_status(uuid)",
+      "dasher_private.enforce_retention_mutation()",
+    ]);
+    expect(scripted.phase6PolicyReplacements).toEqual([
+      "source_snapshots_retention_select",
+      "source_snapshots_retention_delete",
+      "evidence_records_retention_select",
+      "evidence_records_retention_delete",
+    ]);
+    expect(scripted.phase6ColumnAclPresent).toBe(true);
+    expect(scripted.catalogContracts).toContainEqual(
+      getCanonical0005ExactCatalogContractForTests("migration_owner"),
+    );
+    const phase6Catalog = getCanonical0006ExactCatalogContractForTests(
+      "migration_owner",
+      phase6Sql,
+    ) as Record<string, readonly string[]>;
+    expect(scripted.catalogContracts).toContainEqual(phase6Catalog);
+    const dependencyInventories = [
+      ...new Map(
+        scripted.dependencyInventories.map((inventory) => [
+          JSON.stringify(inventory),
+          inventory,
+        ]),
+      ).values(),
+    ];
+    expect(dependencyInventories).toHaveLength(2);
+    const [phase5Dependencies, phase6Dependencies] = dependencyInventories.sort(
+      (left, right) => left.length - right.length,
+    );
+    expect(phase6Dependencies).toHaveLength(
+      (phase5Dependencies?.length ?? 0) + 1,
+    );
+    expect(phase6Dependencies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          dependency_type: "a",
+          grantor_name: "migration_owner",
+          is_grantable: false,
+          object_kind: "column",
+          object_name: "dashboards",
+          privilege_type: "UPDATE",
+          role_name: "dasher_retention_definer",
+          schema_name: "dasher",
+          subobject_name: "head_version_id",
+        }),
+      ]),
+    );
+    const correctedPolicyNames = new Set([
+      "source_snapshots_retention_select",
+      "source_snapshots_retention_delete",
+      "evidence_records_retention_select",
+      "evidence_records_retention_delete",
+    ]);
+    const policyRows = (inventory: readonly Record<string, unknown>[]) =>
+      inventory.filter(
+        (row) =>
+          row.object_kind === "policy" &&
+          typeof row.policy_name === "string" &&
+          correctedPolicyNames.has(row.policy_name),
+      );
+    const phase5PolicyRows = policyRows(phase5Dependencies ?? []);
+    const phase6PolicyRows = policyRows(phase6Dependencies ?? []);
+    expect(phase5PolicyRows).toHaveLength(4);
+    expect(phase6PolicyRows).toHaveLength(4);
+    for (const phase6Policy of phase6PolicyRows) {
+      const phase5Policy = phase5PolicyRows.find(
+        (candidate) => candidate.policy_name === phase6Policy.policy_name,
+      );
+      expect(phase5Policy).toBeDefined();
+      expect(phase6Policy.policy_using_expression).not.toBe(
+        phase5Policy?.policy_using_expression,
+      );
+      expect(phase6Policy).toMatchObject({
+        dependency_type: "r",
+        object_kind: "policy",
+        policy_permissive: true,
+        policy_roles: ["dasher_retention_definer"],
+        policy_with_check_expression: null,
+        role_name: "dasher_retention_definer",
+        schema_name: "dasher",
+      });
+      expect(phase6Policy.policy_using_expression).toEqual(
+        expect.stringContaining("target_finalizer.state = 'deleted'::text"),
+      );
+      expect(phase6Policy.policy_using_expression).not.toEqual(
+        expect.stringContaining(
+          "target_cleanup.completion_proof_sha256 = target_finalizer.expected_claim_set_sha256",
+        ),
+      );
+      expect(phase6Policy.policy_using_expression).toEqual(
+        expect.stringContaining("(EXISTS ( SELECT 1\n"),
+      );
+      expect(phase6Catalog.policies).toContainEqual(
+        expect.stringContaining(
+          `|${String(phase6Policy.policy_using_expression)}|<none>`,
+        ),
+      );
+    }
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 0,
+      discoveredCount: 6,
+      previouslyAppliedCount: 6,
+    });
+    expect(scripted.journalRows).toEqual(series.journalRows);
+  });
+
+  it("binds missing, extra, broad, wrong-role, wrong-column, and grantable phase-6 ACL drift", async () => {
+    type ExactCatalog = Record<string, readonly string[]>;
+    const phase6Sql = await readFile(
+      join(
+        canonicalMigrationDirectory,
+        "0006_lifecycle_access_retention_guard_correction.sql",
+      ),
+      "utf8",
+    );
+    const exact = getCanonical0006ExactCatalogContractForTests(
+      "migration_owner",
+      phase6Sql,
+    ) as ExactCatalog;
+    const approved =
+      "column|dasher.dashboards.head_version_id|migration_owner|dasher_retention_definer|UPDATE|false";
+    expect(exact.acls?.filter((acl) => acl === approved)).toHaveLength(1);
+
+    const replaceApproved = (replacement: string) => ({
+      ...exact,
+      acls: (exact.acls ?? []).map((acl) =>
+        acl === approved ? replacement : acl,
+      ),
+    });
+    const mutants: readonly ExactCatalog[] = [
+      { ...exact, acls: (exact.acls ?? []).filter((acl) => acl !== approved) },
+      {
+        ...exact,
+        acls: [
+          ...(exact.acls ?? []),
+          "column|dasher.dashboards.title|migration_owner|dasher_retention_definer|UPDATE|false",
+        ],
+      },
+      replaceApproved(
+        "relation|dasher.dashboards|migration_owner|dasher_retention_definer|UPDATE|false",
+      ),
+      replaceApproved(
+        "column|dasher.dashboards.head_version_id|migration_owner|dasher_retention_operator|UPDATE|false",
+      ),
+      replaceApproved(
+        "column|dasher.dashboards.title|migration_owner|dasher_retention_definer|UPDATE|false",
+      ),
+      replaceApproved(
+        "column|dasher.dashboards.head_version_id|migration_owner|dasher_retention_definer|UPDATE|true",
+      ),
+    ];
+
+    for (const [index, mutant] of mutants.entries()) {
+      const mismatchDimensions = Object.keys(exact).filter(
+        (dimension) => !isDeepStrictEqual(exact[dimension], mutant[dimension]),
+      );
+      expect(mismatchDimensions, `phase-6 ACL mutant ${index + 1}`).toEqual([
+        "acls",
+      ]);
+    }
+  });
+
+  it("binds missing, extra, renamed, wrong-command, restrictive, wrong-role, predicate, and WITH CHECK policy drift", async () => {
+    type ExactCatalog = Record<string, readonly string[]>;
+    const phase6Sql = await readFile(
+      join(
+        canonicalMigrationDirectory,
+        "0006_lifecycle_access_retention_guard_correction.sql",
+      ),
+      "utf8",
+    );
+    const exact = getCanonical0006ExactCatalogContractForTests(
+      "migration_owner",
+      phase6Sql,
+    ) as ExactCatalog;
+    const identity =
+      "dasher|source_snapshots|source_snapshots_retention_select|";
+    const approved = (exact.policies ?? []).find((row) =>
+      row.startsWith(identity),
+    );
+    expect(approved).toBeDefined();
+    const replaceApproved = (replacement: string) => ({
+      ...exact,
+      policies: (exact.policies ?? []).map((row) =>
+        row === approved ? replacement : row,
+      ),
+    });
+    const mutants: readonly ExactCatalog[] = [
+      {
+        ...exact,
+        policies: (exact.policies ?? []).filter((row) => row !== approved),
+      },
+      { ...exact, policies: [...(exact.policies ?? []), approved!] },
+      replaceApproved(
+        approved!.replace(
+          "source_snapshots_retention_select",
+          "source_snapshots_retention_select_extra",
+        ),
+      ),
+      replaceApproved(
+        approved!.replace(
+          "|true|r|{dasher_retention_definer}|",
+          "|true|d|{dasher_retention_definer}|",
+        ),
+      ),
+      replaceApproved(
+        approved!.replace(
+          "|true|r|{dasher_retention_definer}|",
+          "|false|r|{dasher_retention_definer}|",
+        ),
+      ),
+      replaceApproved(
+        approved!.replace(
+          "|true|r|{dasher_retention_definer}|",
+          "|true|r|{dasher_retention_operator}|",
+        ),
+      ),
+      replaceApproved(
+        approved!.replace(
+          "target_finalizer.state = 'deleted'::text",
+          "target_finalizer.state = 'eligible'::text",
+        ),
+      ),
+      replaceApproved(approved!.replace(/<none>$/u, "true")),
+    ];
+
+    for (const [index, mutant] of mutants.entries()) {
+      expect(
+        Object.keys(exact).filter(
+          (dimension) =>
+            !isDeepStrictEqual(exact[dimension], mutant[dimension]),
+        ),
+        `phase-6 policy mutant ${index + 1}`,
+      ).toEqual(["policies"]);
+    }
+  });
+
+  it("pins all four PostgreSQL-normalized phase-6 policy expressions without changing phase 5", async () => {
+    type ExactCatalog = Record<string, readonly string[]>;
+    const phase6Sql = await readFile(
+      join(
+        canonicalMigrationDirectory,
+        "0006_lifecycle_access_retention_guard_correction.sql",
+      ),
+      "utf8",
+    );
+    const phase5 = getCanonical0005ExactCatalogContractForTests(
+      "migration_owner",
+    ) as ExactCatalog;
+    const phase6 = getCanonical0006ExactCatalogContractForTests(
+      "migration_owner",
+      phase6Sql,
+    ) as ExactCatalog;
+    const policies = [
+      {
+        catalogCommand: "r",
+        name: "source_snapshots_retention_select",
+        phase5Sha256:
+          "fda7b996c553e58515db6ef0cf78f1dc36edff7367d3c53d2ed8a5a9f825ed1e",
+        phase6Sha256:
+          "4ed1d5e8aab0f915a0d1b5b61ee004eb01b19341251b25bdc0d05ab96607f35c",
+        relation: "source_snapshots",
+      },
+      {
+        catalogCommand: "d",
+        name: "source_snapshots_retention_delete",
+        phase5Sha256:
+          "fda7b996c553e58515db6ef0cf78f1dc36edff7367d3c53d2ed8a5a9f825ed1e",
+        phase6Sha256:
+          "4ed1d5e8aab0f915a0d1b5b61ee004eb01b19341251b25bdc0d05ab96607f35c",
+        relation: "source_snapshots",
+      },
+      {
+        catalogCommand: "r",
+        name: "evidence_records_retention_select",
+        phase5Sha256:
+          "59a5733f04110af250f723d3ab8d527fbd8f5b733e318e2385079acaf36133c1",
+        phase6Sha256:
+          "a2976b23c20c713f6d2bbab7dd7100a4a13ea9982c1521b20fa8a485cf3eb3e9",
+        relation: "evidence_records",
+      },
+      {
+        catalogCommand: "d",
+        name: "evidence_records_retention_delete",
+        phase5Sha256:
+          "59a5733f04110af250f723d3ab8d527fbd8f5b733e318e2385079acaf36133c1",
+        phase6Sha256:
+          "a2976b23c20c713f6d2bbab7dd7100a4a13ea9982c1521b20fa8a485cf3eb3e9",
+        relation: "evidence_records",
+      },
+    ] as const;
+    const catalogUsing = (
+      catalog: ExactCatalog,
+      policy: (typeof policies)[number],
+    ) => {
+      const prefix = `dasher|${policy.relation}|${policy.name}|true|${policy.catalogCommand}|{dasher_retention_definer}|`;
+      const row = (catalog.policies ?? []).find((candidate) =>
+        candidate.startsWith(prefix),
+      );
+      expect(row, policy.name).toBeDefined();
+      expect(row, policy.name).toMatch(/[|]<none>$/u);
+      return row!.slice(prefix.length, -"|<none>".length);
+    };
+
+    for (const policy of policies) {
+      const rawUsing = new RegExp(
+        `^CREATE POLICY ${policy.name}\\nON dasher[.]${policy.relation}\\nAS PERMISSIVE\\nFOR (?:SELECT|DELETE)\\nTO dasher_retention_definer\\nUSING \\((.+)\\)\\n;$`,
+        "mu",
+      ).exec(phase6Sql)?.[1];
+      const phase5Using = catalogUsing(phase5, policy);
+      const phase6Using = catalogUsing(phase6, policy);
+
+      expect(rawUsing, policy.name).toBeDefined();
+      expect(phase6Using, policy.name).not.toBe(rawUsing);
+      expect(phase6Using, policy.name).toContain("(EXISTS ( SELECT 1\n");
+      expect(phase6Using, policy.name).toContain(
+        "AND (NOT (EXISTS ( SELECT 1\n",
+      );
+      expect(createHash("sha256").update(phase5Using).digest("hex")).toBe(
+        policy.phase5Sha256,
+      );
+      expect(createHash("sha256").update(phase6Using).digest("hex")).toBe(
+        policy.phase6Sha256,
+      );
+      expect(phase5Using, policy.name).toContain(
+        "target_cleanup.completion_proof_sha256 = target_finalizer.expected_claim_set_sha256",
+      );
+      expect(phase6Using, policy.name).not.toContain(
+        "target_cleanup.completion_proof_sha256 = target_finalizer.expected_claim_set_sha256",
+      );
+    }
+  });
+
+  it("rejects an exact phase-6 normalized policy-expression mutation before SQL", async () => {
+    type ExactCatalog = Record<string, readonly string[]>;
+    const series = await canonicalPhase6Series();
+    const phase6Sql = await readFile(
+      join(
+        canonicalMigrationDirectory,
+        "0006_lifecycle_access_retention_guard_correction.sql",
+      ),
+      "utf8",
+    );
+    const exact = getCanonical0006ExactCatalogContractForTests(
+      "migration_owner",
+      phase6Sql,
+    ) as ExactCatalog;
+    const approved = exact.policies?.find((row) =>
+      row.startsWith(
+        "dasher|source_snapshots|source_snapshots_retention_select|",
+      ),
+    );
+    expect(approved).toBeDefined();
+    const mutated = approved!.replace(
+      "(octet_length(target_cleanup.completion_proof_sha256) = 32)",
+      "(octet_length(target_cleanup.completion_proof_sha256) = 31)",
+    );
+    expect(mutated).not.toBe(approved);
+    const candidate = {
+      ...exact,
+      policies: (exact.policies ?? []).map((row) =>
+        row === approved ? mutated : row,
+      ),
+    };
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      phase6CatalogCandidate: candidate,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(scripted.phase6CorrectionSideEffectPresent).toBe(false);
+    expect(scripted.journalRows).toEqual(series.journalRows);
+    expect(scripted.queryTexts).not.toContainEqual(
+      expect.stringContaining(
+        "CREATE OR REPLACE FUNCTION dasher_api.get_dashboard_admin_status(uuid)",
+      ),
+    );
+  });
+
+  it.each([
+    ["missing corrected policy", { phase6CatalogMatches: false }],
+    ["extra corrected policy", { phase6CatalogMatches: false }],
+    ["renamed corrected policy", { phase6CatalogMatches: false }],
+    ["wrong corrected-policy command", { phase6CatalogMatches: false }],
+    ["restrictive corrected policy", { phase6CatalogMatches: false }],
+    ["wrong corrected-policy role", { phase6CatalogMatches: false }],
+    ["altered corrected-policy predicate", { phase6CatalogMatches: false }],
+    ["non-null corrected-policy WITH CHECK", { phase6CatalogMatches: false }],
+    ["revoked required grant", { phase6CatalogMatches: false }],
+    ["altered managed dependency closure", { dependencyMatches: [false] }],
+  ] as const)(
+    "rejects replay with %s before SQL and does not self-repair",
+    async (_name, drift) => {
+      const series = await canonicalPhase6Series();
+      const scripted = scriptedMigrationClient({
+        ...drift,
+        initialJournalRows: series.journalRows,
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(scripted.phase6CorrectionSideEffectPresent).toBe(false);
+      expect(scripted.journalRows).toEqual(series.journalRows);
+      expect(scripted.queryTexts).not.toContainEqual(
+        expect.stringContaining(
+          "CREATE OR REPLACE FUNCTION dasher_api.get_dashboard_admin_status(uuid)",
+        ),
+      );
+    },
+  );
+
+  it.each([
+    ["post-DDL catalog validation", "catalog"],
+    ["journal insertion", "journal"],
+  ] as const)(
+    "rolls back failed 0006 %s with its journal row, then retries atomically",
+    async (_failureName, failureStage) => {
+      const series = await canonicalPhase6Series();
+      const scripted = scriptedMigrationClient({
+        failure: { stage: failureStage, transaction: 2 },
+        initialJournalRows: series.journalRows.slice(0, 5),
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toBe(scripted.operationError);
+      expect(scripted.journalRows).toEqual(series.journalRows.slice(0, 5));
+      expect(scripted.phase6CorrectionSideEffectPresent).toBe(false);
+      expect(scripted.phase6FunctionReplacements).toEqual([]);
+      expect(scripted.phase6PolicyReplacements).toEqual([]);
+      expect(scripted.phase6ColumnAclPresent).toBe(false);
+      expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 ROLLBACK");
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 6,
+        previouslyAppliedCount: 5,
+      });
+      expect(scripted.journalRows).toEqual(series.journalRows);
+      expect(scripted.phase6CorrectionSideEffectPresent).toBe(true);
+      expect(scripted.phase6FunctionReplacements).toEqual([
+        "dasher_api.get_dashboard_admin_status(uuid)",
+        "dasher_private.enforce_retention_mutation()",
+      ]);
+      expect(scripted.phase6PolicyReplacements).toEqual([
+        "source_snapshots_retention_select",
+        "source_snapshots_retention_delete",
+        "evidence_records_retention_select",
+        "evidence_records_retention_delete",
+      ]);
+      expect(scripted.phase6ColumnAclPresent).toBe(true);
     },
   );
 
@@ -2515,6 +3165,147 @@ describe("prefix-aware managed roles and expected app logins", () => {
     }
   });
 
+  it("rejects renamed, checksum-drifted, gapped, and extra phase-6 successors before SQL", async () => {
+    const canonicalBytes = new Map<string, Buffer>();
+    for (const filename of [
+      "0001_identity_audit.sql",
+      "0002_security_boundary.sql",
+      "0003_immutable_content.sql",
+      "0004_lifecycle_api_correction.sql",
+      "0005_security_definer_cleanup_coordination.sql",
+      "0006_lifecycle_access_retention_guard_correction.sql",
+    ]) {
+      canonicalBytes.set(
+        filename,
+        await readFile(join(canonicalMigrationDirectory, filename)),
+      );
+    }
+    const phase6 = canonicalBytes.get(
+      "0006_lifecycle_access_retention_guard_correction.sql",
+    )!;
+    const cases: readonly Readonly<{
+      files: readonly (readonly [string, Buffer | string])[];
+      name: string;
+    }>[] = [
+      {
+        name: "renamed phase 6",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 5),
+          ["0006_retention_guard_renamed.sql", phase6],
+        ],
+      },
+      {
+        name: "phase-6 checksum drift",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 5),
+          [
+            "0006_lifecycle_access_retention_guard_correction.sql",
+            Buffer.concat([phase6, Buffer.from("\n-- drift\n")]),
+          ],
+        ],
+      },
+      {
+        name: "gap before phase 6",
+        files: [
+          ...[...canonicalBytes.entries()].slice(0, 4),
+          ["0006_lifecycle_access_retention_guard_correction.sql", phase6],
+        ],
+      },
+      {
+        name: "extra phase 7",
+        files: [...canonicalBytes.entries(), ["0007_extra.sql", "SELECT 7;\n"]],
+      },
+    ];
+
+    for (const candidate of cases) {
+      const directory = await temporaryDirectory();
+      for (const [filename, bytes] of candidate.files) {
+        await writeFile(join(directory, filename), bytes);
+      }
+      const scripted = scriptedMigrationClient();
+      await expect(
+        runMigrations(singleClientPool(scripted.client), directory, []),
+        candidate.name,
+      ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+      expect(scripted.transactionCommands, candidate.name).toEqual([
+        "SESSION ADVISORY LOCK",
+        "SESSION ADVISORY UNLOCK",
+      ]);
+      expect(scripted.journalRows, candidate.name).toEqual([]);
+      expect(scripted.phase6CorrectionSideEffectPresent).toBe(false);
+    }
+  });
+
+  it("rejects partial, extra, IF EXISTS, role, command, mode, state, and proof-domain phase-6 policy source tampering before mutation", async () => {
+    const canonicalBytes = new Map<string, Buffer>();
+    for (const filename of [
+      "0001_identity_audit.sql",
+      "0002_security_boundary.sql",
+      "0003_immutable_content.sql",
+      "0004_lifecycle_api_correction.sql",
+      "0005_security_definer_cleanup_coordination.sql",
+      "0006_lifecycle_access_retention_guard_correction.sql",
+    ]) {
+      canonicalBytes.set(
+        filename,
+        await readFile(join(canonicalMigrationDirectory, filename)),
+      );
+    }
+    const phase6 = canonicalBytes
+      .get("0006_lifecycle_access_retention_guard_correction.sql")!
+      .toString("utf8");
+    const mutants = [
+      phase6.replace(
+        "DROP POLICY source_snapshots_retention_select ON dasher.source_snapshots;\n",
+        "",
+      ),
+      `${phase6}\nCREATE POLICY source_snapshots_retention_extra ON dasher.source_snapshots USING (true);\n`,
+      phase6.replace(
+        "DROP POLICY source_snapshots",
+        "DROP POLICY IF EXISTS source_snapshots",
+      ),
+      phase6.replace(
+        "TO dasher_retention_definer\nUSING",
+        "TO dasher_retention_operator\nUSING",
+      ),
+      phase6.replace("FOR SELECT\nTO", "FOR UPDATE\nTO"),
+      phase6.replace("AS PERMISSIVE\nFOR SELECT", "AS RESTRICTIVE\nFOR SELECT"),
+      phase6.replace(
+        "target_finalizer.state = 'deleted'::text",
+        "target_finalizer.state = 'eligible'::text",
+      ),
+      phase6.replace(
+        "target_finalizer.proof_sha256 = target_finalizer.expected_claim_set_sha256",
+        "target_cleanup.completion_proof_sha256 = target_finalizer.expected_claim_set_sha256",
+      ),
+    ];
+
+    for (const [index, mutant] of mutants.entries()) {
+      expect(mutant, `policy source mutant ${index + 1}`).not.toBe(phase6);
+      const directory = await temporaryDirectory();
+      for (const [filename, bytes] of canonicalBytes) {
+        await writeFile(
+          join(directory, filename),
+          filename === "0006_lifecycle_access_retention_guard_correction.sql"
+            ? mutant
+            : bytes,
+        );
+      }
+      const scripted = scriptedMigrationClient();
+      await expect(
+        runMigrations(singleClientPool(scripted.client), directory, []),
+        `policy source mutant ${index + 1}`,
+      ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+      expect(scripted.transactionCommands).toEqual([
+        "SESSION ADVISORY LOCK",
+        "SESSION ADVISORY UNLOCK",
+      ]);
+      expect(scripted.phase6CorrectionSideEffectPresent).toBe(false);
+      expect(scripted.phase6PolicyReplacements).toEqual([]);
+      expect(scripted.journalRows).toEqual([]);
+    }
+  });
+
   it.each([
     {
       name: "one missing role",
@@ -2867,6 +3658,26 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expectExactlyOneSuccessfulSessionGate(scripted);
   });
 
+  it("rejects overlapping reset allowlists before connecting", async () => {
+    let connections = 0;
+    const pool: MigrationPool = {
+      async connect() {
+        connections += 1;
+        throw new Error("unexpected connection");
+      },
+    };
+
+    await expect(
+      resetPreparedRetentionRoles(
+        pool,
+        fixtureDirectory,
+        ["shared_login"],
+        ["shared_login"],
+      ),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(connections).toBe(0);
+  });
+
   it("refuses reset for partial roles, dependencies, or a pending different 0003 without dropping anything", async () => {
     const series = await canonical0002Series();
     const cases: readonly ScriptedMigrationOptions[] = [
@@ -2928,27 +3739,52 @@ describe("prefix-aware managed roles and expected app logins", () => {
       name: "duplicate",
       roleNames: ["dasher_test_login", "dasher_test_login"],
     },
-    { name: "managed role", roleNames: ["dasher_app"] },
+    {
+      name: "managed role dasher_app",
+      roleNames: ["dasher_app"],
+    },
+    {
+      name: "managed role dasher_security_definer",
+      roleNames: ["dasher_security_definer"],
+    },
+    {
+      name: "managed role dasher_retention_definer",
+      roleNames: ["dasher_retention_definer"],
+    },
+    {
+      name: "managed role dasher_retention_operator",
+      roleNames: ["dasher_retention_operator"],
+    },
     { name: "empty name", roleNames: [""] },
     { name: "control byte", roleNames: ["dasher_test_\nlogin"] },
     { name: "overlength", roleNames: ["x".repeat(64)] },
   ])(
     "rejects $name expected-login input before connecting",
     async ({ roleNames }) => {
-      let connections = 0;
-      const pool: MigrationPool = {
-        async connect() {
-          connections += 1;
-          throw new Error("unexpected connection");
-        },
-      };
+      for (const allowlists of [
+        { app: roleNames, retention: [] },
+        { app: [], retention: roleNames },
+      ] as const) {
+        let connections = 0;
+        const pool: MigrationPool = {
+          async connect() {
+            connections += 1;
+            throw new Error("unexpected connection");
+          },
+        };
 
-      const failure = await capturedFailure(
-        runMigrations(pool, fixtureDirectory, roleNames),
-      );
+        const failure = await capturedFailure(
+          runMigrations(
+            pool,
+            fixtureDirectory,
+            allowlists.app,
+            allowlists.retention,
+          ),
+        );
 
-      expect(failure).toMatchObject({ code: "managed_role_drift" });
-      expect(connections).toBe(0);
+        expect(failure).toMatchObject({ code: "managed_role_drift" });
+        expect(connections).toBe(0);
+      }
     },
   );
 
@@ -3050,6 +3886,207 @@ describe("prefix-aware managed roles and expected app logins", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("accepts unordered app and retention logins with their exact closed memberships and CONNECT inventories", async () => {
+    const appLoginNames = ["z_app_login", "a_app_login"];
+    const retentionLoginNames = ["z_retention_login", "a_retention_login"];
+    const scripted = scriptedMigrationClient({
+      expectedLoginRows: [
+        expectedLoginRow({ role_name: "z_app_login" }),
+        expectedLoginRow({ role_name: "a_app_login" }),
+      ],
+      expectedRetentionLoginRows: [
+        expectedRetentionLoginRow("a_retention_login"),
+        expectedRetentionLoginRow("z_retention_login"),
+      ],
+      membershipRows: [
+        expectedRetentionMembershipRowFor("z_retention_login"),
+        expectedMembershipRowFor("a_app_login"),
+        expectedRetentionMembershipRowFor("a_retention_login"),
+        expectedMembershipRowFor("z_app_login"),
+      ],
+    });
+
+    await expect(
+      runMigrations(
+        singleClientPool(scripted.client),
+        fixtureDirectory,
+        appLoginNames,
+        retentionLoginNames,
+      ),
+    ).resolves.toEqual({
+      appliedCount: 2,
+      discoveredCount: 2,
+      previouslyAppliedCount: 0,
+    });
+
+    const expectedTargets = [
+      ...expectedManagedDependencyRoleNames,
+      ...[...appLoginNames].sort(),
+      ...[...retentionLoginNames].sort(),
+    ];
+    expect(scripted.dependencyRoleNames).toHaveLength(3);
+    expect(
+      scripted.dependencyRoleNames.every((roleNames) =>
+        arraysEqualForTest(roleNames, expectedTargets),
+      ),
+    ).toBe(true);
+    for (const inventory of scripted.dependencyInventories) {
+      expect(inventory.map((entry) => entry.role_name).sort()).toEqual(
+        [...appLoginNames, ...retentionLoginNames].sort(),
+      );
+      expect(
+        inventory.every(
+          (entry) =>
+            entry.object_kind === "database" &&
+            entry.object_name === "dasher_test" &&
+            entry.privilege_type === "CONNECT" &&
+            entry.is_grantable === false,
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(inventory)).not.toContain("password");
+      expect(JSON.stringify(inventory)).not.toContain("postgres://");
+    }
+  });
+
+  it("rejects app/retention allowlist overlap before connecting", async () => {
+    let connections = 0;
+    const pool: MigrationPool = {
+      async connect() {
+        connections += 1;
+        throw new Error("unexpected connection");
+      },
+    };
+
+    await expect(
+      runMigrations(pool, fixtureDirectory, ["shared_login"], ["shared_login"]),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(connections).toBe(0);
+  });
+
+  it.each([
+    { app: ["app_login"], name: "app", retention: [] },
+    { app: [], name: "retention", retention: ["retention_login"] },
+  ])(
+    "requires the $name allowlist to be empty while base roles are absent",
+    async ({ app, retention }) => {
+      const scripted = scriptedMigrationClient({
+        managedRoleReads: {
+          dasher_app: [undefined],
+          dasher_security_definer: [undefined],
+        },
+      });
+
+      await expect(
+        runMigrations(
+          singleClientPool(scripted.client),
+          fixtureDirectory,
+          app,
+          retention,
+        ),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(scripted.managedRoleEvents).not.toContain("CREATE dasher_app");
+      expect(scripted.managedRoleEvents).not.toContain(
+        "CREATE dasher_security_definer",
+      );
+    },
+  );
+
+  it.each([
+    {
+      name: "wrong marker",
+      row: expectedRetentionLoginRow("retention_login", {
+        comment: "dasher:app-login:v1:database-oid:16384",
+      }),
+    },
+    {
+      name: "wrong database marker",
+      row: expectedRetentionLoginRow("retention_login", {
+        comment: "dasher:retention-login:v1:database-oid:99999",
+      }),
+    },
+    {
+      name: "unsafe attribute",
+      row: expectedRetentionLoginRow("retention_login", {
+        bypass_rls: true,
+      }),
+    },
+  ])("rejects retention-login catalog drift: $name", async ({ row }) => {
+    const scripted = scriptedMigrationClient({
+      expectedRetentionLoginRows: [row],
+      membershipRows: [expectedRetentionMembershipRowFor("retention_login")],
+    });
+
+    await expect(
+      runMigrations(
+        singleClientPool(scripted.client),
+        fixtureDirectory,
+        [],
+        ["retention_login"],
+      ),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+  });
+
+  it.each([
+    { name: "missing", rows: [] },
+    {
+      name: "duplicate",
+      rows: [
+        expectedRetentionMembershipRowFor("retention_login"),
+        expectedRetentionMembershipRowFor("retention_login"),
+      ],
+    },
+    {
+      name: "wrong granted role",
+      rows: [expectedMembershipRowFor("retention_login")],
+    },
+    {
+      name: "grant option",
+      rows: [
+        {
+          ...expectedRetentionMembershipRowFor("retention_login"),
+          admin_option: true,
+        },
+      ],
+    },
+    {
+      name: "wrong membership options",
+      rows: [
+        {
+          ...expectedRetentionMembershipRowFor("retention_login"),
+          inherit_option: true,
+          set_option: false,
+        },
+      ],
+    },
+    {
+      name: "extra outgoing authority",
+      rows: [
+        expectedRetentionMembershipRowFor("retention_login"),
+        {
+          ...expectedRetentionMembershipRowFor("retention_login"),
+          granted_role_name: "synthetic_parent",
+          member_role_name: "dasher_retention_operator",
+        },
+      ],
+    },
+  ])("rejects retention membership drift: $name", async ({ rows }) => {
+    const scripted = scriptedMigrationClient({
+      expectedRetentionLoginRows: [
+        expectedRetentionLoginRow("retention_login"),
+      ],
+      membershipRows: rows,
+    });
+
+    await expect(
+      runMigrations(
+        singleClientPool(scripted.client),
+        fixtureDirectory,
+        [],
+        ["retention_login"],
+      ),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
   });
 
   it.each([

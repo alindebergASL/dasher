@@ -9,6 +9,7 @@ import {
   discoverMigrations,
   getCanonical0004ExactCatalogContractForTests,
   getCanonical0005ExactCatalogContractForTests,
+  getCanonical0006ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
 } from "./migrator.js";
 import {
@@ -2961,6 +2962,12 @@ const securityDefinerCleanupCoordinationMigration = {
   checksum: "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
 } as const;
 
+const lifecycleAccessRetentionGuardCorrectionMigration = {
+  sequence: 6,
+  filename: "0006_lifecycle_access_retention_guard_correction.sql",
+  checksum: "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
+} as const;
+
 const task4FunctionIdentities = [
   "dasher_api.accept_invitation",
   "dasher_api.change_membership_role",
@@ -2980,8 +2987,8 @@ const task4FunctionIdentities = [
   "dasher_private.context_user_id",
 ] as const;
 
-describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
-  it("pins immutable 0001-0004 and exact canonical 0005 source bytes", async () => {
+describe("Task 3, Task 4, and Task 8 canonical migration golden guard", () => {
+  it("pins immutable 0001-0005 and exact canonical 0006 source bytes", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -2996,11 +3003,13 @@ describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
       immutableContentMigration,
       lifecycleApiCorrectionMigration,
       securityDefinerCleanupCoordinationMigration,
+      lifecycleAccessRetentionGuardCorrectionMigration,
     ]);
     expect(
       migrations.slice(0, 4).map((migration) => migration.bytes.byteLength),
     ).toEqual([17_033, 101_747, 482_279, 104_489]);
     expect(Buffer.byteLength(migrations[4]?.sql ?? "")).toBe(556);
+    expect(Buffer.byteLength(migrations[5]?.sql ?? "")).toBe(34_952);
   });
 
   it("contains no extension, credential, or UUID-generation source", async () => {
@@ -3286,6 +3295,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       immutableContentMigration.filename,
       lifecycleApiCorrectionMigration.filename,
       securityDefinerCleanupCoordinationMigration.filename,
+      lifecycleAccessRetentionGuardCorrectionMigration.filename,
     ]);
     expect(
       Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
@@ -6837,6 +6847,14 @@ function lifecycleCorrectionFunctionSource(
   return expression.exec(sql)?.[1] ?? "";
 }
 
+function migrationPolicyExpression(sql: string, policyName: string): string {
+  const expression = new RegExp(
+    `^CREATE POLICY ${policyName}\\nON dasher[.][a-z_]+\\nAS PERMISSIVE\\nFOR (?:SELECT|DELETE)\\nTO dasher_retention_definer\\nUSING \\((.+)\\)\\n;$`,
+    "mu",
+  );
+  return expression.exec(sql)?.[1] ?? "";
+}
+
 function normalizedSql(source: string): string {
   return source.replace(/\s+/gu, " ").trim();
 }
@@ -6992,9 +7010,9 @@ const lifecycleMutationContracts = [
 ] as const;
 
 describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
-  it("pins the five-row chain while leaving the modeled probe at three", async () => {
+  it("pins the six-row chain while leaving the modeled probe at three", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
-    expect(migrations).toHaveLength(5);
+    expect(migrations).toHaveLength(6);
     expect(
       migrations.map((migration) =>
         Buffer.from(migration.checksumSha256).toString("hex"),
@@ -7005,6 +7023,7 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
       immutableContentMigration.checksum,
       lifecycleApiCorrectionMigration.checksum,
       securityDefinerCleanupCoordinationMigration.checksum,
+      lifecycleAccessRetentionGuardCorrectionMigration.checksum,
     ]);
     expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
     expect(modeled0003Functions.length).toBeGreaterThan(0);
@@ -7372,6 +7391,374 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
     );
     expect(sql).not.toMatch(/GRANT\s+EXECUTE[^;]+dasher_retention_api/iu);
     expect(sql).not.toMatch(/postgres(?:ql)?:\/\/|PASSWORD\s+'|sk-proj/iu);
+  });
+});
+
+describe("Task 8D canonical 0006 lifecycle and retention correction", () => {
+  it("contains exactly two function and four plain policy replacements plus the approved column grant", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const sql = migrations[5]?.sql ?? "";
+    const declarations = [
+      ...sql.matchAll(
+        /^CREATE OR REPLACE FUNCTION ([a-z_]+[.][a-z_]+\([^\n]*\))$/gmu,
+      ),
+    ].map((match) => match[1]);
+
+    expect(declarations).toEqual([
+      "dasher_api.get_dashboard_admin_status(uuid)",
+      "dasher_private.enforce_retention_mutation()",
+    ]);
+    expect(sql.match(/^CREATE OR REPLACE FUNCTION /gmu)).toHaveLength(2);
+    expect(sql.match(/\$function\$;/gu)).toHaveLength(2);
+    expect(normalizedIdentitySql(sql)).toContain(
+      "GRANT UPDATE (head_version_id) ON TABLE dasher.dashboards TO dasher_retention_definer;",
+    );
+    expect(sql.match(/^GRANT\b/gmu)).toHaveLength(1);
+    expect(
+      [
+        ...sql.matchAll(/^DROP POLICY ([a-z_]+) ON dasher[.]([a-z_]+);$/gmu),
+      ].map((match) => `${match[2]}.${match[1]}`),
+    ).toEqual([
+      "source_snapshots.source_snapshots_retention_select",
+      "source_snapshots.source_snapshots_retention_delete",
+      "evidence_records.evidence_records_retention_select",
+      "evidence_records.evidence_records_retention_delete",
+    ]);
+    expect(
+      [
+        ...sql.matchAll(
+          /^CREATE POLICY ([a-z_]+)\nON dasher[.]([a-z_]+)\nAS (PERMISSIVE)\nFOR (SELECT|DELETE)\nTO (dasher_retention_definer)\nUSING \((.+)\)\n;$/gmu,
+        ),
+      ].map((match) => [match[2], match[1], match[4], match[3], match[5]]),
+    ).toEqual([
+      [
+        "source_snapshots",
+        "source_snapshots_retention_select",
+        "SELECT",
+        "PERMISSIVE",
+        "dasher_retention_definer",
+      ],
+      [
+        "source_snapshots",
+        "source_snapshots_retention_delete",
+        "DELETE",
+        "PERMISSIVE",
+        "dasher_retention_definer",
+      ],
+      [
+        "evidence_records",
+        "evidence_records_retention_select",
+        "SELECT",
+        "PERMISSIVE",
+        "dasher_retention_definer",
+      ],
+      [
+        "evidence_records",
+        "evidence_records_retention_delete",
+        "DELETE",
+        "PERMISSIVE",
+        "dasher_retention_definer",
+      ],
+    ]);
+    expect(sql).not.toMatch(/DROP POLICY IF EXISTS/iu);
+    expect(sql).not.toMatch(
+      /^\s*(?:ALTER|REVOKE|CREATE\s+(?:TRIGGER|ROLE|SCHEMA|TABLE|TYPE|EXTENSION))\b/imu,
+    );
+    expect(sql.match(/^DROP\b/gmu)).toHaveLength(4);
+    expect(sql.match(/^CREATE POLICY\b/gmu)).toHaveLength(4);
+    expect(sql).not.toMatch(
+      /GRANT\s+UPDATE\s+ON|GRANT\s+UPDATE\s*\([^)]*(?:,|\b(?!head_version_id\b)[a-z_]+)|\bWITH\s+GRANT\s+OPTION\b/iu,
+    );
+    expect(sql).not.toMatch(
+      /\bEXECUTE\b|\bto_jsonb\b|\bjsonb?\b|\bhstore\b|\bformat\s*\(/iu,
+    );
+    expect(sql).not.toMatch(/\bSECURITY\s+INVOKER\b/iu);
+    expect(sql.match(/\bSECURITY\s+DEFINER\b/gu)).toHaveLength(1);
+  });
+
+  it("preserves each phase-3 claim prefix and freezes the stricter post-claim finalizer arm", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const phase3Sql = migrations[2]?.sql ?? "";
+    const phase6Sql = migrations[5]?.sql ?? "";
+    const policies = [
+      {
+        domain: "snapshot",
+        id: "snapshot_id",
+        name: "source_snapshots_retention_select",
+        relation: "source_snapshots",
+      },
+      {
+        domain: "snapshot",
+        id: "snapshot_id",
+        name: "source_snapshots_retention_delete",
+        relation: "source_snapshots",
+      },
+      {
+        domain: "evidence",
+        id: "evidence_id",
+        name: "evidence_records_retention_select",
+        relation: "evidence_records",
+      },
+      {
+        domain: "evidence",
+        id: "evidence_id",
+        name: "evidence_records_retention_delete",
+        relation: "evidence_records",
+      },
+    ] as const;
+
+    for (const policy of policies) {
+      const before = migrationPolicyExpression(phase3Sql, policy.name);
+      const after = migrationPolicyExpression(phase6Sql, policy.name);
+      const finalizerMarker = ` OR EXISTS (SELECT 1 FROM dasher.${policy.domain}_deletion_finalizers AS target_finalizer`;
+      const beforeFinalizer = before.indexOf(finalizerMarker);
+      const afterFinalizer = after.indexOf(finalizerMarker);
+      expect(beforeFinalizer, policy.name).toBeGreaterThan(0);
+      expect(afterFinalizer, policy.name).toBe(beforeFinalizer);
+      expect(after.slice(0, afterFinalizer), policy.name).toBe(
+        before.slice(0, beforeFinalizer),
+      );
+      const arm = after.slice(afterFinalizer);
+      for (const fragment of [
+        `target_finalizer.organization_id = ${policy.relation}.organization_id`,
+        `target_finalizer.${policy.id} = ${policy.relation}.${policy.id}`,
+        "target_cleanup.organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid",
+        "target_cleanup.dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid",
+        "target_cleanup.current_step = 'purge_finalizing'::text",
+        "target_cleanup.expected_lifecycle_revision = (current_setting('dasher.retention_expected_lifecycle_revision'::text, true))::bigint",
+        "octet_length(target_cleanup.completion_proof_sha256) = 32",
+        "target_cleanup.lease_owner IS NULL",
+        "target_cleanup.lease_expires_at IS NULL",
+        "target_finalizer.state = 'deleted'::text",
+        "target_finalizer.proof_sha256 = target_finalizer.expected_claim_set_sha256",
+        "target_finalizer.bytes_deleted_at IS NOT NULL",
+        "target_finalizer.bytes_deleted_at >= target_finalizer.intent_at",
+        `uuid_send(${policy.relation}.organization_id)`,
+        "uuid_send((current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)",
+        `uuid_send(${policy.relation}.${policy.id})`,
+        `convert_to('${policy.domain}|expected_claim_set=empty'::text, 'UTF8'::name)`,
+        `NOT EXISTS (SELECT 1 FROM dasher.${policy.domain}_reference_claims AS remaining_claim`,
+      ]) {
+        expect(arm, `${policy.name}: ${fragment}`).toContain(fragment);
+      }
+      expect(arm).not.toContain(
+        "target_cleanup.completion_proof_sha256 = target_finalizer.expected_claim_set_sha256",
+      );
+      expect(arm).not.toMatch(
+        /target_finalizer[.]state = '(?:intent|eligible)'/u,
+      );
+    }
+    expect(
+      migrationPolicyExpression(phase6Sql, "source_snapshots_retention_select"),
+    ).toBe(
+      migrationPolicyExpression(phase6Sql, "source_snapshots_retention_delete"),
+    );
+    expect(
+      migrationPolicyExpression(phase6Sql, "evidence_records_retention_select"),
+    ).toBe(
+      migrationPolicyExpression(phase6Sql, "evidence_records_retention_delete"),
+    );
+  });
+
+  it("adds the exact inclusive-expiry lifecycle predicate to only admin status", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[5]?.sql ?? "";
+    const source = lifecycleCorrectionFunctionSource(
+      sql,
+      "dasher_api.get_dashboard_admin_status",
+    );
+    const original = lifecycleCorrectionFunctionSource(
+      (await discoverMigrations(canonicalMigrationDirectory))[3]?.sql ?? "",
+      "dasher_api.get_dashboard_admin_status",
+    );
+    const normalized = normalizedSql(source);
+    const expected = original
+      .replace(
+        "  v_result dasher.dashboard_admin_projection;\n",
+        "  v_result dasher.dashboard_admin_projection;\n  v_now timestamptz := statement_timestamp();\n",
+      )
+      .replace(
+        "    AND dashboard.dashboard_id = $1;",
+        "    AND dashboard.dashboard_id = $1\n    AND NOT (\n      dashboard.current_kind = 'disposable'\n      AND dashboard.effective_expires_at IS NOT NULL\n      AND v_now >= dashboard.effective_expires_at\n    );",
+      );
+
+    expect(source).not.toBe("");
+    expect(source).toBe(expected);
+    expect(normalized).toContain("v_now timestamptz := statement_timestamp();");
+    expect(normalized).toContain(
+      "AND NOT ( dashboard.current_kind = 'disposable' AND dashboard.effective_expires_at IS NOT NULL AND v_now >= dashboard.effective_expires_at )",
+    );
+    expect(normalized).not.toMatch(
+      /dashboard[.]access_revoked_at\s+IS\s+NULL|dashboard[.]purged_at\s+IS\s+NULL|dashboard[.]lifecycle_state\s+(?:=|IN\b)|dashboard[.]current_kind\s*=\s*'durable'/u,
+    );
+    expect(normalized).toContain(
+      "IF NOT FOUND THEN RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';",
+    );
+  });
+
+  it("dispatches by operation and one exact relation before heterogeneous fields", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[5]?.sql ?? "";
+    const source = lifecycleCorrectionFunctionSource(
+      sql,
+      "dasher_private.enforce_retention_mutation",
+    );
+    const dispatchTables = [
+      ...source.matchAll(/(?:IF|ELSIF) TG_TABLE_NAME = '([^']+)' THEN/gu),
+    ].map((match) => match[1]);
+
+    expect(dispatchTables).toEqual([
+      "dashboard_legal_holds",
+      "dashboard_tombstones",
+      "snapshot_deletion_finalizers",
+      "evidence_deletion_finalizers",
+      "artifact_deletion_finalizers",
+      "snapshot_reference_claims",
+      "evidence_reference_claims",
+      "artifact_reference_claims",
+      "dashboard_versions",
+      "dashboard_version_snapshots",
+      "dashboard_version_evidence",
+      "dashboard_restore_lineage",
+      "source_snapshots",
+      "evidence_records",
+      "dashboard_artifacts",
+    ]);
+    expect(source).not.toMatch(/TG_TABLE_NAME\s+IN\s*\(/u);
+    const updateDispatch = source.indexOf("IF TG_OP = 'UPDATE' THEN");
+    const deleteDispatch = source.indexOf("ELSIF TG_OP = 'DELETE' THEN");
+    const firstTableDispatch = source.indexOf("IF TG_TABLE_NAME =");
+    expect(updateDispatch).toBeGreaterThan(0);
+    expect(firstTableDispatch).toBeGreaterThan(updateDispatch);
+    expect(deleteDispatch).toBeGreaterThan(firstTableDispatch);
+
+    const exactFieldOwners = {
+      tombstone_lineage_id: ["dashboard_tombstones"],
+      snapshot_id: ["snapshot_deletion_finalizers", "source_snapshots"],
+      evidence_id: ["evidence_deletion_finalizers", "evidence_records"],
+      artifact_id: ["artifact_deletion_finalizers", "dashboard_artifacts"],
+      case_matter_reference: ["dashboard_legal_holds"],
+      ownership_class: ["dashboard_artifacts"],
+    } as const;
+    for (const [field, owner] of Object.entries(exactFieldOwners)) {
+      for (const match of source.matchAll(
+        new RegExp(`(?:OLD|NEW)[.]${field}\\b`, "gu"),
+      )) {
+        const preceding = [
+          ...source
+            .slice(0, match.index)
+            .matchAll(/(?:IF|ELSIF) TG_TABLE_NAME = '([^']+)' THEN/gu),
+        ].at(-1)?.[1];
+        expect(owner, `${field} at ${String(match.index)}`).toContain(
+          preceding,
+        );
+      }
+    }
+  });
+
+  it("changes only two functions, fifteen trigger sources, four policy predicates, and one ACL from phase 5", async () => {
+    type ExactCatalog = Record<string, readonly string[]>;
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const phase6Sql = migrations[5]?.sql ?? "";
+    const catalog5 = getCanonical0005ExactCatalogContractForTests(
+      "migration_owner",
+    ) as ExactCatalog;
+    const catalog6 = getCanonical0006ExactCatalogContractForTests(
+      "migration_owner",
+      phase6Sql,
+    ) as ExactCatalog;
+
+    for (const category of Object.keys(catalog5).filter(
+      (name) =>
+        name !== "functions" &&
+        name !== "triggers" &&
+        name !== "policies" &&
+        name !== "acls",
+    )) {
+      expect(catalog6[category], category).toEqual(catalog5[category]);
+    }
+
+    const byKey = (rows: readonly string[], keyParts: number) =>
+      new Map(
+        rows.map((row) => [row.split("|").slice(0, keyParts).join("|"), row]),
+      );
+    const policies5 = byKey(catalog5.policies ?? [], 3);
+    const policies6 = byKey(catalog6.policies ?? [], 3);
+    expect(policies6.size).toBe(policies5.size);
+    const changedPolicies = [...policies5.keys()].filter(
+      (key) => policies5.get(key) !== policies6.get(key),
+    );
+    expect(changedPolicies).toEqual([
+      "dasher|evidence_records|evidence_records_retention_delete",
+      "dasher|evidence_records|evidence_records_retention_select",
+      "dasher|source_snapshots|source_snapshots_retention_delete",
+      "dasher|source_snapshots|source_snapshots_retention_select",
+    ]);
+    for (const key of changedPolicies) {
+      expect(policies6.get(key)?.split("|").slice(0, 6)).toEqual(
+        policies5.get(key)?.split("|").slice(0, 6),
+      );
+      expect(policies6.get(key)).toContain("|<none>");
+      expect(policies6.get(key)).not.toContain(
+        "target_cleanup.completion_proof_sha256 = target_finalizer.expected_claim_set_sha256",
+      );
+    }
+
+    const phase6Acl =
+      "column|dasher.dashboards.head_version_id|migration_owner|dasher_retention_definer|UPDATE|false";
+    expect(
+      catalog5.acls?.filter((acl) => acl.startsWith("column|")),
+    ).toHaveLength(258);
+    expect(
+      catalog6.acls?.filter((acl) => acl.startsWith("column|")),
+    ).toHaveLength(259);
+    expect(catalog6.acls).toHaveLength((catalog5.acls?.length ?? 0) + 1);
+    expect(catalog6.acls).toEqual([...(catalog5.acls ?? []), phase6Acl].sort());
+    expect(catalog5.acls).not.toContain(phase6Acl);
+
+    const functions5 = byKey(catalog5.functions ?? [], 1);
+    const functions6 = byKey(catalog6.functions ?? [], 1);
+    const changedFunctions = [...functions5.keys()].filter(
+      (key) => functions5.get(key) !== functions6.get(key),
+    );
+    expect(changedFunctions).toEqual([
+      "dasher_api.get_dashboard_admin_status(uuid)",
+      "dasher_private.enforce_retention_mutation()",
+    ]);
+    expect(functions6.get(changedFunctions[0]!)).toMatch(
+      /059c7ab3e72146897a750ff61e115e44$/u,
+    );
+    expect(functions6.get(changedFunctions[1]!)).toMatch(
+      /0ce6dde7b62f41a1149fa7cd4171b95a$/u,
+    );
+    for (const key of changedFunctions) {
+      expect(functions6.get(key)?.split("|").slice(0, -1)).toEqual(
+        functions5.get(key)?.split("|").slice(0, -1),
+      );
+    }
+
+    const triggers5 = byKey(catalog5.triggers ?? [], 3);
+    const triggers6 = byKey(catalog6.triggers ?? [], 3);
+    const changedTriggers = [...triggers5.keys()].filter(
+      (key) => triggers5.get(key) !== triggers6.get(key),
+    );
+    expect(changedTriggers).toHaveLength(15);
+    const oldRetentionSource = lifecycleCorrectionFunctionSource(
+      migrations[2]?.sql ?? "",
+      "dasher_private.enforce_retention_mutation",
+    );
+    const newRetentionSource = lifecycleCorrectionFunctionSource(
+      phase6Sql,
+      "dasher_private.enforce_retention_mutation",
+    );
+    for (const key of changedTriggers) {
+      expect(triggers5.get(key)).toContain(
+        "dasher_private.enforce_retention_mutation()",
+      );
+      expect(
+        triggers5.get(key)?.replace(oldRetentionSource, newRetentionSource),
+      ).toBe(triggers6.get(key));
+    }
   });
 });
 
