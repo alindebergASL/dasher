@@ -8,7 +8,9 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  DashboardLifecycleRepository,
   InvitationRepository,
+  OperationConflictError,
   OperationDeniedError,
   OperationInternalError,
   SecretKeyRing,
@@ -7831,6 +7833,19 @@ function createTask7Repository(
   });
 }
 
+function createTask8cRepository(
+  client: PoolClient,
+  keyRing: SecretKeyRing,
+  uuidValues: readonly string[],
+): DashboardLifecycleRepository {
+  return new DashboardLifecycleRepository({
+    pool: task6BorrowedPool(client),
+    keyRing,
+    deploymentRevision: "task8c-repository-integration",
+    uuidSource: task6UuidSource(uuidValues),
+  });
+}
+
 function task7Principal(actor: Task4Actor) {
   return task6Principal(
     `task7-${actor.userId}@example.test`,
@@ -15511,6 +15526,557 @@ describe.sequential("Task 8B.3 lifecycle API correction", () => {
       expect(archivedRead.rows.map((row) => row.evidence_id)).toEqual([
         evidenceId,
       ]);
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+});
+
+describe.sequential("Task 8C lifecycle repository", () => {
+  let editor: Task4Actor;
+  let editorSessionToken: string;
+  let editorCsrfValue: string;
+  let adminSessionToken: string;
+  let adminCsrfValue: string;
+  let keyRing: SecretKeyRing;
+
+  beforeAll(async () => {
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+    await createTemporaryAppLogin(ownerPool, config.appDsn, config.appUsername);
+    appLoginCreated = true;
+    await runMigrations(ownerPool, canonicalMigrationDirectory, [
+      config.appUsername,
+    ]);
+    appPool = new Pool({ connectionString: config.appDsn, max: 4 });
+    const client = await appPool.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      keyRing = createTask6KeyRing();
+      const editorSession = keyRing.issue("session");
+      const editorCsrf = keyRing.issue("csrf");
+      editorSessionToken = editorSession.wireValue;
+      editorCsrfValue = editorCsrf.wireValue;
+      editor = await createTask4Actor(client, "editor", undefined, {
+        sessionDigest: Buffer.from(editorSession.persistence.digest),
+        csrfDigest: Buffer.from(editorCsrf.persistence.digest),
+      });
+      const adminSession = keyRing.issue("session");
+      const adminCsrf = keyRing.issue("csrf");
+      adminSessionToken = adminSession.wireValue;
+      adminCsrfValue = adminCsrf.wireValue;
+      await createTask4Actor(client, "admin", editor.organizationId, {
+        sessionDigest: Buffer.from(adminSession.persistence.digest),
+        csrfDigest: Buffer.from(adminCsrf.persistence.digest),
+      });
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+  }, 120_000);
+
+  it("runs the corrected fixed repository lifecycle without widening authority", async () => {
+    const client = await appPool!.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      const createIds = Array.from({ length: 4 }, () => randomUUID());
+      const created = await createTask8cRepository(
+        client,
+        keyRing,
+        createIds,
+      ).createDashboard({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        title: "Repository lifecycle fixture",
+        kind: "disposable",
+        ttl: 3_600,
+      });
+      expect(created).toMatchObject({
+        dashboardId: createIds[1],
+        effectiveTtlSeconds: 3_600,
+        usedOrganizationDefault: false,
+        lifecyclePolicySeeded: true,
+        lifecyclePolicyRevision: 1,
+        defaultDisposableTtlSeconds: 86_400,
+        retentionPolicyRevision: 1,
+      });
+      expect(
+        created.effectiveExpiresAt!.getTime() - created.createdAt.getTime(),
+      ).toBe(3_600_000);
+
+      const draft = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardSummary({
+        sessionToken: editorSessionToken,
+        dashboardId: created.dashboardId,
+      });
+      expect(draft).toMatchObject({
+        currentKind: "disposable",
+        lifecycleState: "draft",
+        lifecycleRevision: 0,
+        headVersionId: null,
+      });
+      expect(draft.effectiveExpiresAt).not.toBeNull();
+
+      const prematurePromotionIds = Array.from({ length: 3 }, () =>
+        randomUUID(),
+      );
+      await expect(
+        createTask8cRepository(
+          client,
+          keyRing,
+          prematurePromotionIds,
+        ).requestDashboardPromotion({
+          sessionToken: editorSessionToken,
+          currentCsrfValue: editorCsrfValue,
+          dashboardId: created.dashboardId,
+          expectedLifecycleRevision: 0,
+          rationaleSha256: new Uint8Array(randomBytes(32)),
+        }),
+      ).rejects.toBeInstanceOf(OperationConflictError);
+      const prematureResidue = await ownerPool.query<{
+        readonly audit_count: string;
+        readonly request_count: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text
+             FROM dasher.dashboard_promotion_requests
+             WHERE promotion_request_id = $1::uuid) AS request_count,
+            (SELECT pg_catalog.count(*)::text
+             FROM dasher.audit_events
+             WHERE audit_event_id = $2::uuid) AS audit_count
+        `,
+        [prematurePromotionIds[1], prematurePromotionIds[2]],
+      );
+      expect(prematureResidue.rows[0]).toEqual({
+        audit_count: "0",
+        request_count: "0",
+      });
+
+      const snapshotId = randomUUID();
+      const snapshotBytes = Buffer.from("task8c-repository-snapshot", "utf8");
+      await ownerPool.query(
+        `
+          INSERT INTO dasher.source_snapshots (
+            organization_id, snapshot_id, source_kind, canonical_bytes,
+            content_sha256, observed_at, retrieved_at, created_at
+          ) VALUES (
+            $1::uuid, $2::uuid, 'synthetic_fixture', $3::bytea,
+            pg_catalog.sha256($3::bytea), clock_timestamp(),
+            clock_timestamp(), clock_timestamp()
+          )
+        `,
+        [editor.organizationId, snapshotId, snapshotBytes],
+      );
+      const firstSpec = new TextEncoder().encode('{"revision":1}');
+      const firstSpecSha256 = new Uint8Array(
+        createHash("sha256").update(firstSpec).digest(),
+      );
+      const firstVersionIds = Array.from({ length: 4 }, () => randomUUID());
+      const firstVersion = await createTask8cRepository(
+        client,
+        keyRing,
+        firstVersionIds,
+      ).createDashboardVersion({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        dashboardId: created.dashboardId,
+        parentVersionId: null,
+        canonicalSpecBytes: firstSpec,
+        canonicalSpecSha256: firstSpecSha256,
+        validationSha256: new Uint8Array(randomBytes(32)),
+        plannerProvenanceSha256: new Uint8Array(randomBytes(32)),
+        policyRevision: 1,
+        registryRevision: 1,
+        calculationGraphSha256: null,
+        snapshotIds: [snapshotId],
+        evidenceIds: [],
+      });
+      expect(firstVersion.versionId).toBe(firstVersionIds[1]);
+
+      const evidenceIds = Array.from({ length: 4 }, () => randomUUID());
+      const evidenceContentSha256 = new Uint8Array(randomBytes(32));
+      const evidenceObservedAt = new Date("2026-08-03T10:00:00.000Z");
+      const evidenceRetrievedAt = new Date("2026-08-03T10:01:00.000Z");
+      const evidence = await createTask8cRepository(
+        client,
+        keyRing,
+        evidenceIds,
+      ).createEvidenceRecord({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        dashboardId: created.dashboardId,
+        versionId: firstVersion.versionId,
+        snapshotId,
+        evidenceKind: "typed_value",
+        coordinates: "metric=generic_value;grain=revision",
+        contentSha256: evidenceContentSha256,
+        observedAt: evidenceObservedAt,
+        retrievedAt: evidenceRetrievedAt,
+      });
+      expect(evidence.evidenceId).toBe(evidenceIds[1]);
+
+      const ownedArtifactId = randomUUID();
+      const sharedArtifactId = randomUUID();
+      await ownerPool.query(
+        `
+          WITH inserted_artifacts AS (
+            INSERT INTO dasher.dashboard_artifacts (
+              organization_id, artifact_id, dashboard_id, version_id,
+              ownership_class, artifact_kind, metadata_sha256, content_sha256,
+              created_at
+            ) VALUES
+              ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'dashboard_owned',
+               'projection', $5::bytea, $5::bytea, clock_timestamp()),
+              ($1::uuid, $6::uuid, NULL, NULL, 'shared', 'projection',
+               $5::bytea, $5::bytea, clock_timestamp())
+            RETURNING organization_id, artifact_id
+          )
+          INSERT INTO dasher.artifact_reference_claims (
+            organization_id, artifact_id, reference_claim_id, dashboard_id,
+            version_id, claim_kind, hold_id, created_at
+          )
+          SELECT organization_id, artifact_id, artifact_id, $3::uuid, $4::uuid,
+                 'access_bearing', NULL, clock_timestamp()
+          FROM inserted_artifacts
+        `,
+        [
+          editor.organizationId,
+          ownedArtifactId,
+          created.dashboardId,
+          firstVersion.versionId,
+          randomBytes(32),
+          sharedArtifactId,
+        ],
+      );
+
+      await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+        randomUUID(),
+      ]).compareAndSwapDashboardHead({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        dashboardId: created.dashboardId,
+        expectedHeadVersionId: null,
+        newHeadVersionId: firstVersion.versionId,
+        expectedLifecycleRevision: 0,
+      });
+
+      const secondSpec = new TextEncoder().encode('{"revision":2}');
+      const secondVersionIds = Array.from({ length: 4 }, () => randomUUID());
+      const secondVersion = await createTask8cRepository(
+        client,
+        keyRing,
+        secondVersionIds,
+      ).createDashboardVersion({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        dashboardId: created.dashboardId,
+        parentVersionId: firstVersion.versionId,
+        canonicalSpecBytes: secondSpec,
+        canonicalSpecSha256: new Uint8Array(
+          createHash("sha256").update(secondSpec).digest(),
+        ),
+        validationSha256: new Uint8Array(randomBytes(32)),
+        plannerProvenanceSha256: new Uint8Array(randomBytes(32)),
+        policyRevision: 1,
+        registryRevision: 1,
+        calculationGraphSha256: null,
+        snapshotIds: [snapshotId],
+        evidenceIds: [],
+      });
+      await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+        randomUUID(),
+      ]).compareAndSwapDashboardHead({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        dashboardId: created.dashboardId,
+        expectedHeadVersionId: firstVersion.versionId,
+        newHeadVersionId: secondVersion.versionId,
+        expectedLifecycleRevision: 1,
+      });
+
+      const staleIds = [randomUUID(), randomUUID()];
+      await expect(
+        createTask8cRepository(
+          client,
+          keyRing,
+          staleIds,
+        ).compareAndSwapDashboardHead({
+          sessionToken: editorSessionToken,
+          currentCsrfValue: editorCsrfValue,
+          dashboardId: created.dashboardId,
+          expectedHeadVersionId: firstVersion.versionId,
+          newHeadVersionId: firstVersion.versionId,
+          expectedLifecycleRevision: 1,
+        }),
+      ).rejects.toBeInstanceOf(OperationConflictError);
+      const staleResidue = await ownerPool.query<{
+        readonly audit_count: string;
+        readonly event_count: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+             WHERE audit_event_id = $1::uuid) AS audit_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.dashboard_lifecycle_events
+             WHERE lifecycle_event_id = $1::uuid) AS event_count
+        `,
+        [staleIds[1]],
+      );
+      expect(staleResidue.rows[0]).toEqual({
+        audit_count: "0",
+        event_count: "0",
+      });
+
+      const promotionIds = Array.from({ length: 3 }, () => randomUUID());
+      const promotion = await createTask8cRepository(
+        client,
+        keyRing,
+        promotionIds,
+      ).requestDashboardPromotion({
+        sessionToken: editorSessionToken,
+        currentCsrfValue: editorCsrfValue,
+        dashboardId: created.dashboardId,
+        expectedLifecycleRevision: 2,
+        rationaleSha256: new Uint8Array(randomBytes(32)),
+      });
+      const decisionIds = Array.from({ length: 3 }, () => randomUUID());
+      await expect(
+        createTask8cRepository(
+          client,
+          keyRing,
+          decisionIds,
+        ).decideDashboardPromotion({
+          sessionToken: adminSessionToken,
+          currentCsrfValue: adminCsrfValue,
+          promotionRequestId: promotion.promotionRequestId,
+          expectedLifecycleRevision: 2,
+          decision: "approved",
+        }),
+      ).resolves.toMatchObject({
+        decision: "approved",
+        lifecycleEventId: decisionIds[1],
+      });
+
+      await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+        randomUUID(),
+      ]).setDashboardArchive({
+        sessionToken: adminSessionToken,
+        currentCsrfValue: adminCsrfValue,
+        dashboardId: created.dashboardId,
+        archived: true,
+        expectedLifecycleRevision: 3,
+      });
+      const archived = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardSummary({
+        sessionToken: editorSessionToken,
+        dashboardId: created.dashboardId,
+      });
+      expect(archived).toMatchObject({
+        currentKind: "durable",
+        lifecycleState: "archived",
+        lifecycleRevision: 4,
+        effectiveExpiresAt: null,
+        headVersionId: secondVersion.versionId,
+      });
+      const archivedHead = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardHead({
+        sessionToken: editorSessionToken,
+        dashboardId: created.dashboardId,
+      });
+      expect(archivedHead.versionId).toBe(secondVersion.versionId);
+      const archivedEvidence = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardEvidence({
+        sessionToken: editorSessionToken,
+        dashboardId: created.dashboardId,
+        versionId: firstVersion.versionId,
+      });
+      expect(archivedEvidence).toEqual([
+        expect.objectContaining({
+          evidenceId: evidence.evidenceId,
+          evidenceKind: "typed_value",
+          observedAt: evidenceObservedAt,
+          retrievedAt: evidenceRetrievedAt,
+        }),
+      ]);
+      const archivedLineage = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardLineage({
+        sessionToken: editorSessionToken,
+        dashboardId: created.dashboardId,
+        versionId: firstVersion.versionId,
+      });
+      expect(
+        archivedLineage
+          .map((row) => [row.artifactId, row.artifactOwnershipClass])
+          .sort(),
+      ).toEqual(
+        [
+          [ownedArtifactId, "dashboard_owned"],
+          [sharedArtifactId, "shared"],
+        ].sort(),
+      );
+
+      const rejectedVersionIds = Array.from({ length: 4 }, () => randomUUID());
+      await expect(
+        createTask8cRepository(
+          client,
+          keyRing,
+          rejectedVersionIds,
+        ).createDashboardVersion({
+          sessionToken: editorSessionToken,
+          currentCsrfValue: editorCsrfValue,
+          dashboardId: created.dashboardId,
+          parentVersionId: secondVersion.versionId,
+          canonicalSpecBytes: secondSpec,
+          canonicalSpecSha256: new Uint8Array(
+            createHash("sha256").update(secondSpec).digest(),
+          ),
+          validationSha256: new Uint8Array(randomBytes(32)),
+          plannerProvenanceSha256: new Uint8Array(randomBytes(32)),
+          policyRevision: 1,
+          registryRevision: 1,
+          calculationGraphSha256: null,
+          snapshotIds: [snapshotId],
+          evidenceIds: [],
+        }),
+      ).rejects.toBeInstanceOf(OperationDeniedError);
+      const archivedMutationResidue = await ownerPool.query<{
+        readonly audit_count: string;
+        readonly version_count: string;
+      }>(
+        `
+          SELECT
+            (SELECT pg_catalog.count(*)::text FROM dasher.dashboard_versions
+             WHERE version_id = $1::uuid) AS version_count,
+            (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+             WHERE audit_event_id = $2::uuid) AS audit_count
+        `,
+        [rejectedVersionIds[1], rejectedVersionIds[3]],
+      );
+      expect(archivedMutationResidue.rows[0]).toEqual({
+        audit_count: "0",
+        version_count: "0",
+      });
+
+      await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+        randomUUID(),
+      ]).deleteDashboard({
+        sessionToken: adminSessionToken,
+        currentCsrfValue: adminCsrfValue,
+        dashboardId: created.dashboardId,
+        expectedLifecycleRevision: 4,
+      });
+      const cleanup = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardAdminStatus({
+        sessionToken: adminSessionToken,
+        dashboardId: created.dashboardId,
+      });
+      expect(cleanup).toMatchObject({
+        lifecycleState: "access_revoked",
+        lifecycleRevision: 5,
+        capabilityEpoch: 3,
+        cacheEpoch: 3,
+        activeHoldCount: 0,
+        cleanupStep: "access_revoked",
+      });
+      expect(cleanup.accessRevokedAt).not.toBeNull();
+      expect(cleanup.purgeAfter).not.toBeNull();
+
+      const restoreIds = Array.from({ length: 5 }, () => randomUUID());
+      const restored = await createTask8cRepository(
+        client,
+        keyRing,
+        restoreIds,
+      ).restoreDashboardAsNew({
+        sessionToken: adminSessionToken,
+        currentCsrfValue: adminCsrfValue,
+        sourceDashboardId: created.dashboardId,
+        sourceVersionId: firstVersion.versionId,
+        expectedSourceLifecycleRevision: 5,
+        title: "Selected revision restored",
+        provenanceSha256: new Uint8Array(randomBytes(32)),
+      });
+      expect(restored).toEqual({
+        dashboardId: restoreIds[1],
+        versionId: restoreIds[2],
+      });
+      const restoredDraft = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardSummary({
+        sessionToken: adminSessionToken,
+        dashboardId: restored.dashboardId,
+      });
+      expect(restoredDraft).toMatchObject({
+        currentKind: "durable",
+        lifecycleState: "draft",
+        lifecycleRevision: 0,
+        effectiveExpiresAt: null,
+        headVersionId: null,
+      });
+      const restoredVersion = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardVersion({
+        sessionToken: adminSessionToken,
+        dashboardId: restored.dashboardId,
+        versionId: restored.versionId,
+      });
+      expect(restoredVersion.parentVersionId).toBeNull();
+      expect(restoredVersion.canonicalSpecBytes).toEqual(firstSpec);
+
+      const preserved = await ownerPool.query<{
+        readonly source_head_version_id: string;
+      }>(
+        `
+          SELECT head_version_id::text AS source_head_version_id
+          FROM dasher.dashboards
+          WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid
+        `,
+        [editor.organizationId, created.dashboardId],
+      );
+      expect(preserved.rows[0]?.source_head_version_id).toBe(
+        secondVersion.versionId,
+      );
+      await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+        randomUUID(),
+      ]).compareAndSwapDashboardHead({
+        sessionToken: adminSessionToken,
+        currentCsrfValue: adminCsrfValue,
+        dashboardId: restored.dashboardId,
+        expectedHeadVersionId: null,
+        newHeadVersionId: restored.versionId,
+        expectedLifecycleRevision: 0,
+      });
+      const restoredActive = await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+      ]).getDashboardSummary({
+        sessionToken: adminSessionToken,
+        dashboardId: restored.dashboardId,
+      });
+      expect(restoredActive).toMatchObject({
+        lifecycleState: "active",
+        lifecycleRevision: 1,
+        headVersionId: restored.versionId,
+      });
       await client.query("RESET ROLE");
     } finally {
       client.release();

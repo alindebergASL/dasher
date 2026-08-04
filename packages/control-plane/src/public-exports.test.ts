@@ -8,9 +8,10 @@ import * as sessionCookieExports from "@dasher/control-plane/session-cookie";
 import * as sessionRepositoryExports from "@dasher/control-plane/session-repository";
 import * as verifiedPrincipalExports from "@dasher/control-plane/verified-principal";
 
-describe("control-plane Task 5 through 7 public exports", () => {
+describe("control-plane Task 5 through 8C public exports", () => {
   it("exposes the expected root symbols", () => {
     expect(Object.keys(packageRoot).sort()).toEqual([
+      "DashboardLifecycleRepository",
       "EmailNormalizationError",
       "IntegrationPreflightError",
       "InvitationRepository",
