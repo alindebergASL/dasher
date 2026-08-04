@@ -24,10 +24,12 @@ import {
 import {
   canonical0003DependencyInventoryMatchesForTests,
   canonical0004DependencyInventoryMatchesForTests,
+  canonical0005DependencyInventoryMatchesForTests,
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
   getCanonical0003ExactCatalogContractForTests,
   getCanonical0004ExactCatalogContractForTests,
+  getCanonical0005ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
   resetPreparedRetentionRoles,
 } from "../src/migrator.js";
@@ -1858,7 +1860,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("installs fresh canonical 0001 through 0004, reruns idempotently, and upgrades an independently exact journal 3", async () => {
+  it("installs fresh canonical 0001 through 0005, reruns idempotently, and proves exact 0003-to-0004 and 0004-to-0005 upgrades", async () => {
     try {
       await resetManagedSchemas();
       const first = await runMigrations(
@@ -1867,8 +1869,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         [],
       );
       expect(first).toEqual({
-        appliedCount: 4,
-        discoveredCount: 4,
+        appliedCount: 5,
+        discoveredCount: 5,
         previouslyAppliedCount: 0,
       });
       const second = await runMigrations(
@@ -1878,8 +1880,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(second).toEqual({
         appliedCount: 0,
-        discoveredCount: 4,
-        previouslyAppliedCount: 4,
+        discoveredCount: 5,
+        previouslyAppliedCount: 5,
       });
 
       const client = await ownerPool.connect();
@@ -1894,12 +1896,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         expect(
           await exactCatalogMatchesForTests(
             client,
-            getCanonical0004ExactCatalogContractForTests(ownerName),
+            getCanonical0005ExactCatalogContractForTests(ownerName),
             ownerName,
           ),
         ).toBe(true);
         expect(
-          await canonical0004DependencyInventoryMatchesForTests(
+          await canonical0005DependencyInventoryMatchesForTests(
             client,
             ownerName,
           ),
@@ -1944,6 +1946,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
           filename: "0004_lifecycle_api_correction.sql",
           sequence: 4,
+        },
+        {
+          checksum:
+            "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
+          filename: "0005_security_definer_cleanup_coordination.sql",
+          sequence: 5,
         },
       ]);
 
@@ -1995,18 +2003,665 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         } finally {
           prefixClient.release();
         }
+        await writeFile(
+          join(canonical0003Directory, "0004_lifecycle_api_correction.sql"),
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0004_lifecycle_api_correction.sql",
+            ),
+          ),
+        );
         await expect(
-          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+          runMigrations(ownerPool, canonical0003Directory, []),
         ).resolves.toEqual({
           appliedCount: 1,
           discoveredCount: 4,
           previouslyAppliedCount: 3,
+        });
+        const correctionClient = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await correctionClient.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await exactCatalogMatchesForTests(
+              correctionClient,
+              getCanonical0004ExactCatalogContractForTests(ownerName),
+              ownerName,
+            ),
+          ).toBe(true);
+          expect(
+            await canonical0004DependencyInventoryMatchesForTests(
+              correctionClient,
+              ownerName,
+            ),
+          ).toBe(true);
+        } finally {
+          correctionClient.release();
+        }
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 5,
+          previouslyAppliedCount: 4,
         });
       } finally {
         await rm(canonical0003Directory, { recursive: true, force: true });
       }
     } finally {
       await resetManagedSchemas();
+    }
+  }, 120_000);
+
+  it("reproduces the exact 0004 delete authority failure and proves the bounded 0005 correction atomically", async () => {
+    const canonical0004Directory = await mkdtemp(
+      join(tmpdir(), "dasher-cleanup-coordination-0004-pg-"),
+    );
+    let deleteAppPool: Pool | undefined;
+    let client: PoolClient | undefined;
+    const dashboardId = randomUUID();
+    const tombstoneLineageId = randomUUID();
+    const createAuditId = randomUUID();
+    const deleteEventId = randomUUID();
+    const tenantBDashboardId = randomUUID();
+    const tenantBTombstoneLineageId = randomUUID();
+    const tenantBCreateAuditId = randomUUID();
+    let actor: Task4Actor | undefined;
+
+    const readDeleteResidue = async () => {
+      const result = await ownerPool.query<{
+        readonly access_revoked_at: Date | null;
+        readonly audit_count: string;
+        readonly coordination_count: string;
+        readonly event_count: string;
+        readonly ledger_count: string;
+        readonly lifecycle_revision: string;
+        readonly lifecycle_state: string;
+        readonly tombstone_count: string;
+      }>(
+        `
+          SELECT
+            dashboard.lifecycle_state,
+            dashboard.lifecycle_revision::text AS lifecycle_revision,
+            dashboard.access_revoked_at,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.dashboard_tombstones AS tombstone
+              WHERE tombstone.organization_id = dashboard.organization_id
+                AND tombstone.tombstone_lineage_id = $2::uuid
+            ) AS tombstone_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.dashboard_cleanup_coordination AS coordination
+              WHERE coordination.organization_id = dashboard.organization_id
+                AND coordination.dashboard_id = dashboard.dashboard_id
+            ) AS coordination_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.backup_deletion_ledger AS ledger
+              WHERE ledger.organization_id = dashboard.organization_id
+                AND ledger.tombstone_lineage_id = $2::uuid
+            ) AS ledger_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.dashboard_lifecycle_events AS event
+              WHERE event.organization_id = dashboard.organization_id
+                AND event.lifecycle_event_id = $3::uuid
+            ) AS event_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.audit_events AS audit
+              WHERE audit.organization_id = dashboard.organization_id
+                AND audit.audit_event_id = $3::uuid
+            ) AS audit_count
+          FROM dasher.dashboards AS dashboard
+          WHERE dashboard.dashboard_id = $1::uuid
+        `,
+        [dashboardId, tombstoneLineageId, deleteEventId],
+      );
+      return result.rows[0];
+    };
+
+    try {
+      await closeAppPoolBeforeLoginTeardown();
+      if (appLoginCreated) {
+        await dropTemporaryAppLogin(
+          ownerPool,
+          config.appDatabase,
+          config.appUsername,
+        );
+        appLoginCreated = false;
+      }
+      await resetManagedSchemas();
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+        "0003_immutable_content.sql",
+        "0004_lifecycle_api_correction.sql",
+      ] as const) {
+        await writeFile(
+          join(canonical0004Directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await createTemporaryAppLogin(
+        ownerPool,
+        config.appDsn,
+        config.appUsername,
+      );
+      appLoginCreated = true;
+      await expect(
+        runMigrations(ownerPool, canonical0004Directory, [config.appUsername]),
+      ).resolves.toEqual({
+        appliedCount: 4,
+        discoveredCount: 4,
+        previouslyAppliedCount: 0,
+      });
+
+      deleteAppPool = new Pool({ connectionString: config.appDsn, max: 1 });
+      client = await deleteAppPool.connect();
+      await client.query("SET ROLE dasher_app");
+      actor = await createTask4Actor(client, "admin");
+      await runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+        client!.query(
+          `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Cleanup authority proof', 'durable', NULL, false,
+                $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b4-integration'
+              )
+            `,
+          [dashboardId, tombstoneLineageId, createAuditId, actor!.csrfDigest],
+        ),
+      );
+
+      const cleanDeleteBaseline = {
+        access_revoked_at: null,
+        audit_count: "0",
+        coordination_count: "0",
+        event_count: "0",
+        ledger_count: "0",
+        lifecycle_revision: "0",
+        lifecycle_state: "draft",
+        tombstone_count: "0",
+      };
+      expect(await readDeleteResidue()).toEqual(cleanDeleteBaseline);
+
+      await expect(
+        runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+          client!.query(
+            `
+              SELECT dasher_api.delete_dashboard(
+                $1::uuid, 0::bigint, $2::uuid, 1::smallint, $3::bytea,
+                'task8b4-integration'
+              )
+            `,
+            [dashboardId, deleteEventId, actor!.csrfDigest],
+          ),
+        ),
+      ).rejects.toMatchObject({
+        code: "42501",
+        message: "permission denied for table dashboard_cleanup_coordination",
+      });
+      expect(await readDeleteResidue()).toEqual(cleanDeleteBaseline);
+
+      await expect(
+        runMigrations(ownerPool, canonicalMigrationDirectory, [
+          config.appUsername,
+        ]),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 5,
+        previouslyAppliedCount: 4,
+      });
+
+      const authority = await ownerPool.query<{
+        readonly app_table_insert: boolean;
+        readonly forced_rls: boolean;
+        readonly public_table_insert_denied: boolean;
+        readonly retention_table_insert: boolean;
+        readonly security_definer_insert_columns: string[];
+        readonly security_definer_table_insert: boolean;
+      }>(`
+        SELECT
+          relation.relforcerowsecurity AS forced_rls,
+          pg_catalog.has_table_privilege(
+            'dasher_security_definer', relation.oid, 'INSERT'
+          ) AS security_definer_table_insert,
+          pg_catalog.has_table_privilege(
+            'dasher_app', relation.oid, 'INSERT'
+          ) AS app_table_insert,
+          pg_catalog.has_table_privilege(
+            'dasher_retention_definer', relation.oid, 'INSERT'
+          ) AS retention_table_insert,
+          NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.aclexplode(relation.relacl) AS privilege
+            WHERE privilege.grantee = 0
+              AND privilege.privilege_type = 'INSERT'
+          ) AS public_table_insert_denied,
+          ARRAY(
+            SELECT attribute.attname::text
+            FROM pg_catalog.pg_attribute AS attribute
+            CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl)
+              AS privilege
+            JOIN pg_catalog.pg_roles AS grantee
+              ON grantee.oid = privilege.grantee
+            WHERE attribute.attrelid = relation.oid
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND grantee.rolname = 'dasher_security_definer'
+              AND privilege.privilege_type = 'INSERT'
+            ORDER BY attribute.attname
+          ) AS security_definer_insert_columns
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'dasher'
+          AND relation.relname = 'dashboard_cleanup_coordination'
+      `);
+      expect(authority.rows[0]).toEqual({
+        app_table_insert: false,
+        forced_rls: true,
+        public_table_insert_denied: true,
+        retention_table_insert: true,
+        security_definer_insert_columns: [
+          "current_step",
+          "dashboard_id",
+          "expected_lifecycle_revision",
+          "next_attempt_at",
+          "organization_id",
+        ],
+        security_definer_table_insert: false,
+      });
+
+      const insertPolicies = await ownerPool.query<{
+        readonly command: string;
+        readonly name: string;
+        readonly permissive: boolean;
+        readonly roles: string[];
+        readonly using_expression: string | null;
+        readonly with_check_expression: string | null;
+      }>(`
+        SELECT
+          policy.polname::text AS name,
+          policy.polpermissive AS permissive,
+          policy.polcmd::text AS command,
+          ARRAY(
+            SELECT role.rolname::text
+            FROM pg_catalog.unnest(policy.polroles) AS role_oid(oid)
+            JOIN pg_catalog.pg_roles AS role ON role.oid = role_oid.oid
+            ORDER BY role.rolname
+          ) AS roles,
+          pg_catalog.pg_get_expr(
+            policy.polqual, policy.polrelid, false
+          ) AS using_expression,
+          pg_catalog.pg_get_expr(
+            policy.polwithcheck, policy.polrelid, false
+          ) AS with_check_expression
+        FROM pg_catalog.pg_policy AS policy
+        JOIN pg_catalog.pg_class AS relation ON relation.oid = policy.polrelid
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'dasher'
+          AND relation.relname = 'dashboard_cleanup_coordination'
+          AND policy.polcmd = 'a'
+        ORDER BY policy.polname
+      `);
+      expect(insertPolicies.rows).toHaveLength(2);
+      expect(
+        insertPolicies.rows.map(({ command, name, permissive, roles }) => ({
+          command,
+          name,
+          permissive,
+          roles,
+        })),
+      ).toEqual([
+        {
+          command: "a",
+          name: "dashboard_cleanup_coordination_retention_insert",
+          permissive: true,
+          roles: ["dasher_retention_definer"],
+        },
+        {
+          command: "a",
+          name: "dashboard_cleanup_coordination_security_definer_insert",
+          permissive: true,
+          roles: ["dasher_security_definer"],
+        },
+      ]);
+      expect(insertPolicies.rows[1]).toMatchObject({
+        using_expression: null,
+        with_check_expression:
+          "((CURRENT_USER = 'dasher_security_definer'::name) AND (organization_id = dasher_private.context_organization_id()))",
+      });
+
+      // This is an adjacent ACL-denial probe; the controlled transaction below
+      // isolates the security-definer INSERT policy itself.
+      await expect(
+        runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+          client!.query(
+            `
+              INSERT INTO dasher.dashboard_cleanup_coordination (
+                organization_id, dashboard_id, current_step,
+                expected_lifecycle_revision, next_attempt_at
+              ) VALUES (
+                $1::uuid, $2::uuid, 'access_revoked', 1, clock_timestamp()
+              )
+            `,
+            [randomUUID(), dashboardId],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+
+      const tenantBActor = await createTask4Actor(client, "admin");
+      await runContextOperation(
+        client,
+        tenantBActor.sessionDigest,
+        randomUUID(),
+        () =>
+          client!.query(
+            `
+              SELECT * FROM dasher_api.create_dashboard(
+                $1::uuid, 'Foreign cleanup policy proof', 'durable', NULL,
+                false, $2::uuid, $3::uuid, 1::smallint, $4::bytea,
+                'task8b4-integration'
+              )
+            `,
+            [
+              tenantBDashboardId,
+              tenantBTombstoneLineageId,
+              tenantBCreateAuditId,
+              tenantBActor.csrfDigest,
+            ],
+          ),
+      );
+
+      const policyFixtureState = await ownerPool.query<{
+        readonly coordination_count: string;
+        readonly dashboard_count: string;
+      }>(
+        `
+          SELECT
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.dashboards AS dashboard
+              WHERE (dashboard.organization_id, dashboard.dashboard_id) IN (
+                ($1::uuid, $2::uuid),
+                ($3::uuid, $4::uuid)
+              )
+            ) AS dashboard_count,
+            (
+              SELECT pg_catalog.count(*)::text
+              FROM dasher.dashboard_cleanup_coordination AS coordination
+              WHERE (
+                coordination.organization_id,
+                coordination.dashboard_id
+              ) IN (
+                ($1::uuid, $2::uuid),
+                ($3::uuid, $4::uuid)
+              )
+            ) AS coordination_count
+        `,
+        [
+          actor.organizationId,
+          dashboardId,
+          tenantBActor.organizationId,
+          tenantBDashboardId,
+        ],
+      );
+      expect(policyFixtureState.rows[0]).toEqual({
+        coordination_count: "0",
+        dashboard_count: "2",
+      });
+
+      const policyClient = await ownerPool.connect();
+      let policyIsolationError: unknown;
+      let policyTransactionOpen = false;
+      try {
+        await policyClient.query("BEGIN");
+        policyTransactionOpen = true;
+        await policyClient.query("SET LOCAL ROLE dasher_app");
+        await policyClient.query(
+          `
+            SELECT *
+            FROM dasher_api.initialize_context(
+              1::smallint,
+              $1::bytea,
+              $2::uuid
+            )
+          `,
+          [actor.sessionDigest, randomUUID()],
+        );
+        await policyClient.query("RESET ROLE");
+        await policyClient.query(
+          "ALTER ROLE dasher_security_definer NOBYPASSRLS",
+        );
+        await policyClient.query("SET LOCAL ROLE dasher_security_definer");
+
+        const policyIdentity = await policyClient.query<{
+          readonly bypasses_rls: boolean;
+          readonly context_organization_id: string;
+          readonly current_user: string;
+        }>(`
+          SELECT
+            CURRENT_USER::text AS current_user,
+            dasher_private.context_organization_id()::text
+              AS context_organization_id,
+            role.rolbypassrls AS bypasses_rls
+          FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = CURRENT_USER
+        `);
+        expect(policyIdentity.rows[0]).toEqual({
+          bypasses_rls: false,
+          context_organization_id: actor.organizationId,
+          current_user: "dasher_security_definer",
+        });
+
+        const sameTenantInsert = await policyClient.query(
+          `
+            INSERT INTO dasher.dashboard_cleanup_coordination (
+              organization_id, dashboard_id, current_step,
+              expected_lifecycle_revision, next_attempt_at
+            ) VALUES (
+              $1::uuid, $2::uuid, 'access_revoked', 1, clock_timestamp()
+            )
+          `,
+          [actor.organizationId, dashboardId],
+        );
+        expect(sameTenantInsert.rowCount).toBe(1);
+
+        await policyClient.query("SAVEPOINT reject_foreign_tenant");
+        let foreignTenantInsertError: unknown;
+        try {
+          await policyClient.query(
+            `
+              INSERT INTO dasher.dashboard_cleanup_coordination (
+                organization_id, dashboard_id, current_step,
+                expected_lifecycle_revision, next_attempt_at
+              ) VALUES (
+                $1::uuid, $2::uuid, 'access_revoked', 1, clock_timestamp()
+              )
+            `,
+            [tenantBActor.organizationId, tenantBDashboardId],
+          );
+        } catch (error) {
+          foreignTenantInsertError = error;
+        }
+        await policyClient.query("ROLLBACK TO SAVEPOINT reject_foreign_tenant");
+        await policyClient.query("RELEASE SAVEPOINT reject_foreign_tenant");
+        expect(foreignTenantInsertError).toMatchObject({ code: "42501" });
+      } catch (error) {
+        policyIsolationError = error;
+      } finally {
+        if (policyTransactionOpen) {
+          try {
+            await policyClient.query("ROLLBACK");
+            policyTransactionOpen = false;
+          } catch (error) {
+            policyIsolationError ??= error;
+          }
+        }
+        policyClient.release(policyTransactionOpen);
+      }
+
+      const policyResidue = await ownerPool.query<{
+        readonly tenant_a_count: string;
+        readonly tenant_b_count: string;
+      }>(
+        `
+          SELECT
+            pg_catalog.count(*) FILTER (
+              WHERE coordination.organization_id = $1::uuid
+                AND coordination.dashboard_id = $2::uuid
+            )::text AS tenant_a_count,
+            pg_catalog.count(*) FILTER (
+              WHERE coordination.organization_id = $3::uuid
+                AND coordination.dashboard_id = $4::uuid
+            )::text AS tenant_b_count
+          FROM dasher.dashboard_cleanup_coordination AS coordination
+          WHERE (coordination.organization_id, coordination.dashboard_id) IN (
+            ($1::uuid, $2::uuid),
+            ($3::uuid, $4::uuid)
+          )
+        `,
+        [
+          actor.organizationId,
+          dashboardId,
+          tenantBActor.organizationId,
+          tenantBDashboardId,
+        ],
+      );
+      expect(policyResidue.rows[0]).toEqual({
+        tenant_a_count: "0",
+        tenant_b_count: "0",
+      });
+      const restoredPolicyRole = await ownerPool.query<{
+        readonly bypasses_rls: boolean;
+      }>(`
+        SELECT role.rolbypassrls AS bypasses_rls
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname = 'dasher_security_definer'
+      `);
+      expect(restoredPolicyRole.rows[0]).toEqual({ bypasses_rls: true });
+      if (policyIsolationError !== undefined) {
+        throw policyIsolationError;
+      }
+
+      await runContextOperation(client, actor.sessionDigest, randomUUID(), () =>
+        client!.query(
+          `
+              SELECT dasher_api.delete_dashboard(
+                $1::uuid, 0::bigint, $2::uuid, 1::smallint, $3::bytea,
+                'task8b4-integration'
+              )
+            `,
+          [dashboardId, deleteEventId, actor!.csrfDigest],
+        ),
+      );
+
+      const deleted = await ownerPool.query<{
+        readonly audit_action: string;
+        readonly audit_outcome: string;
+        readonly coordination_step: string;
+        readonly event_kind: string;
+        readonly expected_lifecycle_revision: string;
+        readonly ledger_kind: string;
+        readonly lifecycle_revision: string;
+        readonly lifecycle_state: string;
+        readonly next_attempt_bound: boolean;
+        readonly proofs_match: boolean;
+        readonly tenant_bound: boolean;
+        readonly tombstone_lifecycle_revision: string;
+      }>(
+        `
+          SELECT
+            dashboard.lifecycle_state,
+            dashboard.lifecycle_revision::text AS lifecycle_revision,
+            coordination.current_step AS coordination_step,
+            coordination.expected_lifecycle_revision::text
+              AS expected_lifecycle_revision,
+            tombstone.access_revoked_lifecycle_revision::text
+              AS tombstone_lifecycle_revision,
+            ledger.event_kind AS ledger_kind,
+            event.event_kind,
+            audit.action AS audit_action,
+            audit.outcome AS audit_outcome,
+            coordination.next_attempt_at = dashboard.access_revoked_at
+              AS next_attempt_bound,
+            tombstone.access_revoked_proof_sha256 = ledger.proof_sha256
+              AND ledger.proof_sha256 = event.reason_sha256
+              AND event.reason_sha256 = audit.content_sha256 AS proofs_match,
+            dashboard.organization_id = $4::uuid
+              AND coordination.organization_id = $4::uuid
+              AND tombstone.organization_id = $4::uuid
+              AND ledger.organization_id = $4::uuid
+              AND event.organization_id = $4::uuid
+              AND audit.organization_id = $4::uuid AS tenant_bound
+          FROM dasher.dashboards AS dashboard
+          JOIN dasher.dashboard_cleanup_coordination AS coordination
+            ON coordination.organization_id = dashboard.organization_id
+           AND coordination.dashboard_id = dashboard.dashboard_id
+          JOIN dasher.dashboard_tombstones AS tombstone
+            ON tombstone.organization_id = dashboard.organization_id
+           AND tombstone.tombstone_lineage_id = $2::uuid
+          JOIN dasher.backup_deletion_ledger AS ledger
+            ON ledger.organization_id = dashboard.organization_id
+           AND ledger.tombstone_lineage_id = $2::uuid
+           AND ledger.event_kind = 'access_revoked'
+          JOIN dasher.dashboard_lifecycle_events AS event
+            ON event.organization_id = dashboard.organization_id
+           AND event.lifecycle_event_id = $3::uuid
+          JOIN dasher.audit_events AS audit
+            ON audit.organization_id = dashboard.organization_id
+           AND audit.audit_event_id = $3::uuid
+          WHERE dashboard.dashboard_id = $1::uuid
+        `,
+        [dashboardId, tombstoneLineageId, deleteEventId, actor.organizationId],
+      );
+      expect(deleted.rows).toEqual([
+        {
+          audit_action: "dashboard.deleted",
+          audit_outcome: "succeeded",
+          coordination_step: "access_revoked",
+          event_kind: "deleted",
+          expected_lifecycle_revision: "1",
+          ledger_kind: "access_revoked",
+          lifecycle_revision: "1",
+          lifecycle_state: "access_revoked",
+          next_attempt_bound: true,
+          proofs_match: true,
+          tenant_bound: true,
+          tombstone_lifecycle_revision: "1",
+        },
+      ]);
+    } finally {
+      if (client !== undefined) {
+        await client.query("RESET ROLE").catch(() => undefined);
+        client.release();
+      }
+      await deleteAppPool?.end().catch(() => undefined);
+      if (appLoginCreated) {
+        await dropTemporaryAppLogin(
+          ownerPool,
+          config.appDatabase,
+          config.appUsername,
+        );
+        appLoginCreated = false;
+      }
+      await resetManagedSchemas();
+      await rm(canonical0004Directory, { recursive: true, force: true });
+      expect(await schemaPresence()).toEqual({
+        dasher: false,
+        dasherMeta: false,
+      });
     }
   }, 120_000);
 
@@ -2173,8 +2828,18 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await expectExactClosure(3);
         await expectExactJournal(3);
 
+        await writeFile(
+          join(canonical0003Directory, "0004_lifecycle_api_correction.sql"),
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0004_lifecycle_api_correction.sql",
+            ),
+          ),
+        );
+
         await expect(
-          runMigrations(instrumentedPool, canonicalMigrationDirectory, []),
+          runMigrations(instrumentedPool, canonical0003Directory, []),
         ).rejects.toBeDefined();
         expect(injected).toBe(true);
         expect(exact0004SqlExecutions).toBe(1);
@@ -2247,7 +2912,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         });
 
         await expect(
-          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+          runMigrations(ownerPool, canonical0003Directory, []),
         ).resolves.toEqual({
           appliedCount: 1,
           discoveredCount: 4,
@@ -2263,18 +2928,19 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     120_000,
   );
 
-  it("serializes concurrent fresh-4 and exact 3-to-4 runners through the session gate", async () => {
-    const canonical0003Directory = await mkdtemp(
-      join(tmpdir(), "dasher-concurrent-0003-pg-"),
+  it("serializes concurrent fresh-5 and exact 4-to-5 runners through the session gate", async () => {
+    const canonical0004Directory = await mkdtemp(
+      join(tmpdir(), "dasher-concurrent-0004-pg-"),
     );
     try {
       for (const filename of [
         "0001_identity_audit.sql",
         "0002_security_boundary.sql",
         "0003_immutable_content.sql",
+        "0004_lifecycle_api_correction.sql",
       ] as const) {
         await writeFile(
-          join(canonical0003Directory, filename),
+          join(canonical0004Directory, filename),
           await readFile(join(canonicalMigrationDirectory, filename)),
         );
       }
@@ -2289,12 +2955,12 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [0, 4],
-        [4, 0],
+        [0, 5],
+        [5, 0],
       ]);
 
       await resetManagedSchemas();
-      await runMigrations(ownerPool, canonical0003Directory, []);
+      await runMigrations(ownerPool, canonical0004Directory, []);
       const upgrades = await Promise.all([
         runMigrations(ownerPool, canonicalMigrationDirectory, []),
         runMigrations(ownerPool, canonicalMigrationDirectory, []),
@@ -2304,11 +2970,11 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [3, 1],
-        [4, 0],
+        [4, 1],
+        [5, 0],
       ]);
     } finally {
-      await rm(canonical0003Directory, { recursive: true, force: true });
+      await rm(canonical0004Directory, { recursive: true, force: true });
       await resetManagedSchemas();
     }
   }, 120_000);
@@ -2455,8 +3121,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await expect(
           runMigrations(ownerPool, canonicalMigrationDirectory, []),
         ).resolves.toEqual({
-          appliedCount: 2,
-          discoveredCount: 4,
+          appliedCount: 3,
+          discoveredCount: 5,
           previouslyAppliedCount: 2,
         });
       } finally {
@@ -14207,7 +14873,7 @@ describe.sequential("Task 8B.3 lifecycle API correction", () => {
         throw new Error("PostgreSQL did not return the session owner");
       }
       expect(
-        await canonical0004DependencyInventoryMatchesForTests(
+        await canonical0005DependencyInventoryMatchesForTests(
           client,
           ownerName,
         ),
