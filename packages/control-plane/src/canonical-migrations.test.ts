@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   discoverMigrations,
   getCanonical0004ExactCatalogContractForTests,
+  getCanonical0005ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
 } from "./migrator.js";
 import {
@@ -2954,6 +2955,12 @@ const lifecycleApiCorrectionMigration = {
   checksum: "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
 } as const;
 
+const securityDefinerCleanupCoordinationMigration = {
+  sequence: 5,
+  filename: "0005_security_definer_cleanup_coordination.sql",
+  checksum: "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
+} as const;
+
 const task4FunctionIdentities = [
   "dasher_api.accept_invitation",
   "dasher_api.change_membership_role",
@@ -2974,7 +2981,7 @@ const task4FunctionIdentities = [
 ] as const;
 
 describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
-  it("pins immutable 0001-0003 and exact canonical 0004 source bytes", async () => {
+  it("pins immutable 0001-0004 and exact canonical 0005 source bytes", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -2988,8 +2995,12 @@ describe("Task 3, Task 4, and Task 8B canonical migration golden guard", () => {
       securityBoundaryMigration,
       immutableContentMigration,
       lifecycleApiCorrectionMigration,
+      securityDefinerCleanupCoordinationMigration,
     ]);
-    expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
+    expect(
+      migrations.slice(0, 4).map((migration) => migration.bytes.byteLength),
+    ).toEqual([17_033, 101_747, 482_279, 104_489]);
+    expect(Buffer.byteLength(migrations[4]?.sql ?? "")).toBe(556);
   });
 
   it("contains no extension, credential, or UUID-generation source", async () => {
@@ -3274,6 +3285,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       securityBoundaryMigration.filename,
       immutableContentMigration.filename,
       lifecycleApiCorrectionMigration.filename,
+      securityDefinerCleanupCoordinationMigration.filename,
     ]);
     expect(
       Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
@@ -6980,9 +6992,9 @@ const lifecycleMutationContracts = [
 ] as const;
 
 describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
-  it("pins all four exact source identities while leaving the modeled probe at three", async () => {
+  it("pins the five-row chain while leaving the modeled probe at three", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
-    expect(migrations).toHaveLength(4);
+    expect(migrations).toHaveLength(5);
     expect(
       migrations.map((migration) =>
         Buffer.from(migration.checksumSha256).toString("hex"),
@@ -6992,6 +7004,7 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
       securityBoundaryMigration.checksum,
       immutableContentMigration.checksum,
       lifecycleApiCorrectionMigration.checksum,
+      securityDefinerCleanupCoordinationMigration.checksum,
     ]);
     expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
     expect(modeled0003Functions.length).toBeGreaterThan(0);
@@ -7359,5 +7372,89 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
     );
     expect(sql).not.toMatch(/GRANT\s+EXECUTE[^;]+dasher_retention_api/iu);
     expect(sql).not.toMatch(/postgres(?:ql)?:\/\/|PASSWORD\s+'|sk-proj/iu);
+  });
+});
+
+describe("Task 8B.4 cleanup-coordination corrective migration contract", () => {
+  it("contains only the exact five-column grant and tenant-bound insert policy", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[4]?.sql ?? "";
+    const normalized = normalizedIdentitySql(sql);
+
+    expect(normalized).toContain(
+      "GRANT INSERT (organization_id, dashboard_id, current_step, expected_lifecycle_revision, next_attempt_at) ON TABLE dasher.dashboard_cleanup_coordination TO dasher_security_definer;",
+    );
+    expect(normalized).toContain(
+      "CREATE POLICY dashboard_cleanup_coordination_security_definer_insert ON dasher.dashboard_cleanup_coordination AS PERMISSIVE FOR INSERT TO dasher_security_definer WITH CHECK (CURRENT_USER = 'dasher_security_definer'::name AND organization_id = dasher_private.context_organization_id());",
+    );
+    expect(sql.match(/\bGRANT\b/gu)).toHaveLength(1);
+    expect(sql.match(/\bCREATE POLICY\b/gu)).toHaveLength(1);
+    expect(sql).not.toMatch(/\bUSING\s*\(/iu);
+    expect(sql).not.toMatch(
+      /\bTO\s+(?:dasher_app|PUBLIC|dasher_retention_definer|dasher_retention_operator)\b/iu,
+    );
+  });
+
+  it("adds exactly five column ACLs and one policy to the exact 0004 catalog", () => {
+    type ExactCatalog = Record<string, readonly string[]> & {
+      readonly acls: readonly string[];
+      readonly policies: readonly string[];
+    };
+    const catalog0004 = getCanonical0004ExactCatalogContractForTests(
+      "migration_owner",
+    ) as ExactCatalog;
+    const catalog0005 = getCanonical0005ExactCatalogContractForTests(
+      "migration_owner",
+    ) as ExactCatalog;
+    const priorAcls = new Set(catalog0004.acls);
+    const priorPolicies = new Set(catalog0004.policies);
+    const addedAcls = catalog0005.acls.filter((row) => !priorAcls.has(row));
+    const addedPolicies = catalog0005.policies.filter(
+      (row) => !priorPolicies.has(row),
+    );
+
+    expect(addedAcls).toEqual(
+      [
+        "organization_id",
+        "dashboard_id",
+        "current_step",
+        "expected_lifecycle_revision",
+        "next_attempt_at",
+      ]
+        .map(
+          (column) =>
+            `column|dasher.dashboard_cleanup_coordination.${column}|migration_owner|dasher_security_definer|INSERT|false`,
+        )
+        .sort(),
+    );
+    expect(addedPolicies).toEqual([
+      "dasher|dashboard_cleanup_coordination|dashboard_cleanup_coordination_security_definer_insert|true|a|{dasher_security_definer}|<none>|((CURRENT_USER = 'dasher_security_definer'::name) AND (organization_id = dasher_private.context_organization_id()))",
+    ]);
+    expect(catalog0005.acls).not.toContain(
+      "relation|dasher.dashboard_cleanup_coordination|migration_owner|dasher_security_definer|INSERT|false",
+    );
+
+    for (const category of Object.keys(catalog0004).filter(
+      (name) => name !== "acls" && name !== "policies",
+    )) {
+      expect(catalog0005[category], category).toEqual(catalog0004[category]);
+    }
+    expect([...addedAcls, ...addedPolicies].join("|")).not.toMatch(
+      /dasher_app|PUBLIC|dasher_retention_definer|dasher_retention_operator/u,
+    );
+  });
+
+  it("introduces no extension, credential, UUID generation, dynamic SQL, or transaction wrapper", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[4]?.sql ?? "";
+    expect(sql).not.toMatch(
+      /CREATE\s+EXTENSION|gen_random_uuid|uuid_generate|PASSWORD\s+'|sk-proj|BEGIN\s+(?:RSA|OPENSSH)\s+PRIVATE|postgres(?:ql)?:\/\//iu,
+    );
+    expect(sql).not.toMatch(
+      /\bEXECUTE\b|\bformat\s*\(|\b(?:BEGIN|COMMIT|ROLLBACK)\s*;/iu,
+    );
+    expect(sql).not.toMatch(
+      /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION|ALTER\s+FUNCTION|SECURITY\s+DEFINER/iu,
+    );
   });
 });

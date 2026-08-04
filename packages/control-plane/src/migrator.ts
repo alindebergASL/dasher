@@ -47,6 +47,11 @@ const canonicalSuccessorFiles = [
       "353021e04bd32183cba82e0069948d43fecf27f4b5ec9995bfb143419279e5d9",
     filename: "0004_lifecycle_api_correction.sql",
   },
+  {
+    checksum:
+      "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
+    filename: "0005_security_definer_cleanup_coordination.sql",
+  },
 ] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
@@ -5992,10 +5997,7 @@ function successorIdentity(
   if (migrations.length < 3) {
     return "none";
   }
-  if (
-    migrations.length !== modeledSuccessorFiles.length &&
-    migrations.length !== canonicalSuccessorFiles.length
-  ) {
+  if (migrations.length > canonicalSuccessorFiles.length) {
     return reject("migration_file_mismatch");
   }
   for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
@@ -20643,6 +20645,9 @@ function canonical0003CatalogPolicyExpressions(policy: {
   return overrides[identity] ?? policy;
 }
 
+const cleanupCoordinationSecurityDefinerInsertWithCheck =
+  "((CURRENT_USER = 'dasher_security_definer'::name) AND (organization_id = dasher_private.context_organization_id()))";
+
 function exactCatalogContract(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
@@ -20652,6 +20657,7 @@ function exactCatalogContract(
   const hasSecurityBoundary = journalRows.length >= 2;
   const hasSuccessor = journalRows.length >= 3;
   const hasLifecycleCorrection = journalRows.length >= 4;
+  const hasCleanupCoordinationCorrection = journalRows.length >= 5;
   const schemas = ["dasher", "dasher_meta", "dasher_private"];
   if (hasSecurityBoundary) schemas.push("dasher_api");
   if (hasSuccessor) schemas.push("dasher_retention_api");
@@ -20772,6 +20778,11 @@ function exactCatalogContract(
         const expressions = canonical0003CatalogPolicyExpressions(policy);
         return `dasher|${policy.relation}|${policy.name}|${String(policy.permissive)}|${policy.catalogCommand}|${pgTextArray(policy.roles)}|${expressions.using ?? "<none>"}|${expressions.withCheck ?? "<none>"}`;
       }),
+    );
+  }
+  if (hasCleanupCoordinationCorrection) {
+    policies.push(
+      `dasher|dashboard_cleanup_coordination|dashboard_cleanup_coordination_security_definer_insert|true|a|{dasher_security_definer}|<none>|${cleanupCoordinationSecurityDefinerInsertWithCheck}`,
     );
   }
 
@@ -21110,6 +21121,31 @@ export function getCanonical0003ExactCatalogContractForTests(
 export function getCanonical0004ExactCatalogContractForTests(
   ownerName: string,
 ): unknown {
+  const journalRows = canonicalSuccessorFiles.slice(0, 4).map(
+    (file, index) =>
+      ({
+        applied_by: ownerName,
+        checksum_sha256: new Uint8Array(32),
+        filename: file.filename,
+        sequence: index + 1,
+      }) satisfies JournalRow,
+  );
+  return JSON.parse(
+    JSON.stringify(
+      exactCatalogContract(
+        journalRows,
+        [],
+        { database_name: "current_database", database_oid: "0" },
+        ownerName,
+      ),
+    ),
+  ) as unknown;
+}
+
+/** Test-only snapshot of the exact canonical-0005 catalog contract. */
+export function getCanonical0005ExactCatalogContractForTests(
+  ownerName: string,
+): unknown {
   const journalRows = canonicalSuccessorFiles.map(
     (file, index) =>
       ({
@@ -21174,6 +21210,34 @@ export async function canonical0003DependencyInventoryMatchesForTests(
 
 /** Test-only execution of canonical-0004 role dependency closure. */
 export async function canonical0004DependencyInventoryMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+): Promise<boolean> {
+  const databaseIdentity = await readDatabaseIdentity(client);
+  const journalRows = canonicalSuccessorFiles.slice(0, 4).map(
+    (file, index) =>
+      ({
+        applied_by: ownerName,
+        checksum_sha256: new Uint8Array(32),
+        filename: file.filename,
+        sequence: index + 1,
+      }) satisfies JournalRow,
+  );
+  const expected = expectedDependencyInventory(
+    journalRows,
+    [],
+    databaseIdentity,
+    ownerName,
+  );
+  const result = await client.query<DependencyComparisonRow>(
+    managedDependencyInventorySql,
+    [allManagedRoleNames, inventoryJson(expected)],
+  );
+  return result.rows.length === 1 && result.rows[0]?.matches === true;
+}
+
+/** Test-only execution of canonical-0005 role dependency closure. */
+export async function canonical0005DependencyInventoryMatchesForTests(
   client: MigrationClient,
   ownerName: string,
 ): Promise<boolean> {
@@ -21397,6 +21461,11 @@ function expectedDependencyInventory(
       row.sequence === 4 &&
       row.filename === "0004_lifecycle_api_correction.sql",
   );
+  const hasCleanupCoordinationCorrection = journalRows.some(
+    (row) =>
+      row.sequence === 5 &&
+      row.filename === "0005_security_definer_cleanup_coordination.sql",
+  );
   if (hasSuccessor) {
     const functionIdentityParts = (
       identity: string,
@@ -21585,6 +21654,55 @@ function expectedDependencyInventory(
             role_name: "dasher_security_definer",
             schema_name: "dasher",
             subobject_name: null,
+          }),
+        );
+      }
+    }
+
+    if (hasCleanupCoordinationCorrection) {
+      entries.push(
+        dependencyEntry({
+          catalog_name: "pg_policy",
+          database_oid: databaseIdentity.database_oid,
+          dependency_type: "r",
+          function_arguments: null,
+          grantor_name: null,
+          object_kind: "policy",
+          object_name: "dashboard_cleanup_coordination",
+          policy_command: "a",
+          policy_name: "dashboard_cleanup_coordination_security_definer_insert",
+          policy_permissive: true,
+          policy_roles: ["dasher_security_definer"],
+          policy_using_expression: null,
+          policy_with_check_expression:
+            cleanupCoordinationSecurityDefinerInsertWithCheck,
+          privilege_type: null,
+          role_name: "dasher_security_definer",
+          schema_name: "dasher",
+          subobject_name: null,
+        }),
+      );
+
+      for (const columnName of [
+        "organization_id",
+        "dashboard_id",
+        "current_step",
+        "expected_lifecycle_revision",
+        "next_attempt_at",
+      ]) {
+        entries.push(
+          dependencyEntry({
+            catalog_name: "pg_class",
+            database_oid: databaseIdentity.database_oid,
+            dependency_type: "a",
+            function_arguments: null,
+            grantor_name: ownerName,
+            object_kind: "column",
+            object_name: "dashboard_cleanup_coordination",
+            privilege_type: "INSERT",
+            role_name: "dasher_security_definer",
+            schema_name: "dasher",
+            subobject_name: columnName,
           }),
         );
       }
@@ -22132,14 +22250,16 @@ export async function runMigrations(
       appliedSuccessor = true;
     }
 
-    if (
+    while (
       successorPresent &&
-      migrations.length === 4 &&
-      prefix.journalRows.length === 3
+      prefix.journalRows.length >= 3 &&
+      prefix.journalRows.length < migrations.length
     ) {
-      await applyThrough(4);
+      await applyThrough(prefix.journalRows.length + 1);
       appliedSuccessor = true;
-    } else if (
+    }
+
+    if (
       !appliedPrefix &&
       !appliedSuccessor &&
       prefix.journalRows.length === migrations.length
