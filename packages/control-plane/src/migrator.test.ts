@@ -23,6 +23,7 @@ import {
   getCanonical0005ExactCatalogContractForTests,
   getCanonical0006ExactCatalogContractForTests,
   getModeled0003StaticCatalogContractForTests,
+  resetPreparedRunRoles,
   resetPreparedRetentionRoles,
   runMigrations,
   type MigrationClient,
@@ -99,6 +100,7 @@ type FailureStage =
   | "begin"
   | "catalog"
   | "commit"
+  | "drop-run-operator"
   | "journal"
   | "migration"
   | "set-local"
@@ -106,20 +108,25 @@ type FailureStage =
 
 interface FailureInjection {
   readonly stage: FailureStage;
-  readonly transaction: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  readonly transaction: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 }
 
 type ManagedRoleName =
   | "dasher_app"
   | "dasher_retention_definer"
   | "dasher_retention_operator"
+  | "dasher_run_definer"
+  | "dasher_run_operator"
   | "dasher_security_definer";
 
 interface ScriptedMigrationOptions {
   readonly dependencyMatches?: readonly boolean[];
   readonly destructiveReleaseThrows?: boolean;
+  readonly discoveredLoginBindingRows?: readonly Record<string, unknown>[];
+  readonly executorRows?: readonly Record<string, unknown>[];
   readonly expectedLoginRows?: readonly Record<string, unknown>[];
   readonly expectedRetentionLoginRows?: readonly Record<string, unknown>[];
+  readonly expectedRunLoginRows?: readonly Record<string, unknown>[];
   readonly failure?: FailureInjection;
   readonly initialJournalRows?: readonly {
     readonly applied_by: string;
@@ -142,6 +149,7 @@ interface ScriptedMigrationOptions {
   readonly phase6CatalogMatches?: boolean;
   readonly prefixObjectMatches?: boolean;
   readonly retentionRoleNames?: readonly string[];
+  readonly runRoleNames?: readonly string[];
   readonly rollbackFails?: boolean;
   readonly savepointReleaseError?: unknown;
   readonly savepointRollbackError?: unknown;
@@ -208,7 +216,11 @@ function managedRoleRow(
           ? "dasher:managed-role:v1:retention-definer"
           : roleName === "dasher_retention_operator"
             ? "dasher:managed-role:v1:retention-operator"
-            : "dasher:managed-role:v1:app",
+            : roleName === "dasher_run_definer"
+              ? "dasher:managed-role:v1:run-definer"
+              : roleName === "dasher_run_operator"
+                ? "dasher:managed-role:v1:run-operator"
+                : "dasher:managed-role:v1:app",
     connection_limit: -1,
     has_settings: false,
     inherit_privileges: false,
@@ -217,7 +229,9 @@ function managedRoleRow(
     role_count: "1",
     superuser: false,
     valid_until_is_null: true,
-    valid_until_is_infinity: roleName.startsWith("dasher_retention_"),
+    valid_until_is_infinity:
+      roleName.startsWith("dasher_retention_") ||
+      roleName.startsWith("dasher_run_"),
     ...overrides,
   };
 }
@@ -247,6 +261,8 @@ function scriptedMigrationClient(
     dasher_app: 0,
     dasher_retention_definer: 0,
     dasher_retention_operator: 0,
+    dasher_run_definer: 0,
+    dasher_run_operator: 0,
     dasher_security_definer: 0,
   };
   const createdPreparedRoles = new Set<string>();
@@ -275,6 +291,7 @@ function scriptedMigrationClient(
   let currentTransaction = 0;
   let dependencyCheck = 0;
   let rollbackQueries = 0;
+  let runOperatorDropFailureInjected = false;
 
   function command(name: string): void {
     transactionCommands.push(`T${String(currentTransaction)} ${name}`);
@@ -413,30 +430,88 @@ function scriptedMigrationClient(
     if (text.includes("WITH RECURSIVE inherited_roles")) {
       command("CATALOG VALIDATION");
       failAt("validation");
-      return result([
-        {
-          current_name: "migration_owner",
-          database_owner_name: "migration_owner",
-          is_database_owner: true,
-          is_managed_role: false,
-          is_member_of_app: false,
-          is_superuser: true,
-          session_name: "migration_owner",
-        },
-      ]);
+      return result(
+        options.executorRows ?? [
+          {
+            current_name: "migration_owner",
+            database_owner_name: "migration_owner",
+            is_database_owner: true,
+            is_managed_role: false,
+            is_member_of_app: false,
+            is_superuser: true,
+            session_name: "migration_owner",
+          },
+        ],
+      );
     }
     if (text.includes("WITH expected(role_name) AS")) {
       return result(
-        values?.[1] === "retention-login"
-          ? (options.expectedRetentionLoginRows ?? [])
-          : (options.expectedLoginRows ?? []),
+        values?.[1] === "run-login"
+          ? (options.expectedRunLoginRows ?? [])
+          : values?.[1] === "retention-login"
+            ? (options.expectedRetentionLoginRows ?? [])
+            : (options.expectedLoginRows ?? []),
+      );
+    }
+    if (
+      text.includes("marked_login AS (") &&
+      text.includes("managed_membership AS (")
+    ) {
+      const expectedLoginRows = [
+        ...(options.expectedLoginRows ?? []),
+        ...(options.expectedRetentionLoginRows ?? []),
+        ...(options.expectedRunLoginRows ?? []),
+      ];
+      const commentsByRole = new Map(
+        expectedLoginRows.map((row) => [
+          row.role_name as string,
+          row.comment as string,
+        ]),
+      );
+      return result(
+        options.discoveredLoginBindingRows ?? [
+          ...expectedLoginRows.map((row) => ({
+            binding_kind: "marker",
+            binding_value: row.comment,
+            role_name: row.role_name,
+          })),
+          ...(options.membershipRows ?? []).map((row) => ({
+            binding_kind: "membership",
+            binding_value: row.granted_role_name,
+            role_name: row.member_role_name,
+            role_comment: commentsByRole.get(row.member_role_name as string),
+          })),
+        ],
       );
     }
     if (text.includes("role.rolname LIKE 'dasher\\_retention\\_%'")) {
       const roleNames = [
         ...(options.retentionRoleNames ?? []),
         ...createdPreparedRoles,
-      ].filter((roleName) => !droppedPreparedRoles.has(roleName));
+      ].filter(
+        (roleName) =>
+          roleName.startsWith("dasher_retention_") &&
+          !droppedPreparedRoles.has(roleName),
+      );
+      return result(
+        [...new Set(roleNames)]
+          .sort()
+          .map((roleName) => ({ role_name: roleName })),
+      );
+    }
+    if (text.includes("role.rolname LIKE 'dasher\\_run\\_%'")) {
+      const preparedRoleNames = new Set(values?.[0] as readonly string[]);
+      const allowlistedLoginNames = new Set(values?.[1] as readonly string[]);
+      const roleNames = [
+        ...(options.runRoleNames ?? []),
+        ...createdPreparedRoles,
+      ].filter(
+        (roleName) =>
+          roleName.startsWith("dasher_run_") &&
+          (preparedRoleNames.has(roleName) ||
+            !allowlistedLoginNames.has(roleName)) &&
+          !droppedPreparedRoles.has(roleName),
+      );
       return result(
         [...new Set(roleNames)]
           .sort()
@@ -452,10 +527,12 @@ function scriptedMigrationClient(
       const row =
         reads !== undefined && readIndex < reads.length
           ? reads[readIndex]
-          : roleName.startsWith("dasher_retention_") &&
+          : (roleName.startsWith("dasher_retention_") ||
+                roleName.startsWith("dasher_run_")) &&
               (droppedPreparedRoles.has(roleName) ||
                 (!createdPreparedRoles.has(roleName) &&
-                  !(options.retentionRoleNames ?? []).includes(roleName)))
+                  !(options.retentionRoleNames ?? []).includes(roleName) &&
+                  !(options.runRoleNames ?? []).includes(roleName)))
             ? undefined
             : managedRoleRow(roleName);
       return result(row === undefined ? [] : [row]);
@@ -496,6 +573,16 @@ function scriptedMigrationClient(
       createdPreparedRoles.add("dasher_retention_operator");
       return result([]);
     }
+    if (text.startsWith("CREATE ROLE dasher_run_definer")) {
+      managedRoleEvents.push("CREATE dasher_run_definer");
+      createdPreparedRoles.add("dasher_run_definer");
+      return result([]);
+    }
+    if (text.startsWith("CREATE ROLE dasher_run_operator")) {
+      managedRoleEvents.push("CREATE dasher_run_operator");
+      createdPreparedRoles.add("dasher_run_operator");
+      return result([]);
+    }
     if (text.startsWith("COMMENT ON ROLE ")) {
       managedRoleEvents.push(
         text.startsWith("COMMENT ON ROLE dasher_app ")
@@ -504,7 +591,11 @@ function scriptedMigrationClient(
             ? "COMMENT dasher_security_definer"
             : text.startsWith("COMMENT ON ROLE dasher_retention_definer ")
               ? "COMMENT dasher_retention_definer"
-              : "COMMENT dasher_retention_operator",
+              : text.startsWith("COMMENT ON ROLE dasher_retention_operator ")
+                ? "COMMENT dasher_retention_operator"
+                : text.startsWith("COMMENT ON ROLE dasher_run_definer ")
+                  ? "COMMENT dasher_run_definer"
+                  : "COMMENT dasher_run_operator",
       );
       return result([]);
     }
@@ -516,6 +607,24 @@ function scriptedMigrationClient(
     if (text === "DROP ROLE dasher_retention_definer") {
       managedRoleEvents.push("DROP dasher_retention_definer");
       droppedPreparedRoles.add("dasher_retention_definer");
+      return result([]);
+    }
+    if (text === "DROP ROLE dasher_run_operator") {
+      managedRoleEvents.push("DROP dasher_run_operator");
+      droppedPreparedRoles.add("dasher_run_operator");
+      if (
+        options.failure?.stage === "drop-run-operator" &&
+        options.failure.transaction === currentTransaction &&
+        !runOperatorDropFailureInjected
+      ) {
+        runOperatorDropFailureInjected = true;
+        throw operationError;
+      }
+      return result([]);
+    }
+    if (text === "DROP ROLE dasher_run_definer") {
+      managedRoleEvents.push("DROP dasher_run_definer");
+      droppedPreparedRoles.add("dasher_run_definer");
       return result([]);
     }
     if (
@@ -746,6 +855,7 @@ function scriptedMigrationClient(
     }
     if (
       text.startsWith("CREATE SCHEMA dasher;") ||
+      text.length === 0 ||
       text.startsWith("CREATE TABLE dasher.fixture_extension") ||
       text.startsWith("SELECT 1;") ||
       text.startsWith("SELECT 2;") ||
@@ -992,6 +1102,7 @@ function expectFailureCommandOrder(
     begin: "BEGIN",
     catalog: "CATALOG VALIDATION",
     commit: "COMMIT",
+    "drop-run-operator": "DROP RUN OPERATOR",
     journal: "JOURNAL INSERT",
     migration: "MIGRATION SQL",
     "set-local": "SET LOCAL",
@@ -1198,6 +1309,45 @@ async function canonicalPhase6Series(): Promise<{
   };
 }
 
+async function phase7PlaceholderSeries(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const phase6 = await canonicalPhase6Series();
+  await writeFile(
+    join(phase6.directory, "0007_agent_run_ledger_and_calculations.sql"),
+    new Uint8Array(),
+  );
+  return phase6;
+}
+
+async function phase7AppliedSeries(): Promise<{
+  readonly directory: string;
+  readonly journalRows: readonly {
+    readonly applied_by: string;
+    readonly checksum_sha256: Uint8Array;
+    readonly filename: string;
+    readonly sequence: number;
+  }[];
+}> {
+  const series = await phase7PlaceholderSeries();
+  const migrations = await discoverMigrations(series.directory);
+  return {
+    directory: series.directory,
+    journalRows: migrations.map((migration) => ({
+      applied_by: "migration_owner",
+      checksum_sha256: migration.checksumSha256,
+      filename: migration.filename,
+      sequence: migration.sequence,
+    })),
+  };
+}
+
 async function canonical0002Series(): Promise<{
   readonly directory: string;
   readonly journalRows: readonly {
@@ -1263,6 +1413,17 @@ function expectedRetentionLoginRow(
   });
 }
 
+function expectedRunLoginRow(
+  roleName = "dasher_test_task9a_run",
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return expectedLoginRow({
+    comment: "dasher:run-login:v1:database-oid:16384",
+    role_name: roleName,
+    ...overrides,
+  });
+}
+
 function expectedMembershipRowFor(
   roleName: string,
 ): Readonly<Record<string, unknown>> {
@@ -1284,6 +1445,15 @@ function expectedRetentionMembershipRowFor(
   };
 }
 
+function expectedRunMembershipRowFor(
+  roleName: string,
+): Readonly<Record<string, unknown>> {
+  return {
+    ...expectedMembershipRowFor(roleName),
+    granted_role_name: "dasher_run_operator",
+  };
+}
+
 const expectedMembershipRow = expectedMembershipRowFor(
   "dasher_test_00000000000000000000000000000000",
 );
@@ -1292,6 +1462,8 @@ const expectedManagedDependencyRoleNames = [
   "dasher_security_definer",
   "dasher_retention_definer",
   "dasher_retention_operator",
+  "dasher_run_definer",
+  "dasher_run_operator",
 ] as const;
 
 afterAll(async () => {
@@ -4502,6 +4674,697 @@ describe("prefix-aware managed roles and expected app logins", () => {
     expect(transactionCommands(scripted, 2)).toContain("T2 MIGRATION SQL");
     expect(transactionCommands(scripted, 2)).toContain("T2 JOURNAL INSERT");
     expect(transactionCommands(scripted, 2).at(-1)).toBe("T2 ROLLBACK");
+  });
+});
+
+describe("phase-7 prepared run roles and three-login allowlists", () => {
+  it("resets only the exact dependency-free run pair from the exact six-row prefix", async () => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+        [],
+        [],
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(
+      scripted.managedRoleEvents.filter((event) => event.startsWith("DROP ")),
+    ).toEqual(["DROP dasher_run_operator", "DROP dasher_run_definer"]);
+    expect(scripted.journalRows).toHaveLength(6);
+    expectExactlyOneSuccessfulSessionGate(scripted);
+  });
+
+  it("resets with all three nonempty exact allowlists and does not classify an allowlisted dasher_run_ login as prepared-role residue", async () => {
+    const appLogin = "dasher_test_task9a_app";
+    const retentionLogin = "dasher_test_task9a_retention";
+    const runLogin = "dasher_run_service";
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      expectedLoginRows: [expectedLoginRow({ role_name: appLogin })],
+      expectedRetentionLoginRows: [expectedRetentionLoginRow(retentionLogin)],
+      expectedRunLoginRows: [expectedRunLoginRow(runLogin)],
+      initialJournalRows: series.journalRows,
+      membershipRows: [
+        expectedMembershipRowFor(appLogin),
+        expectedRetentionMembershipRowFor(retentionLogin),
+        expectedRunMembershipRowFor(runLogin),
+      ],
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator", runLogin],
+    });
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [appLogin],
+        [retentionLogin],
+        [runLogin],
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(
+      scripted.managedRoleEvents.filter((event) => event.startsWith("DROP ")),
+    ).toEqual(["DROP dasher_run_operator", "DROP dasher_run_definer"]);
+  });
+
+  it.each([
+    {
+      app: ["shared_login"],
+      name: "app/run overlap",
+      retention: [],
+      run: ["shared_login"],
+    },
+    {
+      app: [],
+      name: "retention/run overlap",
+      retention: ["shared_login"],
+      run: ["shared_login"],
+    },
+    {
+      app: [],
+      name: "managed run definer",
+      retention: [],
+      run: ["dasher_run_definer"],
+    },
+    {
+      app: [],
+      name: "managed run operator",
+      retention: [],
+      run: ["dasher_run_operator"],
+    },
+    {
+      app: [],
+      name: "duplicate run login",
+      retention: [],
+      run: ["run_login", "run_login"],
+    },
+    {
+      app: [],
+      name: "unlisted malformed run login",
+      retention: [],
+      run: ["run\nlogin"],
+    },
+  ])("rejects $name before connection", async ({ app, retention, run }) => {
+    let connections = 0;
+    const pool: MigrationPool = {
+      async connect() {
+        connections += 1;
+        throw new Error("unexpected connection");
+      },
+    };
+
+    await expect(
+      runMigrations(pool, fixtureDirectory, app, retention, run),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    await expect(
+      resetPreparedRunRoles(pool, fixtureDirectory, app, retention, run),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(connections).toBe(0);
+  });
+
+  it("binds the exact run-login marker, membership, CONNECT dependency, and sorted allowlist", async () => {
+    const runLogins = ["dasher_test_task9a_run_b", "dasher_test_task9a_run_a"];
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      expectedRunLoginRows: runLogins.map((roleName) =>
+        expectedRunLoginRow(roleName),
+      ),
+      initialJournalRows: series.journalRows,
+      membershipRows: runLogins.map((roleName) =>
+        expectedRunMembershipRowFor(roleName),
+      ),
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+        [],
+        runLogins,
+      ),
+    ).resolves.toBeUndefined();
+
+    const runInventory = scripted.dependencyInventories.at(-1) ?? [];
+    expect(
+      runInventory
+        .filter(
+          (row) =>
+            row.object_kind === "database" &&
+            runLogins.includes(row.role_name as string),
+        )
+        .map((row) => row.role_name)
+        .sort(),
+    ).toEqual([...runLogins].sort());
+  });
+
+  it.each([
+    {
+      binding: {
+        binding_kind: "marker",
+        binding_value: "dasher:run-login:v1:database-oid:16384",
+        role_name: "dasher_test_task9a_unlisted_marker",
+      },
+      name: "unlisted database marker",
+    },
+    {
+      binding: {
+        binding_kind: "membership",
+        binding_value: "dasher_run_operator",
+        role_name: "dasher_test_task9a_unlisted_member",
+        role_comment: null,
+      },
+      name: "unlisted managed membership",
+    },
+  ])(
+    "discovers and rejects $name through the production catalog query",
+    async ({ binding }) => {
+      const runLogin = "dasher_test_task9a_run";
+      const expectedBindings = [
+        {
+          binding_kind: "marker",
+          binding_value: "dasher:run-login:v1:database-oid:16384",
+          role_name: runLogin,
+        },
+        {
+          binding_kind: "membership",
+          binding_value: "dasher_run_operator",
+          role_name: runLogin,
+          role_comment: "dasher:run-login:v1:database-oid:16384",
+        },
+        binding,
+      ];
+      const series = await canonicalPhase6Series();
+      const scripted = scriptedMigrationClient({
+        discoveredLoginBindingRows: expectedBindings,
+        expectedRunLoginRows: [expectedRunLoginRow(runLogin)],
+        initialJournalRows: series.journalRows,
+        membershipRows: [expectedRunMembershipRowFor(runLogin)],
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+      });
+
+      await expect(
+        runMigrations(
+          singleClientPool(scripted.client),
+          series.directory,
+          [],
+          [],
+          [runLogin],
+        ),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+
+      const discoveryQuery = scripted.queryTexts.find(
+        (text) =>
+          text.includes("marked_login AS (") &&
+          text.includes("managed_membership AS ("),
+      );
+      expect(discoveryQuery).toBeDefined();
+      expect(discoveryQuery).not.toContain("WITH expected(role_name) AS");
+    },
+  );
+
+  it("prepares the clean exact run pair only after validating phase 6 and preserves it after SQL failure", async () => {
+    const series = await phase7PlaceholderSeries();
+    const scripted = scriptedMigrationClient({
+      failure: { stage: "migration", transaction: 3 },
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toBe(scripted.operationError);
+    expect(
+      scripted.managedRoleEvents.filter((event) =>
+        event.startsWith("CREATE dasher_run_"),
+      ),
+    ).toEqual(["CREATE dasher_run_definer", "CREATE dasher_run_operator"]);
+    const journalRead = scripted.queryTexts.findIndex((text) =>
+      text.startsWith("SELECT sequence, filename, checksum_sha256"),
+    );
+    const firstCreate = scripted.queryTexts.findIndex((text) =>
+      text.startsWith("CREATE ROLE dasher_run_definer WITH"),
+    );
+    expect(journalRead).toBeLessThan(firstCreate);
+    expect(scripted.journalRows).toEqual(series.journalRows);
+  });
+
+  it("stops a clean canonical install at phase 6, prepares the pair, and only then enters phase-7 SQL", async () => {
+    const series = await phase7PlaceholderSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: [],
+      prefixObjectMatches: true,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+
+    expect(transactionCommands(scripted, 7).at(-1)).toBe("T7 COMMIT");
+    expect(transactionCommands(scripted, 8)).not.toContain("T8 MIGRATION SQL");
+    expect(transactionCommands(scripted, 9)).toContain("T9 MIGRATION SQL");
+    expect(transactionCommands(scripted, 9).at(-1)).toBe("T9 ROLLBACK");
+    expect(
+      scripted.managedRoleEvents.filter((event) =>
+        event.startsWith("CREATE dasher_run_"),
+      ),
+    ).toEqual(["CREATE dasher_run_definer", "CREATE dasher_run_operator"]);
+    expect(scripted.journalRows).toEqual(series.journalRows);
+  });
+
+  it.each([
+    {
+      name: "partial prepared pair",
+      runRoleNames: ["dasher_run_definer"],
+    },
+    {
+      name: "wrong prepared residue",
+      runRoleNames: [
+        "dasher_run_definer",
+        "dasher_run_operator",
+        "dasher_run_residue",
+      ],
+    },
+  ])("rejects $name before phase-7 SQL", async ({ runRoleNames }) => {
+    const series = await phase7PlaceholderSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(scripted.transactionCommands).not.toContain("T1 MIGRATION SQL");
+    expect(scripted.journalRows).toEqual(series.journalRows);
+  });
+
+  it("rejects every prepared run-role flag, setting, validity, and comment drift before phase-7 SQL", async () => {
+    const series = await phase7PlaceholderSeries();
+    const mutants = [
+      { can_login: true },
+      { inherit_privileges: true },
+      { superuser: true },
+      { can_create_database: true },
+      { can_create_role: true },
+      { replication: true },
+      { bypass_rls: true },
+      { password_is_null: false },
+      { connection_limit: 0 },
+      { valid_until_is_infinity: false },
+      { has_settings: true },
+      { comment: "dasher:managed-role:v1:run-definer-drift" },
+    ] as const;
+
+    for (const mutant of mutants) {
+      const scripted = scriptedMigrationClient({
+        initialJournalRows: series.journalRows,
+        managedRoleReads: {
+          dasher_run_definer: [managedRoleRow("dasher_run_definer", mutant)],
+        },
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+        runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+      });
+
+      await expect(
+        runMigrations(singleClientPool(scripted.client), series.directory, []),
+      ).rejects.toMatchObject({ code: "managed_role_drift" });
+      expect(transactionCommands(scripted, 3)).not.toContain(
+        "T3 MIGRATION SQL",
+      );
+    }
+  });
+
+  it("rejects prepared run-role adoption before the exact phase-6 prefix", async () => {
+    const series = await phase7PlaceholderSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows.slice(0, 5),
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(
+      scripted.managedRoleEvents.some((event) => event.startsWith("CREATE ")),
+    ).toBe(false);
+  });
+
+  it("rejects run-role residue when the phase-7 file is absent", async () => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(scripted.journalRows).toEqual(series.journalRows);
+  });
+
+  it("reuses the exact prepared residue on retry and rolls back the intentionally absent phase-7 catalog", async () => {
+    const series = await phase7PlaceholderSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(
+      scripted.managedRoleEvents.some((event) =>
+        event.startsWith("CREATE dasher_run_"),
+      ),
+    ).toBe(false);
+    expect(transactionCommands(scripted, 3)).toContain("T3 MIGRATION SQL");
+    expect(transactionCommands(scripted, 3)).toContain("T3 JOURNAL INSERT");
+    expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+    expect(scripted.journalRows).toEqual(series.journalRows);
+  });
+
+  it.each([
+    {
+      name: "wrong database marker",
+      options: {
+        expectedRunLoginRows: [
+          expectedRunLoginRow("dasher_test_task9a_run", {
+            comment: "dasher:run-login:v1:database-oid:99999",
+          }),
+        ],
+        membershipRows: [expectedRunMembershipRowFor("dasher_test_task9a_run")],
+      },
+    },
+    {
+      name: "wrong membership",
+      options: {
+        expectedRunLoginRows: [expectedRunLoginRow()],
+        membershipRows: [expectedMembershipRowFor("dasher_test_task9a_run")],
+      },
+    },
+  ])("rejects run-login catalog drift: $name", async ({ options }) => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      ...options,
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      runMigrations(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+        [],
+        ["dasher_test_task9a_run"],
+      ),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+  });
+
+  it.each([
+    {
+      name: "partial pair",
+      options: { runRoleNames: ["dasher_run_definer"] },
+    },
+    {
+      name: "wrong role name residue",
+      options: {
+        runRoleNames: [
+          "dasher_run_definer",
+          "dasher_run_operator",
+          "dasher_run_residue",
+        ],
+      },
+    },
+    {
+      name: "dependency drift",
+      options: {
+        dependencyMatches: [false],
+        runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+      },
+    },
+    {
+      name: "wrong owner",
+      options: {
+        executorRows: [
+          {
+            current_name: "not_owner",
+            database_owner_name: "migration_owner",
+            is_database_owner: false,
+            is_managed_role: false,
+            is_member_of_app: false,
+            is_superuser: true,
+            session_name: "not_owner",
+          },
+        ],
+        runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+      },
+    },
+  ])("denies reset for $name without a drop", async ({ options }) => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      ...options,
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+        [],
+        [],
+      ),
+    ).rejects.toBeInstanceOf(MigrationContractError);
+    expect(
+      scripted.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+    ).toBe(false);
+  });
+
+  it("denies reset for syntactically valid but catalog-drifted nonempty allowlists", async () => {
+    const appLogin = "dasher_test_task9a_app";
+    const retentionLogin = "dasher_test_task9a_retention";
+    const runLogin = "dasher_test_task9a_run";
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      expectedLoginRows: [expectedLoginRow({ role_name: appLogin })],
+      expectedRetentionLoginRows: [expectedRetentionLoginRow(retentionLogin)],
+      expectedRunLoginRows: [
+        expectedRunLoginRow(runLogin, {
+          comment: "dasher:app-login:v1:database-oid:16384",
+        }),
+      ],
+      initialJournalRows: series.journalRows,
+      membershipRows: [
+        expectedMembershipRowFor(appLogin),
+        expectedRetentionMembershipRowFor(retentionLogin),
+        expectedRunMembershipRowFor(runLogin),
+      ],
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [appLogin],
+        [retentionLogin],
+        [runLogin],
+      ),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(
+      scripted.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+    ).toBe(false);
+  });
+
+  it("rolls back and restores both prepared roles when failure is injected between the ordered drops", async () => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      failure: { stage: "drop-run-operator", transaction: 1 },
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+        [],
+        [],
+      ),
+    ).rejects.toBe(scripted.operationError);
+    expect(transactionCommands(scripted, 1).at(-1)).toBe("T1 ROLLBACK");
+    expect(
+      scripted.managedRoleEvents.filter((event) => event.startsWith("DROP ")),
+    ).toEqual(["DROP dasher_run_operator"]);
+
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(scripted.client),
+        series.directory,
+        [],
+        [],
+        [],
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      scripted.managedRoleEvents.filter((event) => event.startsWith("DROP ")),
+    ).toEqual([
+      "DROP dasher_run_operator",
+      "DROP dasher_run_operator",
+      "DROP dasher_run_definer",
+    ]);
+  });
+
+  it("denies reset from a partial directory, a post-0007 directory, or a non-six-row journal", async () => {
+    const phase6 = await canonicalPhase6Series();
+    const canonical2 = await canonical0002Series();
+
+    for (const series of [
+      canonical2,
+      { ...phase6, journalRows: phase6.journalRows.slice(0, 5) },
+    ]) {
+      const scripted = scriptedMigrationClient({
+        initialJournalRows: series.journalRows,
+        prefixObjectMatches: true,
+        retentionRoleNames: [
+          "dasher_retention_definer",
+          "dasher_retention_operator",
+        ],
+        runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+      });
+      await expect(
+        resetPreparedRunRoles(
+          singleClientPool(scripted.client),
+          series.directory,
+          [],
+          [],
+          [],
+        ),
+      ).rejects.toBeInstanceOf(MigrationContractError);
+      expect(
+        scripted.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+      ).toBe(false);
+    }
+
+    const appliedPhase7 = await phase7AppliedSeries();
+    const post0007 = scriptedMigrationClient({
+      initialJournalRows: appliedPhase7.journalRows,
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+    await expect(
+      resetPreparedRunRoles(
+        singleClientPool(post0007.client),
+        appliedPhase7.directory,
+        [],
+        [],
+        [],
+      ),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(
+      post0007.managedRoleEvents.some((event) => event.startsWith("DROP ")),
+    ).toBe(false);
+    expect(post0007.journalRows).toHaveLength(7);
+  });
+
+  it("never calls the run-role reset automatically", async () => {
+    const series = await canonicalPhase6Series();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await runMigrations(
+      singleClientPool(scripted.client),
+      series.directory,
+      [],
+    );
+    expect(
+      scripted.managedRoleEvents.some((event) =>
+        event.startsWith("DROP dasher_run_"),
+      ),
+    ).toBe(false);
   });
 });
 

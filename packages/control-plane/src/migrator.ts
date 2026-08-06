@@ -58,6 +58,14 @@ const canonicalSuccessorFiles = [
     filename: "0006_lifecycle_access_retention_guard_correction.sql",
   },
 ] as const;
+const canonicalPhase7PlaceholderFile = {
+  checksum: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  filename: "0007_agent_run_ledger_and_calculations.sql",
+} as const;
+const canonicalPhase7PlaceholderSeries = [
+  ...canonicalSuccessorFiles,
+  canonicalPhase7PlaceholderFile,
+] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
   "ROLLBACK TO SAVEPOINT dasher_managed_role_create";
@@ -502,14 +510,42 @@ const preparedRetentionRoles = [
   },
 ] as const satisfies readonly ManagedRoleExpectation[];
 
+const preparedRunRoles = [
+  {
+    name: "dasher_run_definer",
+    comment: "dasher:managed-role:v1:run-definer",
+    bypassRls: false,
+    createSql:
+      "CREATE ROLE dasher_run_definer WITH NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 PASSWORD NULL VALID UNTIL 'infinity'",
+    commentSql:
+      "COMMENT ON ROLE dasher_run_definer IS 'dasher:managed-role:v1:run-definer'",
+    validUntil: "infinity",
+  },
+  {
+    name: "dasher_run_operator",
+    comment: "dasher:managed-role:v1:run-operator",
+    bypassRls: false,
+    createSql:
+      "CREATE ROLE dasher_run_operator WITH NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 PASSWORD NULL VALID UNTIL 'infinity'",
+    commentSql:
+      "COMMENT ON ROLE dasher_run_operator IS 'dasher:managed-role:v1:run-operator'",
+    validUntil: "infinity",
+  },
+] as const satisfies readonly ManagedRoleExpectation[];
+
 const managedRoleNames = ["dasher_app", "dasher_security_definer"] as const;
 const preparedRetentionRoleNames = [
   "dasher_retention_definer",
   "dasher_retention_operator",
 ] as const;
+const preparedRunRoleNames = [
+  "dasher_run_definer",
+  "dasher_run_operator",
+] as const;
 const allManagedRoleNames = [
   ...managedRoleNames,
   ...preparedRetentionRoleNames,
+  ...preparedRunRoleNames,
 ] as const;
 
 const task4FunctionSignatures = [
@@ -5116,6 +5152,13 @@ interface ExpectedLoginRow {
   readonly valid_until_is_null: boolean;
 }
 
+interface DiscoveredLoginBindingRow {
+  readonly binding_kind: "marker" | "membership";
+  readonly binding_value: string;
+  readonly role_comment: string | null;
+  readonly role_name: string;
+}
+
 interface RoleMembershipRow {
   readonly admin_option: boolean;
   readonly granted_role_name: string;
@@ -5272,19 +5315,29 @@ function validateExpectedLoginRoleNames(
 function validateExpectedLoginRoleNameAllowlists(
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
 ): {
   readonly app: readonly string[];
   readonly retention: readonly string[];
+  readonly run: readonly string[];
 } {
   const app = validateExpectedLoginRoleNames(expectedAppLoginRoleNames);
   const retention = validateExpectedLoginRoleNames(
     expectedRetentionLoginRoleNames,
   );
+  const run = validateExpectedLoginRoleNames(expectedRunLoginRoleNames);
   const appRoleNames = new Set(app);
-  if (retention.some((roleName) => appRoleNames.has(roleName))) {
+  const retentionRoleNames = new Set(retention);
+  if (
+    retention.some((roleName) => appRoleNames.has(roleName)) ||
+    run.some(
+      (roleName) =>
+        appRoleNames.has(roleName) || retentionRoleNames.has(roleName),
+    )
+  ) {
     return reject("managed_role_drift");
   }
-  return { app, retention };
+  return { app, retention, run };
 }
 
 function retainSanitizedRollbackDiagnostic(
@@ -5421,7 +5474,9 @@ async function assertExecutor(client: MigrationClient): Promise<string> {
         'dasher_app',
         'dasher_security_definer',
         'dasher_retention_definer',
-        'dasher_retention_operator'
+        'dasher_retention_operator',
+        'dasher_run_definer',
+        'dasher_run_operator'
       )
         AS is_managed_role,
       EXISTS (
@@ -5433,7 +5488,9 @@ async function assertExecutor(client: MigrationClient): Promise<string> {
           'dasher_app',
           'dasher_security_definer',
           'dasher_retention_definer',
-          'dasher_retention_operator'
+          'dasher_retention_operator',
+          'dasher_run_definer',
+          'dasher_run_operator'
         )
       ) AS is_member_of_app
     FROM pg_catalog.pg_database AS target_database
@@ -5622,6 +5679,78 @@ async function createPreparedRetentionRoles(
   }
 }
 
+async function readRunRoleNames(
+  client: MigrationClient,
+  expectedLoginRoleNames: readonly string[],
+): Promise<readonly string[]> {
+  const result = await client.query<{ readonly role_name: string }>(
+    `
+    SELECT role.rolname::text AS role_name
+    FROM pg_catalog.pg_roles AS role
+    WHERE role.rolname = ANY($1::text[])
+       OR (
+         (
+           role.rolname LIKE 'dasher\\_run\\_%' ESCAPE '\\'
+           OR COALESCE(
+             pg_catalog.shobj_description(role.oid, 'pg_authid')
+               LIKE 'dasher:managed-role:v1:run-%',
+             false
+           )
+         )
+         AND NOT (role.rolname = ANY($2::text[]))
+       )
+    ORDER BY role.rolname
+  `,
+    [preparedRunRoleNames, expectedLoginRoleNames],
+  );
+  return result.rows.map((row) => row.role_name);
+}
+
+async function preparedRunRolesAreExact(
+  client: MigrationClient,
+  allowAbsent: boolean,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  const roleNames = await readRunRoleNames(client, expectedLoginRoleNames);
+  if (roleNames.length === 0 && allowAbsent) {
+    return false;
+  }
+  if (!arraysEqual(roleNames, [...preparedRunRoleNames].sort())) {
+    return reject("managed_role_drift");
+  }
+
+  for (const expected of preparedRunRoles) {
+    const row = await readManagedRole(client, expected.name);
+    if (row === undefined || !roleMatches(row, expected)) {
+      return reject("managed_role_drift");
+    }
+  }
+  return true;
+}
+
+async function assertPreparedRunRolesAbsent(
+  client: MigrationClient,
+  expectedLoginRoleNames: readonly string[],
+): Promise<void> {
+  if ((await readRunRoleNames(client, expectedLoginRoleNames)).length !== 0) {
+    return reject("managed_role_drift");
+  }
+}
+
+async function createPreparedRunRoles(client: MigrationClient): Promise<void> {
+  for (const expected of preparedRunRoles) {
+    if ((await readManagedRole(client, expected.name)) !== undefined) {
+      return reject("managed_role_drift");
+    }
+    await client.query(expected.createSql);
+    await client.query(expected.commentSql);
+    const row = await readManagedRole(client, expected.name);
+    if (row === undefined || !roleMatches(row, expected)) {
+      return reject("managed_role_drift");
+    }
+  }
+}
+
 async function readDatabaseIdentity(
   client: MigrationClient,
 ): Promise<DatabaseIdentityRow> {
@@ -5639,11 +5768,102 @@ async function readDatabaseIdentity(
   return row;
 }
 
+async function assertNoUnlistedLoginBindings(
+  client: MigrationClient,
+  expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
+  databaseIdentity: DatabaseIdentityRow,
+): Promise<void> {
+  const result = await client.query<DiscoveredLoginBindingRow>(`
+    WITH marked_login AS (
+      SELECT
+        role.rolname::text AS role_name,
+        'marker'::text AS binding_kind,
+        pg_catalog.shobj_description(role.oid, 'pg_authid') AS binding_value,
+        pg_catalog.shobj_description(role.oid, 'pg_authid') AS role_comment
+      FROM pg_catalog.pg_authid AS role
+      WHERE role.rolcanlogin
+        AND COALESCE(
+          pg_catalog.shobj_description(role.oid, 'pg_authid')
+            LIKE 'dasher:%-login:v1:database-oid:%',
+          false
+        )
+    ),
+    managed_membership AS (
+      SELECT
+        member_role.rolname::text AS role_name,
+        'membership'::text AS binding_kind,
+        granted_role.rolname::text AS binding_value,
+        pg_catalog.shobj_description(
+          member_role.oid,
+          'pg_authid'
+        ) AS role_comment
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS granted_role
+        ON granted_role.oid = membership.roleid
+      JOIN pg_catalog.pg_authid AS member_role
+        ON member_role.oid = membership.member
+      WHERE member_role.rolcanlogin
+        AND granted_role.rolname IN (
+          'dasher_app',
+          'dasher_retention_operator',
+          'dasher_run_operator'
+        )
+    )
+    SELECT role_name, binding_kind, binding_value, role_comment
+    FROM marked_login
+    UNION ALL
+    SELECT role_name, binding_kind, binding_value, role_comment
+    FROM managed_membership
+    ORDER BY role_name, binding_kind, binding_value
+  `);
+
+  const expectedBindings = [
+    ...expectedAppLoginRoleNames.map((roleName) => ({
+      grantedRoleName: "dasher_app",
+      marker: `dasher:app-login:v1:database-oid:${databaseIdentity.database_oid}`,
+      roleName,
+    })),
+    ...expectedRetentionLoginRoleNames.map((roleName) => ({
+      grantedRoleName: "dasher_retention_operator",
+      marker: `dasher:retention-login:v1:database-oid:${databaseIdentity.database_oid}`,
+      roleName,
+    })),
+    ...expectedRunLoginRoleNames.map((roleName) => ({
+      grantedRoleName: "dasher_run_operator",
+      marker: `dasher:run-login:v1:database-oid:${databaseIdentity.database_oid}`,
+      roleName,
+    })),
+  ];
+  const expected = expectedBindings
+    .flatMap(({ grantedRoleName, marker, roleName }) => [
+      JSON.stringify([roleName, "marker", marker]),
+      JSON.stringify([roleName, "membership", grantedRoleName, marker]),
+    ])
+    .sort();
+  const actual = result.rows
+    .map((row) =>
+      row.binding_kind === "marker"
+        ? JSON.stringify([row.role_name, "marker", row.binding_value])
+        : JSON.stringify([
+            row.role_name,
+            "membership",
+            row.binding_value,
+            row.role_comment,
+          ]),
+    )
+    .sort();
+  if (!arraysEqual(actual, expected)) {
+    return reject("managed_role_drift");
+  }
+}
+
 async function assertExpectedLogins(
   client: MigrationClient,
   expectedLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
-  markerKind: "app-login" | "retention-login",
+  markerKind: "app-login" | "retention-login" | "run-login",
 ): Promise<void> {
   if (expectedLoginRoleNames.length === 0) {
     return;
@@ -5682,7 +5902,7 @@ async function assertExpectedLogins(
         ON role.rolname = expected.role_name
       JOIN pg_catalog.pg_database AS database_row
         ON database_row.datname = pg_catalog.current_database()
-      WHERE $2::text IN ('app-login', 'retention-login')
+      WHERE $2::text IN ('app-login', 'retention-login', 'run-login')
     `,
     [expectedLoginRoleNames, markerKind],
   );
@@ -5732,11 +5952,13 @@ async function assertRoleMemberships(
   client: MigrationClient,
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
 ): Promise<void> {
   const targetRoleNames = [
     ...allManagedRoleNames,
     ...expectedAppLoginRoleNames,
     ...expectedRetentionLoginRoleNames,
+    ...expectedRunLoginRoleNames,
   ];
   const result = await client.query<RoleMembershipRow>(
     `
@@ -5780,6 +6002,9 @@ async function assertRoleMemberships(
         false,
       ]),
     ),
+    ...expectedRunLoginRoleNames.map((roleName) =>
+      JSON.stringify(["dasher_run_operator", roleName, false, true, false]),
+    ),
   ].sort();
 
   if (!arraysEqual(actual, expected)) {
@@ -5811,6 +6036,7 @@ async function assertRoleAndLoginState(
   client: MigrationClient,
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
   createMissingManagedRoles: boolean,
 ): Promise<DatabaseIdentityRow> {
   for (const managedRole of managedRoles) {
@@ -5826,6 +6052,13 @@ async function assertRoleAndLoginState(
   }
 
   const databaseIdentity = await readDatabaseIdentity(client);
+  await assertNoUnlistedLoginBindings(
+    client,
+    expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
+    databaseIdentity,
+  );
   await assertExpectedLogins(
     client,
     expectedAppLoginRoleNames,
@@ -5838,10 +6071,17 @@ async function assertRoleAndLoginState(
     databaseIdentity,
     "retention-login",
   );
+  await assertExpectedLogins(
+    client,
+    expectedRunLoginRoleNames,
+    databaseIdentity,
+    "run-login",
+  );
   await assertRoleMemberships(
     client,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
   );
   return databaseIdentity;
 }
@@ -5853,7 +6093,13 @@ async function bootstrapManagedRolesWithState(
 ): Promise<void> {
   await runMigrationTransaction(client, state, async () => {
     await assertExecutor(client);
-    await assertRoleAndLoginState(client, expectedAppLoginRoleNames, [], true);
+    await assertRoleAndLoginState(
+      client,
+      expectedAppLoginRoleNames,
+      [],
+      [],
+      true,
+    );
   });
 }
 
@@ -5993,9 +6239,9 @@ function hasExactCanonicalPrefixFiles(
   migrations: readonly DiscoveredMigration[],
 ): boolean {
   return (
-    migrations.length <= canonicalSuccessorFiles.length &&
+    migrations.length <= canonicalPhase7PlaceholderSeries.length &&
     migrations.every((migration, index) => {
-      const expected = canonicalSuccessorFiles[index];
+      const expected = canonicalPhase7PlaceholderSeries[index];
       return (
         expected !== undefined &&
         migration.sequence === index + 1 &&
@@ -6048,7 +6294,7 @@ function successorIdentity(
   if (migrations.length < 3) {
     return "none";
   }
-  if (migrations.length > canonicalSuccessorFiles.length) {
+  if (migrations.length > canonicalPhase7PlaceholderSeries.length) {
     return reject("migration_file_mismatch");
   }
   for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
@@ -20868,6 +21114,7 @@ function exactCatalogContract(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
   phase6Sources?: CanonicalPhase6FunctionSources,
@@ -21249,6 +21496,7 @@ function exactCatalogContract(
     journalRows,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
     databaseIdentity,
     ownerName,
     phase6Sources,
@@ -21348,6 +21596,7 @@ export function getCanonical0002ExactCatalogContractForTests(
         journalRows,
         [],
         [],
+        [],
         { database_name: "current_database", database_oid: "0" },
         ownerName,
       ),
@@ -21372,6 +21621,7 @@ export function getCanonical0003ExactCatalogContractForTests(
     JSON.stringify(
       exactCatalogContract(
         journalRows,
+        [],
         [],
         [],
         { database_name: "current_database", database_oid: "0" },
@@ -21400,6 +21650,7 @@ export function getCanonical0004ExactCatalogContractForTests(
         journalRows,
         [],
         [],
+        [],
         { database_name: "current_database", database_oid: "0" },
         ownerName,
       ),
@@ -21424,6 +21675,7 @@ export function getCanonical0005ExactCatalogContractForTests(
     JSON.stringify(
       exactCatalogContract(
         journalRows,
+        [],
         [],
         [],
         { database_name: "current_database", database_oid: "0" },
@@ -21451,6 +21703,7 @@ export function getCanonical0006ExactCatalogContractForTests(
     JSON.stringify(
       exactCatalogContract(
         journalRows,
+        [],
         [],
         [],
         { database_name: "current_database", database_oid: "0" },
@@ -21493,6 +21746,7 @@ export async function canonical0003DependencyInventoryMatchesForTests(
     journalRows,
     [],
     [],
+    [],
     databaseIdentity,
     ownerName,
   );
@@ -21522,6 +21776,7 @@ export async function canonical0004DependencyInventoryMatchesForTests(
     journalRows,
     [],
     [],
+    [],
     databaseIdentity,
     ownerName,
   );
@@ -21549,6 +21804,7 @@ export async function canonical0005DependencyInventoryMatchesForTests(
   );
   const expected = expectedDependencyInventory(
     journalRows,
+    [],
     [],
     [],
     databaseIdentity,
@@ -21581,6 +21837,7 @@ export async function canonical0006DependencyInventoryMatchesForTests(
     journalRows,
     [],
     [],
+    [],
     databaseIdentity,
     ownerName,
     canonicalPhase6FunctionSources(migrationSql),
@@ -21599,17 +21856,30 @@ async function assertCanonicalPrefixObjects(
   exactCanonicalFiles: boolean,
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
 ): Promise<void> {
   if (!exactCanonicalFiles || journalRows.length === 0) {
     return;
   }
+  if (
+    journalRows.some(
+      (row) =>
+        row.sequence === 7 &&
+        row.filename === canonicalPhase7PlaceholderFile.filename,
+    )
+  ) {
+    // Task 9A freezes selection/bootstrap only. Canonical phase-7 SQL and its
+    // cumulative catalog validator are intentionally absent until Task 9B.
+    return reject("managed_role_drift");
+  }
 
   const expected = exactCatalogContract(
     journalRows,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
     databaseIdentity,
     ownerName,
     journalRows.some(
@@ -21669,6 +21939,7 @@ function expectedDependencyInventory(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
   phase6Sources?: CanonicalPhase6FunctionSources,
@@ -21676,6 +21947,7 @@ function expectedDependencyInventory(
   const entries: ManagedDependencyInventoryEntry[] = [
     ...expectedAppLoginRoleNames,
     ...expectedRetentionLoginRoleNames,
+    ...expectedRunLoginRoleNames,
   ].map((roleName) =>
     dependencyEntry({
       catalog_name: "pg_database",
@@ -22254,6 +22526,7 @@ async function assertDependencyInventory(
   journalRows: readonly JournalRow[],
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
   databaseIdentity: DatabaseIdentityRow,
   ownerName: string,
   phase6Sources?: CanonicalPhase6FunctionSources,
@@ -22262,11 +22535,13 @@ async function assertDependencyInventory(
     ...allManagedRoleNames,
     ...expectedAppLoginRoleNames,
     ...expectedRetentionLoginRoleNames,
+    ...expectedRunLoginRoleNames,
   ];
   const expected = expectedDependencyInventory(
     journalRows,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
     databaseIdentity,
     ownerName,
     phase6Sources,
@@ -22287,6 +22562,7 @@ interface ValidatedMigrationPrefix {
   readonly journalRows: readonly JournalRow[];
   readonly ownerName: string;
   readonly preparedRolesPresent: boolean;
+  readonly preparedRunRolesPresent: boolean;
 }
 
 async function validateMigrationPrefix(
@@ -22294,9 +22570,16 @@ async function validateMigrationPrefix(
   migrations: readonly DiscoveredMigration[],
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
   exactCanonicalFiles: boolean,
   successorPresent: boolean,
+  runSuccessorPresent = false,
 ): Promise<ValidatedMigrationPrefix> {
+  const expectedLoginRoleNames = [
+    ...expectedAppLoginRoleNames,
+    ...expectedRetentionLoginRoleNames,
+    ...expectedRunLoginRoleNames,
+  ];
   const ownerName = await assertExecutor(client);
   const exists = await journalExists(client);
   const baseRolesMissing = await baseManagedRolesAreMissing(client);
@@ -22304,10 +22587,12 @@ async function validateMigrationPrefix(
   if (!exists) {
     await assertNoAdoptionConflict(client);
     await assertPreparedRetentionRolesAbsent(client);
+    await assertPreparedRunRolesAbsent(client, expectedLoginRoleNames);
     if (baseRolesMissing) {
       if (
         expectedAppLoginRoleNames.length !== 0 ||
-        expectedRetentionLoginRoleNames.length !== 0
+        expectedRetentionLoginRoleNames.length !== 0 ||
+        expectedRunLoginRoleNames.length !== 0
       ) {
         return reject("managed_role_drift");
       }
@@ -22317,6 +22602,7 @@ async function validateMigrationPrefix(
         journalRows: [],
         ownerName,
         preparedRolesPresent: false,
+        preparedRunRolesPresent: false,
       };
     }
 
@@ -22324,6 +22610,7 @@ async function validateMigrationPrefix(
       client,
       expectedAppLoginRoleNames,
       expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
       false,
     );
     await assertDependencyInventory(
@@ -22331,6 +22618,7 @@ async function validateMigrationPrefix(
       [],
       expectedAppLoginRoleNames,
       expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
       databaseIdentity,
       ownerName,
     );
@@ -22340,6 +22628,7 @@ async function validateMigrationPrefix(
       journalRows: [],
       ownerName,
       preparedRolesPresent: false,
+      preparedRunRolesPresent: false,
     };
   }
 
@@ -22357,11 +22646,28 @@ async function validateMigrationPrefix(
   } else {
     preparedRolesPresent = await preparedRetentionRolesAreExact(client, false);
   }
+  let preparedRunRolesPresent = false;
+  if (journalRows.length < 6 || !runSuccessorPresent) {
+    await assertPreparedRunRolesAbsent(client, expectedLoginRoleNames);
+  } else if (journalRows.length === 6) {
+    preparedRunRolesPresent = await preparedRunRolesAreExact(
+      client,
+      true,
+      expectedLoginRoleNames,
+    );
+  } else {
+    preparedRunRolesPresent = await preparedRunRolesAreExact(
+      client,
+      false,
+      expectedLoginRoleNames,
+    );
+  }
 
   const databaseIdentity = await assertRoleAndLoginState(
     client,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
     false,
   );
   await assertCanonicalPrefixObjects(
@@ -22371,6 +22677,7 @@ async function validateMigrationPrefix(
     exactCanonicalFiles,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
     databaseIdentity,
     ownerName,
   );
@@ -22379,6 +22686,7 @@ async function validateMigrationPrefix(
     journalRows,
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
     databaseIdentity,
     ownerName,
     journalRows.some(
@@ -22395,6 +22703,7 @@ async function validateMigrationPrefix(
     journalRows,
     ownerName,
     preparedRolesPresent,
+    preparedRunRolesPresent,
   };
 }
 
@@ -22424,6 +22733,7 @@ export async function resetPreparedRetentionRoles(
   const validatedRoleNames = validateExpectedLoginRoleNameAllowlists(
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    [],
   );
   const client = await pool.connect();
   const state: MigrationClientState = {
@@ -22461,6 +22771,7 @@ export async function resetPreparedRetentionRoles(
           migrations,
           validatedRoleNames.app,
           validatedRoleNames.retention,
+          [],
           true,
           true,
         );
@@ -22506,15 +22817,124 @@ export async function resetPreparedRetentionRoles(
   }
 }
 
+/**
+ * Explicit owner-only recovery for the exact six-row canonical prefix plus the
+ * dependency-free prepared run-role pair. The migration runner never calls this
+ * operation automatically.
+ */
+export async function resetPreparedRunRoles(
+  pool: MigrationPool,
+  directory: string,
+  expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
+): Promise<void> {
+  const validatedRoleNames = validateExpectedLoginRoleNameAllowlists(
+    expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
+  );
+  const client = await pool.connect();
+  const state: MigrationClientState = {
+    normalReleaseAllowed: true,
+    released: false,
+  };
+  let operationError: unknown;
+  let operationSucceeded = false;
+  let sessionGateHeld = false;
+
+  try {
+    try {
+      await client.query(advisorySessionLockSql);
+    } catch (error) {
+      destroyClientAfterAmbiguousGateAcquisition(client, state, error);
+      throw error;
+    }
+    sessionGateHeld = true;
+    const migrations = await discoverMigrationSeriesForExecution(directory);
+    assertKnownCanonicalFileIdentity(migrations);
+    if (
+      migrations.length !== canonicalSuccessorFiles.length ||
+      !hasExactCanonicalPrefixFiles(migrations) ||
+      successorIdentity(migrations) !== "canonical"
+    ) {
+      return reject("migration_file_mismatch");
+    }
+
+    await runMigrationTransaction(
+      client,
+      state,
+      async () => {
+        const prefix = await validateMigrationPrefix(
+          client,
+          migrations,
+          validatedRoleNames.app,
+          validatedRoleNames.retention,
+          validatedRoleNames.run,
+          true,
+          true,
+          true,
+        );
+        if (
+          prefix.journalRows.length !== 6 ||
+          !prefix.preparedRunRolesPresent
+        ) {
+          return reject("managed_role_drift");
+        }
+        await client.query("DROP ROLE dasher_run_operator");
+        await client.query("DROP ROLE dasher_run_definer");
+        await assertPreparedRunRolesAbsent(client, [
+          ...validatedRoleNames.app,
+          ...validatedRoleNames.retention,
+          ...validatedRoleNames.run,
+        ]);
+      },
+      false,
+    );
+    operationSucceeded = true;
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    if (sessionGateHeld && !state.released) {
+      try {
+        await releaseAdvisorySessionGate(client);
+        sessionGateHeld = false;
+      } catch {
+        const diagnostic = destroyClientAfterGateReleaseFailure(
+          client,
+          state,
+          operationError,
+        );
+        if (operationError === undefined) {
+          throw diagnostic;
+        }
+      }
+    }
+    if (!state.released && state.normalReleaseAllowed) {
+      state.released = true;
+      try {
+        client.release();
+      } catch (releaseError) {
+        if (operationSucceeded) {
+          throw releaseError;
+        }
+      }
+    }
+  }
+}
+
 export async function runMigrations(
   pool: MigrationPool,
   directory: string,
   expectedAppLoginRoleNames: readonly string[],
   expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
 ): Promise<MigrationRunResult> {
   const validatedRoleNames = validateExpectedLoginRoleNameAllowlists(
     expectedAppLoginRoleNames,
     expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
   );
   const client = await pool.connect();
   const state: MigrationClientState = {
@@ -22541,6 +22961,8 @@ export async function runMigrations(
     }
     const successorPresent = successor === "canonical";
     const exactCanonicalFiles = hasExactCanonicalPrefixFiles(migrations);
+    const phase7SuccessorPresent =
+      migrations.length === canonicalPhase7PlaceholderSeries.length;
 
     let prefix = await runMigrationTransaction(
       client,
@@ -22551,8 +22973,10 @@ export async function runMigrations(
           migrations,
           validatedRoleNames.app,
           validatedRoleNames.retention,
+          validatedRoleNames.run,
           exactCanonicalFiles,
           successorPresent,
+          phase7SuccessorPresent,
         ),
       false,
     );
@@ -22566,10 +22990,16 @@ export async function runMigrations(
           await assertExecutor(client);
           await assertNoAdoptionConflict(client);
           await assertPreparedRetentionRolesAbsent(client);
+          await assertPreparedRunRolesAbsent(client, [
+            ...validatedRoleNames.app,
+            ...validatedRoleNames.retention,
+            ...validatedRoleNames.run,
+          ]);
           await assertRoleAndLoginState(
             client,
             validatedRoleNames.app,
             validatedRoleNames.retention,
+            validatedRoleNames.run,
             true,
           );
         },
@@ -22587,8 +23017,10 @@ export async function runMigrations(
             migrations,
             validatedRoleNames.app,
             validatedRoleNames.retention,
+            validatedRoleNames.run,
             exactCanonicalFiles,
             successorPresent,
+            phase7SuccessorPresent,
           );
           if (before.journalRows.length > targetCount) {
             return reject("journal_identity_mismatch");
@@ -22625,8 +23057,10 @@ export async function runMigrations(
             migrations,
             validatedRoleNames.app,
             validatedRoleNames.retention,
+            validatedRoleNames.run,
             exactCanonicalFiles,
             successorPresent,
+            phase7SuccessorPresent,
           );
           if (after.journalRows.length !== targetCount) {
             return reject("journal_identity_mismatch");
@@ -22655,8 +23089,10 @@ export async function runMigrations(
             migrations,
             validatedRoleNames.app,
             validatedRoleNames.retention,
+            validatedRoleNames.run,
             exactCanonicalFiles,
             successorPresent,
+            phase7SuccessorPresent,
           );
           if (before.journalRows.length !== 2) {
             return reject("journal_identity_mismatch");
@@ -22671,6 +23107,7 @@ export async function runMigrations(
             client,
             validatedRoleNames.app,
             validatedRoleNames.retention,
+            validatedRoleNames.run,
             false,
           );
           await assertDependencyInventory(
@@ -22678,6 +23115,7 @@ export async function runMigrations(
             before.journalRows,
             validatedRoleNames.app,
             validatedRoleNames.retention,
+            validatedRoleNames.run,
             databaseIdentity,
             before.ownerName,
           );
@@ -22691,6 +23129,68 @@ export async function runMigrations(
     while (
       successorPresent &&
       prefix.journalRows.length >= 3 &&
+      prefix.journalRows.length < migrations.length &&
+      (!phase7SuccessorPresent || prefix.journalRows.length < 6)
+    ) {
+      await applyThrough(prefix.journalRows.length + 1);
+      appliedSuccessor = true;
+    }
+
+    if (phase7SuccessorPresent && prefix.journalRows.length === 6) {
+      await runMigrationTransaction(
+        client,
+        state,
+        async () => {
+          const before = await validateMigrationPrefix(
+            client,
+            migrations,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
+            validatedRoleNames.run,
+            exactCanonicalFiles,
+            successorPresent,
+            true,
+          );
+          if (before.journalRows.length !== 6) {
+            return reject("journal_identity_mismatch");
+          }
+          if (!before.preparedRunRolesPresent) {
+            await createPreparedRunRoles(client);
+          }
+          if (
+            !(await preparedRunRolesAreExact(client, false, [
+              ...validatedRoleNames.app,
+              ...validatedRoleNames.retention,
+              ...validatedRoleNames.run,
+            ]))
+          ) {
+            return reject("managed_role_drift");
+          }
+          const databaseIdentity = await assertRoleAndLoginState(
+            client,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
+            validatedRoleNames.run,
+            false,
+          );
+          await assertDependencyInventory(
+            client,
+            before.journalRows,
+            validatedRoleNames.app,
+            validatedRoleNames.retention,
+            validatedRoleNames.run,
+            databaseIdentity,
+            before.ownerName,
+            canonicalPhase6FunctionSources(migrations[5]?.sql ?? ""),
+          );
+        },
+        false,
+      );
+    }
+
+    while (
+      successorPresent &&
+      prefix.journalRows.length >= 6 &&
       prefix.journalRows.length < migrations.length
     ) {
       await applyThrough(prefix.journalRows.length + 1);
