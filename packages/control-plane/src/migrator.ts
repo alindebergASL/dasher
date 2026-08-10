@@ -58,13 +58,13 @@ const canonicalSuccessorFiles = [
     filename: "0006_lifecycle_access_retention_guard_correction.sql",
   },
 ] as const;
-const canonicalPhase7PlaceholderFile = {
-  checksum: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+const canonicalPhase7File = {
+  checksum: "dfe0ca8eef30b9b5a599657eaf0da6c93a330a90d3fa9b01c75a2f730d8db3d5",
   filename: "0007_agent_run_ledger_and_calculations.sql",
 } as const;
-const canonicalPhase7PlaceholderSeries = [
+const canonicalPhase7Series = [
   ...canonicalSuccessorFiles,
-  canonicalPhase7PlaceholderFile,
+  canonicalPhase7File,
 ] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
@@ -5171,6 +5171,11 @@ interface DependencyComparisonRow {
   readonly matches: boolean;
 }
 
+interface Phase7CatalogComparisonRow extends DependencyComparisonRow {
+  readonly entry_count: string;
+  readonly fingerprint_sha256: string;
+}
+
 interface ManagedDependencyInventoryEntry {
   readonly catalog_name: string;
   readonly database_oid: string;
@@ -6239,9 +6244,9 @@ function hasExactCanonicalPrefixFiles(
   migrations: readonly DiscoveredMigration[],
 ): boolean {
   return (
-    migrations.length <= canonicalPhase7PlaceholderSeries.length &&
+    migrations.length <= canonicalPhase7Series.length &&
     migrations.every((migration, index) => {
-      const expected = canonicalPhase7PlaceholderSeries[index];
+      const expected = canonicalPhase7Series[index];
       return (
         expected !== undefined &&
         migration.sequence === index + 1 &&
@@ -6294,7 +6299,7 @@ function successorIdentity(
   if (migrations.length < 3) {
     return "none";
   }
-  if (migrations.length > canonicalPhase7PlaceholderSeries.length) {
+  if (migrations.length > canonicalPhase7Series.length) {
     return reject("migration_file_mismatch");
   }
   for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
@@ -21849,6 +21854,485 @@ export async function canonical0006DependencyInventoryMatchesForTests(
   return result.rows.length === 1 && result.rows[0]?.matches === true;
 }
 
+// Frozen from the independently normalized PostgreSQL catalog inventory below.
+// The value is intentionally not derived from any migration file at runtime.
+const canonicalPhase7CatalogFingerprintSha256 =
+  "f3defa8eaaec54b0b10ca571b854c07bf74598a5e877f278d10c813c827925eb";
+const canonicalPhase7CatalogEntryCount = "7452";
+
+const canonicalPhase7ExactCatalogValidationSql = `
+  WITH
+  managed_namespaces AS (
+    SELECT namespace.oid, namespace.nspname::text AS schema_name,
+      CASE WHEN owner.rolname = $1 THEN '<migration_owner>'
+        ELSE owner.rolname::text END AS owner_name,
+      namespace.nspacl IS NULL AS acl_is_null
+    FROM pg_catalog.pg_namespace AS namespace
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = namespace.nspowner
+    WHERE namespace.nspname ~ '^dasher(?:_.*)?$'
+  ),
+  relation_catalog AS (
+    SELECT relation.oid, namespace.schema_name,
+      relation.relname::text AS relation_name, relation.relkind,
+      relation.relpersistence, relation.relrowsecurity,
+      relation.relforcerowsecurity, relation.relreplident,
+      CASE WHEN owner.rolname = $1 THEN '<migration_owner>'
+        ELSE owner.rolname::text END AS owner_name,
+      relation.relacl IS NULL AS acl_is_null,
+      relation.reloptions,
+      access_method.amname::text AS access_method,
+      pg_catalog.pg_get_partkeydef(relation.oid) AS partition_key
+    FROM pg_catalog.pg_class AS relation
+    JOIN managed_namespaces AS namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+    LEFT JOIN pg_catalog.pg_am AS access_method
+      ON access_method.oid = relation.relam
+  ),
+  routine_catalog AS (
+    SELECT routine.oid, namespace.schema_name,
+      routine.proname::text AS routine_name,
+      pg_catalog.pg_get_function_identity_arguments(routine.oid)
+        AS identity_arguments,
+      pg_catalog.pg_get_function_arguments(routine.oid) AS arguments,
+      pg_catalog.pg_get_function_result(routine.oid) AS result_type,
+      routine.proargnames, routine.proargmodes,
+      ARRAY(
+        SELECT pg_catalog.format_type(argument_type, NULL)
+        FROM pg_catalog.unnest(COALESCE(
+          routine.proallargtypes, routine.proargtypes::oid[]
+        )) WITH ORDINALITY AS argument(argument_type, ordinal)
+        ORDER BY argument.ordinal
+      ) AS ordered_argument_types,
+      language.lanname::text AS language_name,
+      routine.prokind, routine.provolatile, routine.proisstrict,
+      routine.prosecdef, routine.proleakproof, routine.proparallel,
+      routine.proretset, routine.pronargs, routine.pronargdefaults,
+      routine.procost, routine.prorows, routine.proconfig,
+      routine.prosrc, routine.probin,
+      CASE WHEN owner.rolname = $1 THEN '<migration_owner>'
+        ELSE owner.rolname::text END AS owner_name,
+      routine.proacl IS NULL AS acl_is_null,
+      pg_catalog.pg_get_functiondef(routine.oid) AS function_definition
+    FROM pg_catalog.pg_proc AS routine
+    JOIN managed_namespaces AS namespace ON namespace.oid = routine.pronamespace
+    JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
+  ),
+  type_catalog AS (
+    SELECT type_row.oid, namespace.schema_name,
+      type_row.typname::text AS type_name, type_row.typtype,
+      type_row.typcategory, type_row.typispreferred,
+      type_row.typnotnull, type_row.typbyval, type_row.typlen,
+      type_row.typalign, type_row.typstorage, type_row.typdelim,
+      pg_catalog.format_type(type_row.typelem, NULL) AS element_type,
+      related_relation.relation_name AS related_relation,
+      type_row.typdefault, type_row.typacl IS NULL AS acl_is_null,
+      CASE WHEN owner.rolname = $1 THEN '<migration_owner>'
+        ELSE owner.rolname::text END AS owner_name
+    FROM pg_catalog.pg_type AS type_row
+    JOIN managed_namespaces AS namespace ON namespace.oid = type_row.typnamespace
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = type_row.typowner
+    LEFT JOIN relation_catalog AS related_relation
+      ON related_relation.oid = type_row.typrelid
+  ),
+  inventory_entries AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'database', 'identity', '<current_database>',
+      'definition', pg_catalog.jsonb_build_object(
+        'acl_is_null', database_row.datacl IS NULL,
+        'owner', CASE WHEN owner.rolname = $1 THEN '<migration_owner>'
+          ELSE owner.rolname::text END
+      )
+    ) AS entry
+    FROM pg_catalog.pg_database AS database_row
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = database_row.datdba
+    WHERE database_row.datname = pg_catalog.current_database()
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'schema', 'identity', namespace.schema_name,
+      'definition', pg_catalog.jsonb_build_object(
+        'owner', namespace.owner_name, 'acl_is_null', namespace.acl_is_null
+      )
+    )
+    FROM managed_namespaces AS namespace
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'relation',
+      'identity', relation.schema_name || '.' || relation.relation_name,
+      'definition', pg_catalog.to_jsonb(relation) - 'oid' - 'schema_name'
+        - 'relation_name'
+    )
+    FROM relation_catalog AS relation
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'column',
+      'identity', relation.schema_name || '.' || relation.relation_name ||
+        '.' || attribute.attnum::text,
+      'definition', pg_catalog.jsonb_build_object(
+        'name', attribute.attname, 'ordinal', attribute.attnum,
+        'type', pg_catalog.format_type(attribute.atttypid, attribute.atttypmod),
+        'not_null', attribute.attnotnull, 'dropped', attribute.attisdropped,
+        'identity', attribute.attidentity, 'generated', attribute.attgenerated,
+        'collation', collation_namespace.nspname || '.' || collation_row.collname,
+        'default', pg_catalog.pg_get_expr(default_value.adbin, default_value.adrelid),
+        'acl_is_null', attribute.attacl IS NULL,
+        'storage', attribute.attstorage, 'compression', attribute.attcompression,
+        'statistics_target', attribute.attstattarget, 'options', attribute.attoptions
+      )
+    )
+    FROM relation_catalog AS relation
+    JOIN pg_catalog.pg_attribute AS attribute
+      ON attribute.attrelid = relation.oid AND attribute.attnum > 0
+    LEFT JOIN pg_catalog.pg_attrdef AS default_value
+      ON default_value.adrelid = relation.oid
+     AND default_value.adnum = attribute.attnum
+    LEFT JOIN pg_catalog.pg_collation AS collation_row
+      ON collation_row.oid = attribute.attcollation AND attribute.attcollation <> 0
+    LEFT JOIN pg_catalog.pg_namespace AS collation_namespace
+      ON collation_namespace.oid = collation_row.collnamespace
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'routine',
+      'identity', routine.schema_name || '.' || routine.routine_name ||
+        '(' || routine.identity_arguments || ')',
+      'definition', pg_catalog.to_jsonb(routine) - 'oid' - 'schema_name'
+        - 'routine_name' - 'identity_arguments'
+    )
+    FROM routine_catalog AS routine
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'type',
+      'identity', type_row.schema_name || '.' || type_row.type_name,
+      'definition', pg_catalog.to_jsonb(type_row) - 'oid' - 'schema_name'
+        - 'type_name'
+    )
+    FROM type_catalog AS type_row
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'constraint',
+      'identity', namespace.schema_name || '.' ||
+        COALESCE(relation.relation_name, type_row.type_name) || '.' ||
+        constraint_row.conname,
+      'definition', pg_catalog.jsonb_build_object(
+        'type', constraint_row.contype,
+        'deferrable', constraint_row.condeferrable,
+        'initially_deferred', constraint_row.condeferred,
+        'validated', constraint_row.convalidated,
+        'no_inherit', constraint_row.connoinherit,
+        'match', constraint_row.confmatchtype,
+        'on_update', constraint_row.confupdtype,
+        'on_delete', constraint_row.confdeltype,
+        'referenced_relation', referenced_namespace.nspname || '.' ||
+          referenced_relation.relname,
+        'definition', pg_catalog.pg_get_constraintdef(
+          constraint_row.oid, true
+        )
+      )
+    )
+    FROM pg_catalog.pg_constraint AS constraint_row
+    LEFT JOIN relation_catalog AS relation
+      ON relation.oid = constraint_row.conrelid
+    LEFT JOIN type_catalog AS type_row ON type_row.oid = constraint_row.contypid
+    JOIN managed_namespaces AS namespace ON namespace.oid = COALESCE(
+      (SELECT relation_row.relnamespace FROM pg_catalog.pg_class AS relation_row
+       WHERE relation_row.oid = constraint_row.conrelid),
+      (SELECT domain_row.typnamespace FROM pg_catalog.pg_type AS domain_row
+       WHERE domain_row.oid = constraint_row.contypid)
+    )
+    LEFT JOIN pg_catalog.pg_class AS referenced_relation
+      ON referenced_relation.oid = constraint_row.confrelid
+    LEFT JOIN pg_catalog.pg_namespace AS referenced_namespace
+      ON referenced_namespace.oid = referenced_relation.relnamespace
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'index',
+      'identity', relation.schema_name || '.' || index_relation.relname,
+      'definition', pg_catalog.jsonb_build_object(
+        'table', relation.schema_name || '.' || relation.relation_name,
+        'unique', index_row.indisunique, 'primary', index_row.indisprimary,
+        'exclusion', index_row.indisexclusion,
+        'immediate', index_row.indimmediate, 'valid', index_row.indisvalid,
+        'ready', index_row.indisready, 'live', index_row.indislive,
+        'replica_identity', index_row.indisreplident,
+        'clustered', index_row.indisclustered,
+        'method', access_method.amname,
+        'options', index_relation.reloptions,
+        'definition', pg_catalog.pg_get_indexdef(index_relation.oid, 0, true),
+        'predicate', pg_catalog.pg_get_expr(index_row.indpred, index_row.indrelid),
+        'expressions', pg_catalog.pg_get_expr(index_row.indexprs, index_row.indrelid)
+      )
+    )
+    FROM pg_catalog.pg_index AS index_row
+    JOIN relation_catalog AS relation ON relation.oid = index_row.indrelid
+    JOIN pg_catalog.pg_class AS index_relation
+      ON index_relation.oid = index_row.indexrelid
+    JOIN pg_catalog.pg_am AS access_method
+      ON access_method.oid = index_relation.relam
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'trigger',
+      'identity', relation.schema_name || '.' || relation.relation_name ||
+        '.' || trigger.tgname,
+      'definition', pg_catalog.jsonb_build_object(
+        'enabled', trigger.tgenabled, 'type', trigger.tgtype,
+        'internal', trigger.tgisinternal,
+        'deferrable', trigger.tgdeferrable,
+        'initially_deferred', trigger.tginitdeferred,
+        'constraint', constraint_row.conname,
+        'function', routine.schema_name || '.' || routine.routine_name ||
+          '(' || routine.identity_arguments || ')',
+        'arguments', pg_catalog.encode(trigger.tgargs, 'hex'),
+        'old_table', trigger.tgoldtable, 'new_table', trigger.tgnewtable,
+        'when', pg_catalog.pg_get_expr(trigger.tgqual, trigger.tgrelid),
+        'definition', pg_catalog.pg_get_triggerdef(trigger.oid, true)
+      )
+    )
+    FROM pg_catalog.pg_trigger AS trigger
+    JOIN relation_catalog AS relation ON relation.oid = trigger.tgrelid
+    LEFT JOIN pg_catalog.pg_constraint AS constraint_row
+      ON constraint_row.oid = trigger.tgconstraint
+    JOIN routine_catalog AS routine ON routine.oid = trigger.tgfoid
+    WHERE NOT trigger.tgisinternal
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'policy',
+      'identity', relation.schema_name || '.' || relation.relation_name ||
+        '.' || policy.polname,
+      'definition', pg_catalog.jsonb_build_object(
+        'command', policy.polcmd, 'permissive', policy.polpermissive,
+        'roles', ARRAY(
+          SELECT CASE WHEN policy_role.role_oid = 0 THEN '<PUBLIC>'
+            ELSE role.rolname::text END
+          FROM pg_catalog.unnest(policy.polroles) AS policy_role(role_oid)
+          LEFT JOIN pg_catalog.pg_roles AS role ON role.oid = policy_role.role_oid
+          ORDER BY CASE WHEN policy_role.role_oid = 0 THEN '<PUBLIC>'
+            ELSE role.rolname::text END
+        ),
+        'using', pg_catalog.pg_get_expr(policy.polqual, policy.polrelid),
+        'with_check', pg_catalog.pg_get_expr(policy.polwithcheck, policy.polrelid)
+      )
+    )
+    FROM pg_catalog.pg_policy AS policy
+    JOIN relation_catalog AS relation ON relation.oid = policy.polrelid
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'sequence',
+      'identity', relation.schema_name || '.' || relation.relation_name,
+      'definition', pg_catalog.to_jsonb(sequence_row) - 'seqrelid'
+    )
+    FROM pg_catalog.pg_sequence AS sequence_row
+    JOIN relation_catalog AS relation ON relation.oid = sequence_row.seqrelid
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'enum_label',
+      'identity', type_row.schema_name || '.' || type_row.type_name || '.' ||
+        enum_label.enumsortorder::text,
+      'definition', pg_catalog.jsonb_build_object('label', enum_label.enumlabel)
+    )
+    FROM pg_catalog.pg_enum AS enum_label
+    JOIN type_catalog AS type_row ON type_row.oid = enum_label.enumtypid
+
+    UNION ALL
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'default_acl',
+      'identity', CASE WHEN owner.rolname = $1 THEN '<migration_owner>'
+        ELSE owner.rolname::text END || '|' ||
+        COALESCE(namespace.schema_name, '<global>') || '|' ||
+        default_acl.defaclobjtype::text,
+      'definition', pg_catalog.jsonb_build_object(
+        'acl_is_null', default_acl.defaclacl IS NULL,
+        'acl', ARRAY(
+          SELECT pg_catalog.jsonb_build_array(
+            CASE WHEN grantor.rolname = $1 THEN '<migration_owner>'
+              ELSE grantor.rolname::text END,
+            CASE WHEN privilege.grantee = 0 THEN '<PUBLIC>'
+              WHEN grantee.rolname = $1 THEN '<migration_owner>'
+              ELSE grantee.rolname::text END,
+            privilege.privilege_type, privilege.is_grantable
+          )
+          FROM pg_catalog.aclexplode(default_acl.defaclacl) AS privilege
+          JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+          LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+          ORDER BY
+            CASE WHEN grantor.rolname = $1 THEN '<migration_owner>'
+              ELSE grantor.rolname::text END,
+            CASE WHEN privilege.grantee = 0 THEN '<PUBLIC>'
+              WHEN grantee.rolname = $1 THEN '<migration_owner>'
+              ELSE grantee.rolname::text END,
+            privilege.privilege_type, privilege.is_grantable
+        )
+      )
+    )
+    FROM pg_catalog.pg_default_acl AS default_acl
+    JOIN pg_catalog.pg_roles AS owner ON owner.oid = default_acl.defaclrole
+    LEFT JOIN managed_namespaces AS namespace
+      ON namespace.oid = default_acl.defaclnamespace
+    WHERE owner.rolname = $1 OR namespace.oid IS NOT NULL
+  ),
+  acl_entries AS (
+    SELECT 'database'::text AS object_kind,
+      pg_catalog.current_database()::text AS object_identity,
+      database_row.datacl AS acl, database_row.datdba AS object_owner,
+      'd'::"char" AS object_type
+    FROM pg_catalog.pg_database AS database_row
+    WHERE database_row.datname = pg_catalog.current_database()
+    UNION ALL
+    SELECT 'schema', namespace.schema_name, namespace_row.nspacl,
+      namespace_row.nspowner, 'n'::"char"
+    FROM managed_namespaces AS namespace
+    JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = namespace.oid
+    UNION ALL
+    SELECT 'relation', relation.schema_name || '.' || relation.relation_name,
+      relation_row.relacl, relation_row.relowner,
+      CASE WHEN relation_row.relkind = 'S' THEN 'S'::"char" ELSE 'r'::"char" END
+    FROM relation_catalog AS relation
+    JOIN pg_catalog.pg_class AS relation_row ON relation_row.oid = relation.oid
+    UNION ALL
+    SELECT 'column', relation.schema_name || '.' || relation.relation_name ||
+      '.' || attribute.attname, attribute.attacl, relation_row.relowner, 'c'::"char"
+    FROM relation_catalog AS relation
+    JOIN pg_catalog.pg_class AS relation_row ON relation_row.oid = relation.oid
+    JOIN pg_catalog.pg_attribute AS attribute
+      ON attribute.attrelid = relation.oid AND attribute.attnum > 0
+    WHERE attribute.attacl IS NOT NULL
+    UNION ALL
+    SELECT 'routine', routine.schema_name || '.' || routine.routine_name ||
+      '(' || routine.identity_arguments || ')', routine_row.proacl,
+      routine_row.proowner, 'f'::"char"
+    FROM routine_catalog AS routine
+    JOIN pg_catalog.pg_proc AS routine_row ON routine_row.oid = routine.oid
+    UNION ALL
+    SELECT 'type', type_row.schema_name || '.' || type_row.type_name,
+      type_source.typacl, type_source.typowner, 'T'::"char"
+    FROM type_catalog AS type_row
+    JOIN pg_catalog.pg_type AS type_source ON type_source.oid = type_row.oid
+  ),
+  privilege_inventory AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'acl',
+      'identity', acl.object_kind || '|' || acl.object_identity || '|' ||
+        CASE WHEN privilege.grantee = 0 THEN '<PUBLIC>'
+          WHEN grantee.rolname = $1 THEN '<migration_owner>'
+          ELSE grantee.rolname::text END || '|' || privilege.privilege_type || '|' ||
+        CASE WHEN grantor.rolname = $1 THEN '<migration_owner>'
+          ELSE grantor.rolname::text END,
+      'definition', pg_catalog.jsonb_build_object(
+        'grantable', privilege.is_grantable
+      )
+    ) AS entry
+    FROM acl_entries AS acl
+    CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+      acl.acl, pg_catalog.acldefault(acl.object_type, acl.object_owner)
+    )) AS privilege
+    JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
+    LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+  ),
+  managed_roles AS (
+    SELECT role.oid, role.rolname::text AS role_name
+    FROM pg_catalog.pg_roles AS role
+    WHERE role.rolname IN (
+      'dasher_app', 'dasher_security_definer', 'dasher_retention_definer',
+      'dasher_retention_operator', 'dasher_run_definer', 'dasher_run_operator'
+    )
+  ),
+  dependency_inventory AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'shared_dependency',
+      'identity', role.role_name || '|' || dependency.deptype::text || '|' ||
+        dependency.classid::regclass::text || '|' ||
+        pg_catalog.replace(
+          pg_catalog.pg_describe_object(
+            dependency.classid, dependency.objid, dependency.objsubid
+          ), pg_catalog.current_database(), '<current_database>'
+        ),
+      'definition', pg_catalog.jsonb_build_object(
+        'database', CASE dependency.dbid WHEN 0 THEN '<shared>'
+          ELSE '<current_database>' END,
+        'subobject', dependency.objsubid
+      )
+    ) AS entry
+    FROM pg_catalog.pg_shdepend AS dependency
+    JOIN managed_roles AS role ON role.oid = dependency.refobjid
+    WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass
+      AND dependency.deptype IN ('a', 'o', 'r')
+      AND dependency.dbid IN (
+        0, (SELECT database_row.oid FROM pg_catalog.pg_database AS database_row
+            WHERE database_row.datname = pg_catalog.current_database())
+      )
+  ),
+  comment_inventory AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'comment',
+      'identity', description.classoid::regclass::text || '|' ||
+        pg_catalog.pg_describe_object(
+          description.classoid, description.objoid, description.objsubid
+        ),
+      'definition', pg_catalog.jsonb_build_object(
+        'description', description.description
+      )
+    ) AS entry
+    FROM pg_catalog.pg_description AS description
+    WHERE (description.classoid, description.objoid) IN (
+      SELECT 'pg_catalog.pg_namespace'::regclass::oid, namespace.oid
+      FROM managed_namespaces AS namespace
+      UNION ALL SELECT 'pg_catalog.pg_class'::regclass::oid, relation.oid
+      FROM relation_catalog AS relation
+      UNION ALL SELECT 'pg_catalog.pg_proc'::regclass::oid, routine.oid
+      FROM routine_catalog AS routine
+      UNION ALL SELECT 'pg_catalog.pg_type'::regclass::oid, type_row.oid
+      FROM type_catalog AS type_row
+    )
+  ),
+  complete_inventory AS (
+    SELECT entry FROM inventory_entries
+    UNION ALL SELECT entry FROM privilege_inventory
+    UNION ALL SELECT entry FROM dependency_inventory
+    UNION ALL SELECT entry FROM comment_inventory
+  ),
+  fingerprint AS (
+    SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+      COALESCE(pg_catalog.jsonb_agg(
+        inventory.entry ORDER BY inventory.entry->>'kind',
+          inventory.entry->>'identity', inventory.entry::text
+      )::text, '[]'), 'UTF8'
+    )), 'hex') AS fingerprint_sha256,
+    pg_catalog.count(*) AS entry_count
+    FROM complete_inventory AS inventory
+  )
+  SELECT fingerprint.fingerprint_sha256 = $2 AS matches,
+    fingerprint.fingerprint_sha256, fingerprint.entry_count
+  FROM fingerprint
+`;
+
+/** Test-only execution of canonical-0007 cumulative catalog validation. */
+export async function canonical0007CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+): Promise<boolean> {
+  const result = await client.query<Phase7CatalogComparisonRow>(
+    canonicalPhase7ExactCatalogValidationSql,
+    [ownerName, canonicalPhase7CatalogFingerprintSha256],
+  );
+  const row = result.rows[0];
+  return (
+    result.rows.length === 1 &&
+    row?.matches === true &&
+    row.fingerprint_sha256 === canonicalPhase7CatalogFingerprintSha256 &&
+    row.entry_count === canonicalPhase7CatalogEntryCount
+  );
+}
+
 async function assertCanonicalPrefixObjects(
   client: MigrationClient,
   migrations: readonly DiscoveredMigration[],
@@ -21866,13 +22350,23 @@ async function assertCanonicalPrefixObjects(
   if (
     journalRows.some(
       (row) =>
-        row.sequence === 7 &&
-        row.filename === canonicalPhase7PlaceholderFile.filename,
+        row.sequence === 7 && row.filename === canonicalPhase7File.filename,
     )
   ) {
-    // Task 9A freezes selection/bootstrap only. Canonical phase-7 SQL and its
-    // cumulative catalog validator are intentionally absent until Task 9B.
-    return reject("managed_role_drift");
+    const result = await client.query<Phase7CatalogComparisonRow>(
+      canonicalPhase7ExactCatalogValidationSql,
+      [ownerName, canonicalPhase7CatalogFingerprintSha256],
+    );
+    const row = result.rows[0];
+    if (
+      result.rows.length !== 1 ||
+      row?.matches !== true ||
+      row.fingerprint_sha256 !== canonicalPhase7CatalogFingerprintSha256 ||
+      row.entry_count !== canonicalPhase7CatalogEntryCount
+    ) {
+      return reject("managed_role_drift");
+    }
+    return;
   }
 
   const expected = exactCatalogContract(
@@ -22681,22 +23175,25 @@ async function validateMigrationPrefix(
     databaseIdentity,
     ownerName,
   );
-  await assertDependencyInventory(
-    client,
-    journalRows,
-    expectedAppLoginRoleNames,
-    expectedRetentionLoginRoleNames,
-    expectedRunLoginRoleNames,
-    databaseIdentity,
-    ownerName,
-    journalRows.some(
-      (row) =>
-        row.sequence === 6 &&
-        row.filename === "0006_lifecycle_access_retention_guard_correction.sql",
-    )
-      ? canonicalPhase6FunctionSources(migrations[5]?.sql ?? "")
-      : undefined,
-  );
+  if (!journalRows.some((row) => row.sequence === 7)) {
+    await assertDependencyInventory(
+      client,
+      journalRows,
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+      databaseIdentity,
+      ownerName,
+      journalRows.some(
+        (row) =>
+          row.sequence === 6 &&
+          row.filename ===
+            "0006_lifecycle_access_retention_guard_correction.sql",
+      )
+        ? canonicalPhase6FunctionSources(migrations[5]?.sql ?? "")
+        : undefined,
+    );
+  }
   return {
     baseRolesMissing: false,
     journalExists: true,
@@ -22962,7 +23459,7 @@ export async function runMigrations(
     const successorPresent = successor === "canonical";
     const exactCanonicalFiles = hasExactCanonicalPrefixFiles(migrations);
     const phase7SuccessorPresent =
-      migrations.length === canonicalPhase7PlaceholderSeries.length;
+      migrations.length === canonicalPhase7Series.length;
 
     let prefix = await runMigrationTransaction(
       client,

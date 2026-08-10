@@ -17,6 +17,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   MigrationContractError,
   bootstrapManagedRoles,
+  canonical0007CatalogMatchesForTests,
   discoverMigrations,
   getCanonical0003ExactCatalogContractForTests,
   getCanonical0004ExactCatalogContractForTests,
@@ -147,6 +148,7 @@ interface ScriptedMigrationOptions {
   readonly lifecycleCorrectionCatalogMatches?: boolean;
   readonly phase6CatalogCandidate?: Readonly<Record<string, readonly string[]>>;
   readonly phase6CatalogMatches?: boolean;
+  readonly phase7ActualCatalogFingerprint?: string;
   readonly prefixObjectMatches?: boolean;
   readonly retentionRoleNames?: readonly string[];
   readonly runRoleNames?: readonly string[];
@@ -421,7 +423,8 @@ function scriptedMigrationClient(
     }
     if (
       text.includes("CREATE TABLE dasher.users") ||
-      text.includes("CREATE FUNCTION dasher_api.rotate_session")
+      text.includes("CREATE FUNCTION dasher_api.rotate_session") ||
+      text.includes("CREATE TABLE dasher.agent_run_policy_revisions")
     ) {
       command("MIGRATION SQL");
       failAt("migration");
@@ -640,6 +643,22 @@ function scriptedMigrationClient(
     }
     if (text.includes("FROM pg_catalog.pg_auth_members AS membership")) {
       return result(options.membershipRows ?? []);
+    }
+    if (text.includes("complete_inventory AS")) {
+      expect(values).toHaveLength(2);
+      expect(values?.[0]).toBe("migration_owner");
+      expect(values?.[1]).toMatch(/^[0-9a-f]{64}$/u);
+      failAt("catalog");
+      const fingerprint =
+        options.phase7ActualCatalogFingerprint ??
+        "f3defa8eaaec54b0b10ca571b854c07bf74598a5e877f278d10c813c827925eb";
+      return result([
+        {
+          entry_count: "7452",
+          fingerprint_sha256: fingerprint,
+          matches: fingerprint === values?.[1],
+        },
+      ]);
     }
     if (text.includes("signature_catalog AS")) {
       const contract = JSON.parse(values?.[0] as string) as Record<
@@ -1309,7 +1328,7 @@ async function canonicalPhase6Series(): Promise<{
   };
 }
 
-async function phase7PlaceholderSeries(): Promise<{
+async function canonicalPhase7Series(): Promise<{
   readonly directory: string;
   readonly journalRows: readonly {
     readonly applied_by: string;
@@ -1321,7 +1340,12 @@ async function phase7PlaceholderSeries(): Promise<{
   const phase6 = await canonicalPhase6Series();
   await writeFile(
     join(phase6.directory, "0007_agent_run_ledger_and_calculations.sql"),
-    new Uint8Array(),
+    await readFile(
+      join(
+        canonicalMigrationDirectory,
+        "0007_agent_run_ledger_and_calculations.sql",
+      ),
+    ),
   );
   return phase6;
 }
@@ -1335,7 +1359,7 @@ async function phase7AppliedSeries(): Promise<{
     readonly sequence: number;
   }[];
 }> {
-  const series = await phase7PlaceholderSeries();
+  const series = await canonicalPhase7Series();
   const migrations = await discoverMigrations(series.directory);
   return {
     directory: series.directory,
@@ -4912,7 +4936,7 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
   );
 
   it("prepares the clean exact run pair only after validating phase 6 and preserves it after SQL failure", async () => {
-    const series = await phase7PlaceholderSeries();
+    const series = await canonicalPhase7Series();
     const scripted = scriptedMigrationClient({
       failure: { stage: "migration", transaction: 3 },
       initialJournalRows: series.journalRows,
@@ -4941,8 +4965,125 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
     expect(scripted.journalRows).toEqual(series.journalRows);
   });
 
-  it("stops a clean canonical install at phase 6, prepares the pair, and only then enters phase-7 SQL", async () => {
-    const series = await phase7PlaceholderSeries();
+  it("uses an independent exhaustive phase-7 catalog fingerprint rather than migration SQL", async () => {
+    let catalogQuery = "";
+    let catalogValues: readonly unknown[] | undefined;
+    const client = {
+      query: async (text: string, values?: readonly unknown[]) => {
+        catalogQuery = text;
+        catalogValues = values;
+        return result([
+          {
+            entry_count: "7452",
+            fingerprint_sha256:
+              "f3defa8eaaec54b0b10ca571b854c07bf74598a5e877f278d10c813c827925eb",
+            matches:
+              values?.[1] ===
+              "f3defa8eaaec54b0b10ca571b854c07bf74598a5e877f278d10c813c827925eb",
+          },
+        ]);
+      },
+      release: () => undefined,
+    } as unknown as MigrationClient;
+
+    await expect(
+      canonical0007CatalogMatchesForTests(client, "migration_owner"),
+    ).resolves.toBe(true);
+    expect(catalogValues?.[0]).toBe("migration_owner");
+    expect(catalogValues?.[1]).toMatch(/^[0-9a-f]{64}$/u);
+    expect(catalogQuery).toContain("pg_catalog.pg_get_constraintdef");
+    expect(catalogQuery).toContain("pg_catalog.pg_get_indexdef");
+    expect(catalogQuery).toContain("pg_catalog.pg_get_triggerdef");
+    expect(catalogQuery).toContain("pg_catalog.pg_get_functiondef");
+    expect(catalogQuery).toContain("routine.proargnames");
+    expect(catalogQuery).toContain("routine.proargmodes");
+    expect(catalogQuery).toContain("routine.proisstrict");
+    expect(catalogQuery).toContain("routine.proparallel");
+    expect(catalogQuery).toContain("routine.proconfig");
+    expect(catalogQuery).toContain("routine.prosrc");
+    expect(catalogQuery).toContain("pg_catalog.aclexplode");
+    expect(catalogQuery).toContain("pg_catalog.pg_shdepend");
+    expect(catalogQuery).toContain("dependency.objsubid");
+    expect(catalogQuery).toContain("relation.relrowsecurity");
+    expect(catalogQuery).toContain("relation.relforcerowsecurity");
+    expect(catalogQuery).not.toContain(
+      "0007_agent_run_ledger_and_calculations.sql",
+    );
+  });
+
+  it.each([
+    {
+      ddl: "ALTER TABLE dasher.agent_runs DROP CONSTRAINT agent_runs_check_02",
+      entryCount: "7439",
+      fingerprint:
+        "881e33c69fc6c6f40736517bdfe2e3f32cc463a1e8c6dc405bd37872a3017b96",
+      requiredCatalogExpression: "pg_catalog.pg_get_constraintdef",
+    },
+    {
+      ddl: "CREATE FUNCTION dasher_private.validate_metric_contract_graph_v1(bytea) RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT true'",
+      entryCount: "7442",
+      fingerprint:
+        "4de4c96606a72c86f67bb46fcb1428799196b4cc0c87dace6bac9a990055c76d",
+      requiredCatalogExpression: "routine.identity_arguments",
+    },
+    {
+      ddl: "GRANT TRUNCATE ON dasher.agent_runs TO dasher_app",
+      entryCount: "7442",
+      fingerprint:
+        "15493104508c017f8369c9bdb8a5ed534ed3b546aff00b6b1075417b1a4ea9fa",
+      requiredCatalogExpression: "pg_catalog.aclexplode",
+    },
+    {
+      ddl: "ALTER TABLE dasher.users ADD COLUMN catalog_drift text",
+      entryCount: "7441",
+      fingerprint:
+        "3be880a29b70c34ea087788b08142b74eadf2921cdb2bb756e140646f6abcf4e",
+      requiredCatalogExpression: "attribute.attname",
+    },
+    {
+      ddl: "ALTER TABLE dasher.agent_runs NO FORCE ROW LEVEL SECURITY",
+      entryCount: "7452",
+      fingerprint:
+        "58264781a2c5dcbf0c2c7af962ec52bb750b64450b3bbbb37b0a36f9f9ca1e82",
+      requiredCatalogExpression: "relation.relforcerowsecurity",
+    },
+    {
+      ddl: "ALTER TABLE dasher.agent_runs DISABLE TRIGGER agent_run_transition_guard",
+      entryCount: "7452",
+      fingerprint:
+        "e803f49e1063c15a5a74de84687318d870cdbb5e0fd4a445a5cb5745cb6d1fa2",
+      requiredCatalogExpression: "trigger.tgenabled",
+    },
+  ])(
+    "rejects the frozen real-PostgreSQL catalog mutation: $ddl",
+    async ({ entryCount, fingerprint, requiredCatalogExpression }) => {
+      let expectedFingerprint = "";
+      const client = {
+        query: async (text: string, values?: readonly unknown[]) => {
+          expect(text).toContain(requiredCatalogExpression);
+          expectedFingerprint = values?.[1] as string;
+          return result([
+            {
+              entry_count: entryCount,
+              fingerprint_sha256: fingerprint,
+              matches: true,
+            },
+          ]);
+        },
+        release: () => undefined,
+      } as unknown as MigrationClient;
+
+      await expect(
+        canonical0007CatalogMatchesForTests(client, "migration_owner"),
+      ).resolves.toBe(false);
+      expect(fingerprint).toMatch(/^[0-9a-f]{64}$/u);
+      expect(fingerprint).not.toBe(expectedFingerprint);
+      expect(Number(entryCount)).toBeGreaterThan(7_000);
+    },
+  );
+
+  it("installs the clean canonical chain through phase 7 after preparing the run pair", async () => {
+    const series = await canonicalPhase7Series();
     const scripted = scriptedMigrationClient({
       initialJournalRows: [],
       prefixObjectMatches: true,
@@ -4950,18 +5091,86 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
 
     await expect(
       runMigrations(singleClientPool(scripted.client), series.directory, []),
-    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    ).resolves.toEqual({
+      appliedCount: 7,
+      discoveredCount: 7,
+      previouslyAppliedCount: 0,
+    });
 
     expect(transactionCommands(scripted, 7).at(-1)).toBe("T7 COMMIT");
     expect(transactionCommands(scripted, 8)).not.toContain("T8 MIGRATION SQL");
     expect(transactionCommands(scripted, 9)).toContain("T9 MIGRATION SQL");
-    expect(transactionCommands(scripted, 9).at(-1)).toBe("T9 ROLLBACK");
+    expect(transactionCommands(scripted, 9).at(-1)).toBe("T9 COMMIT");
     expect(
       scripted.managedRoleEvents.filter((event) =>
         event.startsWith("CREATE dasher_run_"),
       ),
     ).toEqual(["CREATE dasher_run_definer", "CREATE dasher_run_operator"]);
-    expect(scripted.journalRows).toEqual(series.journalRows);
+    expect(scripted.journalRows).toHaveLength(7);
+    expect(scripted.journalRows.at(-1)).toMatchObject({
+      filename: "0007_agent_run_ledger_and_calculations.sql",
+      sequence: 7,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 0,
+      discoveredCount: 7,
+      previouslyAppliedCount: 7,
+    });
+    expect(scripted.journalRows).toHaveLength(7);
+  });
+
+  it("rejects canonical phase-7 checksum drift before connecting", async () => {
+    const series = await canonicalPhase7Series();
+    const phase7Path = join(
+      series.directory,
+      "0007_agent_run_ledger_and_calculations.sql",
+    );
+    await writeFile(
+      phase7Path,
+      Buffer.concat([await readFile(phase7Path), Buffer.from("\n")]),
+    );
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "migration_file_mismatch" });
+    expect(scripted.queryTexts).toEqual([
+      "SELECT pg_catalog.pg_advisory_lock(724372, 20260730)",
+      "SELECT pg_catalog.pg_advisory_unlock(724372, 20260730) AS unlocked",
+    ]);
+  });
+
+  it("rejects a partial phase-7 journal before SQL or role mutation", async () => {
+    const series = await phase7AppliedSeries();
+    const partialJournal = [
+      ...series.journalRows.slice(0, 5),
+      series.journalRows[6]!,
+    ];
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: partialJournal,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "journal_identity_mismatch" });
+    expect(scripted.transactionCommands).not.toContain("T1 MIGRATION SQL");
+    expect(
+      scripted.managedRoleEvents.filter(
+        (event) => event.startsWith("CREATE ") || event.startsWith("DROP "),
+      ),
+    ).toEqual([]);
   });
 
   it.each([
@@ -4978,7 +5187,7 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
       ],
     },
   ])("rejects $name before phase-7 SQL", async ({ runRoleNames }) => {
-    const series = await phase7PlaceholderSeries();
+    const series = await canonicalPhase7Series();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
       prefixObjectMatches: true,
@@ -4997,7 +5206,7 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
   });
 
   it("rejects every prepared run-role flag, setting, validity, and comment drift before phase-7 SQL", async () => {
-    const series = await phase7PlaceholderSeries();
+    const series = await canonicalPhase7Series();
     const mutants = [
       { can_login: true },
       { inherit_privileges: true },
@@ -5037,7 +5246,7 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
   });
 
   it("rejects prepared run-role adoption before the exact phase-6 prefix", async () => {
-    const series = await phase7PlaceholderSeries();
+    const series = await canonicalPhase7Series();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows.slice(0, 5),
       prefixObjectMatches: true,
@@ -5074,8 +5283,8 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
     expect(scripted.journalRows).toEqual(series.journalRows);
   });
 
-  it("reuses the exact prepared residue on retry and rolls back the intentionally absent phase-7 catalog", async () => {
-    const series = await phase7PlaceholderSeries();
+  it("reuses the exact prepared residue and completes the canonical phase-7 catalog", async () => {
+    const series = await canonicalPhase7Series();
     const scripted = scriptedMigrationClient({
       initialJournalRows: series.journalRows,
       prefixObjectMatches: true,
@@ -5088,7 +5297,11 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
 
     await expect(
       runMigrations(singleClientPool(scripted.client), series.directory, []),
-    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    ).resolves.toEqual({
+      appliedCount: 1,
+      discoveredCount: 7,
+      previouslyAppliedCount: 6,
+    });
     expect(
       scripted.managedRoleEvents.some((event) =>
         event.startsWith("CREATE dasher_run_"),
@@ -5096,7 +5309,98 @@ describe("phase-7 prepared run roles and three-login allowlists", () => {
     ).toBe(false);
     expect(transactionCommands(scripted, 3)).toContain("T3 MIGRATION SQL");
     expect(transactionCommands(scripted, 3)).toContain("T3 JOURNAL INSERT");
+    expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 COMMIT");
+    expect(scripted.journalRows).toHaveLength(7);
+  });
+
+  it("rolls back phase-7 SQL and its journal row on cumulative catalog drift, then retries cleanly", async () => {
+    const series = await canonicalPhase7Series();
+    const drifted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      phase7ActualCatalogFingerprint: "0".repeat(64),
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(drifted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(transactionCommands(drifted, 3)).toContain("T3 MIGRATION SQL");
+    expect(transactionCommands(drifted, 3)).toContain("T3 JOURNAL INSERT");
+    expect(transactionCommands(drifted, 3).at(-1)).toBe("T3 ROLLBACK");
+    expect(drifted.journalRows).toEqual(series.journalRows);
+
+    const retry = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+    await expect(
+      runMigrations(singleClientPool(retry.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 1,
+      discoveredCount: 7,
+      previouslyAppliedCount: 6,
+    });
+    expect(retry.journalRows).toHaveLength(7);
+  });
+
+  it("rolls back a failed phase-7 journal insertion and retries atomically", async () => {
+    const series = await canonicalPhase7Series();
+    const scripted = scriptedMigrationClient({
+      failure: { stage: "journal", transaction: 3 },
+      initialJournalRows: series.journalRows,
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toBe(scripted.operationError);
+    expect(scripted.journalRows).toEqual(series.journalRows);
+    expect(transactionCommands(scripted, 3)).toContain("T3 MIGRATION SQL");
     expect(transactionCommands(scripted, 3).at(-1)).toBe("T3 ROLLBACK");
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).resolves.toEqual({
+      appliedCount: 1,
+      discoveredCount: 7,
+      previouslyAppliedCount: 6,
+    });
+    expect(scripted.journalRows).toHaveLength(7);
+  });
+
+  it("rejects a wrong phase-7 catalog object on replay without self-repair", async () => {
+    const series = await phase7AppliedSeries();
+    const scripted = scriptedMigrationClient({
+      initialJournalRows: series.journalRows,
+      phase7ActualCatalogFingerprint: "0".repeat(64),
+      prefixObjectMatches: true,
+      retentionRoleNames: [
+        "dasher_retention_definer",
+        "dasher_retention_operator",
+      ],
+      runRoleNames: ["dasher_run_definer", "dasher_run_operator"],
+    });
+
+    await expect(
+      runMigrations(singleClientPool(scripted.client), series.directory, []),
+    ).rejects.toMatchObject({ code: "managed_role_drift" });
+    expect(scripted.queryTexts).not.toContainEqual(
+      expect.stringContaining("CREATE TABLE dasher.agent_run_policy_revisions"),
+    );
     expect(scripted.journalRows).toEqual(series.journalRows);
   });
 

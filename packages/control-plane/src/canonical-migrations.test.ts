@@ -2991,8 +2991,8 @@ const task4FunctionIdentities = [
   "dasher_private.context_user_id",
 ] as const;
 
-describe("Task 3, Task 4, and Task 8 canonical migration golden guard", () => {
-  it("pins immutable 0001-0005 and exact canonical 0006 source bytes", async () => {
+describe("Task 3, Task 4, Task 8, and Task 9 canonical migration golden guard", () => {
+  it("pins immutable 0001-0006 and exact canonical 0007 source bytes", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -3008,6 +3008,7 @@ describe("Task 3, Task 4, and Task 8 canonical migration golden guard", () => {
       lifecycleApiCorrectionMigration,
       securityDefinerCleanupCoordinationMigration,
       lifecycleAccessRetentionGuardCorrectionMigration,
+      phase7Migration,
     ]);
     expect(
       migrations.slice(0, 4).map((migration) => migration.bytes.byteLength),
@@ -3300,6 +3301,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       lifecycleApiCorrectionMigration.filename,
       securityDefinerCleanupCoordinationMigration.filename,
       lifecycleAccessRetentionGuardCorrectionMigration.filename,
+      phase7Migration.filename,
     ]);
     expect(
       Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
@@ -7014,9 +7016,9 @@ const lifecycleMutationContracts = [
 ] as const;
 
 describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
-  it("pins the six-row chain while leaving the modeled probe at three", async () => {
+  it("pins the seven-row chain while leaving the modeled probe at three", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
-    expect(migrations).toHaveLength(6);
+    expect(migrations).toHaveLength(7);
     expect(
       migrations.map((migration) =>
         Buffer.from(migration.checksumSha256).toString("hex"),
@@ -7028,6 +7030,7 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
       lifecycleApiCorrectionMigration.checksum,
       securityDefinerCleanupCoordinationMigration.checksum,
       lifecycleAccessRetentionGuardCorrectionMigration.checksum,
+      phase7Migration.checksum,
     ]);
     expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
     expect(modeled0003Functions.length).toBeGreaterThan(0);
@@ -7850,11 +7853,24 @@ describe("Task 8B.4 cleanup-coordination corrective migration contract", () => {
   });
 });
 
-const phase7MigrationPlaceholder = {
+const phase7Migration = {
   sequence: 7,
   filename: "0007_agent_run_ledger_and_calculations.sql",
-  checksum: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  checksum: "dfe0ca8eef30b9b5a599657eaf0da6c93a330a90d3fa9b01c75a2f730d8db3d5",
 } as const;
+
+function phase7FixedFunctionDefinitions(
+  sql: string,
+): ReadonlyMap<string, string> {
+  return new Map(
+    Array.from(
+      sql.matchAll(
+        /^CREATE (?:OR REPLACE )?FUNCTION ([a-z0-9_]+[.][a-z0-9_]+)\([\s\S]*?^\$function\$;/gmu,
+      ),
+      (match) => [match[1]!, match[0]] as const,
+    ),
+  );
+}
 
 const phase7ManagedRoles = [
   {
@@ -8047,7 +8063,7 @@ const phase7PolicyExpressionTemplates = {
     roles: ["dasher_run_definer"],
     using: [
       "current_user = 'dasher_run_definer'",
-      "phase IN ('locking','authorized')",
+      "phase IN ('locking','authorized','checkpoint_replay')",
       "exact proven transaction-local principal revision",
       "exact transaction-local organization, dashboard, run, requesting membership, requesting user, and requesting authority revision",
     ],
@@ -8121,7 +8137,7 @@ const phase7PolicyExpressionTemplates = {
       "current_user = 'dasher_run_definer'",
       "phase = 'discovering'",
       "latest enabled database-bound principal revision with capability 'claim'",
-      "state IN ('requested','authorized','planning','generating','validating','revising')",
+      "state IN ('requested','authorized','planning','generating','validating','revising') OR (state = 'failed' AND capability = 'reconcile')",
     ],
   },
   principalBootstrap: {
@@ -21480,15 +21496,21 @@ describe("Task 9A phase-7 static contract", () => {
     );
   });
 
-  it("freezes the exact phase-7 placeholder, role pair, 31 relations, and no-sequence inventory", () => {
-    expect(phase7MigrationPlaceholder).toEqual({
+  it("freezes the exact phase-7 migration, role pair, 31 relations, and no-sequence inventory", async () => {
+    expect(phase7Migration).toEqual({
       sequence: 7,
       filename: "0007_agent_run_ledger_and_calculations.sql",
       checksum:
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dfe0ca8eef30b9b5a599657eaf0da6c93a330a90d3fa9b01c75a2f730d8db3d5",
     });
-    expect(createHash("sha256").update(Buffer.alloc(0)).digest("hex")).toBe(
-      phase7MigrationPlaceholder.checksum,
+    const phase7Bytes = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+    );
+    expect(createHash("sha256").update(phase7Bytes).digest("hex")).toBe(
+      phase7Migration.checksum,
     );
     expect(phase7ManagedRoles).toEqual([
       {
@@ -22018,7 +22040,7 @@ describe("Task 9A phase-7 static contract", () => {
         roles: ["dasher_run_definer"],
         using: [
           "current_user = 'dasher_run_definer'",
-          "phase IN ('locking','authorized')",
+          "phase IN ('locking','authorized','checkpoint_replay')",
           "exact proven transaction-local principal revision",
           "exact transaction-local organization, dashboard, run, requesting membership, requesting user, and requesting authority revision",
         ],
@@ -23319,7 +23341,7 @@ describe("Task 9A phase-7 static contract", () => {
       phase6Sql,
     ) as Record<string, readonly string[]>;
 
-    expect(migrations).toHaveLength(6);
+    expect(migrations).toHaveLength(7);
     expect(baseline.functions).toContainEqual(
       expect.stringMatching(
         /^dasher_retention_api[.]claim_dashboard_cleanup\(uuid, bigint, bytea, interval, uuid, text, uuid\)\|/u,
@@ -23338,7 +23360,7 @@ describe("Task 9A phase-7 static contract", () => {
   });
 });
 
-describe("Task 9A canonical 0007 SQL red gate", () => {
+describe("Task 9B canonical 0007 SQL gate", () => {
   it("requires the exact canonical phase-7 file and checksum", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
     expect(
@@ -23347,6 +23369,1532 @@ describe("Task 9A canonical 0007 SQL red gate", () => {
         filename: migration.filename,
         checksum: Buffer.from(migration.checksumSha256).toString("hex"),
       })),
-    ).toContainEqual(phase7MigrationPlaceholder);
+    ).toContainEqual(phase7Migration);
+  });
+
+  it("binds raw accounting to the frozen reconciliation-only grammar", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const start = sql.indexOf(
+      "CREATE FUNCTION dasher_run_api.reconcile_agent_run_attempt(",
+    );
+    const end = sql.indexOf(
+      "CREATE FUNCTION dasher_run_api.release_agent_run_attempt(",
+      start,
+    );
+    const reconcile = sql.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(reconcile).toContain(
+      "pg_catalog.octet_length(p_actual_accounting_bytes) NOT BETWEEN 1 AND 1024",
+    );
+    expect(reconcile).toContain("'attempt-actual-accounting-v1'");
+    expect(reconcile).toContain("'caller_indeterminate'");
+    expect(reconcile).toContain("'malformed_accounting'");
+    expect(reconcile).toContain("'actual_over_reservation'");
+    expect(reconcile).toContain(
+      "WHEN SQLSTATE '22021' OR SQLSTATE '22P02' OR SQLSTATE '22003' THEN",
+    );
+    expect(reconcile).not.toMatch(
+      /undefined_function|data_exception|WHEN OTHERS|sha256\(p_actual_accounting_bytes\)|RAISE (?:LOG|NOTICE|WARNING)/u,
+    );
+    expect(sql.slice(0, start) + sql.slice(end)).not.toContain(
+      "p_actual_accounting_bytes",
+    );
+  });
+
+  it("allows discovery for exactly the 21 run capabilities without weakening principal binding", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const start = sql.indexOf("CREATE POLICY agent_runs_run_discovery_select");
+    const end = sql.indexOf(
+      "CREATE POLICY agent_runs_run_definer_update",
+      start,
+    );
+    const discoveryPolicy = sql.slice(start, end);
+    const expectedCapabilities = [
+      "checkpoint",
+      "claim",
+      "clone_replay",
+      "close_candidate_set",
+      "commit_abstention",
+      "commit_brief",
+      "commit_bundle",
+      "commit_candidate",
+      "commit_claims",
+      "commit_graph",
+      "commit_manifest",
+      "commit_validation",
+      "consume_replay",
+      "dispatch",
+      "finalize_ranking",
+      "finish",
+      "read_input",
+      "read_replay",
+      "reconcile",
+      "release",
+      "reserve",
+    ] as const;
+    const capabilityArray =
+      /run_capability'[\s\S]*?= ANY\(ARRAY\[([\s\S]*?)\]::text\[\]\)/u.exec(
+        discoveryPolicy,
+      )?.[1] ?? "";
+    const discoveredCapabilities = Array.from(
+      capabilityArray.matchAll(/'([a-z_]+)'/gu),
+      (match) => match[1],
+    );
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(discoveredCapabilities).toEqual(expectedCapabilities);
+    expect(new Set(discoveredCapabilities).size).toBe(21);
+    expect(discoveryPolicy).toContain(
+      "current_setting('dasher.run_phase', true) = 'discovering'",
+    );
+    expect(discoveryPolicy).toContain(
+      "principal.run_service_principal_id = NULLIF(current_setting(",
+    );
+    expect(discoveryPolicy).toContain(
+      "principal.principal_revision = NULLIF(current_setting(",
+    );
+    expect(discoveryPolicy).toContain("principal.session_login = session_user");
+    expect(discoveryPolicy).toContain(
+      "principal.database_name = pg_catalog.current_database()",
+    );
+    expect(discoveryPolicy).toContain("principal.enabled");
+    expect(discoveryPolicy).toContain(
+      "later.principal_revision > principal.principal_revision",
+    );
+    expect(discoveryPolicy).toMatch(
+      /NULLIF\(current_setting\(\s*'dasher[.]run_capability', true\s*\), ''\) = ANY\(principal[.]capabilities\)/u,
+    );
+    expect(discoveryPolicy).not.toContain(
+      "current_setting('dasher.run_capability', true) = 'claim'",
+    );
+    expect(discoveryPolicy).not.toContain(
+      "'claim' = ANY(principal.capabilities)",
+    );
+  });
+
+  it("surfaces terminal failed runs to discovery only under the reconcile capability", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = (start: string, end: string): string => {
+      const startIndex = sql.indexOf(start);
+      const endIndex = sql.indexOf(end, startIndex + start.length);
+      expect(startIndex, start).toBeGreaterThanOrEqual(0);
+      expect(endIndex, end).toBeGreaterThan(startIndex);
+      return sql.slice(startIndex, endIndex);
+    };
+    const discoveryPolicy = section(
+      "CREATE POLICY agent_runs_run_discovery_select",
+      "CREATE POLICY agent_runs_run_definer_update",
+    );
+    const expectedStatePredicate = [
+      "  AND (",
+      "    state IN (",
+      "      'requested','authorized','planning','generating','validating','revising'",
+      "    )",
+      "    OR (",
+      "      state = 'failed'",
+      "      AND NULLIF(current_setting(",
+      "        'dasher.run_capability', true",
+      "      ), '') = 'reconcile'",
+      "    )",
+      "  )",
+    ].join("\n");
+
+    expect(discoveryPolicy).toContain(expectedStatePredicate);
+    expect(
+      discoveryPolicy.split("state IN (").length - 1,
+      "exactly one nonterminal state list",
+    ).toBe(1);
+    expect(
+      discoveryPolicy.split("'failed'").length - 1,
+      "failed appears only in the reconcile-guarded branch",
+    ).toBe(1);
+    expect(discoveryPolicy).not.toMatch(
+      /'(?:succeeded|refused|cancelled|canceled|approval_required|indeterminate_quarantined|running)'/u,
+    );
+
+    expect(discoveryPolicy).toContain(
+      "AS PERMISSIVE FOR SELECT TO dasher_run_definer",
+    );
+    expect(discoveryPolicy).not.toContain("WITH CHECK");
+    expect(discoveryPolicy).not.toMatch(
+      /\bFOR (?:UPDATE|INSERT|DELETE|ALL)\b/u,
+    );
+
+    const agentRunsPolicies = section(
+      "CREATE POLICY agent_runs_security_definer_select",
+      "CREATE POLICY agent_run_request_payloads_security_definer_select",
+    );
+    const failedOutsideDiscovery =
+      agentRunsPolicies.split("'failed'").length - 1;
+    expect(
+      failedOutsideDiscovery,
+      "no other agent_runs policy surfaces state='failed'",
+    ).toBe(1);
+
+    const reauthorize = section(
+      "CREATE FUNCTION dasher_private.reauthorize_agent_run_v1(",
+      "CREATE FUNCTION dasher_private.replay_source_fence_v1(",
+    );
+    for (const guard of [
+      "v_terminal_reconcile_replay :=\n" +
+        "    current_setting('dasher.run_capability', true) = 'reconcile'\n" +
+        "    AND v_run.state = 'failed'\n" +
+        "    AND v_run.lease_epoch = p_lease_epoch + 1\n" +
+        "    AND v_run.lease_token_sha256 IS NULL\n" +
+        "    AND v_run.lease_owner_principal_id IS NULL\n" +
+        "    AND v_run.lease_owner_principal_revision IS NULL\n" +
+        "    AND v_run.lease_expires_at IS NULL",
+      "claim_event.event_kind = 'lease_acquired'",
+      "claim_event.claim_operation_kind = 'ordinary_claim'",
+      "claim_event.claim_result_lease_epoch = p_lease_epoch",
+      "claim_event.claim_result_attempt_token = p_attempt_token",
+      "'dasher.agent-run-ordinary-claim-input.v1', 'UTF8'",
+      "pg_catalog.convert_to('dasher.agent-run-claim-result.v1', 'UTF8')",
+    ]) {
+      expect(reauthorize, guard).toContain(guard);
+    }
+  });
+
+  it("surfaces locking-phase run events only under the reconcile capability", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = (start: string, end: string): string => {
+      const startIndex = sql.indexOf(start);
+      const endIndex = sql.indexOf(end, startIndex + start.length);
+      expect(startIndex, start).toBeGreaterThanOrEqual(0);
+      expect(endIndex, end).toBeGreaterThan(startIndex);
+      return sql.slice(startIndex, endIndex);
+    };
+    const definerSelect = section(
+      "CREATE POLICY agent_run_events_run_definer_select",
+      "CREATE POLICY agent_run_events_run_definer_insert",
+    );
+
+    const expectedDefinerSelect = [
+      "CREATE POLICY agent_run_events_run_definer_select",
+      "ON dasher.agent_run_events",
+      "AS PERMISSIVE FOR SELECT TO dasher_run_definer",
+      "USING (",
+      "  dasher_private.run_policy_allows_v1(organization_id, dashboard_id, run_id)",
+      "  OR (",
+      "    current_user = 'dasher_run_definer'::name",
+      "    AND current_setting('dasher.run_phase', true) = 'locking'",
+      "    AND NULLIF(current_setting('dasher.run_capability', true), '')",
+      "      = 'reconcile'",
+      "    AND organization_id = NULLIF(current_setting(",
+      "      'dasher.run_organization_id', true",
+      "    ), '')::uuid",
+      "    AND dashboard_id = NULLIF(current_setting(",
+      "      'dasher.run_dashboard_id', true",
+      "    ), '')::uuid",
+      "    AND run_id = NULLIF(current_setting('dasher.run_id', true), '')::uuid",
+      "  )",
+      "  OR (",
+      "    current_user = 'dasher_run_definer'::name",
+      "    AND current_setting('dasher.run_phase', true) = 'replay_source_read'",
+      "    AND organization_id = NULLIF(current_setting(",
+      "      'dasher.run_organization_id', true",
+      "    ), '')::uuid",
+      "    AND dashboard_id = NULLIF(current_setting('dasher.run_dashboard_id', true), '')::uuid",
+      "    AND run_id = NULLIF(current_setting('dasher.run_replay_source_id', true), '')::uuid",
+      "  )",
+      ");",
+      "",
+    ].join("\n");
+
+    // 1. Exact three-branch union, byte-for-byte with the migration text.
+    expect(definerSelect).toBe(expectedDefinerSelect);
+
+    // 2. The single locking branch is reconcile-conditioned and run-scoped;
+    //    a 'claim' capability under phase='locking' cannot satisfy it.
+    const branches = definerSelect
+      .split("\n  OR (\n")
+      .slice(1)
+      .map((branch) => branch.split("\n  )")[0] ?? "");
+    const lockingBranches = branches.filter((branch) =>
+      branch.includes("'locking'"),
+    );
+    expect(branches).toHaveLength(2);
+    expect(lockingBranches).toHaveLength(1);
+    for (const conjunct of [
+      "current_user = 'dasher_run_definer'::name",
+      "AND current_setting('dasher.run_phase', true) = 'locking'",
+      "AND NULLIF(current_setting('dasher.run_capability', true), '')\n      = 'reconcile'",
+      "AND organization_id = NULLIF(current_setting(\n      'dasher.run_organization_id', true\n    ), '')::uuid",
+      "AND dashboard_id = NULLIF(current_setting(\n      'dasher.run_dashboard_id', true\n    ), '')::uuid",
+      "AND run_id = NULLIF(current_setting('dasher.run_id', true), '')::uuid",
+    ]) {
+      expect(lockingBranches[0], conjunct).toContain(conjunct);
+    }
+    expect(
+      definerSelect.split("'locking'").length - 1,
+      "exactly one locking branch",
+    ).toBe(1);
+    expect(
+      definerSelect.split("'reconcile'").length - 1,
+      "the locking branch is the only capability-gated branch",
+    ).toBe(1);
+    expect(
+      definerSelect,
+      "no unconditioned locking branch may be copied from agent_runs",
+    ).not.toContain(
+      "AND current_setting('dasher.run_phase', true) = 'locking'\n    AND organization_id",
+    );
+    expect(definerSelect).not.toMatch(/'claim'|'claim_retry_discovering'/u);
+
+    // 5. Still SELECT-only for dasher_run_definer with no WITH CHECK.
+    expect(definerSelect).toContain(
+      "AS PERMISSIVE FOR SELECT TO dasher_run_definer",
+    );
+    expect(definerSelect).not.toContain("WITH CHECK");
+    expect(definerSelect).not.toMatch(/\bFOR (?:UPDATE|INSERT|DELETE|ALL)\b/u);
+    expect(definerSelect).not.toMatch(
+      /dasher_security_definer|dasher_retention_definer/u,
+    );
+
+    // 3. The other eight agent_run_events policies stay byte-identical.
+    expect(
+      section(
+        "CREATE POLICY agent_run_events_security_definer_select",
+        "CREATE POLICY agent_run_events_run_definer_select",
+      ),
+    ).toBe(
+      [
+        "CREATE POLICY agent_run_events_security_definer_select",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR SELECT TO dasher_security_definer",
+        "USING (dasher_private.security_policy_allows_v1(organization_id, dashboard_id));",
+        "CREATE POLICY agent_run_events_security_definer_insert",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR INSERT TO dasher_security_definer",
+        "WITH CHECK (dasher_private.security_policy_allows_v1(organization_id, dashboard_id));",
+        "",
+      ].join("\n"),
+    );
+    expect(
+      section(
+        "CREATE POLICY agent_run_events_run_definer_insert",
+        "CREATE POLICY agent_run_event_payloads_security_definer_insert",
+      ),
+    ).toBe(
+      [
+        "CREATE POLICY agent_run_events_run_definer_insert",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR INSERT TO dasher_run_definer",
+        "WITH CHECK (dasher_private.run_policy_allows_v1(organization_id, dashboard_id, run_id));",
+        "CREATE POLICY agent_run_events_retention_definer_select",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR SELECT TO dasher_retention_definer",
+        "USING (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id));",
+        "CREATE POLICY agent_run_events_retention_definer_insert",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR INSERT TO dasher_retention_definer",
+        "WITH CHECK (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id));",
+        "CREATE POLICY agent_run_events_retention_definer_update",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR UPDATE TO dasher_retention_definer",
+        "USING (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id))",
+        "WITH CHECK (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id));",
+        "CREATE POLICY agent_run_events_retention_definer_delete",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR DELETE TO dasher_retention_definer",
+        "USING (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id));",
+        "",
+      ].join("\n"),
+    );
+    expect(
+      section(
+        "CREATE POLICY agent_run_events_run_claim_retry_select",
+        "CREATE POLICY candidate_comparison_bundles_run_lock_update",
+      ),
+    ).toBe(
+      [
+        "CREATE POLICY agent_run_events_run_claim_retry_select",
+        "ON dasher.agent_run_events",
+        "AS PERMISSIVE FOR SELECT TO dasher_run_definer",
+        "USING (",
+        "  current_user = 'dasher_run_definer'::name",
+        "  AND current_setting('dasher.run_phase', true) = 'claim_retry_discovering'",
+        "  AND claim_request_id = NULLIF(current_setting('dasher.run_claim_request_id', true), '')::uuid",
+        ");",
+        "",
+        "",
+      ].join("\n"),
+    );
+
+    // Exactly nine policies target dasher.agent_run_events.
+    const eventPolicyNames = Array.from(
+      sql.matchAll(
+        /^CREATE POLICY ([a-z0-9_]+)\nON dasher[.]agent_run_events\n/gmu,
+      ),
+      (match) => match[1],
+    );
+    expect(eventPolicyNames).toEqual([
+      "agent_run_events_security_definer_select",
+      "agent_run_events_security_definer_insert",
+      "agent_run_events_run_definer_select",
+      "agent_run_events_run_definer_insert",
+      "agent_run_events_retention_definer_select",
+      "agent_run_events_retention_definer_insert",
+      "agent_run_events_retention_definer_update",
+      "agent_run_events_retention_definer_delete",
+      "agent_run_events_run_claim_retry_select",
+    ]);
+
+    // No new authority: table grants and RLS forcing are unchanged.
+    expect(
+      Array.from(
+        sql.matchAll(
+          /GRANT[^;]+ON TABLE dasher[.]agent_run_events TO [^;]+;/gu,
+        ),
+        (match) => match[0].replace(/\s+/gu, " ").trim(),
+      ).sort(),
+    ).toEqual(
+      [
+        "GRANT SELECT ON TABLE dasher.agent_run_events TO dasher_security_definer;",
+        "GRANT INSERT ON TABLE dasher.agent_run_events TO dasher_security_definer;",
+        "GRANT SELECT ON TABLE dasher.agent_run_events TO dasher_run_definer;",
+        "GRANT INSERT ON TABLE dasher.agent_run_events TO dasher_run_definer;",
+        "GRANT SELECT ON TABLE dasher.agent_run_events TO dasher_retention_definer;",
+        "GRANT INSERT ON TABLE dasher.agent_run_events TO dasher_retention_definer;",
+        "GRANT DELETE ON TABLE dasher.agent_run_events TO dasher_retention_definer;",
+        "GRANT UPDATE (event_payload_id, claim_input_sha256, claim_result_sha256, claim_result_attempt_token, claim_result_input_sha256) ON TABLE dasher.agent_run_events TO dasher_retention_definer;",
+      ].sort(),
+    );
+    expect(sql).toContain(
+      "ALTER TABLE dasher.agent_run_events ENABLE ROW LEVEL SECURITY;\n" +
+        "ALTER TABLE dasher.agent_run_events FORCE ROW LEVEL SECURITY;",
+    );
+
+    // 4. The reauthorize terminal-reconcile-replay guard is unweakened, and
+    //    'locking' remains the phase in force when the guard EXISTS runs.
+    const reauthorize = section(
+      "CREATE FUNCTION dasher_private.reauthorize_agent_run_v1(",
+      "CREATE FUNCTION dasher_private.replay_source_fence_v1(",
+    );
+    const lockingSet = reauthorize.indexOf(
+      "PERFORM pg_catalog.set_config('dasher.run_phase', 'locking', true);",
+    );
+    const guardRead = reauthorize.indexOf("v_terminal_reconcile_replay :=");
+    const authorizedSet = reauthorize.indexOf(
+      "PERFORM pg_catalog.set_config('dasher.run_phase', 'authorized', true);",
+    );
+    expect(lockingSet).toBeGreaterThanOrEqual(0);
+    expect(guardRead).toBeGreaterThan(lockingSet);
+    expect(authorizedSet).toBeGreaterThan(guardRead);
+    for (const guard of [
+      "v_terminal_reconcile_replay :=\n" +
+        "    current_setting('dasher.run_capability', true) = 'reconcile'\n" +
+        "    AND v_run.state = 'failed'\n" +
+        "    AND v_run.lease_epoch = p_lease_epoch + 1\n" +
+        "    AND v_run.lease_token_sha256 IS NULL\n" +
+        "    AND v_run.lease_owner_principal_id IS NULL\n" +
+        "    AND v_run.lease_owner_principal_revision IS NULL\n" +
+        "    AND v_run.lease_expires_at IS NULL",
+      "FROM dasher.agent_run_events AS claim_event",
+      "claim_event.event_kind = 'lease_acquired'",
+      "claim_event.claim_operation_kind = 'ordinary_claim'",
+      "claim_event.claim_result_state = 'running'",
+      "claim_event.claim_result_lease_epoch = p_lease_epoch",
+      "claim_event.claim_result_attempt_token = p_attempt_token",
+      "'dasher.agent-run-ordinary-claim-input.v1', 'UTF8'",
+      "pg_catalog.convert_to('dasher.agent-run-claim-result.v1', 'UTF8')",
+    ]) {
+      expect(reauthorize, guard).toContain(guard);
+    }
+
+    // The two claim_agent_run locking sites keep capability 'claim', so the
+    // new branch is unreachable for them.
+    const claim = section(
+      "CREATE FUNCTION dasher_run_api.claim_agent_run(",
+      "CREATE FUNCTION dasher_run_api.get_claimed_agent_run_input(",
+    );
+    expect(claim).toContain(
+      "PERFORM dasher_private.initialize_run_operator_context_v1(\n" +
+        "    p_claim_request_id, 'claim'\n" +
+        "  );",
+    );
+    expect(
+      claim.split(
+        "PERFORM pg_catalog.set_config('dasher.run_phase', 'locking', true);",
+      ).length - 1,
+    ).toBe(2);
+    expect(claim).not.toContain("'reconcile'");
+    expect(
+      Array.from(
+        sql.matchAll(
+          /initialize_run_operator_context_v1\([\s\S]{0,80}?'([a-z_]+)'\s*\)/gu,
+        ),
+        (match) => match[1],
+      ).filter((capability) => capability === "reconcile"),
+      "reconcile capability has exactly one setter",
+    ).toHaveLength(1);
+  });
+
+  it("pins the agent_runs run-definer write gate to the authorized write path", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = (start: string, end: string): string => {
+      const startIndex = sql.indexOf(start);
+      const endIndex = sql.indexOf(end, startIndex + start.length);
+      expect(startIndex, start).toBeGreaterThanOrEqual(0);
+      expect(endIndex, end).toBeGreaterThan(startIndex);
+      return sql.slice(startIndex, endIndex);
+    };
+    const definerUpdate = section(
+      "CREATE POLICY agent_runs_run_definer_update",
+      "CREATE POLICY agent_runs_retention_definer_select",
+    );
+
+    const expectedDefinerUpdate = [
+      "CREATE POLICY agent_runs_run_definer_update",
+      "ON dasher.agent_runs",
+      "AS PERMISSIVE FOR UPDATE TO dasher_run_definer",
+      "USING (",
+      "  dasher_private.run_policy_allows_v1(organization_id, dashboard_id, run_id)",
+      "  OR (",
+      "    current_user = 'dasher_run_definer'::name",
+      "    AND current_setting('dasher.run_phase', true) = 'locking'",
+      "    AND organization_id = NULLIF(current_setting(",
+      "      'dasher.run_organization_id', true",
+      "    ), '')::uuid",
+      "    AND dashboard_id = NULLIF(current_setting(",
+      "      'dasher.run_dashboard_id', true",
+      "    ), '')::uuid",
+      "    AND run_id = NULLIF(current_setting('dasher.run_id', true), '')::uuid",
+      "  )",
+      "  OR (",
+      "    current_user = 'dasher_run_definer'::name",
+      "    AND current_setting('dasher.run_phase', true) = 'replay_source_read'",
+      "    AND organization_id = NULLIF(current_setting(",
+      "      'dasher.run_organization_id', true",
+      "    ), '')::uuid",
+      "    AND dashboard_id = NULLIF(current_setting('dasher.run_dashboard_id', true), '')::uuid",
+      "    AND run_id = NULLIF(current_setting('dasher.run_replay_source_id', true), '')::uuid",
+      "  )",
+      ")",
+      "WITH CHECK (dasher_private.run_policy_allows_v1(organization_id, dashboard_id, run_id));",
+      "",
+    ].join("\n");
+
+    // 1. Byte-for-byte with the migration text.
+    expect(definerUpdate).toBe(expectedDefinerUpdate);
+
+    // 2. WITH CHECK is exactly the authorized write gate — nothing else.
+    const withCheckIndex = definerUpdate.indexOf("\nWITH CHECK (");
+    expect(withCheckIndex).toBeGreaterThan(0);
+    const usingClause = definerUpdate.slice(0, withCheckIndex);
+    const withCheckClause = definerUpdate.slice(withCheckIndex + 1);
+    expect(withCheckClause).toBe(
+      "WITH CHECK (dasher_private.run_policy_allows_v1(organization_id, dashboard_id, run_id));\n",
+    );
+
+    // 3. The replay fence widens reads only; it may never widen writes.
+    expect(
+      usingClause.split("'replay_source_read'").length - 1,
+      "exactly one replay_source_read branch in USING",
+    ).toBe(1);
+    expect(withCheckClause).not.toContain("replay_source_read");
+    expect(withCheckClause).not.toContain("'locking'");
+    expect(withCheckClause).not.toContain("current_setting");
+
+    // 4. dasher_run_definer gets UPDATE on agent_runs and nothing wider.
+    const runDefinerCommands = Array.from(
+      sql.matchAll(
+        /^CREATE POLICY [a-z0-9_]+\nON dasher[.]agent_runs\nAS PERMISSIVE FOR ([A-Z]+) TO ([^\n]+)\n/gmu,
+      ),
+    )
+      .filter(([, , roles]) => (roles ?? "").includes("dasher_run_definer"))
+      .map(([, command]) => command);
+    expect(new Set(runDefinerCommands)).toEqual(new Set(["SELECT", "UPDATE"]));
+    expect(runDefinerCommands).not.toContain("INSERT");
+    expect(runDefinerCommands).not.toContain("DELETE");
+    expect(runDefinerCommands).not.toContain("ALL");
+  });
+
+  it("keeps the post-reauthorization policy-row lock exact and lock-only", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = (start: string, end: string): string => {
+      const startIndex = sql.indexOf(start);
+      const endIndex = sql.indexOf(end, startIndex + start.length);
+      expect(startIndex, start).toBeGreaterThanOrEqual(0);
+      expect(endIndex, end).toBeGreaterThan(startIndex);
+      return sql.slice(startIndex, endIndex);
+    };
+    const policyRevisionVisibility = section(
+      "CREATE POLICY agent_run_policy_revisions_run_definer_select",
+      "CREATE POLICY agent_run_policy_revisions_run_lock_update",
+    );
+    const policyRevisionLock = section(
+      "CREATE POLICY agent_run_policy_revisions_run_lock_update",
+      "CREATE POLICY memberships_run_reauthorization_select",
+    );
+    const reauthorize = section(
+      "CREATE FUNCTION dasher_private.reauthorize_agent_run_v1(",
+      "CREATE FUNCTION dasher_private.replay_source_fence_v1(",
+    );
+    const reserve = section(
+      "CREATE FUNCTION dasher_run_api.reserve_agent_run_attempt(",
+      "CREATE FUNCTION dasher_run_api.start_agent_run_attempt(",
+    );
+    const reauthorizeCall = reserve.indexOf(
+      "PERFORM dasher_private.reauthorize_agent_run_v1(",
+    );
+    const runRelock = reserve.indexOf(
+      "SELECT run.* INTO STRICT v_run FROM dasher.agent_runs AS run",
+      reauthorizeCall,
+    );
+    const policyRelock = reserve.indexOf(
+      "SELECT policy.* INTO STRICT v_policy",
+      runRelock,
+    );
+
+    expect(reauthorize).toMatch(
+      /set_config\('dasher[.]run_phase', 'authorized', true\);\s*END\s*\$function\$/u,
+    );
+    expect(reauthorizeCall).toBeGreaterThanOrEqual(0);
+    expect(runRelock).toBeGreaterThan(reauthorizeCall);
+    expect(policyRelock).toBeGreaterThan(runRelock);
+    expect(reserve.slice(policyRelock)).toMatch(
+      /WHERE policy[.]policy_revision = v_run[.]policy_revision\s+FOR UPDATE/u,
+    );
+
+    expect(policyRevisionVisibility).toContain(
+      "current_setting('dasher.run_phase', true) IN ('locking','authorized','checkpoint_replay')",
+    );
+    expect(policyRevisionVisibility).toContain(
+      "policy_revision >= NULLIF(current_setting(",
+    );
+    expect(policyRevisionVisibility).toContain(
+      "COALESCE(current_setting('dasher.run_principal_id', true), '') <> ''",
+    );
+    expect(policyRevisionVisibility).toContain(
+      "'dasher.run_principal_revision', true",
+    );
+    expect(policyRevisionVisibility).toContain(
+      "COALESCE(current_setting('dasher.run_capability', true), '') <> ''",
+    );
+
+    expect(policyRevisionLock).toContain(
+      "current_user = 'dasher_run_definer'::name",
+    );
+    expect(policyRevisionLock).toContain(
+      "current_setting('dasher.run_phase', true) IN ('locking','authorized')",
+    );
+    expect(policyRevisionLock).toContain(
+      "policy_revision = NULLIF(current_setting(",
+    );
+    expect(policyRevisionLock).not.toContain(
+      "policy_revision >= NULLIF(current_setting(",
+    );
+    expect(policyRevisionLock).toContain(
+      "current_user = 'dasher_security_definer'::name",
+    );
+    expect(policyRevisionLock).toMatch(/WITH CHECK \(false\);\s*$/u);
+  });
+
+  it("mechanically binds retry, cancellation, checkpoint, and graph semantics", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = (start: string, end: string): string => {
+      const startIndex = sql.indexOf(start);
+      const endIndex = sql.indexOf(end, startIndex + start.length);
+      expect(startIndex, start).toBeGreaterThanOrEqual(0);
+      expect(endIndex, end).toBeGreaterThan(startIndex);
+      return sql.slice(startIndex, endIndex);
+    };
+    const reserve = section(
+      "CREATE FUNCTION dasher_run_api.reserve_agent_run_attempt(",
+      "CREATE FUNCTION dasher_run_api.start_agent_run_attempt(",
+    );
+    const cancel = section(
+      "CREATE FUNCTION dasher_api.cancel_agent_run(",
+      "CREATE FUNCTION dasher_api.get_agent_run(",
+    );
+    const checkpoint = section(
+      "CREATE FUNCTION dasher_run_api.write_agent_run_checkpoint(",
+      "CREATE FUNCTION dasher_run_api.commit_agent_brief(",
+    );
+    const graph = section(
+      "CREATE FUNCTION dasher_private.validate_metric_contract_graph_v1(",
+      "CREATE FUNCTION dasher_run_api.commit_calculation_graph(",
+    );
+    const commitGraph = section(
+      "CREATE FUNCTION dasher_run_api.commit_calculation_graph(",
+      "CREATE FUNCTION dasher_run_api.commit_agent_candidate(",
+    );
+    const closeCandidateSet = section(
+      "CREATE FUNCTION dasher_run_api.close_agent_candidate_set(",
+      "CREATE FUNCTION dasher_run_api.commit_candidate_claims(",
+    );
+    const runAuthorization = section(
+      "CREATE FUNCTION dasher_private.run_policy_allows_v1(",
+      "CREATE FUNCTION dasher_private.retention_policy_allows_v1(",
+    );
+    const policyRevisionVisibility = section(
+      "CREATE POLICY agent_run_policy_revisions_run_definer_select",
+      "CREATE POLICY agent_run_policy_revisions_run_lock_update",
+    );
+
+    expect(reserve).toContain("v_retry_of_attempt_id");
+    expect(reserve).toContain(
+      "v_retry_attempt.candidate_slot IS DISTINCT FROM v_candidate_slot",
+    );
+    expect(reserve).toContain(
+      "v_request - 'attempt_id' - 'retry_of_attempt_id'",
+    );
+    expect(reserve).toContain("attempt.retry_of_attempt_id IS NOT NULL");
+    expect(reserve).not.toMatch(/COALESCE\([^)]*candidate_slot[^)]*,\s*1\)/u);
+    expect(cancel).toContain("'approval_required'");
+    expect(cancel).toContain(
+      "ORDER BY pg_catalog.uuid_send(attempt.attempt_id) FOR UPDATE",
+    );
+    expect(cancel).toContain("'attempt_cancelled_charged'");
+    expect(cancel).toContain("'attempt_cancelled_released'");
+    expect(cancel).toContain("COALESCE(component.outstanding_units, 0) <> 0");
+    expect(cancel).toContain("audit.outcome <> 'succeeded'");
+    expect(checkpoint).toContain("'dasher.agent-run-checkpoint.v1'");
+    expect(checkpoint).toContain("'dasher.retained-payload-envelope.v1'");
+    expect(checkpoint).toContain("v_expected_checkpoint_bytes");
+    expect(checkpoint).toContain("v_state_sha");
+    expect(checkpoint).not.toContain("p_checkpoint_sha256");
+    expect(graph).toContain("v_allowed_keys");
+    expect(graph).toContain("prior.ordinal >= v_node.ordinal");
+    expect(graph).toContain("canonical_jsonb_bytes_v1");
+    expect(graph).toContain("'unavailable','missing','null','present','stale'");
+    expect(graph).toContain("'coefficient','scale'");
+    expect(graph).not.toContain(phase7R7Fixture.hashes.result);
+    expect(commitGraph).toContain("metric_contract_versions");
+    expect(commitGraph).toContain("field_catalog_entries");
+    expect(commitGraph).toContain("candidate_comparison_bundle_evidence");
+    expect(commitGraph).toContain("member.freshness = 'current'");
+    expect(commitGraph).toContain("v_freshness_classifier_node_id");
+    expect(commitGraph).toContain("v_outputs_bytes");
+    expect(commitGraph).toContain("pg_catalog.octet_length(v_outputs_bytes)");
+    expect(commitGraph).toContain("v_expected_scanned_rows");
+    expect(commitGraph).toContain("+ 64 * (p_meter_vector).node_count");
+    expect(closeCandidateSet).toContain(
+      "SELECT run.* INTO STRICT v_run FROM dasher.agent_runs AS run",
+    );
+    expect(closeCandidateSet).toContain("AND run.run_id = p_run_id FOR UPDATE");
+    expect(closeCandidateSet).toContain(
+      "'dasher.run_next_state', 'validating', true",
+    );
+    expect(closeCandidateSet).not.toMatch(
+      /FROM dasher[.](?:briefs|candidate_comparison_bundles)[\s\S]{0,320}FOR UPDATE/u,
+    );
+    expect(sql).toContain(
+      "CREATE FUNCTION dasher_private.canonical_jsonb_bytes_v1(",
+    );
+    expect(sql).toContain(
+      "GRANT USAGE ON SCHEMA dasher, dasher_private TO dasher_run_definer",
+    );
+    expect(sql).not.toContain("freshness IN ('fresh', 'stale')");
+    expect(sql).toContain(
+      "CREATE CONSTRAINT TRIGGER calculation_graph_contract_constraint",
+    );
+    expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(graph).toContain("|| pg_catalog.decode('00', 'hex')");
+    expect(graph).toContain("v_meter.meter_sha256 <> v_result.meter_sha256");
+    expect(sql).toContain(
+      "CREATE FUNCTION dasher_private.evaluate_calculation_graph_v1(",
+    );
+    expect(commitGraph).toContain(
+      "dasher_private.evaluate_calculation_graph_v1(",
+    );
+    expect(runAuthorization).toContain(
+      "later.policy_revision > policy.policy_revision",
+    );
+    // The write gate admits exactly two phases; 'replay_source_read' must
+    // never join this whitelist (the fence is a read-only widening).
+    expect(runAuthorization).toContain(
+      "    AND current_setting('dasher.run_phase', true) IN (\n" +
+        "      'authorized', 'checkpoint_replay'\n" +
+        "    )\n",
+    );
+    expect(
+      runAuthorization.split("current_setting('dasher.run_phase'").length - 1,
+      "run_policy_allows_v1 reads the run phase exactly once",
+    ).toBe(1);
+    expect(runAuthorization).not.toContain("replay_source_read");
+    expect(runAuthorization).not.toContain("'locking'");
+    expect(runAuthorization).not.toContain("'discovering'");
+    expect(policyRevisionVisibility).toContain(
+      "policy_revision >= NULLIF(current_setting(",
+    );
+    expect(policyRevisionVisibility).not.toMatch(
+      /policy_revision\s*=\s*NULLIF\(current_setting/u,
+    );
+  });
+
+  it("independently fixes the event preimage to signed epoch microseconds and raw hashes", () => {
+    const uuidBytes = (value: string): Buffer =>
+      Buffer.from(value.replaceAll("-", ""), "hex");
+    const int32 = (value: number): Buffer => {
+      const bytes = Buffer.alloc(4);
+      bytes.writeUInt32BE(value);
+      return bytes;
+    };
+    const int64 = (value: bigint): Buffer => {
+      const bytes = Buffer.alloc(8);
+      bytes.writeBigInt64BE(value);
+      return bytes;
+    };
+    const eventKind = Buffer.from("attempt_indeterminate", "utf8");
+    const payloadEnvelopeSha = Buffer.alloc(32, 0x11);
+    const epochMicros = 1_786_106_096_123_456n;
+    const exactPreimage = Buffer.concat([
+      Buffer.from("dasher.agent-run-event.v1\0", "utf8"),
+      uuidBytes("00000000-0000-8000-8000-000000000001"),
+      int64(7n),
+      int32(eventKind.length),
+      eventKind,
+      int64(epochMicros),
+      Buffer.from([0]),
+      Buffer.from([0]),
+      payloadEnvelopeSha,
+    ]);
+    const incompatiblePreimage = Buffer.concat([
+      Buffer.from("dasher.agent-run-event.v1\0", "utf8"),
+      uuidBytes("00000000-0000-8000-8000-000000000001"),
+      int64(7n),
+      int32(eventKind.length),
+      eventKind,
+      Buffer.from("2026-08-07T12:34:56.123456Z", "utf8"),
+      Buffer.from([0]),
+      Buffer.from([0]),
+      int32(payloadEnvelopeSha.length),
+      payloadEnvelopeSha,
+    ]);
+
+    expect(createHash("sha256").update(exactPreimage).digest("hex")).toBe(
+      "07bd74401b794b254dfa8595b0e4074543df8654b62c66312336e3b16bd71f80",
+    );
+    expect(
+      createHash("sha256").update(incompatiblePreimage).digest("hex"),
+    ).toBe("79794785741a45ea5ee8696a5b31bc7a1390107170fe598eae39c5d4b4bc7434");
+    expect(exactPreimage).not.toEqual(incompatiblePreimage);
+  });
+
+  it("keeps replay transitions, set rows, and claim statement operands executable", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const section = (start: string, end: string): string => {
+      const startIndex = sql.indexOf(start);
+      const endIndex = sql.indexOf(end, startIndex + start.length);
+      expect(startIndex, start).toBeGreaterThanOrEqual(0);
+      expect(endIndex, end).toBeGreaterThan(startIndex);
+      return sql.slice(startIndex, endIndex);
+    };
+    const transition = section(
+      "CREATE FUNCTION dasher_private.agent_run_transition_guard_v1()",
+      "CREATE FUNCTION dasher_private.agent_run_mutable_guard_v1()",
+    );
+    const listReplay = section(
+      "CREATE FUNCTION dasher_run_api.list_claimed_replay_results(",
+      "CREATE FUNCTION dasher_run_api.consume_agent_replay_result(",
+    );
+    const claims = section(
+      "CREATE FUNCTION dasher_run_api.commit_candidate_claims(",
+      "CREATE FUNCTION dasher_private.validate_candidate_claim_rows_v1(",
+    );
+
+    expect(transition).toContain(
+      "v_event_kind = 'replay_prerequisites_cloned' AND NOT (",
+    );
+    expect(transition).toContain(
+      "OLD.state = 'authorized' AND NEW.state = 'planning'",
+    );
+    expect(transition).toContain(
+      "OLD.state IN ('generating','revising') AND NEW.state = 'validating'",
+    );
+    expect(listReplay).toMatch(
+      /RETURN QUERY\s+SELECT\s+v_source[.]run_id, result[.]result_sequence,/u,
+    );
+    expect(listReplay).not.toMatch(
+      /RETURN QUERY\s+SELECT ROW\([\s\S]*replay_source_result/u,
+    );
+    expect(claims).toContain("(claim.value->>'json_pointer') || ' sha256:'");
+    expect(claims).toContain("|| (claim.value->>'assertion_sha256')");
+    expect(claims).toContain("dasher_private.validate_calculated_claim_v1(");
+  });
+
+  it("reduces indeterminate attempts transactionally and rejects retry identity drift", () => {
+    type AttemptProjection = {
+      state: string;
+      used: readonly bigint[];
+      released: readonly bigint[];
+    };
+    const zero = Array<bigint>(14).fill(0n);
+    const reserved = [
+      1n,
+      1n,
+      0n,
+      0n,
+      0n,
+      6_000n,
+      3_000n,
+      3_000n,
+      6_000n,
+      3_000n,
+      9_000n,
+      9_000n,
+      8_000n,
+      24_000n,
+    ];
+    const reduce = (
+      events: readonly { kind: string; attemptId: string }[],
+    ): { runState: string; attempt: AttemptProjection } => {
+      let runState = "authorized";
+      let attempt: AttemptProjection = {
+        state: "absent",
+        used: zero,
+        released: zero,
+      };
+      for (const event of events) {
+        if (event.kind === "attempt_reserved") {
+          runState = "generating";
+          attempt = {
+            state: "reserved_pre_dispatch",
+            used: zero,
+            released: zero,
+          };
+        } else if (event.kind === "attempt_dispatch_started") {
+          attempt = { ...attempt, state: "dispatch_started" };
+        } else if (event.kind === "attempt_indeterminate") {
+          runState = "failed";
+          attempt = {
+            state: "indeterminate_quarantined",
+            used: reserved.map((value, index) => (index === 1 ? 0n : value)),
+            released: reserved.map((value, index) =>
+              index === 1 ? value : 0n,
+            ),
+          };
+        }
+        expect(event.attemptId).toBe("00000000-0000-8000-8000-000000000501");
+      }
+      return { runState, attempt };
+    };
+    const projection = reduce([
+      {
+        kind: "attempt_reserved",
+        attemptId: "00000000-0000-8000-8000-000000000501",
+      },
+      {
+        kind: "attempt_dispatch_started",
+        attemptId: "00000000-0000-8000-8000-000000000501",
+      },
+      {
+        kind: "attempt_indeterminate",
+        attemptId: "00000000-0000-8000-8000-000000000501",
+      },
+    ]);
+    expect(projection).toMatchObject({
+      runState: "failed",
+      attempt: { state: "indeterminate_quarantined" },
+    });
+    expect(projection.attempt.used[1]).toBe(0n);
+    expect(projection.attempt.released[1]).toBe(1n);
+    expect(
+      projection.attempt.used.reduce((sum, value) => sum + value, 0n) +
+        projection.attempt.released.reduce((sum, value) => sum + value, 0n),
+    ).toBe(reserved.reduce((sum, value) => sum + value, 0n));
+
+    const prior = {
+      schema: "attempt-request-v1",
+      attempt_id: "00000000-0000-8000-8000-000000000501",
+      retry_of_attempt_id: null,
+      attempt_kind: "generator",
+      candidate_slot: "i64:1",
+      adapter_id: "task9-fake-adapter-v1",
+      model_id: "task9-fake-model-v1",
+      policy_revision: "i64:1",
+      price_book_revision: "task9-price-v1",
+      input_sha256: "11".repeat(32),
+      common_bundle_sha256: "22".repeat(32),
+      brief_sha256: "33".repeat(32),
+      instructions_sha256: "44".repeat(32),
+    };
+    const retryBindings = (request: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...request,
+        attempt_id: undefined,
+        retry_of_attempt_id: undefined,
+      });
+    const exactRetry = {
+      ...prior,
+      attempt_id: "00000000-0000-8000-8000-000000000502",
+      retry_of_attempt_id: prior.attempt_id,
+    };
+    const driftedRetry = {
+      ...exactRetry,
+      common_bundle_sha256: "23".repeat(32),
+    };
+    expect(retryBindings(exactRetry)).toBe(retryBindings(prior));
+    expect(retryBindings(driftedRetry)).not.toBe(retryBindings(prior));
+  });
+
+  it("recomputes the frozen calculation output from graph and input semantics", () => {
+    type Decimal = { coefficient: string; scale: string };
+    const thousandths = (value: Decimal): bigint => {
+      const scale = Number(value.scale.slice(4));
+      expect(scale).toBeLessThanOrEqual(3);
+      return BigInt(value.coefficient) * 10n ** BigInt(3 - scale);
+    };
+    const input = JSON.parse(phase7R7LiteralFixture.bytes.input) as {
+      rows: { values: { field_id: string; value: Decimal }[] }[];
+    };
+    const graph = JSON.parse(phase7R7LiteralFixture.bytes.graph) as {
+      nodes: { op: string; field_id?: string; rate?: Decimal }[];
+    };
+    const amountField = graph.nodes.find(
+      (node) => node.op === "field",
+    )?.field_id;
+    const rate = graph.nodes.find(
+      (node) => node.op === "currency_convert",
+    )?.rate;
+    expect(amountField).toBeDefined();
+    expect(rate).toBeDefined();
+    const sourceThousandths = input.rows.map((row) => {
+      const cell = row.values.find((item) => item.field_id === amountField);
+      expect(cell).toBeDefined();
+      return thousandths(cell!.value);
+    });
+    const usdThousandths = sourceThousandths.reduce(
+      (sum, value) => sum + value,
+      0n,
+    );
+    const rateScale = BigInt(Number(rate!.scale.slice(4)));
+    const divisor = 10n ** rateScale;
+    const convertedNumerator = usdThousandths * BigInt(rate!.coefficient);
+    const quotient = convertedNumerator / divisor;
+    const remainder = convertedNumerator % divisor;
+    const eurThousandths =
+      remainder * 2n > divisor ||
+      (remainder * 2n === divisor && quotient % 2n !== 0n)
+        ? quotient + 1n
+        : quotient;
+    const output = JSON.parse(phase7R7LiteralFixture.bytes.output) as {
+      rows: { value: { value: Decimal } }[];
+    };
+    expect(usdThousandths).toBe(100_000n);
+    expect(eurThousandths).toBe(92_500n);
+    expect(thousandths(output.rows[0]!.value.value)).toBe(eurThousandths);
+
+    const mutatedRate = { ...rate!, coefficient: "924" };
+    expect(
+      (usdThousandths * BigInt(mutatedRate.coefficient)) / divisor,
+    ).not.toBe(eurThousandths);
+  });
+
+  it("validates all fourteen calculated-claim fields against pointer and output bytes", () => {
+    const semanticRowHash = (domain: string, bytes: string): string => {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(Buffer.byteLength(bytes));
+      return createHash("sha256")
+        .update(domain, "utf8")
+        .update("\0", "utf8")
+        .update(length)
+        .update(bytes, "utf8")
+        .digest("hex");
+    };
+    const evidenceId = "00000000-0000-8000-8000-000000000106";
+    const candidate = {
+      pages: [
+        {
+          components: [
+            {
+              metrics: [
+                {
+                  label: "EUR total",
+                  value: "92.5",
+                  evidenceIds: [evidenceId],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const pointer = "/pages/0/components/0/metrics/0";
+    const subtree = pointer
+      .slice(1)
+      .split("/")
+      .reduce<unknown>((value, segment) => {
+        if (Array.isArray(value)) return value[Number(segment)];
+        return (value as Record<string, unknown>)[segment];
+      }, candidate) as Record<string, unknown>;
+    const assertionBytes = JSON.stringify(subtree);
+    const assertionSha = semanticRowHash(
+      "dasher.material-assertion.v1",
+      assertionBytes,
+    );
+    const claim = {
+      claim_id: "00000000-0000-8000-8000-000000000701",
+      json_pointer: pointer,
+      assertion_sha256: assertionSha,
+      label: "calculated",
+      statement: `${pointer} sha256:${assertionSha}`,
+      salience: "high",
+      evidence_state: "complete",
+      calculation_result_id: phase7R7Fixture.resultId,
+      calculation_output_identity_kind: "scalar_row",
+      calculation_output_node_id: phase7R7LiteralFixture.sourceRows.fxNodeId,
+      calculation_output_sha256: phase7R7Fixture.hashes.output as string,
+      calculation_output_row_id: "4c5b6acc-0c61-8c42-a6b6-35d927aed9fb",
+      calculation_output_field_id: null,
+      calculation_output_value_sha256: phase7R7Fixture.hashes.outputValue,
+    };
+    const validate = (
+      candidateValue: typeof candidate,
+      claimValue: typeof claim,
+      edges: readonly string[],
+    ): boolean => {
+      if (Object.keys(claimValue).length !== 14) return false;
+      if (
+        claimValue.statement !==
+        `${claimValue.json_pointer} sha256:${claimValue.assertion_sha256}`
+      )
+        return false;
+      const selected = claimValue.json_pointer
+        .slice(1)
+        .split("/")
+        .reduce<unknown>((value, segment) => {
+          if (Array.isArray(value)) return value[Number(segment)];
+          return (value as Record<string, unknown> | undefined)?.[segment];
+        }, candidateValue) as Record<string, unknown> | undefined;
+      return (
+        selected?.label === "EUR total" &&
+        selected.value === "92.5" &&
+        JSON.stringify(selected.evidenceIds) === JSON.stringify([evidenceId]) &&
+        claimValue.calculation_result_id === phase7R7Fixture.resultId &&
+        claimValue.calculation_output_node_id ===
+          phase7R7LiteralFixture.sourceRows.fxNodeId &&
+        claimValue.calculation_output_sha256 ===
+          semanticRowHash(
+            "dasher.calculation-output.v1",
+            phase7R7LiteralFixture.bytes.output,
+          ) &&
+        claimValue.calculation_output_value_sha256 ===
+          semanticRowHash(
+            "dasher.calculation-output-value.v1",
+            phase7R7LiteralFixture.bytes.outputValue,
+          ) &&
+        edges.length === 1 &&
+        edges[0] === evidenceId
+      );
+    };
+
+    expect(validate(candidate, claim, [evidenceId])).toBe(true);
+    expect(
+      validate(
+        {
+          pages: [
+            {
+              components: [
+                {
+                  metrics: [
+                    {
+                      label: "EUR total",
+                      value: "92.4",
+                      evidenceIds: [evidenceId],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        claim,
+        [evidenceId],
+      ),
+    ).toBe(false);
+    expect(validate(candidate, claim, [])).toBe(false);
+    expect(
+      validate(
+        candidate,
+        { ...claim, calculation_output_sha256: "00".repeat(32) },
+        [evidenceId],
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps event bodies readable only by the fixed checkpoint path", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const functions = phase7FixedFunctionDefinitions(sql);
+    const payloadRelation = "dasher.agent_run_event_payloads";
+    const payloadMutations =
+      /(?:INSERT\s+INTO|DELETE\s+FROM)\s+dasher[.]agent_run_event_payloads/gu;
+    const checkpointName = "dasher_run_api.write_agent_run_checkpoint";
+    const checkpoint = functions.get(checkpointName) ?? "";
+    const functionDeclarationCount = (
+      sql.match(/^CREATE (?:OR REPLACE )?FUNCTION /gmu) ?? []
+    ).length;
+
+    expect(functions.size).toBe(functionDeclarationCount);
+    expect(functions.size).toBe(68);
+    for (const [name, definition] of functions) {
+      if (name === checkpointName) continue;
+      expect(
+        definition.replace(payloadMutations, ""),
+        `${name} has a non-mutation event-payload dependency`,
+      ).not.toContain(payloadRelation);
+    }
+    expect(checkpoint).toMatch(
+      /JOIN\s+dasher[.]agent_run_event_payloads\s+AS\s+payload/gu,
+    );
+    expect(
+      functions
+        .get("dasher_private.append_agent_run_event_v1")
+        ?.match(/INSERT\s+INTO\s+dasher[.]agent_run_event_payloads/gu),
+    ).toHaveLength(1);
+    expect(
+      functions
+        .get("dasher_retention_api.purge_dashboard")
+        ?.match(/DELETE\s+FROM\s+dasher[.]agent_run_event_payloads/gu),
+    ).toHaveLength(1);
+
+    const policyStart = sql.indexOf(
+      "CREATE POLICY agent_run_event_payloads_run_definer_select",
+    );
+    const policyEnd = sql.indexOf(
+      "CREATE POLICY agent_run_events_run_claim_retry_select",
+      policyStart,
+    );
+    const policy = sql.slice(policyStart, policyEnd);
+    expect(policyStart).toBeGreaterThanOrEqual(0);
+    expect(policyEnd).toBeGreaterThan(policyStart);
+    expect(policy).toContain("AS PERMISSIVE FOR SELECT TO dasher_run_definer");
+    expect(policy).toContain("current_user = 'dasher_run_definer'::name");
+    expect(policy).toMatch(
+      /dasher_private[.]run_policy_allows_v1\(\s*organization_id, dashboard_id, run_id\s*\)/u,
+    );
+    expect(policy).toContain(
+      "current_setting('dasher.run_phase', true) = 'checkpoint_replay'",
+    );
+    expect(policy).toMatch(
+      /event_sequence BETWEEN 1\s+AND NULLIF\(current_setting\('dasher[.]run_source_event_sequence', true\), ''\)::bigint/u,
+    );
+    expect(policy).not.toMatch(
+      /dasher_security_definer|dasher_retention_definer|replay_source_read/u,
+    );
+
+    const payloadGrants = Array.from(
+      sql.matchAll(
+        /GRANT[^;]+ON TABLE dasher[.]agent_run_event_payloads TO [^;]+;/gu,
+      ),
+      (match) => match[0].replace(/\s+/gu, " ").trim(),
+    ).sort();
+    expect(payloadGrants).toEqual(
+      [
+        "GRANT DELETE ON TABLE dasher.agent_run_event_payloads TO dasher_retention_definer;",
+        "GRANT INSERT ON TABLE dasher.agent_run_event_payloads TO dasher_retention_definer;",
+        "GRANT INSERT ON TABLE dasher.agent_run_event_payloads TO dasher_run_definer;",
+        "GRANT INSERT ON TABLE dasher.agent_run_event_payloads TO dasher_security_definer;",
+        "GRANT SELECT ( organization_id, dashboard_id, run_id, event_payload_id, event_id, event_sequence, content_nonce, canonical_bytes, payload_sha256 ) ON TABLE dasher.agent_run_event_payloads TO dasher_run_definer;",
+      ].sort(),
+    );
+    expect(checkpoint).toContain(
+      "PERFORM pg_catalog.set_config('dasher.run_phase', 'checkpoint_replay', true)",
+    );
+    expect(sql).toContain(
+      "ALTER FUNCTION dasher_run_api.write_agent_run_checkpoint(uuid, bigint, bytea, bigint, bytea, bytea) OWNER TO dasher_run_definer;",
+    );
+  });
+
+  it("binds body-free retries to semantic rows and immutable transition headers", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const functions = phase7FixedFunctionDefinitions(sql);
+    const functionBody = (name: string): string => {
+      const definition = functions.get(name);
+      expect(definition, name).toBeDefined();
+      return definition ?? "";
+    };
+    const retryProfiles = [
+      {
+        name: "dasher_run_api.reserve_agent_run_attempt",
+        tokens: [
+          "v_existing_request_payload.canonical_bytes",
+          "v_existing_request_payload.payload_sha256",
+          "event.event_kind = 'attempt_reserved'",
+          "event.occurred_at = v_existing.reserved_at",
+        ],
+      },
+      {
+        name: "dasher_run_api.start_agent_run_attempt",
+        tokens: [
+          "v_expected_dispatch_sha <> p_dispatch_request_sha256",
+          "v_attempt.dispatch_ready_at IS NULL",
+          "event.event_kind = 'attempt_dispatch_prepared'",
+          "event.occurred_at = v_attempt.dispatch_ready_at",
+        ],
+      },
+      {
+        name: "dasher_run_api.authorize_agent_run_attempt_invocation",
+        tokens: [
+          "v_expected_dispatch_sha <> p_dispatch_request_sha256",
+          "v_attempt.dispatch_started_at IS NULL",
+          "event.event_kind = 'attempt_dispatch_started'",
+          "event.occurred_at = v_attempt.dispatch_started_at",
+        ],
+      },
+      {
+        name: "dasher_run_api.reconcile_agent_run_attempt",
+        tokens: [
+          "v_expected_dispatch_sha := pg_catalog.sha256(",
+          "'dasher.attempt-dispatch-request.v1'",
+          "v_attempt.dispatch_started_at IS NULL",
+          "event.occurred_at = v_attempt.dispatch_started_at",
+          "v_stored_result.result_sha256 IS DISTINCT FROM v_result_semantic_sha",
+          "v_attempt.actual_vector IS DISTINCT FROM v_actual",
+        ],
+      },
+      {
+        name: "dasher_run_api.clone_claimed_replay_prerequisites",
+        tokens: [
+          "v_local_bundle.canonical_bytes <> v_bundle.canonical_bytes",
+          "v_local_members IS DISTINCT FROM v_source_members",
+          "event.event_kind = 'replay_prerequisites_cloned'",
+          "event.occurred_at = v_local_bundle.created_at",
+        ],
+      },
+      {
+        name: "dasher_run_api.commit_agent_candidate",
+        tokens: [
+          "v_existing_payload.canonical_bytes <>",
+          "v_existing.material_claim_set_sha256 <> v_claim_set_sha",
+          "event.event_kind = 'candidate_committed'",
+          "event.occurred_at = v_existing.created_at",
+        ],
+      },
+      {
+        name: "dasher_run_api.commit_candidate_claims",
+        tokens: [
+          "v_existing_claims <> v_body->'claims'",
+          "claim.claim_set_sha256 <> v_sha",
+          "event.event_kind = 'candidate_claims_committed'",
+          "event.occurred_at = claim.created_at",
+        ],
+      },
+      {
+        name: "dasher_api.cancel_agent_run",
+        tokens: [
+          "v_run.tenant_cancel_operation_sha256 <> v_operation_sha",
+          "v_run.tenant_cancel_result_sha256 <> v_expected_result_sha",
+          "v_cancel_event.event_id <> p_cancel_operation_and_audit_id",
+          "v_operation_audit.content_sha256 <> v_operation_sha",
+        ],
+      },
+    ] as const;
+
+    for (const profile of retryProfiles) {
+      const definition = functionBody(profile.name);
+      for (const token of profile.tokens) {
+        expect(definition, `${profile.name}: ${token}`).toContain(token);
+      }
+    }
+    expect(
+      functionBody("dasher_run_api.clone_claimed_replay_prerequisites"),
+    ).not.toContain("'checkpoint_replay'");
+
+    const reauthorize = functionBody("dasher_private.reauthorize_agent_run_v1");
+    expect(reauthorize).toContain("'dasher.agent-run-ordinary-claim-input.v1'");
+    expect(reauthorize).toContain("claim_event.claim_input_sha256");
+    expect(reauthorize).toContain("claim_event.claim_result_sha256");
+    expect(reauthorize).toContain("claim_event.claim_result_state = 'running'");
+    expect(reauthorize).toContain(
+      "claim_event.claim_result_input_sha256 =\n          claim_event.claim_input_sha256",
+    );
+    expect(reauthorize).toContain("claim_event.claim_result_lease_expires_at");
+    expect(functionBody("dasher_private.replay_source_fence_v1")).toContain(
+      "pg_catalog.count(event.event_payload_id) =\n          v_source.current_event_sequence",
+    );
+  });
+
+  it("derives payload purge accounting from headers under exact-dashboard RLS", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const functions = phase7FixedFunctionDefinitions(sql);
+    const purge = functions.get("dasher_retention_api.purge_dashboard") ?? "";
+    const ageOut =
+      functions.get(
+        "dasher_retention_api.age_out_dashboard_agent_run_metadata",
+      ) ?? "";
+    const retentionPolicy = sql.slice(
+      sql.indexOf(
+        "CREATE POLICY agent_run_event_payloads_retention_definer_delete",
+      ),
+      sql.indexOf(
+        "CREATE POLICY agent_run_checkpoints_security_definer_select",
+      ),
+    );
+    const retentionFence =
+      functions.get("dasher_private.retention_policy_allows_v1") ?? "";
+
+    expect(purge).toMatch(
+      /'agent_run_event_payloads',\s*\(SELECT pg_catalog[.]count\(\*\)\s+FROM dasher[.]agent_run_events AS event\s+WHERE event[.]organization_id = v_organization_id\s+AND event[.]dashboard_id = \$1\s+AND event[.]event_payload_id IS NOT NULL\)/u,
+    );
+    expect(
+      purge.replace(/DELETE\s+FROM\s+dasher[.]agent_run_event_payloads/gu, ""),
+    ).not.toContain("dasher.agent_run_event_payloads");
+    expect(purge).toMatch(
+      /DELETE FROM dasher[.]agent_run_event_payloads;\s*GET DIAGNOSTICS v_phase7_deleted_count = ROW_COUNT;/u,
+    );
+    expect(ageOut).not.toContain("dasher.agent_run_event_payloads");
+    expect(retentionPolicy).toContain(
+      "USING (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id))",
+    );
+    expect(retentionFence).toContain(
+      "p_organization_id = NULLIF(current_setting(\n      'dasher.retention_target_organization_id', true",
+    );
+    expect(retentionFence).toContain(
+      "p_dashboard_id = NULLIF(current_setting(\n      'dasher.retention_target_dashboard_id', true",
+    );
+    expect(sql).toContain(
+      "ALTER TABLE dasher.agent_run_event_payloads FORCE ROW LEVEL SECURITY;",
+    );
+  });
+
+  it("mechanically enforces pointer-first purge and proof-before-age-out deletion", async () => {
+    const sql = await readFile(
+      new URL(
+        "../migrations/0007_agent_run_ledger_and_calculations.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const purgeStart = sql.indexOf(
+      "CREATE OR REPLACE FUNCTION dasher_retention_api.purge_dashboard(",
+    );
+    const ageOutStart = sql.indexOf(
+      "CREATE FUNCTION dasher_retention_api.age_out_dashboard_agent_run_metadata(",
+      purgeStart,
+    );
+    expect(purgeStart).toBeGreaterThanOrEqual(0);
+    expect(ageOutStart).toBeGreaterThan(purgeStart);
+    const purge = sql.slice(purgeStart, ageOutStart);
+    const ageOut = sql.slice(ageOutStart);
+    const expectOrdered = (source: string, tokens: readonly string[]): void => {
+      let cursor = -1;
+      for (const token of tokens) {
+        const next = source.indexOf(token, cursor + 1);
+        expect(next, token).toBeGreaterThan(cursor);
+        cursor = next;
+      }
+    };
+
+    expectOrdered(purge, [
+      "UPDATE dasher.agent_runs AS run",
+      "UPDATE dasher.agent_run_events AS event",
+      "UPDATE dasher.agent_run_checkpoints AS checkpoint",
+      "UPDATE dasher.agent_run_attempts AS attempt",
+      "DELETE FROM dasher.candidate_evidence_manifests",
+      "DELETE FROM dasher.claim_evidence",
+      "DELETE FROM dasher.claims",
+      "DELETE FROM dasher.agent_validation_findings",
+      "DELETE FROM dasher.agent_candidate_payloads",
+      "DELETE FROM dasher.agent_candidates",
+      "DELETE FROM dasher.agent_run_calculation_meters",
+      "DELETE FROM dasher.calculation_results",
+      "DELETE FROM dasher.calculation_graphs",
+      "DELETE FROM dasher.briefs",
+      "DELETE FROM dasher.run_abstentions",
+      "DELETE FROM dasher.candidate_comparison_bundle_evidence",
+      "DELETE FROM dasher.candidate_comparison_bundles",
+      "DELETE FROM dasher.agent_recorded_results",
+      "DELETE FROM dasher.agent_run_request_payloads",
+      "DELETE FROM dasher.agent_run_attempt_payloads",
+      "DELETE FROM dasher.agent_run_checkpoint_payloads",
+      "DELETE FROM dasher.agent_run_event_payloads",
+      "DELETE FROM dasher.metric_contract_versions",
+      "DELETE FROM dasher.field_catalog_entries",
+      "DELETE FROM dasher.field_catalog_snapshots",
+      "DELETE FROM dasher.snapshot_reference_claims AS claim",
+    ]);
+    expect(
+      purge.match(/GET DIAGNOSTICS v_phase7_deleted_count = ROW_COUNT/gu),
+    ).toHaveLength(21);
+    expect(purge).toContain("v_bundle_membership_recheck_sha256");
+    expect(purge).toContain("INSERT INTO dasher.backup_deletion_ledger");
+    expect(purge).toContain("UPDATE dasher.dashboard_tombstones SET purged_at");
+    expectOrdered(ageOut, [
+      "INSERT INTO dasher.dashboard_agent_run_age_out_proofs",
+      "INSERT INTO dasher.audit_events",
+      "SELECT proof.* INTO STRICT v_existing",
+      "DELETE FROM dasher.agent_run_attempts",
+      "DELETE FROM dasher.agent_run_checkpoints",
+      "DELETE FROM dasher.agent_run_budget_counters",
+      "DELETE FROM dasher.agent_run_events",
+      "DELETE FROM dasher.dashboard_agent_drain_proof_consumptions",
+      "DELETE FROM dasher.dashboard_agent_drain_proofs",
+      "DELETE FROM dasher.agent_runs",
+    ]);
+    expect(ageOut).toContain("'dasher.agent-run-retained-chain-set.v1'");
+    expect(ageOut).toContain("ledger.event_kind = 'backup.deleted'");
+    expect(ageOut).not.toContain("ledger.event_kind = 'backup_deleted'");
   });
 });
