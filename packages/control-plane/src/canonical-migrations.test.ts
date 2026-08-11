@@ -2992,7 +2992,7 @@ const task4FunctionIdentities = [
 ] as const;
 
 describe("Task 3, Task 4, Task 8, and Task 9 canonical migration golden guard", () => {
-  it("pins immutable 0001-0006 and exact canonical 0007 source bytes", async () => {
+  it("pins immutable 0001-0007 and exact canonical 0008 source bytes", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -3009,12 +3009,14 @@ describe("Task 3, Task 4, Task 8, and Task 9 canonical migration golden guard", 
       securityDefinerCleanupCoordinationMigration,
       lifecycleAccessRetentionGuardCorrectionMigration,
       phase7Migration,
+      phase8Migration,
     ]);
     expect(
       migrations.slice(0, 4).map((migration) => migration.bytes.byteLength),
     ).toEqual([17_033, 101_747, 482_279, 104_489]);
     expect(Buffer.byteLength(migrations[4]?.sql ?? "")).toBe(556);
     expect(Buffer.byteLength(migrations[5]?.sql ?? "")).toBe(34_952);
+    expect(Buffer.byteLength(migrations[7]?.sql ?? "")).toBe(294_865);
   });
 
   it("contains no extension, credential, or UUID-generation source", async () => {
@@ -3302,6 +3304,7 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       securityDefinerCleanupCoordinationMigration.filename,
       lifecycleAccessRetentionGuardCorrectionMigration.filename,
       phase7Migration.filename,
+      phase8Migration.filename,
     ]);
     expect(
       Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
@@ -7016,9 +7019,9 @@ const lifecycleMutationContracts = [
 ] as const;
 
 describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
-  it("pins the seven-row chain while leaving the modeled probe at three", async () => {
+  it("pins the eight-row chain while leaving the modeled probe at three", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
-    expect(migrations).toHaveLength(7);
+    expect(migrations).toHaveLength(8);
     expect(
       migrations.map((migration) =>
         Buffer.from(migration.checksumSha256).toString("hex"),
@@ -7031,6 +7034,7 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
       securityDefinerCleanupCoordinationMigration.checksum,
       lifecycleAccessRetentionGuardCorrectionMigration.checksum,
       phase7Migration.checksum,
+      phase8Migration.checksum,
     ]);
     expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
     expect(modeled0003Functions.length).toBeGreaterThan(0);
@@ -7857,6 +7861,12 @@ const phase7Migration = {
   sequence: 7,
   filename: "0007_agent_run_ledger_and_calculations.sql",
   checksum: "dfe0ca8eef30b9b5a599657eaf0da6c93a330a90d3fa9b01c75a2f730d8db3d5",
+} as const;
+
+const phase8Migration = {
+  sequence: 8,
+  filename: "0008_retention_lock_authority_correction.sql",
+  checksum: "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
 } as const;
 
 function phase7FixedFunctionDefinitions(
@@ -23341,7 +23351,7 @@ describe("Task 9A phase-7 static contract", () => {
       phase6Sql,
     ) as Record<string, readonly string[]>;
 
-    expect(migrations).toHaveLength(7);
+    expect(migrations).toHaveLength(8);
     expect(baseline.functions).toContainEqual(
       expect.stringMatching(
         /^dasher_retention_api[.]claim_dashboard_cleanup\(uuid, bigint, bytea, interval, uuid, text, uuid\)\|/u,
@@ -24896,5 +24906,1093 @@ describe("Task 9B canonical 0007 SQL gate", () => {
     expect(ageOut).toContain("'dasher.agent-run-retained-chain-set.v1'");
     expect(ageOut).toContain("ledger.event_kind = 'backup.deleted'");
     expect(ageOut).not.toContain("ledger.event_kind = 'backup_deleted'");
+  });
+});
+
+describe("Task 9B.1 retention allowlist lock-authority correction contract", () => {
+  // Part 5's read grant, verbatim. Column-scoped over exactly the eight
+  // dasher.audit_events columns the retention definer's four reader statements
+  // touch, in the same catalog attnum order and the same packed layout frozen
+  // 0002 and 0007 use for the other two readers of this relation.
+  const auditEventsRetentionSelectGrant =
+    "GRANT SELECT (\n" +
+    "  audit_event_id, organization_id, action, target_type, target_id,\n" +
+    "  outcome, content_sha256, deployment_revision\n" +
+    ") ON TABLE dasher.audit_events\n" +
+    "  TO dasher_retention_definer;";
+
+  // Every relation frozen 0007 row-marks as dasher_retention_definer, with the
+  // primary-key columns that identify the row. The correction may grant UPDATE
+  // on these columns and nothing else.
+  const lockedRelations = [
+    [
+      "agent_candidate_payloads",
+      "organization_id, dashboard_id, run_id, candidate_id",
+    ],
+    ["agent_candidates", "organization_id, dashboard_id, run_id, candidate_id"],
+    [
+      "agent_recorded_results",
+      "organization_id, dashboard_id, run_id, result_sequence",
+    ],
+    [
+      "agent_run_attempt_payloads",
+      "organization_id, dashboard_id, run_id, attempt_id, payload_kind, payload_id",
+    ],
+    [
+      "agent_run_calculation_meters",
+      "organization_id, dashboard_id, run_id, meter_id",
+    ],
+    [
+      "agent_run_checkpoint_payloads",
+      "organization_id, dashboard_id, checkpoint_payload_id",
+    ],
+    [
+      "agent_run_request_payloads",
+      "organization_id, dashboard_id, request_payload_id",
+    ],
+    [
+      "agent_validation_findings",
+      "organization_id, dashboard_id, run_id, candidate_id",
+    ],
+    ["backup_deletion_ledger", "organization_id, ledger_sequence"],
+    ["briefs", "organization_id, dashboard_id, run_id, brief_id"],
+    ["calculation_graphs", "organization_id, dashboard_id, run_id, graph_id"],
+    ["calculation_results", "organization_id, dashboard_id, run_id, result_id"],
+    [
+      "candidate_comparison_bundles",
+      "organization_id, dashboard_id, run_id, bundle_id",
+    ],
+    [
+      "candidate_evidence_manifests",
+      "organization_id, dashboard_id, run_id, candidate_id",
+    ],
+    [
+      "claim_evidence",
+      "organization_id, dashboard_id, run_id, candidate_id, claim_id, bundle_id, evidence_id, relation",
+    ],
+    ["claims", "organization_id, dashboard_id, run_id, candidate_id, claim_id"],
+    [
+      "dashboard_agent_drain_proof_consumptions",
+      "organization_id, dashboard_id, proof_id",
+    ],
+    ["dashboard_agent_drain_proofs", "organization_id, dashboard_id, proof_id"],
+    [
+      "dashboard_agent_run_age_out_proofs",
+      "organization_id, dashboard_id, age_out_operation_id",
+    ],
+    [
+      "dashboard_cleanup_attempts",
+      "organization_id, dashboard_id, cleanup_attempt_id",
+    ],
+    [
+      "field_catalog_entries",
+      "organization_id, dashboard_id, catalog_snapshot_id, field_id",
+    ],
+    [
+      "field_catalog_snapshots",
+      "organization_id, dashboard_id, catalog_snapshot_id",
+    ],
+    [
+      "metric_contract_versions",
+      "organization_id, dashboard_id, contract_id, contract_version",
+    ],
+    [
+      "retention_service_principal_allowlist",
+      "retention_service_principal_id, principal_revision",
+    ],
+    ["run_abstentions", "organization_id, dashboard_id, run_id"],
+  ] as const;
+
+  it("grants UPDATE on exactly the identity columns of exactly the row-marked relations", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[7]?.sql ?? "";
+    const normalized = normalizedIdentitySql(sql);
+
+    for (const [relation, columns] of lockedRelations) {
+      expect(normalized, `${relation} identity grant`).toContain(
+        `GRANT UPDATE (${columns}) ON TABLE dasher.${relation} TO dasher_retention_definer;`,
+      );
+    }
+    // One identity grant per row-marked relation, plus the two object grants
+    // the later parts add: schema USAGE on dasher_run_api, and SELECT on
+    // dasher.audit_events.
+    expect(sql.match(/\bGRANT\b/gu)).toHaveLength(lockedRelations.length + 2);
+    expect(
+      [
+        ...normalized.matchAll(
+          /GRANT UPDATE \([^)]*\) ON TABLE (dasher[.][a-z_]+)/gu,
+        ),
+      ].map((match) => match[1]),
+    ).toEqual(lockedRelations.map(([relation]) => `dasher.${relation}`));
+    // Only the retention definer gains anything: UPDATE on the identity
+    // columns above, plus one schema USAGE grant so the agent-run drain can
+    // resolve the dasher_run_api composite types its own declarations name,
+    // plus one table SELECT so the drain-proof recomputation can read the audit
+    // row its own inner join names.
+    expect(sql).not.toMatch(
+      /\bTO\s+(?:dasher_app|PUBLIC|dasher_security_definer|dasher_retention_operator|dasher_run_definer|dasher_run_operator)\b/iu,
+    );
+    expect(sql).not.toMatch(
+      /\bGRANT\s+(?:ALL|INSERT|DELETE|TRUNCATE|REFERENCES|TRIGGER|EXECUTE)\b/iu,
+    );
+    // The one read grant is on exactly one relation, for exactly one role, and
+    // is column-scoped rather than table-wide.
+    expect(sql.match(/\bGRANT\s+SELECT\b[^;]*;/giu)).toEqual([
+      auditEventsRetentionSelectGrant,
+    ]);
+    // It never degrades to the table-level form, which would silently readmit
+    // every column the traversal does not read.
+    expect(sql).not.toMatch(
+      /\bGRANT\s+SELECT\s+ON\s+TABLE\s+dasher[.]audit_events\b/iu,
+    );
+    // The one USAGE grant is on a schema, never on a type, sequence, domain or
+    // foreign server, and it names exactly one grantee.
+    expect(sql.match(/\bGRANT\s+USAGE\b[^;]*;/giu)).toEqual([
+      "GRANT USAGE ON SCHEMA dasher_run_api TO dasher_retention_definer;",
+    ]);
+    // The correction drops exactly one object, and only to re-create it under
+    // the same name in the same statement pair: the frozen 0003 retention
+    // SELECT policy Part 4 re-issues. Nothing is altered, revoked or deleted.
+    expect(sql.match(/^DROP\b[^;]*;/gmu)).toEqual([
+      "DROP POLICY dashboard_cleanup_attempts_retention_select\n  ON dasher.dashboard_cleanup_attempts;",
+    ]);
+    expect(sql.match(/^CREATE POLICY dashboard_cleanup_attempts_/gmu)).toEqual([
+      "CREATE POLICY dashboard_cleanup_attempts_",
+      "CREATE POLICY dashboard_cleanup_attempts_",
+    ]);
+    // This guard is about the statements this file issues against the schema,
+    // not prose and not the interiors of the frozen routines it re-issues.
+    // Part 5's commentary names the privileges it deliberately does not add -
+    // UPDATE and DELETE on the audit log - so the comment lines come out first.
+    // The re-issued function bodies come out too: Part 6 carries frozen 0007's
+    // age-out verbatim, and that body deletes the agent-run rows it is there to
+    // age out. Those bodies are not unchecked - the per-part tests below diff
+    // each one against its frozen 0007 original and allow only the single
+    // documented change - so what is left here is exactly the file's own DDL,
+    // which still alters, revokes and deletes nothing apart from Part 9's two
+    // ALTER TABLE statements that correct the backup-deletion-ledger vocabulary
+    // constraint in place.
+    const schemaStatements = sql
+      .replaceAll(/^--.*$/gmu, "")
+      .replaceAll(/AS \$function\$[\s\S]*?^\$function\$;/gmu, "");
+    // Part 9 touches exactly one constraint via two ALTER TABLE statements.
+    expect(schemaStatements.match(/^ALTER\b[^;]*;/gmu)).toEqual([
+      "ALTER TABLE dasher.backup_deletion_ledger\n  DROP CONSTRAINT backup_deletion_ledger_event_kind_check;",
+      "ALTER TABLE dasher.backup_deletion_ledger\n  ADD CONSTRAINT backup_deletion_ledger_event_kind_check\n  CHECK ((event_kind = ANY (ARRAY['access_revoked'::text, 'purged'::text, 'backup.deleted'::text])));",
+    ]);
+    expect(schemaStatements).not.toMatch(/\bREVOKE\b|\bDELETE\b/iu);
+    expect(schemaStatements.replace(/^ALTER\b[^;]*;/gmu, "")).not.toMatch(
+      /\bALTER\b/iu,
+    );
+  });
+
+  it("adds only lock-only UPDATE policies that can never admit a written row", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[7]?.sql ?? "";
+    const policies = [
+      ...sql.matchAll(
+        /CREATE POLICY ([a-z0-9_]+)\nON (dasher[.][a-z_]+)\nAS PERMISSIVE\nFOR UPDATE\nTO dasher_retention_definer\nUSING \(([\s\S]*?)\)\nWITH CHECK \(false\);/gu,
+      ),
+    ];
+
+    // One CREATE POLICY per row-marked relation, plus the single re-issued
+    // frozen 0003 SELECT policy Part 4 replaces and the single new SELECT
+    // policy Part 5 adds on dasher.audit_events - and nothing else.
+    expect(sql.match(/\bCREATE POLICY\b/gu)).toHaveLength(
+      lockedRelations.length + 2,
+    );
+    expect(policies).toHaveLength(lockedRelations.length);
+    expect(policies.map((match) => match[2])).toEqual(
+      lockedRelations.map(([relation]) => `dasher.${relation}`),
+    );
+    // Not one policy may carry a permissive WITH CHECK, and none may be
+    // RESTRICTIVE-free of the definer scoping.
+    expect(sql.match(/\nWITH CHECK \(false\);/gu)).toHaveLength(
+      lockedRelations.length,
+    );
+    expect(sql).not.toMatch(/WITH CHECK \((?!false\))/u);
+    // The two non-UPDATE policies are Part 4's SELECT re-issue and Part 5's new
+    // SELECT policy, neither of which carries a WITH CHECK at all; INSERT,
+    // DELETE and ALL policies stay forbidden.
+    expect(sql.match(/^FOR (?:SELECT|INSERT|DELETE|ALL)\b.*$/gmu)).toEqual([
+      "FOR SELECT",
+      "FOR SELECT",
+    ]);
+    expect(
+      sql.match(
+        /^CREATE POLICY ([a-z0-9_]+)\nON dasher[.]dashboard_cleanup_attempts\nAS PERMISSIVE\nFOR SELECT\nTO dasher_retention_definer\n/gmu,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("mirrors each frozen retention SELECT predicate without widening visibility", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const immutableContentSql = migrations[2]?.sql ?? "";
+    const phase7Sql = migrations[6]?.sql ?? "";
+    const correctionSql = migrations[7]?.sql ?? "";
+    const collapse = (value: string): string =>
+      value.replaceAll(/\s+/gu, " ").trim();
+    const selectPredicate = (source: string, policy: string): string => {
+      const match = new RegExp(
+        `CREATE POLICY ${policy}\\nON dasher[.][a-z_]+\\n(?:AS PERMISSIVE\\nFOR SELECT\\nTO dasher_retention_definer|AS PERMISSIVE FOR SELECT TO dasher_retention_definer)\\nUSING \\(([\\s\\S]*?)\\)\\n?;`,
+        "u",
+      ).exec(source);
+      if (match?.[1] === undefined) {
+        throw new Error(`missing frozen select policy ${policy}`);
+      }
+      return collapse(match[1]);
+    };
+    const lockPredicate = (relation: string): string => {
+      const match = new RegExp(
+        `CREATE POLICY [a-z0-9_]+\\nON dasher[.]${relation}\\nAS PERMISSIVE\\nFOR UPDATE\\nTO dasher_retention_definer\\nUSING \\(([\\s\\S]*?)\\)\\nWITH CHECK \\(false\\);`,
+        "u",
+      ).exec(correctionSql);
+      if (match?.[1] === undefined) {
+        throw new Error(`missing lock policy for ${relation}`);
+      }
+      return collapse(match[1]);
+    };
+
+    // The two relations whose retention visibility predicate is spelled out in
+    // 0003 keep that exact predicate as their lock predicate.
+    expect(lockPredicate("backup_deletion_ledger")).toBe(
+      selectPredicate(
+        immutableContentSql,
+        "backup_deletion_ledger_retention_select",
+      ),
+    );
+    // dasher.dashboard_cleanup_attempts is the one relation whose retention
+    // SELECT predicate this file also re-issues, so its lock predicate mirrors
+    // the corrected spelling rather than the frozen one - and the corrected
+    // spelling is the frozen one with exactly one capability inserted.
+    const frozenAttemptSelect = selectPredicate(
+      immutableContentSql,
+      "dashboard_cleanup_attempts_retention_select",
+    );
+    const correctedAttemptSelect = selectPredicate(
+      correctionSql,
+      "dashboard_cleanup_attempts_retention_select",
+    );
+    expect(correctedAttemptSelect).not.toBe(frozenAttemptSelect);
+    expect(correctedAttemptSelect.replace("'claim_cleanup'::text, ", "")).toBe(
+      frozenAttemptSelect,
+    );
+    expect(correctedAttemptSelect.length - frozenAttemptSelect.length).toBe(
+      "'claim_cleanup'::text, ".length,
+    );
+    expect(correctedAttemptSelect).toContain(
+      "current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['claim_cleanup'::text, 'record_attempt'::text, 'purge'::text])",
+    );
+    expect(lockPredicate("dashboard_cleanup_attempts")).toBe(
+      correctedAttemptSelect,
+    );
+    expect(lockPredicate("retention_service_principal_allowlist")).toBe(
+      selectPredicate(
+        immutableContentSql,
+        "retention_service_principal_self_binding_select",
+      ),
+    );
+    // Every other locked relation reuses the frozen phase-7 helper that already
+    // gates its retention SELECT policy, so no new visibility rule is written.
+    for (const [relation] of lockedRelations) {
+      if (
+        relation === "backup_deletion_ledger" ||
+        relation === "dashboard_cleanup_attempts" ||
+        relation === "retention_service_principal_allowlist"
+      ) {
+        continue;
+      }
+      expect(lockPredicate(relation), relation).toBe(
+        "dasher_private.retention_policy_allows_v1(organization_id, dashboard_id)",
+      );
+      expect(phase7Sql, `${relation} frozen select`).toContain(
+        `CREATE POLICY ${relation}_retention_definer_select\nON dasher.${relation}\nAS PERMISSIVE FOR SELECT TO dasher_retention_definer\nUSING (dasher_private.retention_policy_allows_v1(organization_id, dashboard_id));`,
+      );
+    }
+  });
+
+  it("carries the retention SELECT discipline verbatim onto the audit log and narrows it", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const correctionSql = migrations[7]?.sql ?? "";
+    const collapse = (value: string): string =>
+      value.replaceAll(/\s+/gu, " ").trim();
+    const predicate = (policy: string, relation: string): string => {
+      const match = new RegExp(
+        `CREATE POLICY ${policy}\\nON dasher[.]${relation}\\nAS PERMISSIVE\\nFOR SELECT\\nTO dasher_retention_definer\\nUSING \\(([\\s\\S]*?)\\)\\n;`,
+        "u",
+      ).exec(correctionSql);
+      if (match?.[1] === undefined) {
+        throw new Error(`missing select policy ${policy}`);
+      }
+      return collapse(match[1]);
+    };
+    const auditSelect = predicate(
+      "audit_events_retention_select",
+      "audit_events",
+    );
+    const attemptSelect = predicate(
+      "dashboard_cleanup_attempts_retention_select",
+      "dashboard_cleanup_attempts",
+    );
+
+    // Rewriting the audit policy's two relation-specific clauses - the
+    // capability array and the row scoping - into the cleanup-attempt policy's
+    // has to reproduce that policy character for character. Everything else
+    // the two carry is therefore identical: the CURRENT_USER check, the
+    // 'authorized' phase, the non-empty principal id and revision, the
+    // 'platform_operator' authority scope, the allowlist EXISTS with its
+    // postgres_session_user binding to SESSION_USER, enabled, can_initialize,
+    // the no-later-revision NOT EXISTS, and the per-capability CASE. No
+    // conjunct is dropped, relaxed or reordered on the way onto the audit log.
+    expect(
+      auditSelect
+        .replace(
+          "ARRAY['claim_cleanup'::text, 'purge'::text]",
+          "ARRAY['claim_cleanup'::text, 'record_attempt'::text, 'purge'::text]",
+        )
+        .replace(
+          "AND (target_type = 'dashboard'::text) AND (target_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)",
+          "AND (dashboard_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)",
+        ),
+    ).toBe(attemptSelect);
+
+    // The capability array is the narrower of the two, by exactly the one
+    // capability that reaches no statement reading dasher.audit_events.
+    expect(auditSelect).toContain(
+      "current_setting('dasher.retention_capability'::text, true) = ANY (ARRAY['claim_cleanup'::text, 'purge'::text])",
+    );
+    expect(auditSelect).not.toContain("'record_attempt'::text, 'purge'::text]");
+    expect(auditSelect).not.toContain("'materialize_expiry'::text, ");
+
+    // The relation carries no dashboard_id column, so the dashboard scoping is
+    // spelled against the audit target instead - and it is spelled, not
+    // dropped. Organization scoping is the frozen spelling unchanged.
+    expect(auditSelect).toContain(
+      "AND (organization_id = (current_setting('dasher.retention_target_organization_id'::text, true))::uuid)",
+    );
+    expect(auditSelect).toContain(
+      "AND (target_type = 'dashboard'::text) AND (target_id = (current_setting('dasher.retention_target_dashboard_id'::text, true))::uuid)",
+    );
+
+    // A SELECT policy carries no WITH CHECK, and the audit log gains no write
+    // authority of any kind here.
+    expect(correctionSql).not.toMatch(
+      /audit_events[\s\S]{0,400}?\nWITH CHECK/u,
+    );
+    expect(correctionSql).not.toMatch(
+      /\bGRANT\b[^;]*\b(?:UPDATE|DELETE|TRUNCATE)\b[^;]*dasher[.]audit_events/iu,
+    );
+    expect(
+      correctionSql.match(
+        /^(?:CREATE POLICY|DROP POLICY)[^\n;]*audit_events[^\n;]*/gmu,
+      ),
+    ).toEqual(["CREATE POLICY audit_events_retention_select"]);
+    // Exactly one statement in the file grants anything at all on the audit
+    // log, and it is the Part 5 column-scoped read.
+    expect(
+      correctionSql.match(/^GRANT[^;]*dasher[.]audit_events[^;]*;/gmu),
+    ).toEqual([auditEventsRetentionSelectGrant]);
+
+    // The grant names exactly the eight columns the four retention-definer
+    // statements that read dasher.audit_events reference, and no others.
+    // recompute_drain_proof_v1 supplies organization_id, audit_event_id,
+    // action, outcome, content_sha256 and deployment_revision; the re-issued
+    // drain adds target_id; age_out_dashboard_agent_run_metadata adds
+    // target_type. Listed here in catalog attnum order, the order frozen 0002
+    // and 0007 already use for this relation.
+    const grantedAuditColumns =
+      /GRANT SELECT \(([\s\S]*?)\) ON TABLE dasher[.]audit_events/u
+        .exec(correctionSql)?.[1]
+        ?.split(",")
+        .map((column) => column.trim());
+    expect(grantedAuditColumns).toEqual([
+      "audit_event_id",
+      "organization_id",
+      "action",
+      "target_type",
+      "target_id",
+      "outcome",
+      "content_sha256",
+      "deployment_revision",
+    ]);
+    // No duplicates, and not one of the twelve columns the traversal never
+    // reads slips in.
+    expect(new Set(grantedAuditColumns).size).toBe(8);
+    for (const unread of [
+      "occurred_at",
+      "actor_kind",
+      "actor_user_id",
+      "actor_service",
+      "authority_revision",
+      "request_id",
+      "job_id",
+      "source_ref",
+      "provider",
+      "credential_version",
+      "usage_units",
+      "cost_minor_units",
+    ]) {
+      expect(grantedAuditColumns).not.toContain(unread);
+    }
+  });
+
+  it("never grants UPDATE on a content, capability, predicate, or provenance column", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[7]?.sql ?? "";
+    const granted = new Set(
+      [...sql.matchAll(/GRANT UPDATE \(([\s\S]*?)\) ON TABLE/gu)].flatMap(
+        (match) => match[1]!.split(",").map((column) => column.trim()),
+      ),
+    );
+    const identityColumns = new Set(
+      lockedRelations.flatMap(([, columns]) =>
+        columns.split(", ").map((column) => column.trim()),
+      ),
+    );
+
+    expect([...granted].sort()).toEqual([...identityColumns].sort());
+    for (const forbidden of [
+      "can_initialize",
+      "can_materialize_expiry",
+      "can_place_hold",
+      "can_release_hold",
+      "can_claim_cleanup",
+      "can_record_attempt",
+      "can_purge",
+      "enabled",
+      "binding_kind",
+      "binding_subject",
+      "authority_scope",
+      "scope_organization_id",
+      "revision_sha256",
+      "migration_provenance",
+      "canonical_bytes",
+      "content_sha256",
+      "proof_sha256",
+      "created_at",
+    ]) {
+      expect(granted.has(forbidden), forbidden).toBe(false);
+    }
+  });
+
+  it("introduces no extension, credential, UUID generation, dynamic SQL, or transaction wrapper", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[7]?.sql ?? "";
+    expect(sql).not.toMatch(
+      /CREATE\s+EXTENSION|gen_random_uuid|uuid_generate|PASSWORD\s+'|sk-proj|BEGIN\s+(?:RSA|OPENSSH)\s+PRIVATE|postgres(?:ql)?:\/\//iu,
+    );
+    // Dynamic-SQL and transaction-statement detection applies to the file's own
+    // statements, not prose and not the interiors of the frozen routines it
+    // re-issues: the Part 9 header says a frozen entry point "cannot execute at
+    // all", and the re-issued bodies carry frozen 0007's own BEGIN keywords.
+    const dynamicSqlStatements = sql
+      .replaceAll(/^--.*$/gmu, "")
+      .replaceAll(/AS \$function\$[\s\S]*?^\$function\$;/gmu, "");
+    expect(dynamicSqlStatements).not.toMatch(
+      /\bEXECUTE\b|\bformat\s*\(|\b(?:BEGIN|COMMIT|ROLLBACK)\s*;/iu,
+    );
+    // The correction may re-issue exactly six already-frozen routines and may
+    // not author a routine of its own, so ALTER FUNCTION and any further
+    // definition stay forbidden.
+    expect(sql).not.toMatch(/ALTER\s+FUNCTION/iu);
+    expect(sql.match(/^CREATE (?:OR REPLACE )?FUNCTION /gmu)).toEqual([
+      "CREATE OR REPLACE FUNCTION ",
+      "CREATE OR REPLACE FUNCTION ",
+      "CREATE OR REPLACE FUNCTION ",
+      "CREATE OR REPLACE FUNCTION ",
+      "CREATE OR REPLACE FUNCTION ",
+      "CREATE OR REPLACE FUNCTION ",
+    ]);
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_retention_api.claim_dashboard_cleanup(",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_retention_api.drain_dashboard_agent_runs(",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_retention_api.age_out_dashboard_agent_run_metadata(",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_api.request_agent_run(",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_retention_api.purge_dashboard(",
+    );
+    expect(sql).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_api.cancel_agent_run(",
+    );
+  });
+
+  // The only behavioural change 0008 may make to a frozen routine is the
+  // conflict target of the coordination upsert. Everything else - signature,
+  // SECURITY DEFINER, search path, volatility, the #variable_conflict
+  // directive, every declaration and every statement - has to survive
+  // byte-for-byte, so the two bodies are compared line by line here rather
+  // than spot-checked.
+  it("re-issues claim_dashboard_cleanup with only its conflict target changed", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozen = phase7FixedFunctionDefinitions(migrations[6]?.sql ?? "").get(
+      "dasher_retention_api.claim_dashboard_cleanup",
+    );
+    const corrected = phase7FixedFunctionDefinitions(
+      migrations[7]?.sql ?? "",
+    ).get("dasher_retention_api.claim_dashboard_cleanup");
+    if (frozen === undefined || corrected === undefined) {
+      throw new Error("missing claim_dashboard_cleanup definition");
+    }
+
+    const frozenLines = frozen.split("\n");
+    const correctedLines = corrected.split("\n");
+    // The collision-normalization wrapper lands in this same re-issued body -
+    // the routine is re-issued exactly once in 0008, and the wrapper belongs
+    // to the body that actually gets installed. Remove exactly those four
+    // wrapper lines (and the two-space re-indent they impose) before the
+    // line-by-line comparison, so the conflict-target proof below still sees
+    // the body the first correction installed.
+    const wrapperBegin = correctedLines.findIndex(
+      (line, index) =>
+        /^ {4}BEGIN$/u.test(line) &&
+        correctedLines[index + 1] === "      INSERT INTO dasher.audit_events (",
+    );
+    expect(wrapperBegin).toBeGreaterThan(0);
+    const unwrappedLines = [
+      ...correctedLines.slice(0, wrapperBegin),
+      ...correctedLines
+        .slice(wrapperBegin + 1, wrapperBegin + 1 + 13)
+        .map((line) => line.replace(/^ {2}/u, "")),
+      ...correctedLines.slice(wrapperBegin + 1 + 13 + 3),
+    ];
+    expect(unwrappedLines).toHaveLength(frozenLines.length);
+    const changed = frozenLines.flatMap((line, index) =>
+      line === unwrappedLines[index] ? [] : [[line, unwrappedLines[index]!]],
+    );
+    expect(changed).toEqual([
+      [
+        "  ) ON CONFLICT (organization_id, dashboard_id) DO UPDATE",
+        "  ) ON CONFLICT ON CONSTRAINT dashboard_cleanup_coordination_pkey DO UPDATE",
+      ],
+    ]);
+    // The named constraint is the very unique index the frozen inference list
+    // was written against, declared in 0003 and never redeclared since.
+    expect(migrations[2]?.sql ?? "").toContain(
+      "ALTER TABLE dasher.dashboard_cleanup_coordination ADD CONSTRAINT dashboard_cleanup_coordination_pkey PRIMARY KEY (organization_id, dashboard_id);",
+    );
+    expect(corrected).toContain("#variable_conflict use_variable");
+    expect(corrected).toContain("SECURITY DEFINER");
+    expect(corrected).toContain("SET search_path = pg_catalog");
+    // The agent-run drain and the age-out are re-issued alongside it, neither
+    // for a conflict-target reason: the drain corrects its hold gate and the
+    // age-out normalizes its audit collision, and the age-out carries no
+    // #variable_conflict directive and no ON CONFLICT clause at all. The two
+    // routines that do carry the directive and are not re-issued need no
+    // conflict-target correction either: one has no ON CONFLICT clause, and
+    // the other infers only on names it never declares. Parts 7, 8 and 10
+    // additionally re-issue the run-request entry point, the purge and the
+    // cancel so the sixth defect's collision wrapper can live in their
+    // installed bodies.
+    const phase7Sql = migrations[6]?.sql ?? "";
+    const reissued = [
+      ...(migrations[7]?.sql ?? "").matchAll(
+        /^CREATE OR REPLACE FUNCTION ([a-z0-9_]+[.][a-z0-9_]+)\(/gmu,
+      ),
+    ].map((match) => match[1]);
+    expect(reissued).toEqual([
+      "dasher_retention_api.claim_dashboard_cleanup",
+      "dasher_retention_api.drain_dashboard_agent_runs",
+      "dasher_retention_api.age_out_dashboard_agent_run_metadata",
+      "dasher_api.request_agent_run",
+      "dasher_retention_api.purge_dashboard",
+      "dasher_api.cancel_agent_run",
+    ]);
+    for (const routine of [
+      "dasher_retention_api.record_dashboard_cleanup_attempt",
+    ]) {
+      const body = phase7FixedFunctionDefinitions(phase7Sql).get(routine);
+      if (body === undefined) {
+        throw new Error(`missing frozen routine ${routine}`);
+      }
+      expect(body, routine).toContain("#variable_conflict use_variable");
+      const parameters = new Set(
+        [...body.matchAll(/^ {2}([a-z0-9_]+) [a-z]/gmu)].map(
+          (match) => match[1]!,
+        ),
+      );
+      for (const inference of [
+        ...body.matchAll(/ON CONFLICT \(([^)]*)\)/gu),
+      ].map((match) => match[1]!)) {
+        for (const column of inference.split(",").map((name) => name.trim())) {
+          expect(parameters.has(column), `${routine}:${column}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  // The only behavioural change 0008 may make to the agent-run drain is the
+  // legal-hold gate predicate. Everything else - signature, SECURITY DEFINER,
+  // search path, volatility, every declaration, every row mark, every proof
+  // preimage and every conflict path - has to survive byte-for-byte, so the
+  // two bodies are compared line by line here rather than spot-checked.
+  it("re-issues drain_dashboard_agent_runs with only its hold gate changed", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const phase7Sql = migrations[6]?.sql ?? "";
+    const frozen = phase7FixedFunctionDefinitions(phase7Sql).get(
+      "dasher_retention_api.drain_dashboard_agent_runs",
+    );
+    const corrected = phase7FixedFunctionDefinitions(
+      migrations[7]?.sql ?? "",
+    ).get("dasher_retention_api.drain_dashboard_agent_runs");
+    if (frozen === undefined || corrected === undefined) {
+      throw new Error("missing drain_dashboard_agent_runs definition");
+    }
+
+    const frozenLines = frozen
+      .replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ")
+      .split("\n");
+    const correctedLines = corrected.split("\n");
+    // The collision-normalization wrapper lands in this same re-issued body -
+    // the routine is re-issued exactly once in 0008, and the wrapper belongs
+    // to the body that actually gets installed. Remove exactly those four
+    // wrapper lines (and the two-space re-indent they impose) before the
+    // line-by-line comparison, so the hold-gate proof below still sees the
+    // body the first correction installed.
+    const wrapperBegin = correctedLines.findIndex(
+      (line, index) =>
+        /^ {2}BEGIN$/u.test(line) &&
+        correctedLines[index + 1] === "    INSERT INTO dasher.audit_events (",
+    );
+    expect(wrapperBegin).toBeGreaterThan(0);
+    const unwrappedLines = [
+      ...correctedLines.slice(0, wrapperBegin),
+      ...correctedLines
+        .slice(wrapperBegin + 1, wrapperBegin + 1 + 13)
+        .map((line) => line.replace(/^ {2}/u, "")),
+      ...correctedLines.slice(wrapperBegin + 1 + 13 + 3),
+    ];
+    // Exactly one line is inserted; nothing is removed and nothing is edited.
+    expect(unwrappedLines).toHaveLength(frozenLines.length + 1);
+    const inserted = unwrappedLines.findIndex(
+      (line, index) => line !== frozenLines[index],
+    );
+    expect(unwrappedLines[inserted]).toBe("    AND hold.released_at IS NULL");
+    expect(unwrappedLines.filter((_, index) => index !== inserted)).toEqual(
+      frozenLines,
+    );
+    // The inserted predicate lands in the drain's own legal-hold gate.
+    expect(unwrappedLines.slice(inserted - 2, inserted + 2)).toEqual([
+      "  PERFORM 1 FROM dasher.dashboard_legal_holds AS hold",
+      "  WHERE hold.organization_id = v_organization_id AND hold.dashboard_id = p_dashboard_id",
+      "    AND hold.released_at IS NULL",
+      "  ORDER BY hold.hold_id FOR UPDATE;",
+    ]);
+    // And it is the same predicate purge_dashboard's frozen gate already
+    // carries, so drain and purge now agree on what "held" means.
+    const purge = phase7FixedFunctionDefinitions(phase7Sql).get(
+      "dasher_retention_api.purge_dashboard",
+    );
+    if (purge === undefined) {
+      throw new Error("missing purge_dashboard definition");
+    }
+    expect(purge).toContain(
+      "  PERFORM 1 FROM dasher.dashboard_legal_holds AS hold\n" +
+        "  WHERE hold.organization_id = v_organization_id AND hold.dashboard_id = $1\n" +
+        "    AND hold.released_at IS NULL\n",
+    );
+    expect(corrected).toContain("SECURITY DEFINER");
+    expect(corrected).toContain("SET search_path = pg_catalog");
+    expect(corrected).not.toContain("#variable_conflict");
+  });
+
+  // The only behavioural change 0008 may make to the age-out is the exception
+  // normalization around its audit INSERT. Everything else - signature,
+  // SECURITY DEFINER, search path, volatility, every declaration, both
+  // operation-id probes, every predicate, every proof preimage and every other
+  // RAISE - has to survive byte-for-byte, so the two bodies are compared line
+  // by line here rather than spot-checked.
+  it("re-issues the age-out with only its audit collision normalized", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const phase7Sql = migrations[6]?.sql ?? "";
+    const routine = "dasher_retention_api.age_out_dashboard_agent_run_metadata";
+    const frozen = phase7FixedFunctionDefinitions(phase7Sql).get(routine);
+    const corrected = phase7FixedFunctionDefinitions(
+      migrations[7]?.sql ?? "",
+    ).get(routine);
+    if (frozen === undefined || corrected === undefined) {
+      throw new Error(
+        "missing age_out_dashboard_agent_run_metadata definition",
+      );
+    }
+
+    const frozenLines = frozen
+      .replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ")
+      .split("\n");
+    const correctedLines = corrected.split("\n");
+    // Four lines are inserted - the block opener, the handler condition, its
+    // single RAISE and the block terminator - and the twelve INSERT lines they
+    // wrap are re-indented by exactly two spaces. Nothing else moves, so
+    // comparing with the wrap removed and indentation collapsed has to
+    // reproduce the frozen body exactly.
+    expect(correctedLines).toHaveLength(frozenLines.length + 4);
+    const blockStart = correctedLines.indexOf("  BEGIN", 1);
+    expect(blockStart).toBeGreaterThan(0);
+    expect(correctedLines.slice(blockStart + 13, blockStart + 16)).toEqual([
+      "  EXCEPTION WHEN unique_violation THEN",
+      "    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';",
+      "  END;",
+    ]);
+    const unwrapped = [
+      ...correctedLines.slice(0, blockStart),
+      ...correctedLines
+        .slice(blockStart + 1, blockStart + 13)
+        .map((line) => line.replace(/^ {2}/u, "")),
+      ...correctedLines.slice(blockStart + 16),
+    ];
+    expect(unwrapped).toEqual(frozenLines);
+    // The wrapped statement is the audit INSERT and nothing else.
+    expect(correctedLines[blockStart + 1]).toBe(
+      "    INSERT INTO dasher.audit_events (",
+    );
+    expect(correctedLines[blockStart + 12]).toBe("    );");
+    // The handler re-raises the series' own conflict code. It never swallows
+    // the collision, never reports a bare SQLSTATE, and never leaks the
+    // constraint, the relation or the colliding value.
+    expect(corrected).not.toMatch(/\bRETURN\b[^;]*;\s*\n\s*END;/u);
+    expect(corrected).not.toMatch(
+      /SQLERRM|SQLSTATE|CONSTRAINT_NAME|PG_EXCEPTION/iu,
+    );
+    // Exactly one handler exists in the whole body, and it catches exactly one
+    // condition: a broader WHEN OTHERS would swallow unrelated failures.
+    expect(corrected.match(/^\s*EXCEPTION\b.*$/gmu)).toEqual([
+      "  EXCEPTION WHEN unique_violation THEN",
+    ]);
+    expect(corrected).not.toMatch(/WHEN\s+OTHERS/iu);
+    // Both frozen operation-id probes survive: the per-dashboard replay branch
+    // and the global audit_event_id uniqueness probe that Part 5's row scoping
+    // narrowed. The normalization is an addition to them, not a replacement.
+    expect(corrected).toContain(
+      "  IF EXISTS (\n" +
+        "    SELECT 1 FROM dasher.audit_events AS audit\n" +
+        "    WHERE audit.audit_event_id = p_operation_and_audit_id\n" +
+        "  ) THEN\n" +
+        "    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';\n" +
+        "  END IF;\n",
+    );
+    expect(corrected).toContain("SECURITY DEFINER");
+    expect(corrected).toContain("SET search_path = pg_catalog");
+    expect(corrected).not.toContain("#variable_conflict");
+    // Part 6 changes a routine body only. It adds no privilege and no policy,
+    // so the audit read surface Part 5 established is untouched by it.
+    const partSix = (migrations[7]?.sql ?? "").slice(
+      (migrations[7]?.sql ?? "").indexOf("-- Part 6 -"),
+    );
+    expect(partSix).not.toMatch(/^GRANT\b|^REVOKE\b|^CREATE POLICY\b/gmu);
+  });
+
+  // The whole collision-normalization family, proved mechanically against the
+  // frozen bytes. For each of the six routines 0008 wraps, removing exactly
+  // the four wrapper lines and collapsing the two-space re-indent of the lines
+  // they enclose has to reproduce the frozen 0007 body - line for line - apart
+  // from the one further documented line that Parts 2 and 3 change for reasons
+  // of their own. That is the mechanical form of "diff -w shows only the
+  // documented lines", carried in CI rather than in a report.
+  it.each([
+    { routine: "dasher_api.request_agent_run", documentedDeltas: [] },
+    {
+      routine: "dasher_retention_api.claim_dashboard_cleanup",
+      documentedDeltas: [
+        {
+          frozen: "  ) ON CONFLICT (organization_id, dashboard_id) DO UPDATE",
+          corrected:
+            "  ) ON CONFLICT ON CONSTRAINT dashboard_cleanup_coordination_pkey DO UPDATE",
+        },
+      ],
+    },
+    {
+      routine: "dasher_retention_api.drain_dashboard_agent_runs",
+      documentedDeltas: [
+        { frozen: undefined, corrected: "    AND hold.released_at IS NULL" },
+      ],
+    },
+    { routine: "dasher_retention_api.purge_dashboard", documentedDeltas: [] },
+    {
+      routine: "dasher_retention_api.age_out_dashboard_agent_run_metadata",
+      documentedDeltas: [],
+    },
+    { routine: "dasher_api.cancel_agent_run", documentedDeltas: [] },
+  ])(
+    "wraps only the audit INSERT in $routine and changes nothing else",
+    async ({ routine, documentedDeltas }) => {
+      const migrations = await discoverMigrations(canonicalMigrationDirectory);
+      const frozen = phase7FixedFunctionDefinitions(
+        migrations[6]?.sql ?? "",
+      ).get(routine);
+      const corrected = phase7FixedFunctionDefinitions(
+        migrations[7]?.sql ?? "",
+      ).get(routine);
+      if (frozen === undefined || corrected === undefined) {
+        throw new Error(`missing ${routine} definition`);
+      }
+
+      const correctedLines = corrected.split("\n");
+      // Exactly one wrapper beyond the frozen body's own handlers, catching
+      // exactly one condition. A broader handler would swallow failures this
+      // correction has no business touching. (request_agent_run's and
+      // cancel_agent_run's frozen bodies already carry one EXCEPTION clause
+      // each for encoding failures, so the count is relative to the frozen
+      // baseline.)
+      const frozenExceptionCount = (
+        frozen
+          .replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ")
+          .match(/^\s*EXCEPTION\b.*$/gmu) ?? []
+      ).length;
+      expect(corrected.match(/^\s*EXCEPTION\b.*$/gmu)).toHaveLength(
+        frozenExceptionCount + 1,
+      );
+      expect(corrected).not.toMatch(/WHEN\s+OTHERS/iu);
+
+      const openerIndex = correctedLines.findIndex(
+        (line, index) =>
+          /^[ ]*BEGIN$/u.test(line) &&
+          correctedLines[index + 1] ===
+            `${line.slice(0, line.length - "BEGIN".length)}  INSERT INTO dasher.audit_events (`,
+      );
+      expect(openerIndex).toBeGreaterThan(0);
+      const indent = correctedLines[openerIndex]?.slice(
+        0,
+        (correctedLines[openerIndex]?.length ?? 0) - "BEGIN".length,
+      );
+      const closerIndex = correctedLines.indexOf(
+        `${indent}EXCEPTION WHEN unique_violation THEN`,
+        openerIndex,
+      );
+      expect(closerIndex).toBeGreaterThan(openerIndex);
+      expect(correctedLines.slice(closerIndex, closerIndex + 3)).toEqual([
+        `${indent}EXCEPTION WHEN unique_violation THEN`,
+        `${indent}  RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';`,
+        `${indent}END;`,
+      ]);
+      // The wrapper itself never reports a bare SQLSTATE and never leaks the
+      // constraint, the relation or the colliding value. (The whole-body form
+      // of this prohibition cannot apply here because request_agent_run's
+      // frozen body carries its own SQLSTATE-named encoding handler; the exact
+      // wrapper-line pin above is what enforces the property on the lines this
+      // correction adds.)
+      expect(
+        correctedLines.slice(closerIndex, closerIndex + 3).join("\n"),
+      ).not.toMatch(/SQLERRM|SQLSTATE|CONSTRAINT_NAME|PG_EXCEPTION/iu);
+      // The block encloses one statement: the audit INSERT, terminator and
+      // all, with no row mark and no second semicolon inside it.
+      const wrapped = correctedLines.slice(openerIndex + 1, closerIndex);
+      expect(wrapped.at(-1)).toBe(`${indent}  );`);
+      expect(wrapped.join("\n").match(/;/gu)).toHaveLength(1);
+      expect(wrapped.join("\n")).not.toMatch(
+        /FOR (?:UPDATE|KEY SHARE|SHARE|NO KEY UPDATE)/u,
+      );
+
+      const unwrapped = [
+        ...correctedLines.slice(0, openerIndex),
+        ...wrapped.map((line) => line.replace(/^ {2}/u, "")),
+        ...correctedLines.slice(closerIndex + 3),
+      ];
+      const frozenLines = frozen
+        .replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ")
+        .split("\n");
+
+      // Apply the documented non-wrapper deltas to the frozen text, then
+      // require byte equality. Anything else at all - a moved predicate, a
+      // dropped row mark, a re-spelled digest - fails here.
+      const reconstructed = [...frozenLines];
+      for (const delta of documentedDeltas) {
+        if (delta.frozen === undefined) {
+          const anchorIndex = unwrapped.indexOf(delta.corrected);
+          expect(anchorIndex).toBeGreaterThan(0);
+          reconstructed.splice(anchorIndex, 0, delta.corrected);
+          continue;
+        }
+        const replaceIndex = reconstructed.indexOf(delta.frozen);
+        expect(replaceIndex).toBeGreaterThan(0);
+        reconstructed[replaceIndex] = delta.corrected;
+      }
+      expect(unwrapped).toEqual(reconstructed);
+      expect(unwrapped).toHaveLength(
+        correctedLines.length -
+          4 -
+          documentedDeltas.length +
+          documentedDeltas.length,
+      );
+      expect(correctedLines).toHaveLength(unwrapped.length + 4);
+    },
+  );
+
+  // dasher_api.cancel_agent_run is the sixth frozen site that writes the global
+  // audit primary key from a caller-supplied uuid, and it is no longer exempt.
+  // The exemption rested on the frozen body's advisory lock plus its global
+  // probe serializing the probe and the INSERT against every other transaction
+  // that could spend the id. It does not: the advisory key is namespaced to the
+  // cancel operation, so it orders cancel against cancel and against none of
+  // the five other entry points that spend the same global key; and the
+  // probe-then-INSERT ordering only serializes under READ COMMITTED, which this
+  // series pins on the retention path and never on dasher_api. Part 10 wraps
+  // the INSERT for both reasons.
+  //
+  // Defense-in-depth is preserved, not traded away: this requires the two
+  // advisory locks and the pre-INSERT probe to survive the re-issue unchanged,
+  // in the frozen order, AND the audit INSERT to be enclosed in the
+  // unique_violation wrapper. Losing either half fails here. The byte-for-byte
+  // proof that the wrapper is the only change lives in the collision-family
+  // it.each above, which now covers this routine too.
+  it("wraps cancel_agent_run's audit INSERT and keeps its lock and probe", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozen =
+      phase7FixedFunctionDefinitions(migrations[6]?.sql ?? "").get(
+        "dasher_api.cancel_agent_run",
+      ) ?? "";
+    const corrected =
+      phase7FixedFunctionDefinitions(migrations[7]?.sql ?? "").get(
+        "dasher_api.cancel_agent_run",
+      ) ?? "";
+    expect(frozen).not.toBe("");
+    // 0008 re-issues it exactly once, and the frozen 0007 bytes still carry the
+    // unwrapped definition: the correction lands in the body that installs.
+    expect(corrected).not.toBe("");
+    expect(corrected.startsWith("CREATE OR REPLACE FUNCTION ")).toBe(true);
+    expect(frozen.startsWith("CREATE FUNCTION ")).toBe(true);
+    expect(
+      (migrations[7]?.sql ?? "").match(
+        /^CREATE OR REPLACE FUNCTION dasher_api[.]cancel_agent_run\(/gmu,
+      ),
+    ).toHaveLength(1);
+
+    const lockIndex = corrected.indexOf(
+      "'dasher:agent-run-cancel-operation:v1|'\n        || p_cancel_operation_and_audit_id::text",
+    );
+    const probeIndex = corrected.indexOf(
+      "SELECT audit.* INTO v_operation_audit\n  FROM dasher.audit_events AS audit\n  WHERE audit.audit_event_id = p_cancel_operation_and_audit_id;",
+    );
+    const insertIndex = corrected.indexOf("INSERT INTO dasher.audit_events (");
+    // The lock is still taken first, the probe still reads the whole relation
+    // on the id alone, and the INSERT that spends it still comes last.
+    expect(lockIndex).toBeGreaterThan(0);
+    expect(probeIndex).toBeGreaterThan(lockIndex);
+    expect(insertIndex).toBeGreaterThan(probeIndex);
+    // Both frozen advisory locks survive, neither is added and neither is
+    // dropped.
+    expect(corrected.match(/pg_catalog[.]pg_advisory_xact_lock\(/gu)).toEqual(
+      frozen.match(/pg_catalog[.]pg_advisory_xact_lock\(/gu),
+    );
+    expect(
+      corrected.match(/pg_catalog[.]pg_advisory_xact_lock\(/gu),
+    ).toHaveLength(2);
+
+    // The audit INSERT - and only it - is now inside the collision wrapper.
+    const correctedLines = corrected.split("\n");
+    const openerIndex = correctedLines.findIndex(
+      (line, index) =>
+        line === "  BEGIN" &&
+        correctedLines[index + 1] === "    INSERT INTO dasher.audit_events (",
+    );
+    expect(openerIndex).toBeGreaterThan(0);
+    const closerIndex = correctedLines.indexOf(
+      "  EXCEPTION WHEN unique_violation THEN",
+      openerIndex,
+    );
+    expect(correctedLines.slice(closerIndex, closerIndex + 3)).toEqual([
+      "  EXCEPTION WHEN unique_violation THEN",
+      "    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';",
+      "  END;",
+    ]);
+    // One statement inside the block, terminator included: no advisory lock, no
+    // probe, no RETURN and no second semicolon rode in with it.
+    const wrapped = correctedLines.slice(openerIndex + 1, closerIndex);
+    expect(wrapped[0]).toBe("    INSERT INTO dasher.audit_events (");
+    expect(wrapped.at(-1)).toBe("    );");
+    expect(wrapped.join("\n").match(/;/gu)).toHaveLength(1);
+    expect(wrapped.join("\n")).not.toMatch(
+      /pg_advisory_xact_lock|RETURN|SELECT|FOR UPDATE/u,
+    );
+    // The RETURN the frozen body puts after the INSERT stays outside the block.
+    expect(correctedLines[closerIndex + 3]).toBe(
+      "  RETURN ROW(v_mutation.run_id, v_mutation.run_revision, v_mutation.state,",
+    );
+
+    // The frozen encoding handler survives byte-for-byte and is untouched: the
+    // wrapper is an addition beside it, not a replacement of it.
+    const encodingHandler =
+      "  EXCEPTION WHEN character_not_in_repertoire OR invalid_text_representation THEN\n" +
+      "    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_invalid';\n" +
+      "  END;\n";
+    expect(frozen).toContain(encodingHandler);
+    expect(corrected).toContain(encodingHandler);
+    expect(corrected.match(/^\s*EXCEPTION\b.*$/gmu)).toEqual([
+      "  EXCEPTION WHEN character_not_in_repertoire OR invalid_text_representation THEN",
+      "  EXCEPTION WHEN unique_violation THEN",
+    ]);
+    expect(corrected).not.toMatch(/WHEN\s+OTHERS/iu);
+    // The wrapper lines never report a bare SQLSTATE and never leak the
+    // constraint, the relation or the colliding value.
+    expect(
+      correctedLines.slice(closerIndex, closerIndex + 3).join("\n"),
+    ).not.toMatch(/SQLERRM|SQLSTATE|CONSTRAINT_NAME|PG_EXCEPTION/iu);
+    expect(corrected).toContain("SECURITY DEFINER");
+    expect(corrected).toContain("SET search_path = pg_catalog");
+  });
+
+  // Part 9 corrects one frozen 0003 CHECK in place. Same relation, same
+  // constraint name, same closed-vocabulary shape; the admitted set gains
+  // exactly the one value the frozen age-out requires and nothing else moves.
+  it("widens the backup-deletion ledger vocabulary by exactly one value", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozen0003 = migrations[2]?.sql ?? "";
+    const correction = migrations[7]?.sql ?? "";
+
+    // The frozen constraint is still the two-value form in 0003. 0003 is not
+    // edited; the whole point is that the correction lands in 0008.
+    expect(frozen0003).toContain(
+      "ALTER TABLE dasher.backup_deletion_ledger ADD CONSTRAINT backup_deletion_ledger_event_kind_check CHECK ((event_kind = ANY (ARRAY['access_revoked'::text, 'purged'::text])));",
+    );
+    expect(frozen0003).not.toContain("backup.deleted");
+
+    expect(correction).toContain(
+      "ALTER TABLE dasher.backup_deletion_ledger\n" +
+        "  DROP CONSTRAINT backup_deletion_ledger_event_kind_check;\n" +
+        "ALTER TABLE dasher.backup_deletion_ledger\n" +
+        "  ADD CONSTRAINT backup_deletion_ledger_event_kind_check\n" +
+        "  CHECK ((event_kind = ANY (ARRAY['access_revoked'::text, 'purged'::text, 'backup.deleted'::text])));",
+    );
+    // Exactly one constraint is touched, and only this one.
+    expect(correction.match(/^ALTER TABLE .*$/gmu)).toEqual([
+      "ALTER TABLE dasher.backup_deletion_ledger",
+      "ALTER TABLE dasher.backup_deletion_ledger",
+    ]);
+    expect(correction.match(/DROP CONSTRAINT/gu)).toHaveLength(1);
+    // No row is read, written or removed by the vocabulary correction.
+    const partNine = correction.slice(correction.indexOf("-- Part 9 -"));
+    expect(partNine).not.toMatch(
+      /^(?:INSERT|UPDATE|DELETE|GRANT|REVOKE|CREATE POLICY|DROP POLICY)\b/gmu,
+    );
+    // And the value it admits is exactly the one the frozen age-out reads.
+    expect(migrations[6]?.sql ?? "").toContain(
+      "ledger.event_kind = 'backup.deleted'",
+    );
+  });
+
+  // The one schema privilege Part 3 adds has to stay exactly that: USAGE, on
+  // dasher_run_api, for dasher_retention_definer, carrying no EXECUTE.
+  it("grants the drain nothing beyond dasher_run_api schema visibility", async () => {
+    const sql =
+      (await discoverMigrations(canonicalMigrationDirectory))[7]?.sql ?? "";
+
+    expect(sql).toContain(
+      "GRANT USAGE ON SCHEMA dasher_run_api TO dasher_retention_definer;",
+    );
+    expect(sql.match(/^GRANT USAGE ON SCHEMA .*$/gmu)).toEqual([
+      "GRANT USAGE ON SCHEMA dasher_run_api TO dasher_retention_definer;",
+    ]);
+    expect(sql).not.toMatch(
+      /GRANT[\s\S]{0,80}?\bON\s+(?:ALL\s+)?FUNCTIONS?\b/iu,
+    );
+    expect(sql).not.toMatch(
+      /\bON\s+TYPE\b|\bON\s+DOMAIN\b|\bON\s+SEQUENCE\b/iu,
+    );
+    expect(sql).not.toMatch(/ALTER\s+DEFAULT\s+PRIVILEGES/iu);
   });
 });

@@ -66,6 +66,14 @@ const canonicalPhase7Series = [
   ...canonicalSuccessorFiles,
   canonicalPhase7File,
 ] as const;
+const canonicalPhase8File = {
+  checksum: "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
+  filename: "0008_retention_lock_authority_correction.sql",
+} as const;
+const canonicalPhase8Series = [
+  ...canonicalPhase7Series,
+  canonicalPhase8File,
+] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
   "ROLLBACK TO SAVEPOINT dasher_managed_role_create";
@@ -5173,6 +5181,7 @@ interface DependencyComparisonRow {
 
 interface Phase7CatalogComparisonRow extends DependencyComparisonRow {
   readonly entry_count: string;
+  readonly expected_login_connect_count: string;
   readonly fingerprint_sha256: string;
 }
 
@@ -6244,9 +6253,9 @@ function hasExactCanonicalPrefixFiles(
   migrations: readonly DiscoveredMigration[],
 ): boolean {
   return (
-    migrations.length <= canonicalPhase7Series.length &&
+    migrations.length <= canonicalPhase8Series.length &&
     migrations.every((migration, index) => {
-      const expected = canonicalPhase7Series[index];
+      const expected = canonicalPhase8Series[index];
       return (
         expected !== undefined &&
         migration.sequence === index + 1 &&
@@ -6299,7 +6308,7 @@ function successorIdentity(
   if (migrations.length < 3) {
     return "none";
   }
-  if (migrations.length > canonicalPhase7Series.length) {
+  if (migrations.length > canonicalPhase8Series.length) {
     return reject("migration_file_mismatch");
   }
   for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
@@ -21857,10 +21866,73 @@ export async function canonical0006DependencyInventoryMatchesForTests(
 // Frozen from the independently normalized PostgreSQL catalog inventory below.
 // The value is intentionally not derived from any migration file at runtime.
 const canonicalPhase7CatalogFingerprintSha256 =
-  "f3defa8eaaec54b0b10ca571b854c07bf74598a5e877f278d10c813c827925eb";
-const canonicalPhase7CatalogEntryCount = "7452";
+  "759a57fd62f02921110ea07ee8e66b63ffcca7c6ab9baf5e25674ecaeb2e4529";
+const canonicalPhase7CatalogEntryCount = "7458";
 
-const canonicalPhase7ExactCatalogValidationSql = `
+// Same normalized inventory, taken after 0008 restores the retention definer's
+// row-mark authority, re-issues the one frozen 0007 routine whose ON CONFLICT
+// inference list could not name a table column, and grants the retention
+// definer USAGE on dasher_run_api so the agent-run drain can compile: for each
+// of the 25 row-marked relations, one column ACL and one shared-dependency
+// entry per granted primary-key column plus the lock-only UPDATE policy and
+// its shared dependency; then one namespace ACL entry and one shared-dependency
+// entry for the dasher_run_api USAGE grant. The two replaced routine bodies add
+// no entry of their own, and neither does Part 4: it drops and re-creates the
+// retention SELECT policy on dasher.dashboard_cleanup_attempts and the lock
+// policy Part 1 mirrors onto that relation, so the entry count is unchanged and
+// only the two policy expressions the fingerprint hashes move. Part 5 then adds
+// eighteen entries: its column-scoped dasher.audit_events SELECT grant
+// contributes one column ACL entry and one shared dependency for each of the
+// eight granted columns - a column-level grant records its own pg_shdepend row
+// per attribute, unlike the table-level form, whose dependency the frozen
+// INSERT grant already covered - and the new audit_events_retention_select
+// policy contributes itself and one shared dependency. No relation ACL entry
+// is added: dasher_retention_definer's relacl holds INSERT and nothing else.
+// Part 6 adds no entry either: it re-issues one further frozen 0007 routine -
+// the agent-run age-out, so a duplicate audit_event_id normalizes to P1002
+// instead of surfacing a bare 23505 - and replacing a body renames no identity,
+// so only the routine definition this fingerprint hashes moves. Parts 7 and 8
+// carry the same wrapper into dasher_api.request_agent_run and
+// dasher_retention_api.purge_dashboard, and Parts 2 and 3 carry it into the two
+// bodies they already re-issue, so four more routine definitions move and no
+// identity is added. Part 9 then corrects one frozen 0003 CHECK in place -
+// dasher.backup_deletion_ledger's event-kind vocabulary gains the one value the
+// frozen age-out requires - and a constraint's inventory identity is its name
+// on its relation, so its definition moves and the entry count does not.
+// Part 10 finally carries the same wrapper into dasher_api.cancel_agent_run,
+// the sixth and last entry point that spends the global audit primary key from
+// a caller-supplied uuid: its advisory lock is keyed on the cancel-operation
+// namespace alone and so never serialized it against the other five, and its
+// probe-then-INSERT ordering only serializes under READ COMMITTED, which is
+// pinned on the retention path and not on dasher_api. That moves a sixth
+// routine definition and, like every other body replacement here, adds no
+// inventory entry.
+// The entry count is therefore the same 7718 the row-mark, ACL, policy and
+// dependency accounting above arrives at: everything from Part 6 onward moves
+// definitions the fingerprint hashes and adds no inventory entry at all.
+// Frozen from a pristine postgres:16.14 cluster, never derived from a
+// migration file at runtime. Both this constant and the phase-7 one above are
+// database-name independent: every inventory that can name the database emits
+// the '<current_database>' placeholder - the shared-dependency inventory by
+// rewriting the one row whose object IS the current database, matched on
+// catalog identity rather than on its text - and both were re-derived on four
+// pristine clusters whose databases were named dasher_ci, dasher, audit_events
+// and dasher_api and reproduced identically. That last claim is no longer a
+// derivation note carried in prose: the integration suite reproduces both
+// constants - and the privilege and shared-dependency inventories behind them,
+// compared as normalized text rather than as a digest - on databases carrying
+// those exact names.
+const canonicalPhase8CatalogFingerprintSha256 =
+  "a5ea815f68b637d9e557cd6855ddc636b962bf41474f1ecd88f042237326a337";
+const canonicalPhase8CatalogEntryCount = "7718";
+
+// The whole normalized inventory, as a WITH list with no final statement. Two
+// statements are built from it below: the phase validation both migration paths
+// run, and the test-only extraction of the two inventory families that could
+// carry the database's own name. Splitting it keeps those two readings of the
+// catalog literally the same query - a name-independence proof taken against a
+// re-typed copy would prove nothing about the constants this file freezes.
+const canonicalPhaseCatalogInventoryCteSql = `
   WITH
   managed_namespaces AS (
     SELECT namespace.oid, namespace.nspname::text AS schema_name,
@@ -22181,8 +22253,14 @@ const canonicalPhase7ExactCatalogValidationSql = `
     WHERE owner.rolname = $1 OR namespace.oid IS NOT NULL
   ),
   acl_entries AS (
+    -- The database identity is the literal placeholder the inventory and
+    -- dependency CTEs above already use, never the name this cluster happens
+    -- to carry. Emitting current_database() here would fold the database name
+    -- into every database-scoped ACL identity, and with it into the phase
+    -- fingerprints, so the frozen constants would reproduce on a database
+    -- named dasher_ci and fail closed on every other name.
     SELECT 'database'::text AS object_kind,
-      pg_catalog.current_database()::text AS object_identity,
+      '<current_database>'::text AS object_identity,
       database_row.datacl AS acl, database_row.datdba AS object_owner,
       'd'::"char" AS object_type
     FROM pg_catalog.pg_database AS database_row
@@ -22218,25 +22296,65 @@ const canonicalPhase7ExactCatalogValidationSql = `
     FROM type_catalog AS type_row
     JOIN pg_catalog.pg_type AS type_source ON type_source.oid = type_row.oid
   ),
-  privilege_inventory AS (
-    SELECT pg_catalog.jsonb_build_object(
-      'kind', 'acl',
-      'identity', acl.object_kind || '|' || acl.object_identity || '|' ||
-        CASE WHEN privilege.grantee = 0 THEN '<PUBLIC>'
-          WHEN grantee.rolname = $1 THEN '<migration_owner>'
-          ELSE grantee.rolname::text END || '|' || privilege.privilege_type || '|' ||
-        CASE WHEN grantor.rolname = $1 THEN '<migration_owner>'
-          ELSE grantor.rolname::text END,
-      'definition', pg_catalog.jsonb_build_object(
-        'grantable', privilege.is_grantable
-      )
-    ) AS entry
+  privilege_rows AS (
+    SELECT acl.object_kind, acl.object_identity,
+      CASE WHEN privilege.grantee = 0 THEN '<PUBLIC>'
+        WHEN grantee.rolname = $1 THEN '<migration_owner>'
+        ELSE grantee.rolname::text END AS grantee_name,
+      privilege.privilege_type,
+      CASE WHEN grantor.rolname = $1 THEN '<migration_owner>'
+        ELSE grantor.rolname::text END AS grantor_name,
+      privilege.is_grantable,
+      COALESCE(grantee.rolname::text, '') AS grantee_role_name,
+      -- The only login-configuration dependent entry the canonical series can
+      -- produce is the database CONNECT grant the operator issues to each
+      -- expected login role. Normalize exactly that shape - owner grantor, not
+      -- grantable, CONNECT, database scope, grantee in the expected allowlist -
+      -- so the fingerprint depends on the expected list rather than on however
+      -- many logins happen to be provisioned. Every other privilege, including
+      -- any privilege held by a role outside the expected allowlist, stays in
+      -- the fingerprinted inventory.
+      --
+      -- PUBLIC is excluded structurally rather than by trusting the allowlist.
+      -- aclexplode reports PUBLIC as grantee 0, whose rolname is NULL, so the
+      -- COALESCE below would render it as the empty string and an allowlist
+      -- that contained '' would normalize PUBLIC's own database CONNECT out of
+      -- the fingerprint. runMigrations cannot reach that state - it validates
+      -- every declared login name first - but the grantee.rolname IS NOT NULL
+      -- conjunct makes it unreachable for any caller, so no entry point can
+      -- normalize away a grant that is not a real login role's.
+      acl.object_kind = 'database'
+        AND privilege.privilege_type = 'CONNECT'
+        AND privilege.is_grantable = false
+        AND grantor.rolname = $1
+        AND grantee.rolname IS NOT NULL
+        AND COALESCE(grantee.rolname::text, '') = ANY($3::text[])
+        AS is_expected_login_connect
     FROM acl_entries AS acl
     CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
       acl.acl, pg_catalog.acldefault(acl.object_type, acl.object_owner)
     )) AS privilege
     JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = privilege.grantor
     LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+  ),
+  expected_login_connect_coverage AS (
+    SELECT pg_catalog.count(DISTINCT privilege_row.grantee_role_name)
+      AS expected_login_connect_count
+    FROM privilege_rows AS privilege_row
+    WHERE privilege_row.is_expected_login_connect
+  ),
+  privilege_inventory AS (
+    SELECT pg_catalog.jsonb_build_object(
+      'kind', 'acl',
+      'identity', privilege_row.object_kind || '|' ||
+        privilege_row.object_identity || '|' || privilege_row.grantee_name ||
+        '|' || privilege_row.privilege_type || '|' || privilege_row.grantor_name,
+      'definition', pg_catalog.jsonb_build_object(
+        'grantable', privilege_row.is_grantable
+      )
+    ) AS entry
+    FROM privilege_rows AS privilege_row
+    WHERE NOT privilege_row.is_expected_login_connect
   ),
   managed_roles AS (
     SELECT role.oid, role.rolname::text AS role_name
@@ -22246,16 +22364,35 @@ const canonicalPhase7ExactCatalogValidationSql = `
       'dasher_retention_operator', 'dasher_run_definer', 'dasher_run_operator'
     )
   ),
+  current_database_identity AS (
+    SELECT database_row.oid AS database_oid
+    FROM pg_catalog.pg_database AS database_row
+    WHERE database_row.datname = pg_catalog.current_database()
+  ),
   dependency_inventory AS (
+    -- Exactly one shared dependency can name the database this cluster happens
+    -- to carry: the row whose dependent object IS the current database. It is
+    -- rewritten by catalog identity - pg_shdepend.classid is pg_database and
+    -- objid is the current database's oid - never by rewriting the described
+    -- text. A substring rewrite of pg_describe_object's output would fold any
+    -- database name that happens to occur inside an unrelated description into
+    -- the placeholder: a database named 'dasher' mangles every
+    -- 'table dasher.<relation>' identity, one named 'audit_events' mangles
+    -- 'column ... of table dasher.audit_events', and one named 'dasher_api'
+    -- mangles 'schema dasher_api' and every routine in it. Those descriptions
+    -- do not name the database at all, so no rewrite of them can be correct,
+    -- and the fingerprints they feed would drift with the deployment's
+    -- database name. Identity matching cannot collide: it looks at oids.
     SELECT pg_catalog.jsonb_build_object(
       'kind', 'shared_dependency',
       'identity', role.role_name || '|' || dependency.deptype::text || '|' ||
         dependency.classid::regclass::text || '|' ||
-        pg_catalog.replace(
-          pg_catalog.pg_describe_object(
+        CASE WHEN dependency.classid = 'pg_catalog.pg_database'::regclass
+              AND dependency.objid = database_identity.database_oid
+          THEN 'database <current_database>'
+          ELSE pg_catalog.pg_describe_object(
             dependency.classid, dependency.objid, dependency.objsubid
-          ), pg_catalog.current_database(), '<current_database>'
-        ),
+          ) END,
       'definition', pg_catalog.jsonb_build_object(
         'database', CASE dependency.dbid WHEN 0 THEN '<shared>'
           ELSE '<current_database>' END,
@@ -22263,13 +22400,11 @@ const canonicalPhase7ExactCatalogValidationSql = `
       )
     ) AS entry
     FROM pg_catalog.pg_shdepend AS dependency
+    CROSS JOIN current_database_identity AS database_identity
     JOIN managed_roles AS role ON role.oid = dependency.refobjid
     WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass
       AND dependency.deptype IN ('a', 'o', 'r')
-      AND dependency.dbid IN (
-        0, (SELECT database_row.oid FROM pg_catalog.pg_database AS database_row
-            WHERE database_row.datname = pg_catalog.current_database())
-      )
+      AND dependency.dbid IN (0, database_identity.database_oid)
   ),
   comment_inventory AS (
     SELECT pg_catalog.jsonb_build_object(
@@ -22309,28 +22444,200 @@ const canonicalPhase7ExactCatalogValidationSql = `
     )), 'hex') AS fingerprint_sha256,
     pg_catalog.count(*) AS entry_count
     FROM complete_inventory AS inventory
-  )
+  )`;
+
+const canonicalPhase7ExactCatalogValidationSql = `${canonicalPhaseCatalogInventoryCteSql}
   SELECT fingerprint.fingerprint_sha256 = $2 AS matches,
-    fingerprint.fingerprint_sha256, fingerprint.entry_count
+    fingerprint.fingerprint_sha256, fingerprint.entry_count,
+    coverage.expected_login_connect_count
   FROM fingerprint
+  CROSS JOIN expected_login_connect_coverage AS coverage
 `;
 
-/** Test-only execution of canonical-0007 cumulative catalog validation. */
-export async function canonical0007CatalogMatchesForTests(
+// The same inventory, restricted to the two families that could name the
+// database: the ACL entries (whose database-scoped identity is the
+// '<current_database>' placeholder) and the shared dependencies (whose one
+// database-valued row is rewritten by catalog identity). Read as ordered text
+// rather than as a digest, so a drift under a different database name shows the
+// entry that moved instead of a hash that differs.
+const canonicalPhaseNameSensitiveInventorySql = `${canonicalPhaseCatalogInventoryCteSql}
+  SELECT fingerprint.fingerprint_sha256 = $2 AS matches,
+    fingerprint.fingerprint_sha256,
+    COALESCE(pg_catalog.jsonb_agg(
+      name_sensitive.entry ORDER BY name_sensitive.entry->>'kind',
+        name_sensitive.entry->>'identity', name_sensitive.entry::text
+    )::text, '[]') AS name_sensitive_inventory,
+    pg_catalog.count(*)::text AS name_sensitive_entry_count
+  FROM (
+    SELECT entry FROM privilege_inventory
+    UNION ALL SELECT entry FROM dependency_inventory
+  ) AS name_sensitive
+  CROSS JOIN fingerprint
+  GROUP BY fingerprint.fingerprint_sha256
+`;
+
+/**
+ * Deduplicated, ordered union of the login roles the caller declared. The
+ * phase-7 and phase-8 fingerprints are derived from this list, never from the
+ * roles that happen to exist in the cluster.
+ *
+ * The three allowlists are revalidated here rather than taken on trust. The
+ * migration path already validates them before it gets this far, but the
+ * test-only catalog exports below reach this function directly, and a
+ * test-only entry point must not admit a list that runMigrations would refuse:
+ * an empty name, a control character, an over-long name, a managed role name,
+ * a duplicate, or an overlap across the three lists all reject here exactly as
+ * they do on the migration path.
+ */
+function phase7ExpectedLoginRoleNames(
+  expectedAppLoginRoleNames: readonly string[],
+  expectedRetentionLoginRoleNames: readonly string[],
+  expectedRunLoginRoleNames: readonly string[],
+): readonly string[] {
+  const validated = validateExpectedLoginRoleNameAllowlists(
+    expectedAppLoginRoleNames,
+    expectedRetentionLoginRoleNames,
+    expectedRunLoginRoleNames,
+  );
+  return sortedStrings([
+    ...new Set([...validated.app, ...validated.retention, ...validated.run]),
+  ]);
+}
+
+async function canonicalPhaseCatalogMatches(
   client: MigrationClient,
   ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+  expectedFingerprintSha256: string,
+  expectedEntryCount: string,
 ): Promise<boolean> {
   const result = await client.query<Phase7CatalogComparisonRow>(
     canonicalPhase7ExactCatalogValidationSql,
-    [ownerName, canonicalPhase7CatalogFingerprintSha256],
+    [ownerName, expectedFingerprintSha256, expectedLoginRoleNames],
   );
   const row = result.rows[0];
   return (
     result.rows.length === 1 &&
     row?.matches === true &&
-    row.fingerprint_sha256 === canonicalPhase7CatalogFingerprintSha256 &&
-    row.entry_count === canonicalPhase7CatalogEntryCount
+    row.fingerprint_sha256 === expectedFingerprintSha256 &&
+    row.entry_count === expectedEntryCount &&
+    // Normalizing the expected database CONNECT grants must never let a
+    // missing one pass: every declared login role has to contribute exactly
+    // one normalized entry.
+    row.expected_login_connect_count === String(expectedLoginRoleNames.length)
   );
+}
+
+async function canonicalPhase7CatalogMatches(
+  client: MigrationClient,
+  ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  return canonicalPhaseCatalogMatches(
+    client,
+    ownerName,
+    expectedLoginRoleNames,
+    canonicalPhase7CatalogFingerprintSha256,
+    canonicalPhase7CatalogEntryCount,
+  );
+}
+
+async function canonicalPhase8CatalogMatches(
+  client: MigrationClient,
+  ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  return canonicalPhaseCatalogMatches(
+    client,
+    ownerName,
+    expectedLoginRoleNames,
+    canonicalPhase8CatalogFingerprintSha256,
+    canonicalPhase8CatalogEntryCount,
+  );
+}
+
+/** Test-only execution of canonical-0007 cumulative catalog validation. */
+export async function canonical0007CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<boolean> {
+  return canonicalPhase7CatalogMatches(
+    client,
+    ownerName,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  );
+}
+
+/** Test-only execution of canonical-0008 cumulative catalog validation. */
+export async function canonical0008CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<boolean> {
+  return canonicalPhase8CatalogMatches(
+    client,
+    ownerName,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  );
+}
+
+/**
+ * Test-only extraction of the two inventory families that could carry the
+ * database's own name, taken from the same WITH list the phase validation runs.
+ *
+ * The phase fingerprints are frozen constants, and a constant that folded the
+ * database name into any identity it hashes would reproduce on a database named
+ * dasher_ci and fail closed on every other one. The migration path can only
+ * observe that as a digest mismatch; this returns the normalized entries as
+ * ordered text so a name-independence test can compare the entries themselves.
+ * It reads the catalog and nothing else.
+ */
+export async function canonicalPhaseNameSensitiveInventoryForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<{
+  readonly fingerprintSha256: string;
+  readonly inventory: string;
+  readonly entryCount: string;
+}> {
+  const result = await client.query<{
+    readonly fingerprint_sha256: string;
+    readonly name_sensitive_inventory: string;
+    readonly name_sensitive_entry_count: string;
+  }>(canonicalPhaseNameSensitiveInventorySql, [
+    ownerName,
+    canonicalPhase8CatalogFingerprintSha256,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  ]);
+  const row = result.rows[0];
+  if (result.rows.length !== 1 || row === undefined) {
+    return reject("managed_role_drift");
+  }
+  return {
+    fingerprintSha256: row.fingerprint_sha256,
+    inventory: row.name_sensitive_inventory,
+    entryCount: row.name_sensitive_entry_count,
+  };
 }
 
 async function assertCanonicalPrefixObjects(
@@ -22347,23 +22654,46 @@ async function assertCanonicalPrefixObjects(
   if (!exactCanonicalFiles || journalRows.length === 0) {
     return;
   }
+  // A journal that already carries 0008 has to satisfy the phase-8 catalog;
+  // one that stops at 0007 still has to satisfy the phase-7 catalog. Both
+  // branches read the same normalized inventory under the same declared-login
+  // normalization, so neither can be satisfied by the other phase's catalog.
+  if (
+    journalRows.some(
+      (row) =>
+        row.sequence === 8 && row.filename === canonicalPhase8File.filename,
+    )
+  ) {
+    const matches = await canonicalPhase8CatalogMatches(
+      client,
+      ownerName,
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
+    );
+    if (!matches) {
+      return reject("managed_role_drift");
+    }
+    return;
+  }
   if (
     journalRows.some(
       (row) =>
         row.sequence === 7 && row.filename === canonicalPhase7File.filename,
     )
   ) {
-    const result = await client.query<Phase7CatalogComparisonRow>(
-      canonicalPhase7ExactCatalogValidationSql,
-      [ownerName, canonicalPhase7CatalogFingerprintSha256],
+    const matches = await canonicalPhase7CatalogMatches(
+      client,
+      ownerName,
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
     );
-    const row = result.rows[0];
-    if (
-      result.rows.length !== 1 ||
-      row?.matches !== true ||
-      row.fingerprint_sha256 !== canonicalPhase7CatalogFingerprintSha256 ||
-      row.entry_count !== canonicalPhase7CatalogEntryCount
-    ) {
+    if (!matches) {
       return reject("managed_role_drift");
     }
     return;
@@ -23458,8 +23788,11 @@ export async function runMigrations(
     }
     const successorPresent = successor === "canonical";
     const exactCanonicalFiles = hasExactCanonicalPrefixFiles(migrations);
+    // The run-role bootstrap barrier belongs to 0007. Every canonical series
+    // that carries 0007 - including the phase-8 series that appends 0008 -
+    // has to pause after 0006 and prepare the run roles before applying it.
     const phase7SuccessorPresent =
-      migrations.length === canonicalPhase7Series.length;
+      migrations.length >= canonicalPhase7Series.length;
 
     let prefix = await runMigrationTransaction(
       client,

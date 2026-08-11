@@ -28,6 +28,9 @@ import {
   canonical0004DependencyInventoryMatchesForTests,
   canonical0005DependencyInventoryMatchesForTests,
   canonical0006DependencyInventoryMatchesForTests,
+  canonical0007CatalogMatchesForTests,
+  canonical0008CatalogMatchesForTests,
+  canonicalPhaseNameSensitiveInventoryForTests,
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
   getCanonical0003ExactCatalogContractForTests,
@@ -136,10 +139,13 @@ async function resetManagedSchemas(): Promise<void> {
     await client.query(`
       DROP SCHEMA IF EXISTS fixture_role_owned CASCADE;
       DROP SCHEMA IF EXISTS dasher_retention_api CASCADE;
+      DROP SCHEMA IF EXISTS dasher_run_api CASCADE;
       DROP SCHEMA IF EXISTS dasher_api CASCADE;
       DROP SCHEMA IF EXISTS dasher_private CASCADE;
       DROP SCHEMA IF EXISTS dasher CASCADE;
       DROP SCHEMA IF EXISTS dasher_meta CASCADE;
+      DROP ROLE IF EXISTS dasher_run_operator;
+      DROP ROLE IF EXISTS dasher_run_definer;
       DROP ROLE IF EXISTS dasher_retention_operator;
       DROP ROLE IF EXISTS dasher_retention_definer
     `);
@@ -2009,7 +2015,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("installs fresh canonical 0001 through 0006, reruns idempotently, and proves exact phase upgrades", async () => {
+  it("installs fresh canonical 0001 through 0008, reruns idempotently, and proves exact phase upgrades", async () => {
     try {
       await resetManagedSchemas();
       const first = await runMigrations(
@@ -2018,8 +2024,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         [],
       );
       expect(first).toEqual({
-        appliedCount: 6,
-        discoveredCount: 6,
+        appliedCount: 8,
+        discoveredCount: 8,
         previouslyAppliedCount: 0,
       });
       const second = await runMigrations(
@@ -2029,8 +2035,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(second).toEqual({
         appliedCount: 0,
-        discoveredCount: 6,
-        previouslyAppliedCount: 6,
+        discoveredCount: 8,
+        previouslyAppliedCount: 8,
       });
 
       const client = await ownerPool.connect();
@@ -2043,34 +2049,13 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           throw new Error("PostgreSQL did not return the session owner");
         }
         expect(
-          await exactCatalogMatchesForTests(
-            client,
-            getCanonical0006ExactCatalogContractForTests(
-              ownerName,
-              await readFile(
-                join(
-                  canonicalMigrationDirectory,
-                  "0006_lifecycle_access_retention_guard_correction.sql",
-                ),
-                "utf8",
-              ),
-            ),
-            ownerName,
-          ),
+          await canonical0008CatalogMatchesForTests(client, ownerName),
         ).toBe(true);
+        // The phase-7 catalog is no longer the installed catalog: 0008 added
+        // the retention allowlist lock authority on top of it.
         expect(
-          await canonical0006DependencyInventoryMatchesForTests(
-            client,
-            ownerName,
-            await readFile(
-              join(
-                canonicalMigrationDirectory,
-                "0006_lifecycle_access_retention_guard_correction.sql",
-              ),
-              "utf8",
-            ),
-          ),
-        ).toBe(true);
+          await canonical0007CatalogMatchesForTests(client, ownerName),
+        ).toBe(false);
       } finally {
         client.release();
       }
@@ -2123,6 +2108,18 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
           filename: "0006_lifecycle_access_retention_guard_correction.sql",
           sequence: 6,
+        },
+        {
+          checksum:
+            "dfe0ca8eef30b9b5a599657eaf0da6c93a330a90d3fa9b01c75a2f730d8db3d5",
+          filename: "0007_agent_run_ledger_and_calculations.sql",
+          sequence: 7,
+        },
+        {
+          checksum:
+            "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
+          filename: "0008_retention_lock_authority_correction.sql",
+          sequence: 8,
         },
       ]);
 
@@ -2261,13 +2258,126 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         } finally {
           phase5Client.release();
         }
+        await writeFile(
+          join(
+            canonical0003Directory,
+            "0006_lifecycle_access_retention_guard_correction.sql",
+          ),
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0006_lifecycle_access_retention_guard_correction.sql",
+            ),
+          ),
+        );
         await expect(
-          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+          runMigrations(ownerPool, canonical0003Directory, []),
         ).resolves.toEqual({
           appliedCount: 1,
           discoveredCount: 6,
           previouslyAppliedCount: 5,
         });
+        const phase6Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase6Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          const exact0006Sql = await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0006_lifecycle_access_retention_guard_correction.sql",
+            ),
+            "utf8",
+          );
+          expect(
+            await exactCatalogMatchesForTests(
+              phase6Client,
+              getCanonical0006ExactCatalogContractForTests(
+                ownerName,
+                exact0006Sql,
+              ),
+              ownerName,
+            ),
+          ).toBe(true);
+          expect(
+            await canonical0006DependencyInventoryMatchesForTests(
+              phase6Client,
+              ownerName,
+              exact0006Sql,
+            ),
+          ).toBe(true);
+        } finally {
+          phase6Client.release();
+        }
+        await writeFile(
+          join(
+            canonical0003Directory,
+            "0007_agent_run_ledger_and_calculations.sql",
+          ),
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0007_agent_run_ledger_and_calculations.sql",
+            ),
+          ),
+        );
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 7,
+          previouslyAppliedCount: 6,
+        });
+        const phase7Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase7Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await canonical0007CatalogMatchesForTests(phase7Client, ownerName),
+          ).toBe(true);
+          expect(
+            await canonical0008CatalogMatchesForTests(phase7Client, ownerName),
+          ).toBe(false);
+        } finally {
+          phase7Client.release();
+        }
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 8,
+          previouslyAppliedCount: 7,
+        });
+        const phase8Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase8Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await canonical0008CatalogMatchesForTests(phase8Client, ownerName),
+          ).toBe(true);
+          expect(
+            await canonical0007CatalogMatchesForTests(phase8Client, ownerName),
+          ).toBe(false);
+        } finally {
+          phase8Client.release();
+        }
       } finally {
         await rm(canonical0003Directory, { recursive: true, force: true });
       }
@@ -2275,6 +2385,401 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       await resetManagedSchemas();
     }
   }, 120_000);
+
+  // The phase-7 and phase-8 fingerprints are frozen constants, and the queries
+  // that produce them read pg_database. If any identity they hash carried the
+  // database's own name, the constants would reproduce on a database called
+  // dasher_ci and fail closed on every other one - the gate would pass here and
+  // reject the same schema in production under a different database name. This
+  // applies the whole series to a database whose name is deliberately not the
+  // one the rest of this suite uses, and requires both frozen constants to
+  // reproduce there unchanged.
+  //
+  // Both databases satisfying the same frozen constant is the identity claim:
+  // the phase-7 fingerprint computed here equals the phase-7 fingerprint the
+  // test above computed on the primary database, because each is asserted equal
+  // to canonicalPhase7CatalogFingerprintSha256. The mutual-exclusion checks
+  // come along too, so neither phase can be satisfied by the other's catalog on
+  // this name any more than on the primary's.
+  //
+  // The canonical series is a cluster-wide singleton - a second database cannot
+  // hold it while the primary does, because the prepared retention roles are
+  // cluster objects and the migrator refuses to install over them - so the
+  // primary is reset first and the sibling is torn down completely afterwards.
+  it("reproduces both frozen phase catalogs on a differently named database", async () => {
+    const databaseName = `dasher_t9_${siblingDatabaseNonce}_altname`;
+    // A name-independence proof is vacuous unless the names actually differ.
+    expect(databaseName).not.toBe(config.ownerDatabase);
+
+    let sibling:
+      | {
+          readonly databaseOid: string;
+          readonly pool: Pool;
+        }
+      | undefined;
+    const phase7Directory = await mkdtemp(
+      join(tmpdir(), "dasher-altname-phase7-pg-"),
+    );
+
+    try {
+      await resetManagedSchemas();
+      sibling = await createSiblingDatabase(databaseName);
+      const siblingPool = sibling.pool;
+
+      const bootstrap = await siblingPool.connect();
+      try {
+        await bootstrapManagedRoles(bootstrap, []);
+      } finally {
+        bootstrap.release();
+      }
+
+      // Phase 7 first, from a directory holding exactly 0001 through 0007.
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+        "0003_immutable_content.sql",
+        "0004_lifecycle_api_correction.sql",
+        "0005_security_definer_cleanup_coordination.sql",
+        "0006_lifecycle_access_retention_guard_correction.sql",
+        "0007_agent_run_ledger_and_calculations.sql",
+      ] as const) {
+        await writeFile(
+          join(phase7Directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+      await expect(
+        runMigrations(siblingPool, phase7Directory, []),
+      ).resolves.toEqual({
+        appliedCount: 7,
+        discoveredCount: 7,
+        previouslyAppliedCount: 0,
+      });
+
+      const phase7Client = await siblingPool.connect();
+      try {
+        const ownerName = (
+          await phase7Client.query<{
+            readonly database_name: string;
+            readonly owner_name: string;
+          }>(
+            "SELECT session_user::text AS owner_name, pg_catalog.current_database()::text AS database_name",
+          )
+        ).rows[0];
+        if (ownerName === undefined) {
+          throw new Error("PostgreSQL did not return the session owner");
+        }
+        // The connection really is on the differently named database.
+        expect(ownerName.database_name).toBe(databaseName);
+        expect(ownerName.database_name).not.toBe(config.ownerDatabase);
+        expect(
+          await canonical0007CatalogMatchesForTests(
+            phase7Client,
+            ownerName.owner_name,
+          ),
+        ).toBe(true);
+        expect(
+          await canonical0008CatalogMatchesForTests(
+            phase7Client,
+            ownerName.owner_name,
+          ),
+        ).toBe(false);
+      } finally {
+        phase7Client.release();
+      }
+
+      // Then 0008 on top, from the canonical directory itself.
+      await expect(
+        runMigrations(siblingPool, canonicalMigrationDirectory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 8,
+        previouslyAppliedCount: 7,
+      });
+
+      const phase8Client = await siblingPool.connect();
+      try {
+        const ownerName = (
+          await phase8Client.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          )
+        ).rows[0]?.owner_name;
+        if (ownerName === undefined) {
+          throw new Error("PostgreSQL did not return the session owner");
+        }
+        expect(
+          await canonical0008CatalogMatchesForTests(phase8Client, ownerName),
+        ).toBe(true);
+        expect(
+          await canonical0007CatalogMatchesForTests(phase8Client, ownerName),
+        ).toBe(false);
+      } finally {
+        phase8Client.release();
+      }
+    } finally {
+      await rm(phase7Directory, { recursive: true, force: true });
+      if (sibling !== undefined) {
+        const siblingPool = sibling.pool;
+        const siblingOid = sibling.databaseOid;
+        sibling = undefined;
+        try {
+          await siblingPool.end();
+        } finally {
+          await dropSiblingDatabase(databaseName, siblingOid);
+        }
+      } else {
+        const residualOid = await databaseOidByName(databaseName);
+        if (residualOid !== undefined) {
+          await dropSiblingDatabase(databaseName, residualOid);
+        }
+      }
+      // The sibling is gone, so the cluster roles it left behind have no
+      // dependent objects and the next test starts from the same clean state
+      // every other test in this block starts from.
+      await resetManagedSchemas();
+    }
+  }, 180_000);
+
+  // The same name-independence claim, taken against the three database names
+  // that actually defeat the naive implementation, and against the two
+  // inventory families that carry the risk.
+  //
+  // Only two of the four families the phase fingerprints hash can name the
+  // database at all: the ACL entries, whose database-scoped identity has to be
+  // the '<current_database>' placeholder rather than the database's own name,
+  // and the shared dependencies, exactly one of whose rows describes an object
+  // that IS the current database. The tempting implementation of the second one
+  // is a substring rewrite of pg_describe_object's output, and these three
+  // names are what it destroys: 'dasher' occurs inside every
+  // 'table dasher.<relation>' identity, 'audit_events' inside every
+  // 'column ... of table dasher.audit_events', and 'dasher_api' inside
+  // 'schema dasher_api' and every routine in it. None of those descriptions
+  // names the database, so a rewrite of them is never correct, and the phase
+  // fingerprints they feed would drift with the deployment's database name -
+  // the frozen constants would reproduce on dasher_ci and fail closed
+  // everywhere else. The correct rewrite matches on catalog identity, and this
+  // is the regression that keeps it that way.
+  //
+  // The proof is byte equality of the normalized inventory text across all four
+  // names, not just equality of the digest over it: a digest tells you that
+  // something moved, this tells you which entry did. The two frozen constants
+  // are asserted on each name as well, so the whole-inventory claim rides
+  // along.
+  //
+  // Both phases are walked on every name, because the name-dependence hole
+  // lives in the shared WITH list that feeds BOTH phase fingerprints. Stopping
+  // at phase 8 would leave the phase-7 constant proven only negatively - as the
+  // digest that does NOT match a phase-8 catalog - which a name-dependent
+  // normalization satisfies just as easily as a correct one. So each name gets
+  // 0001 through 0007 installed first, the phase-7 catalog asserted positively
+  // and its name-sensitive inventory captured, and only then 0008 on top for
+  // the phase-8 half.
+  it("reproduces the name-sensitive inventories on dasher, audit_events and dasher_api", async () => {
+    const defeatNames = ["dasher", "audit_events", "dasher_api"] as const;
+    for (const defeatName of defeatNames) {
+      expect(defeatName).not.toBe(config.ownerDatabase);
+    }
+
+    type CapturedInventory = Readonly<{
+      entryCount: string;
+      fingerprintSha256: string;
+      inventory: string;
+    }>;
+    const capturedByPhase = {
+      7: new Map<string, CapturedInventory>(),
+      8: new Map<string, CapturedInventory>(),
+    } as const;
+
+    const capture = async (
+      pool: Pool,
+      expectedName: string,
+      phase: 7 | 8,
+    ): Promise<void> => {
+      const client = await pool.connect();
+      try {
+        const identity = (
+          await client.query<{
+            readonly database_name: string;
+            readonly owner_name: string;
+          }>(
+            "SELECT session_user::text AS owner_name, pg_catalog.current_database()::text AS database_name",
+          )
+        ).rows[0];
+        if (identity === undefined) {
+          throw new Error("PostgreSQL did not return the session identity");
+        }
+        expect(identity.database_name).toBe(expectedName);
+        // Both frozen constants are asserted on this name at this phase: the
+        // one the database is actually at holds, and the other cannot be
+        // satisfied by it any more than on dasher_ci.
+        expect(
+          await canonical0007CatalogMatchesForTests(
+            client,
+            identity.owner_name,
+          ),
+          `${expectedName} phase-7 constant at phase ${phase}`,
+        ).toBe(phase === 7);
+        expect(
+          await canonical0008CatalogMatchesForTests(
+            client,
+            identity.owner_name,
+          ),
+          `${expectedName} phase-8 constant at phase ${phase}`,
+        ).toBe(phase === 8);
+        capturedByPhase[phase].set(
+          expectedName,
+          await canonicalPhaseNameSensitiveInventoryForTests(
+            client,
+            identity.owner_name,
+          ),
+        );
+      } finally {
+        client.release();
+      }
+    };
+
+    // 0001 through 0007 from a directory holding exactly those seven files, so
+    // the phase-7 catalog can be read on a database that has never seen 0008.
+    const phase7Directory = await mkdtemp(
+      join(tmpdir(), "dasher-defeatname-phase7-pg-"),
+    );
+
+    const installBothPhasesAndCapture = async (
+      pool: Pool,
+      name: string,
+    ): Promise<void> => {
+      await expect(runMigrations(pool, phase7Directory, [])).resolves.toEqual({
+        appliedCount: 7,
+        discoveredCount: 7,
+        previouslyAppliedCount: 0,
+      });
+      await capture(pool, name, 7);
+      await expect(
+        runMigrations(pool, canonicalMigrationDirectory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 8,
+        previouslyAppliedCount: 7,
+      });
+      await capture(pool, name, 8);
+    };
+
+    try {
+      for (const filename of [
+        "0001_identity_audit.sql",
+        "0002_security_boundary.sql",
+        "0003_immutable_content.sql",
+        "0004_lifecycle_api_correction.sql",
+        "0005_security_definer_cleanup_coordination.sql",
+        "0006_lifecycle_access_retention_guard_correction.sql",
+        "0007_agent_run_ledger_and_calculations.sql",
+      ] as const) {
+        await writeFile(
+          join(phase7Directory, filename),
+          await readFile(join(canonicalMigrationDirectory, filename)),
+        );
+      }
+
+      // The primary database first. The canonical series is a cluster-wide
+      // singleton, so each name holds it alone and is torn down before the
+      // next.
+      await resetManagedSchemas();
+      try {
+        await installBothPhasesAndCapture(ownerPool, config.ownerDatabase);
+      } finally {
+        await resetManagedSchemas();
+      }
+
+      for (const defeatName of defeatNames) {
+        let sibling:
+          { readonly databaseOid: string; readonly pool: Pool } | undefined;
+        try {
+          sibling = await createSiblingDatabase(defeatName);
+          const bootstrap = await sibling.pool.connect();
+          try {
+            await bootstrapManagedRoles(bootstrap, []);
+          } finally {
+            bootstrap.release();
+          }
+          await installBothPhasesAndCapture(sibling.pool, defeatName);
+        } finally {
+          if (sibling !== undefined) {
+            const siblingPool = sibling.pool;
+            const siblingOid = sibling.databaseOid;
+            sibling = undefined;
+            try {
+              await siblingPool.end();
+            } finally {
+              await dropSiblingDatabase(defeatName, siblingOid);
+            }
+          } else {
+            const residualOid = await databaseOidByName(defeatName);
+            if (residualOid !== undefined) {
+              await dropSiblingDatabase(defeatName, residualOid);
+            }
+          }
+          await resetManagedSchemas();
+        }
+      }
+    } finally {
+      await rm(phase7Directory, { recursive: true, force: true });
+    }
+
+    const names = [config.ownerDatabase, ...defeatNames] as const;
+    const baselines = new Map<7 | 8, CapturedInventory>();
+    for (const phase of [7, 8] as const) {
+      const captured = capturedByPhase[phase];
+      expect([...captured.keys()].sort(), `phase ${phase}`).toEqual(
+        [...names].sort(),
+      );
+      const baseline = captured.get(config.ownerDatabase);
+      if (baseline === undefined) {
+        throw new Error(
+          `the primary database phase-${phase} inventory was not captured`,
+        );
+      }
+      baselines.set(phase, baseline);
+      // Not a vacuous comparison: these two families are populated, and they do
+      // carry the placeholder both normalizations are supposed to emit.
+      expect(Number(baseline.entryCount), `phase ${phase}`).toBeGreaterThan(0);
+      expect(baseline.inventory, `phase ${phase}`).toContain(
+        "database|<current_database>|",
+      );
+      expect(baseline.inventory, `phase ${phase}`).toContain(
+        "database <current_database>",
+      );
+      // And the identities that merely contain a defeat name as a substring are
+      // present, which is what makes a substring rewrite detectable here.
+      expect(baseline.inventory, `phase ${phase}`).toContain(
+        "table dasher.audit_events",
+      );
+      expect(baseline.inventory, `phase ${phase}`).toContain(
+        "schema dasher_api",
+      );
+      for (const defeatName of defeatNames) {
+        expect(baseline.inventory, `phase ${phase}`).toContain(defeatName);
+      }
+
+      for (const name of names) {
+        expect(captured.get(name), `phase ${phase} on ${name}`).toEqual(
+          baseline,
+        );
+      }
+    }
+
+    // The two captures per name really are two different catalogs, so the
+    // phase-7 half is not the phase-8 half asserted twice: 0008 grants and
+    // policies land in the privilege family this inventory reads.
+    const phase7Baseline = baselines.get(7);
+    const phase8Baseline = baselines.get(8);
+    if (phase7Baseline === undefined || phase8Baseline === undefined) {
+      throw new Error("both phase baselines must have been captured");
+    }
+    expect(phase7Baseline.fingerprintSha256).not.toBe(
+      phase8Baseline.fingerprintSha256,
+    );
+    expect(phase7Baseline.inventory).not.toBe(phase8Baseline.inventory);
+  }, 900_000);
 
   it("reproduces the exact 0004 delete authority failure and proves the bounded 0005 correction atomically", async () => {
     const canonical0004Directory = await mkdtemp(
@@ -3498,7 +4003,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     120_000,
   );
 
-  it("serializes concurrent fresh-6 and exact 4-to-6 runners through the session gate", async () => {
+  it("serializes concurrent fresh-8 and exact 4-to-8 runners through the session gate", async () => {
     const canonical0004Directory = await mkdtemp(
       join(tmpdir(), "dasher-concurrent-0004-pg-"),
     );
@@ -3525,8 +4030,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [0, 6],
-        [6, 0],
+        [0, 8],
+        [8, 0],
       ]);
 
       await resetManagedSchemas();
@@ -3540,8 +4045,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [4, 2],
-        [6, 0],
+        [4, 4],
+        [8, 0],
       ]);
     } finally {
       await rm(canonical0004Directory, { recursive: true, force: true });
@@ -3691,8 +4196,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await expect(
           runMigrations(ownerPool, canonicalMigrationDirectory, []),
         ).resolves.toEqual({
-          appliedCount: 4,
-          discoveredCount: 6,
+          appliedCount: 6,
+          discoveredCount: 8,
           previouslyAppliedCount: 2,
         });
       } finally {
@@ -15573,17 +16078,9 @@ describe.sequential("Task 8B.3 lifecycle API correction", () => {
         throw new Error("PostgreSQL did not return the session owner");
       }
       expect(
-        await canonical0006DependencyInventoryMatchesForTests(
-          client,
-          ownerName,
-          await readFile(
-            join(
-              canonicalMigrationDirectory,
-              "0006_lifecycle_access_retention_guard_correction.sql",
-            ),
-            "utf8",
-          ),
-        ),
+        await canonical0008CatalogMatchesForTests(client, ownerName, [
+          config.appUsername,
+        ]),
       ).toBe(true);
     } finally {
       client.release();
@@ -16927,6 +17424,398 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
     }
   }
 
+  // Frozen 0007 makes every retention proof a hash over live coordination and
+  // dashboard state, so this test derives each one from the database the same
+  // way the definer does rather than carrying a hand-written constant. Each
+  // helper below mirrors exactly one frozen preimage.
+  const task8dRetentionPrincipalId = "8d000000-0000-4000-8000-000000000030";
+  const task8dRetentionPrincipalRevision = 1;
+
+  async function task8dDrainRequestProof(
+    expectedLifecycleRevision: number,
+    operationAndAuditId: string,
+    deploymentRevision: string,
+  ): Promise<Buffer> {
+    const derived = await ownerPool.query<{
+      readonly request_sha256: Buffer;
+    }>(
+      `SELECT pg_catalog.sha256(
+         pg_catalog.convert_to('dasher.agent-run-drain-request.v1', 'UTF8')
+         || pg_catalog.decode('00', 'hex')
+         || pg_catalog.uuid_send($2::uuid)
+         || pg_catalog.int8send($3::bigint)
+         || pg_catalog.uuid_send($4::uuid)
+         || pg_catalog.int4send(pg_catalog.octet_length($5::text))
+         || pg_catalog.convert_to($5::text, 'UTF8')
+         || pg_catalog.uuid_send($1::uuid)
+         || pg_catalog.int4send(
+           pg_catalog.octet_length(coordination.current_step))
+         || pg_catalog.convert_to(coordination.current_step, 'UTF8')
+         || pg_catalog.int4send(
+           pg_catalog.octet_length(coordination.lease_owner::text))
+         || pg_catalog.convert_to(coordination.lease_owner::text, 'UTF8')
+         || pg_catalog.int8send((extract(epoch FROM
+           coordination.lease_expires_at) * 1000000)::bigint)
+         || pg_catalog.uuid_send($6::uuid)
+         || pg_catalog.int8send($7::bigint)
+       ) AS request_sha256
+       FROM dasher.dashboard_cleanup_coordination AS coordination
+       WHERE coordination.organization_id = $1::uuid
+         AND coordination.dashboard_id = $2::uuid`,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        expectedLifecycleRevision,
+        operationAndAuditId,
+        deploymentRevision,
+        task8dRetentionPrincipalId,
+        task8dRetentionPrincipalRevision,
+      ],
+    );
+    const digest = derived.rows[0]?.request_sha256;
+    if (digest === undefined) {
+      throw new Error("Task 8D could not derive the drain request proof");
+    }
+    return digest;
+  }
+
+  async function task8dCleanupCompletionProof(
+    cleanupAttemptId: string,
+    step: string,
+    result: string,
+    releasedClaimCount: number,
+    deletedResourceCount: number,
+    deferredClaimCount: number,
+  ): Promise<Buffer> {
+    const derived = await ownerPool.query<{
+      readonly completion_sha256: Buffer;
+    }>(
+      `SELECT pg_catalog.sha256(
+         pg_catalog.convert_to(
+           'dasher.dashboard-cleanup-completion.v1', 'UTF8')
+         || pg_catalog.decode('00', 'hex')
+         || pg_catalog.uuid_send($2::uuid)
+         || pg_catalog.int8send(dashboard.lifecycle_revision)
+         || pg_catalog.uuid_send($3::uuid)
+         || pg_catalog.int4send(pg_catalog.octet_length($4::text))
+         || pg_catalog.convert_to($4::text, 'UTF8')
+         || pg_catalog.int4send(pg_catalog.octet_length($5::text))
+         || pg_catalog.convert_to($5::text, 'UTF8')
+         || pg_catalog.int8send($6::bigint)
+         || pg_catalog.int8send($7::bigint)
+         || pg_catalog.int8send($8::bigint)
+         || CASE WHEN drain.drain_proof_sha256 IS NULL
+           THEN pg_catalog.decode('00', 'hex')
+           ELSE pg_catalog.decode('01', 'hex')
+             || pg_catalog.int4send(
+               pg_catalog.octet_length(drain.drain_proof_sha256))
+             || drain.drain_proof_sha256 END
+         || pg_catalog.uuid_send($1::uuid)
+         || pg_catalog.int4send(
+           pg_catalog.octet_length(coordination.lease_owner::text))
+         || pg_catalog.convert_to(coordination.lease_owner::text, 'UTF8')
+         || pg_catalog.uuid_send($9::uuid)
+         || pg_catalog.int8send($10::bigint)
+       ) AS completion_sha256
+       FROM dasher.dashboards AS dashboard
+       JOIN dasher.dashboard_cleanup_coordination AS coordination
+         ON coordination.organization_id = dashboard.organization_id
+         AND coordination.dashboard_id = dashboard.dashboard_id
+       LEFT JOIN LATERAL (
+         SELECT proof.drain_proof_sha256
+         FROM dasher.dashboard_agent_drain_proofs AS proof
+         WHERE proof.organization_id = dashboard.organization_id
+           AND proof.dashboard_id = dashboard.dashboard_id
+           AND NOT EXISTS (
+             SELECT 1
+             FROM dasher.dashboard_agent_drain_proof_consumptions AS consumed
+             WHERE consumed.organization_id = proof.organization_id
+               AND consumed.dashboard_id = proof.dashboard_id
+               AND consumed.proof_id = proof.proof_id
+           )
+         ORDER BY proof.generated_at DESC,
+           pg_catalog.uuid_send(proof.proof_id) DESC
+         LIMIT 1
+       ) AS drain ON true
+       WHERE dashboard.organization_id = $1::uuid
+         AND dashboard.dashboard_id = $2::uuid`,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        cleanupAttemptId,
+        step,
+        result,
+        releasedClaimCount,
+        deletedResourceCount,
+        deferredClaimCount,
+        task8dRetentionPrincipalId,
+        task8dRetentionPrincipalRevision,
+      ],
+    );
+    const digest = derived.rows[0]?.completion_sha256;
+    if (digest === undefined) {
+      throw new Error("Task 8D could not derive the cleanup completion proof");
+    }
+    return digest;
+  }
+
+  async function task8dUnconsumedDrainProof(): Promise<Buffer> {
+    const derived = await ownerPool.query<{
+      readonly drain_proof_sha256: Buffer;
+    }>(
+      `SELECT proof.drain_proof_sha256
+       FROM dasher.dashboard_agent_drain_proofs AS proof
+       WHERE proof.organization_id = $1::uuid
+         AND proof.dashboard_id = $2::uuid
+         AND NOT EXISTS (
+           SELECT 1
+           FROM dasher.dashboard_agent_drain_proof_consumptions AS consumed
+           WHERE consumed.organization_id = proof.organization_id
+             AND consumed.dashboard_id = proof.dashboard_id
+             AND consumed.proof_id = proof.proof_id
+         )
+       ORDER BY proof.generated_at DESC,
+         pg_catalog.uuid_send(proof.proof_id) DESC
+       LIMIT 1`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    const digest = derived.rows[0]?.drain_proof_sha256;
+    if (digest === undefined) {
+      throw new Error("Task 8D found no unconsumed drain proof");
+    }
+    return digest;
+  }
+
+  // The frozen claim upsert only re-leases a coordination row whose lease and
+  // next-attempt boundaries have both passed. Releasing the lease from the
+  // owner connection is how this test advances between cleanup steps without
+  // sleeping out a real lease duration; it never touches lifecycle state.
+  async function task8dReleaseCleanupLease(): Promise<void> {
+    await ownerPool.query(
+      `UPDATE dasher.dashboard_cleanup_coordination
+       SET lease_owner = NULL, lease_expires_at = NULL,
+         next_attempt_at = statement_timestamp()
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+  }
+
+  // One full frozen drain step: take the lease, produce the drain proof a
+  // later claim will consume, and record the successful attempt that closes
+  // the step.
+  // Reads dasher.dashboard_cleanup_attempts through the real retention SELECT
+  // policy under one chosen capability. The policy is only ever evaluated with
+  // current_user = dasher_retention_definer and SESSION_USER bound in the
+  // allowlist, and dasher_retention_definer is granted to no role in this
+  // cluster, so no login can reach that pair except inside a SECURITY DEFINER
+  // retention routine - and no frozen routine reads this relation under an
+  // unrelated capability. The probe therefore binds the owner's own
+  // SESSION_USER into the allowlist inside a transaction it always rolls back,
+  // then evaluates the unmodified policy under SET LOCAL ROLE. It grants no
+  // durable authority: the binding, and everything else the transaction
+  // touched, is gone when it returns.
+  const task8dProbePrincipalId = "8d000000-0000-4000-8000-000000000031";
+
+  // Evaluates one statement under the real, unmodified retention policies as
+  // dasher_retention_definer in one chosen operator context, and always rolls
+  // back. Binding the owner's own SESSION_USER into the allowlist is what lets
+  // the policies be evaluated at all, and it grants no durable authority: the
+  // binding, and everything else the transaction touched, is gone on return.
+  // Passing bindPrincipal: false evaluates the same statement with no principal
+  // binding present, which is how the fail-closed direction is probed.
+  async function task8dDefinerProbe<T extends object>(
+    capability: string,
+    sql: string,
+    params: readonly unknown[] = [],
+    options: { readonly bindPrincipal?: boolean } = {},
+  ): Promise<readonly T[]> {
+    const bindPrincipal = options.bindPrincipal ?? true;
+    const client = await ownerPool.connect();
+    let operationError: unknown;
+    let rows: readonly T[] = [];
+    try {
+      await client.query("BEGIN");
+      if (bindPrincipal) {
+        await client.query(
+          `INSERT INTO dasher.retention_service_principal_allowlist (
+             retention_service_principal_id, principal_revision, binding_kind,
+             binding_subject, authority_scope, scope_organization_id,
+             can_initialize, can_materialize_expiry, can_place_hold,
+             can_release_hold, can_claim_cleanup, can_record_attempt, can_purge,
+             enabled, created_at, predecessor_revision, predecessor_sha256,
+             revision_sha256, migration_provenance
+           ) VALUES (
+             $1::uuid, 1, 'postgres_session_user', SESSION_USER,
+             'platform_operator', NULL,
+             true, true, true, true, true, true, true, true,
+             clock_timestamp(), NULL, NULL,
+             pg_catalog.decode(pg_catalog.repeat('8e', 32), 'hex'),
+             'task8d-select-policy-probe'
+           )`,
+          [task8dProbePrincipalId],
+        );
+      }
+      await client.query("SET LOCAL ROLE dasher_retention_definer");
+      await client.query(
+        `SELECT
+           pg_catalog.set_config('dasher.retention_phase', 'authorized', true),
+           pg_catalog.set_config(
+             'dasher.retention_principal_id', $1::text, true),
+           pg_catalog.set_config(
+             'dasher.retention_principal_revision', '1', true),
+           pg_catalog.set_config(
+             'dasher.retention_authority_scope', 'platform_operator', true),
+           pg_catalog.set_config(
+             'dasher.retention_capability', $2::text, true),
+           pg_catalog.set_config(
+             'dasher.retention_target_organization_id', $3::text, true),
+           pg_catalog.set_config(
+             'dasher.retention_target_dashboard_id', $4::text, true)`,
+        [
+          task8dProbePrincipalId,
+          capability,
+          task8dOrganizationId,
+          expiryDashboardId,
+        ],
+      );
+      const seen = await client.query<T>(sql, params as unknown[]);
+      rows = seen.rows;
+    } catch (error) {
+      operationError = error;
+    } finally {
+      try {
+        await client.query("ROLLBACK");
+      } catch (error) {
+        operationError ??= error;
+      }
+      client.release(
+        operationError instanceof Error ? operationError : undefined,
+      );
+    }
+    if (operationError !== undefined) {
+      throw operationError;
+    }
+    return rows;
+  }
+
+  async function task8dAttemptsVisibleUnderCapability(
+    capability: string,
+  ): Promise<string> {
+    const seen = await task8dDefinerProbe<{ readonly visible: string }>(
+      capability,
+      `SELECT pg_catalog.count(*)::text AS visible
+       FROM dasher.dashboard_cleanup_attempts`,
+    );
+    return seen[0]?.visible ?? "";
+  }
+
+  // Runs the frozen drain-proof recomputation as the role that owns it, under
+  // one chosen capability, and reports both what it returned and what the two
+  // relations its inner join spans made visible in that same context.
+  interface Task8dRecomputedDrainProof {
+    readonly audit_rows_visible: string;
+    readonly matches_stored: boolean | null;
+    readonly out_of_scope_rows_visible: string;
+    readonly proof_rows_visible: string;
+    readonly recomputed_is_null: boolean;
+  }
+
+  async function task8dRecomputedDrainProof(
+    capability: string,
+    options: { readonly bindPrincipal?: boolean } = {},
+  ): Promise<Task8dRecomputedDrainProof> {
+    const seen = await task8dDefinerProbe<Task8dRecomputedDrainProof>(
+      capability,
+      `WITH recomputed AS (
+         SELECT dasher_private.recompute_drain_proof_v1($1::uuid, $2::uuid)
+           AS digest
+       )
+       SELECT
+         (SELECT digest IS NULL FROM recomputed) AS recomputed_is_null,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proofs) AS proof_rows_visible,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.audit_events) AS audit_rows_visible,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.audit_events AS audit
+          WHERE audit.organization_id <> $1::uuid
+            OR audit.target_type <> 'dashboard'
+            OR audit.target_id <> $2::uuid) AS out_of_scope_rows_visible,
+         (SELECT pg_catalog.bool_or(
+            proof.drain_proof_sha256 = (SELECT digest FROM recomputed))
+          FROM dasher.dashboard_agent_drain_proofs AS proof)
+           AS matches_stored`,
+      [task8dOrganizationId, expiryDashboardId],
+      options,
+    );
+    const row = seen[0];
+    if (row === undefined) {
+      throw new Error(
+        "Task 8D drain-proof recomputation probe returned no row",
+      );
+    }
+    return row;
+  }
+
+  async function task8dDrainStep(
+    expectedLifecycleRevision: number,
+    step: "drain_and_cancel" | "prepare_finalizers" | "purge_finalizing",
+    claimEventId: string,
+    drainEventId: string,
+    deploymentRevision: string,
+  ): Promise<void> {
+    await task8dReleaseCleanupLease();
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, $2::bigint, NULL, interval '1 minute', $3::uuid,
+        $4::text, $5::uuid)`,
+      [
+        expiryDashboardId,
+        expectedLifecycleRevision,
+        claimEventId,
+        deploymentRevision,
+        task8dOrganizationId,
+      ],
+    );
+    const requestProof = await task8dDrainRequestProof(
+      expectedLifecycleRevision,
+      drainEventId,
+      deploymentRevision,
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.drain_dashboard_agent_runs(
+        $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::text, $6::uuid)`,
+      [
+        expiryDashboardId,
+        expectedLifecycleRevision,
+        requestProof,
+        drainEventId,
+        deploymentRevision,
+        task8dOrganizationId,
+      ],
+    );
+    const completionProof = await task8dCleanupCompletionProof(
+      drainEventId,
+      step,
+      "succeeded",
+      0,
+      0,
+      0,
+    );
+    await callRetention(
+      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+        $1::uuid, $2::uuid, $3::text, 'succeeded', 0, 0, 0,
+        $4::bytea, $5::uuid)`,
+      [
+        expiryDashboardId,
+        drainEventId,
+        step,
+        completionProof,
+        task8dOrganizationId,
+      ],
+    );
+  }
+
   async function setTask8dDashboardBoundary(
     column: "effective_expires_at" | "purge_after",
     boundary: "now" | "five_minutes_from_now",
@@ -17020,8 +17909,8 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       ),
     ).resolves.toEqual({
       appliedCount: 0,
-      discoveredCount: 6,
-      previouslyAppliedCount: 6,
+      discoveredCount: 8,
+      previouslyAppliedCount: 8,
     });
     appPool = new Pool({ connectionString: config.appDsn, max: 4 });
     retentionPool = new Pool({
@@ -17097,12 +17986,20 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
         "0004_lifecycle_api_correction.sql",
         "0005_security_definer_cleanup_coordination.sql",
         "0006_lifecycle_access_retention_guard_correction.sql",
+        "0007_agent_run_ledger_and_calculations.sql",
+        "0008_retention_lock_authority_correction.sql",
       ]);
       expect(journal.rows[4]?.checksum).toBe(
         "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
       );
       expect(journal.rows[5]?.checksum).toBe(
         "26a6075696c5aba6562a87f63564860e49b22cdbc1c8015335e19006044bd499",
+      );
+      expect(journal.rows[6]?.checksum).toBe(
+        "dfe0ca8eef30b9b5a599657eaf0da6c93a330a90d3fa9b01c75a2f730d8db3d5",
+      );
+      expect(journal.rows[7]?.checksum).toBe(
+        "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
       );
       const owner = await ownerPool.connect();
       try {
@@ -17115,16 +18012,11 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
           throw new Error("Task 8D could not resolve the database owner");
         }
         expect(
-          await canonical0006DependencyInventoryMatchesForTests(
+          await canonical0008CatalogMatchesForTests(
             owner,
             ownerName,
-            await readFile(
-              join(
-                canonicalMigrationDirectory,
-                "0006_lifecycle_access_retention_guard_correction.sql",
-              ),
-              "utf8",
-            ),
+            [config.appUsername],
+            [task8dRetentionUsername],
           ),
         ).toBe(true);
       } finally {
@@ -17404,6 +18296,7 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
 
       const facts = await ownerPool.query<{
         readonly audit_count: string;
+        readonly canonical_claims_present: boolean;
         readonly dashboard_count: string;
         readonly event_count: string;
         readonly policy_count: string;
@@ -17424,17 +18317,23 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
              WHERE organization_id = $1::uuid) AS event_count,
             (SELECT pg_catalog.count(*)::text
              FROM pg_catalog.unnest(ARRAY[
-               'dasher.publications', 'dasher.claims',
+               'dasher.publications',
                'dasher.decision_snapshots', 'dasher.recipes',
                'dasher.alerts', 'dasher.schedules'
              ]) AS absent(identity)
              WHERE pg_catalog.to_regclass(absent.identity) IS NOT NULL
-            ) AS publication_exports
+            ) AS publication_exports,
+            -- dasher.claims stopped being a speculative export surface once the
+            -- frozen 0007 ledger introduced it, so assert it positively instead
+            -- of counting it as unexpected drift.
+            pg_catalog.to_regclass('dasher.claims') IS NOT NULL
+              AS canonical_claims_present
         `,
         [task8dOrganizationId],
       );
       expect(facts.rows[0]).toEqual({
         audit_count: "5",
+        canonical_claims_present: true,
         dashboard_count: "5",
         event_count: "0",
         policy_count: "2",
@@ -18739,7 +19638,7 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
     });
   }, 120_000);
 
-  it("keeps independent legal holds exact and purges only after the inclusive unheld boundary", async () => {
+  it("keeps independent legal holds exact, drains agent runs only once every hold is released, and carries the frozen cleanup lifecycle through to a purged dashboard", async () => {
     const holdA = "8d000000-0000-4000-8000-00000000f101";
     const holdB = "8d000000-0000-4000-8000-00000000f102";
     const reasonA = Buffer.alloc(32, 0xa1);
@@ -18826,54 +19725,680 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       hold_b_released: false,
     });
 
+    // Frozen 0007 redefined the third claim argument from "transition proof to
+    // record" into "expected drain proof to verify", so a claim that supplies
+    // one has to match a real, unconsumed dasher.dashboard_agent_drain_proofs
+    // row and the successful cleanup attempt that closed it. Every lifecycle
+    // transition below therefore runs the full frozen sequence - claim the
+    // lease, drain the agent runs, record the attempt, then re-claim with the
+    // drain proof - which 0008 Part 3 is what makes reachable at all.
     await callRetention(
       `SELECT dasher_retention_api.claim_dashboard_cleanup(
-        $1::uuid, 5, $2::bytea, interval '1 minute', $3::uuid,
-        'task8d-quarantine', $4::uuid)`,
+        $1::uuid, 5, NULL, interval '1 minute', $2::uuid,
+        'task8d-quarantine', $3::uuid)`,
       [
         expiryDashboardId,
-        Buffer.alloc(32, 0xc1),
         "8d000000-0000-4000-8000-00000000f114",
         task8dOrganizationId,
       ],
     );
-    await callRetention(
-      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
-        $1::uuid, $2::uuid, 'quarantined', 'succeeded', 0, 0, 0,
-        $3::bytea, $4::uuid)`,
-      [
-        expiryDashboardId,
-        "8d000000-0000-4000-8000-00000000f120",
-        Buffer.alloc(32, 0xc2),
-        task8dOrganizationId,
-      ],
+    // The claim above actually lands now that 0008 names the coordination
+    // upsert's conflict target by constraint: the coordination row carries this
+    // caller's lease and the step frozen 0007 derives for an untransitioned
+    // access_revoked dashboard. Before that correction the same call could only
+    // raise 42P10, so nothing below this line had ever been reached.
+    const claimed = await ownerPool.query<{
+      readonly current_step: string;
+      readonly expected_lifecycle_revision: string;
+      readonly lease_held_by_retention_login: boolean;
+      readonly lease_live: boolean;
+    }>(
+      `SELECT current_step,
+         expected_lifecycle_revision::text AS expected_lifecycle_revision,
+         lease_owner = $3::name AS lease_held_by_retention_login,
+         lease_expires_at > statement_timestamp() AS lease_live
+       FROM dasher.dashboard_cleanup_coordination
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId, task8dRetentionUsername],
     );
-    await callRetention(
-      `SELECT dasher_retention_api.claim_dashboard_cleanup(
-        $1::uuid, 6, NULL, interval '1 minute', $2::uuid,
-        'task8d-held', $3::uuid)`,
-      [
-        expiryDashboardId,
-        "8d000000-0000-4000-8000-00000000f115",
-        task8dOrganizationId,
-      ],
+    expect(claimed.rows[0]).toEqual({
+      current_step: "drain_and_cancel",
+      expected_lifecycle_revision: "5",
+      lease_held_by_retention_login: true,
+      lease_live: true,
+    });
+    // Serialization: while that lease is live the frozen DO UPDATE ... WHERE
+    // clause matches no row, so a second claim - necessarily by the same
+    // definer session_user, the only caller the function admits - is denied
+    // with dasher_conflict instead of stealing the lease, and leaves the
+    // coordination row exactly as the first claim wrote it.
+    await expectDasherBoundaryError(
+      (async () => {
+        await callRetention(
+          `SELECT dasher_retention_api.claim_dashboard_cleanup(
+            $1::uuid, 5, NULL, interval '1 minute', $2::uuid,
+            'task8d-quarantine-reclaim', $3::uuid)`,
+          [
+            expiryDashboardId,
+            "8d000000-0000-4000-8000-00000000f123",
+            task8dOrganizationId,
+          ],
+        );
+      })(),
+      "P1002",
+      "dasher_conflict",
     );
-    await callRetention(
-      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
-        $1::uuid, $2::uuid, 'prepare_finalizers', 'held', 0, 0, 2,
-        $3::bytea, $4::uuid)`,
-      [
-        expiryDashboardId,
-        "8d000000-0000-4000-8000-00000000f121",
-        Buffer.alloc(32, 0xc3),
-        task8dOrganizationId,
-      ],
+    const afterDeniedReclaim = await ownerPool.query(
+      `SELECT current_step,
+         expected_lifecycle_revision::text AS expected_lifecycle_revision
+       FROM dasher.dashboard_cleanup_coordination
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(afterDeniedReclaim.rows[0]).toEqual({
+      current_step: "drain_and_cancel",
+      expected_lifecycle_revision: "5",
+    });
+    // hold B is still unreleased here, so 0008's corrected drain gate denies
+    // exactly as the frozen gate did. The correction only stops released holds
+    // from blocking; a live hold still closes the drain, and with it the only
+    // route to a transition proof.
+    const heldDrainProof = await task8dDrainRequestProof(
+      5,
+      "8d000000-0000-4000-8000-00000000f130",
+      "task8d-held-drain",
     );
     await expectDasherBoundaryError(
       (async () => {
         await callRetention(
+          `SELECT dasher_retention_api.drain_dashboard_agent_runs(
+            $1::uuid, 5, $2::bytea, $3::uuid, 'task8d-held-drain', $4::uuid)`,
+          [
+            expiryDashboardId,
+            heldDrainProof,
+            "8d000000-0000-4000-8000-00000000f130",
+            task8dOrganizationId,
+          ],
+        );
+      })(),
+      "P1001",
+      "dasher_denied",
+    );
+    const deniedDrain = await ownerPool.query<{
+      readonly proof_count: string;
+      readonly audit_count: string;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proofs
+          WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid)
+           AS proof_count,
+         (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+          WHERE organization_id = $1::uuid
+            AND action = 'dashboard.agent_runs_drained') AS audit_count`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(deniedDrain.rows[0]).toEqual({ audit_count: "0", proof_count: "0" });
+    // Releasing hold B leaves two holds on the dashboard, both released. Under
+    // frozen 0007's gate that history alone would still deny the drain; under
+    // the corrected gate - the same predicate purge_dashboard already used -
+    // only unreleased holds count, so the drain now proceeds. Each release
+    // advances the lifecycle revision by one.
+    await callRetention(
+      `SELECT dasher_retention_api.release_dashboard_legal_hold(
+        $1::uuid, $2::uuid, $3::bytea, 5, $4::uuid,
+        'task8d-release-b', $5::uuid)`,
+      [
+        expiryDashboardId,
+        holdB,
+        reasonB,
+        "8d000000-0000-4000-8000-00000000f117",
+        task8dOrganizationId,
+      ],
+    );
+    const releasedHistory = await ownerPool.query<{
+      readonly active_holds: string;
+      readonly lifecycle_revision: string;
+      readonly released_holds: string;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_legal_holds
+          WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid
+            AND released_at IS NULL) AS active_holds,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_legal_holds
+          WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid
+            AND released_at IS NOT NULL) AS released_holds,
+         (SELECT lifecycle_revision::text FROM dasher.dashboards
+          WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid)
+           AS lifecycle_revision`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(releasedHistory.rows[0]).toEqual({
+      active_holds: "0",
+      lifecycle_revision: "6",
+      released_holds: "2",
+    });
+    await task8dDrainStep(
+      6,
+      "drain_and_cancel",
+      "8d000000-0000-4000-8000-00000000f124",
+      "8d000000-0000-4000-8000-00000000f131",
+      "task8d-drain",
+    );
+    const drained = await ownerPool.query<{
+      readonly audit_outcome: string;
+      readonly cancelled_run_count: string;
+      readonly event_count: string;
+      readonly lifecycle_revision: string;
+      readonly pre_drain_run_count: string;
+      readonly remaining_claimed_run_count: string;
+      readonly remaining_nonterminal_run_count: string;
+    }>(
+      `SELECT proof.lifecycle_revision::text AS lifecycle_revision,
+         proof.pre_drain_run_count::text AS pre_drain_run_count,
+         proof.cancelled_run_count::text AS cancelled_run_count,
+         proof.remaining_nonterminal_run_count::text
+           AS remaining_nonterminal_run_count,
+         proof.remaining_claimed_run_count::text
+           AS remaining_claimed_run_count,
+         proof.event_count::text AS event_count,
+         (SELECT audit.outcome FROM dasher.audit_events AS audit
+          WHERE audit.organization_id = proof.organization_id
+            AND audit.audit_event_id = proof.proof_id
+            AND audit.action = 'dashboard.agent_runs_drained'
+            AND audit.content_sha256 = proof.drain_proof_sha256)
+           AS audit_outcome
+       FROM dasher.dashboard_agent_drain_proofs AS proof
+       WHERE proof.organization_id = $1::uuid
+         AND proof.dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(drained.rows[0]).toEqual({
+      audit_outcome: "succeeded",
+      cancelled_run_count: "0",
+      event_count: "0",
+      lifecycle_revision: "6",
+      pre_drain_run_count: "0",
+      remaining_claimed_run_count: "0",
+      remaining_nonterminal_run_count: "0",
+    });
+    // The drain closes with a recorded, successful cleanup attempt whose
+    // completion proof the coordination row carries forward.
+    const attemptRecorded = await ownerPool.query<{
+      readonly coordination_proof_matches: boolean;
+      readonly lease_released: boolean;
+      readonly result: string;
+      readonly step: string;
+    }>(
+      `SELECT attempt.step, attempt.result,
+         coordination.completion_proof_sha256 = attempt.proof_sha256
+           AS coordination_proof_matches,
+         coordination.lease_owner IS NULL AS lease_released
+       FROM dasher.dashboard_cleanup_attempts AS attempt
+       JOIN dasher.dashboard_cleanup_coordination AS coordination
+         ON coordination.organization_id = attempt.organization_id
+         AND coordination.dashboard_id = attempt.dashboard_id
+       WHERE attempt.organization_id = $1::uuid
+         AND attempt.dashboard_id = $2::uuid
+         AND attempt.cleanup_attempt_id = $3::uuid`,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f131",
+      ],
+    );
+    expect(attemptRecorded.rows[0]).toEqual({
+      coordination_proof_matches: true,
+      lease_released: true,
+      result: "succeeded",
+      step: "drain_and_cancel",
+    });
+
+    // With Part 4 in place the frozen-0003 visibility gap is closed, and the
+    // rest of the frozen lifecycle is reachable for the first time.
+    // dasher_retention_api.claim_dashboard_cleanup opens its operator context
+    // with capability 'claim_cleanup' and then, only on its proof-carrying
+    // branch, runs "SELECT attempt.* INTO STRICT v_attempt" over
+    // dasher.dashboard_cleanup_attempts with FOR UPDATE. The frozen 0003
+    // SELECT policy admitted 'record_attempt' and 'purge' only, so that STRICT
+    // select found nothing and raised P0002 for every proof-carrying claim.
+    // Part 4 inserts 'claim_cleanup' into that one array, and carries the same
+    // insertion into the Part 1 lock policy because a locking SELECT also has
+    // to pass the UPDATE policies' USING quals.
+    const attemptPolicies = await ownerPool.query<{
+      readonly attempt_exists: boolean;
+      readonly lock_capabilities: string;
+      readonly lock_policy_count: string;
+      readonly select_capabilities: string;
+      readonly select_policy_count: string;
+    }>(
+      `WITH retention_policies AS (
+         SELECT policy.polcmd,
+           pg_catalog.substring(
+             pg_catalog.pg_get_expr(policy.polqual, policy.polrelid),
+             'retention_capability''::text, true\\) = ANY \\(ARRAY\\[([^\\]]*)\\]'
+           ) AS capabilities
+         FROM pg_catalog.pg_policy AS policy
+         WHERE policy.polrelid = 'dasher.dashboard_cleanup_attempts'::regclass
+           AND 'dasher_retention_definer'::regrole = ANY (policy.polroles)
+       )
+       SELECT
+         (SELECT pg_catalog.count(*)::text FROM retention_policies
+          WHERE polcmd = 'r') AS select_policy_count,
+         (SELECT pg_catalog.count(*)::text FROM retention_policies
+          WHERE polcmd = 'w') AS lock_policy_count,
+         (SELECT capabilities FROM retention_policies WHERE polcmd = 'r')
+           AS select_capabilities,
+         (SELECT capabilities FROM retention_policies WHERE polcmd = 'w')
+           AS lock_capabilities,
+         EXISTS (
+           SELECT 1 FROM dasher.dashboard_cleanup_attempts AS attempt
+           WHERE attempt.organization_id = $1::uuid
+             AND attempt.dashboard_id = $2::uuid
+             AND attempt.cleanup_attempt_id = $3::uuid
+             AND attempt.result = 'succeeded'
+         ) AS attempt_exists`,
+      [
+        task8dOrganizationId,
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f131",
+      ],
+    );
+    expect(attemptPolicies.rows[0]).toEqual({
+      attempt_exists: true,
+      lock_capabilities:
+        "'claim_cleanup'::text, 'record_attempt'::text, 'purge'::text",
+      lock_policy_count: "1",
+      select_capabilities:
+        "'claim_cleanup'::text, 'record_attempt'::text, 'purge'::text",
+      select_policy_count: "1",
+    });
+    // Live, per-capability evaluation of that same policy. The widening is
+    // exactly one capability wide: the three the array names see the recorded
+    // attempt, and every capability outside it still sees nothing at all.
+    for (const capability of ["claim_cleanup", "record_attempt", "purge"]) {
+      expect(
+        await task8dAttemptsVisibleUnderCapability(capability),
+        capability,
+      ).toBe("1");
+    }
+    for (const capability of [
+      "materialize_expiry",
+      "place_hold",
+      "release_hold",
+      "",
+    ]) {
+      expect(
+        await task8dAttemptsVisibleUnderCapability(capability),
+        capability,
+      ).toBe("0");
+    }
+
+    // Part 5 lands. dasher_private.recompute_drain_proof_v1 (frozen 0007,
+    // SECURITY DEFINER, OWNER dasher_retention_definer) inner-joins
+    // dasher.audit_events to bind a drain proof to the audit row that recorded
+    // the drain, and reads audit.deployment_revision straight into the proof
+    // preimage. Frozen 0003 gave dasher_retention_definer INSERT on that
+    // relation and nothing else, under forced row-level security with no SELECT
+    // policy for the role, so the join raised 42501 - on the cleanup claim's
+    // proof-carrying branch one statement past the attempt read Part 4
+    // unblocked, and again inside dasher_retention_api.purge_dashboard.
+    //
+    // Part 5 adds the column-scoped read privilege and the one SELECT policy
+    // that join needs, naming the eight columns the retention definer's four
+    // reader statements touch and none of the other twelve.
+    // Both halves are load-bearing: under forced row-level security the
+    // grant on its own would have made the relation read as empty rather than
+    // raise, the inner join would have matched nothing, and both callers would
+    // have compared a stored digest against NULL - the vacuous proof
+    // verification this helper exists to prevent.
+    const auditReadAuthority = await ownerPool.query<{
+      readonly column_scoped_privileges: string[];
+      readonly definer_privileges: string[];
+      readonly definer_select_capabilities: string;
+      readonly definer_select_policies: string;
+      readonly forces_row_security: boolean;
+      readonly other_role_select_policies: string;
+      readonly table_scoped_privileges: string[];
+    }>(
+      `SELECT
+         ARRAY(SELECT privilege.privilege_type::text
+           FROM information_schema.table_privileges AS privilege
+           WHERE privilege.table_schema = 'dasher'
+             AND privilege.table_name = 'audit_events'
+             AND privilege.grantee = 'dasher_retention_definer'
+           ORDER BY privilege.privilege_type) AS definer_privileges,
+         ARRAY(SELECT privilege.grantee::text || ':'
+             || privilege.privilege_type::text
+           FROM information_schema.table_privileges AS privilege
+           WHERE privilege.table_schema = 'dasher'
+             AND privilege.table_name = 'audit_events'
+             AND privilege.grantee <> $1::text
+           ORDER BY privilege.grantee, privilege.privilege_type)
+           AS table_scoped_privileges,
+         ARRAY(SELECT privilege.grantee::text || ':'
+             || privilege.privilege_type::text || ':'
+             || pg_catalog.count(*)::text
+           FROM information_schema.column_privileges AS privilege
+           WHERE privilege.table_schema = 'dasher'
+             AND privilege.table_name = 'audit_events'
+             AND privilege.grantee <> $1::text
+           GROUP BY privilege.grantee, privilege.privilege_type
+           ORDER BY privilege.grantee, privilege.privilege_type)
+           AS column_scoped_privileges,
+         (SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_policy AS policy
+          WHERE policy.polrelid = 'dasher.audit_events'::regclass
+            AND policy.polcmd = 'r'
+            AND 'dasher_retention_definer'::regrole = ANY (policy.polroles))
+           AS definer_select_policies,
+         (SELECT pg_catalog.count(*)::text FROM pg_catalog.pg_policy AS policy
+          WHERE policy.polrelid = 'dasher.audit_events'::regclass
+            AND policy.polcmd = 'r'
+            AND NOT ('dasher_retention_definer'::regrole
+              = ANY (policy.polroles))) AS other_role_select_policies,
+         (SELECT pg_catalog.substring(
+            pg_catalog.pg_get_expr(policy.polqual, policy.polrelid),
+            'retention_capability''::text, true\\) = ANY \\(ARRAY\\[([^\\]]*)\\]')
+          FROM pg_catalog.pg_policy AS policy
+          WHERE policy.polrelid = 'dasher.audit_events'::regclass
+            AND policy.polcmd = 'r'
+            AND 'dasher_retention_definer'::regrole = ANY (policy.polroles))
+           AS definer_select_capabilities,
+         (SELECT relation.relforcerowsecurity FROM pg_catalog.pg_class
+            AS relation WHERE relation.oid = 'dasher.audit_events'::regclass)
+           AS forces_row_security`,
+      [config.ownerUsername],
+    );
+    // The read surface widens by exactly one privilege on exactly one role,
+    // over eight of that relation's twenty columns. Outside the migration owner
+    // the audit log carries no privilege at all beyond INSERT and SELECT, so
+    // nothing anywhere holds UPDATE, DELETE or TRUNCATE on it and the relation
+    // stays append-only. dasher_app and dasher_security_definer keep the
+    // column-scoped SELECT the frozen series already gave them - their counts
+    // below are every column, unchanged - and the two run roles hold nothing.
+    // Only dasher_retention_definer's row moves, and its table-scoped
+    // privileges do not move at all: the new SELECT is column-scoped, so it
+    // appears in column_privileges with a count of 8 and nowhere in
+    // table_privileges, which still shows INSERT alone. The 8 is the assertion
+    // that matters most here - a table-level grant, or a column list that grew
+    // by even one unread column, would read as 20 or 9 instead. Forced
+    // row-level security is untouched, and each of the three reading roles
+    // still reaches rows through its own policy and no other.
+    expect(auditReadAuthority.rows[0]).toEqual({
+      column_scoped_privileges: [
+        "dasher_app:SELECT:20",
+        "dasher_retention_definer:INSERT:20",
+        "dasher_retention_definer:SELECT:8",
+        "dasher_security_definer:INSERT:20",
+        "dasher_security_definer:SELECT:20",
+      ],
+      definer_privileges: ["INSERT"],
+      definer_select_capabilities: "'claim_cleanup'::text, 'purge'::text",
+      definer_select_policies: "1",
+      forces_row_security: true,
+      other_role_select_policies: "2",
+      table_scoped_privileges: ["dasher_retention_definer:INSERT"],
+    });
+
+    // The column scoping is live, not merely recorded in the catalog. In the
+    // same authorized context that lets the drain-proof join succeed, a
+    // granted column reads normally over this dashboard's eight visible audit
+    // rows, and every one of the twelve ungranted columns is refused outright
+    // with 42501 before row-level security is ever consulted. Under the
+    // table-level grant this replaced, all twelve would have read cleanly.
+    expect(
+      await task8dDefinerProbe<{ readonly granted: string }>(
+        "purge",
+        `SELECT pg_catalog.count(audit.deployment_revision)::text AS granted
+         FROM dasher.audit_events AS audit`,
+      ),
+    ).toEqual([{ granted: "8" }]);
+    for (const ungranted of [
+      "occurred_at",
+      "actor_kind",
+      "actor_user_id",
+      "actor_service",
+      "authority_revision",
+      "request_id",
+      "job_id",
+      "source_ref",
+      "provider",
+      "credential_version",
+      "usage_units",
+      "cost_minor_units",
+    ]) {
+      await expectPostgresError(
+        task8dDefinerProbe<{ readonly blocked: string }>(
+          "purge",
+          `SELECT audit.${ungranted} AS blocked
+           FROM dasher.audit_events AS audit`,
+        ),
+        "42501",
+      );
+    }
+    // The audit log is still immutable in both directions, for the owner and
+    // for the role that just gained the read.
+    await expectPostgresError(
+      ownerPool.query(
+        `UPDATE dasher.audit_events SET outcome = outcome
+         WHERE organization_id = $1::uuid`,
+        [task8dOrganizationId],
+      ),
+      "55000",
+    );
+    await expectPostgresError(
+      ownerPool.query(
+        `DELETE FROM dasher.audit_events WHERE organization_id = $1::uuid`,
+        [task8dOrganizationId],
+      ),
+      "55000",
+    );
+    for (const mutation of [
+      `UPDATE dasher.audit_events SET outcome = outcome`,
+      `DELETE FROM dasher.audit_events`,
+    ]) {
+      await expect(
+        task8dDefinerProbe("purge", mutation),
+        mutation,
+      ).rejects.toMatchObject({ code: "42501" });
+    }
+
+    // What the organization's audit log actually holds at this point, read from
+    // the owner connection: rows about this dashboard, and rows about
+    // everything else in the same organization. The second number is the one
+    // the new policy has to keep out of reach.
+    const auditScope = await ownerPool.query<{
+      readonly organization_rows: string;
+      readonly other_target_rows: string;
+      readonly this_dashboard_rows: string;
+    }>(
+      `SELECT
+         pg_catalog.count(*)::text AS organization_rows,
+         pg_catalog.count(*) FILTER (
+           WHERE audit.target_type = 'dashboard'
+             AND audit.target_id = $2::uuid)::text AS this_dashboard_rows,
+         pg_catalog.count(*) FILTER (
+           WHERE audit.target_type <> 'dashboard'
+             OR audit.target_id <> $2::uuid)::text AS other_target_rows
+       FROM dasher.audit_events AS audit
+       WHERE audit.organization_id = $1::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(auditScope.rows[0]).toEqual({
+      organization_rows: "14",
+      other_target_rows: "6",
+      this_dashboard_rows: "8",
+    });
+
+    // Live evaluation of the new policy, through the helper that needs it.
+    //
+    //   * Under the two capabilities the call graph reaches
+    //     recompute_drain_proof_v1 with, the helper completes and reproduces
+    //     the digest stored on the drain proof row exactly. What it can see
+    //     while doing so is this dashboard's own audit trail and nothing else:
+    //     the six rows the same organization holds about other targets stay
+    //     out of reach, because the policy pins target_type and target_id to
+    //     the operator context's own dashboard.
+    //   * Under 'record_attempt' the proof rows are still visible - frozen
+    //     dasher_private.retention_policy_allows_v1 admits that capability on
+    //     dasher.dashboard_agent_drain_proofs - but no audit row is, so the
+    //     inner join matches nothing and the helper returns NULL. That is the
+    //     frozen contract for an absent proof: NULL, not an error and not a
+    //     wrong digest. It is also what proves the capability array is doing
+    //     the narrowing, and not some other conjunct that happens to fail.
+    //   * With no principal binding present at all, both relations close and
+    //     the helper returns NULL again.
+    for (const capability of ["claim_cleanup", "purge"]) {
+      expect(await task8dRecomputedDrainProof(capability), capability).toEqual({
+        audit_rows_visible: "8",
+        matches_stored: true,
+        out_of_scope_rows_visible: "0",
+        proof_rows_visible: "1",
+        recomputed_is_null: false,
+      });
+    }
+    expect(await task8dRecomputedDrainProof("record_attempt")).toEqual({
+      audit_rows_visible: "0",
+      matches_stored: null,
+      out_of_scope_rows_visible: "0",
+      proof_rows_visible: "1",
+      recomputed_is_null: true,
+    });
+    for (const capability of [
+      "materialize_expiry",
+      "place_hold",
+      "release_hold",
+      "",
+    ]) {
+      expect(await task8dRecomputedDrainProof(capability), capability).toEqual({
+        audit_rows_visible: "0",
+        matches_stored: null,
+        out_of_scope_rows_visible: "0",
+        proof_rows_visible: "0",
+        recomputed_is_null: true,
+      });
+    }
+    expect(
+      await task8dRecomputedDrainProof("purge", { bindPrincipal: false }),
+    ).toEqual({
+      audit_rows_visible: "0",
+      matches_stored: null,
+      out_of_scope_rows_visible: "0",
+      proof_rows_visible: "0",
+      recomputed_is_null: true,
+    });
+
+    // The proof-carrying claim runs end to end for the first time:
+    // access_revoked -> quarantined, one drain proof consumed, one lifecycle
+    // revision spent.
+    await setTask8dDashboardBoundary("purge_after", "five_minutes_from_now");
+    const quarantineProof = await task8dUnconsumedDrainProof();
+    await task8dReleaseCleanupLease();
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, 6, $2::bytea, interval '1 minute', $3::uuid,
+        'task8d-quarantine', $4::uuid)`,
+      [
+        expiryDashboardId,
+        quarantineProof,
+        "8d000000-0000-4000-8000-00000000f120",
+        task8dOrganizationId,
+      ],
+    );
+    const afterQuarantineTransition = await ownerPool.query<{
+      readonly consumed_proofs: string;
+      readonly lifecycle_revision: string;
+      readonly lifecycle_state: string;
+      readonly unconsumed_proofs: string;
+    }>(
+      `SELECT dashboard.lifecycle_state,
+         dashboard.lifecycle_revision::text AS lifecycle_revision,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proof_consumptions
+          WHERE organization_id = dashboard.organization_id
+            AND dashboard_id = dashboard.dashboard_id) AS consumed_proofs,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proofs AS proof
+          WHERE proof.organization_id = dashboard.organization_id
+            AND proof.dashboard_id = dashboard.dashboard_id
+            AND NOT EXISTS (
+              SELECT 1
+              FROM dasher.dashboard_agent_drain_proof_consumptions AS consumed
+              WHERE consumed.organization_id = proof.organization_id
+                AND consumed.dashboard_id = proof.dashboard_id
+                AND consumed.proof_id = proof.proof_id
+            )) AS unconsumed_proofs
+       FROM dasher.dashboards AS dashboard
+       WHERE dashboard.organization_id = $1::uuid
+         AND dashboard.dashboard_id = $2::uuid`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(afterQuarantineTransition.rows[0]).toEqual({
+      consumed_proofs: "1",
+      lifecycle_revision: "7",
+      lifecycle_state: "quarantined",
+      unconsumed_proofs: "0",
+    });
+
+    // A fresh unreleased hold closes the drain again, exactly as hold B did
+    // above: the corrected gate only stops released holds from blocking.
+    const holdC = "8d000000-0000-4000-8000-00000000f103";
+    const reasonC = Buffer.alloc(32, 0xc1);
+    await callRetention(
+      `SELECT dasher_retention_api.place_dashboard_legal_hold(
+        $1::uuid, $2::uuid, 'task8d-matter-c', $3::bytea, 7,
+        $4::uuid, 'task8d-hold-c', $5::uuid)`,
+      [
+        expiryDashboardId,
+        holdC,
+        reasonC,
+        "8d000000-0000-4000-8000-00000000f141",
+        task8dOrganizationId,
+      ],
+    );
+    await task8dReleaseCleanupLease();
+    await callRetention(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+        $1::uuid, 8, NULL, interval '1 minute', $2::uuid,
+        'task8d-held-claim', $3::uuid)`,
+      [
+        expiryDashboardId,
+        "8d000000-0000-4000-8000-00000000f142",
+        task8dOrganizationId,
+      ],
+    );
+    const heldDrainRequest = await task8dDrainRequestProof(
+      8,
+      "8d000000-0000-4000-8000-00000000f143",
+      "task8d-held-drain-c",
+    );
+    await expectDasherBoundaryError(
+      (async () => {
+        await callRetention(
+          `SELECT dasher_retention_api.drain_dashboard_agent_runs(
+            $1::uuid, 8, $2::bytea, $3::uuid, 'task8d-held-drain-c', $4::uuid)`,
+          [
+            expiryDashboardId,
+            heldDrainRequest,
+            "8d000000-0000-4000-8000-00000000f143",
+            task8dOrganizationId,
+          ],
+        );
+      })(),
+      "P1001",
+      "dasher_denied",
+    );
+    // purge_dashboard denies here too, and would deny on the unreleased hold
+    // even if the lifecycle had reached 'purge_eligible': its hold gate sits
+    // ahead of every proof check it makes.
+    await setTask8dDashboardBoundary("purge_after", "now");
+    await expectDasherBoundaryError(
+      (async () => {
+        await callRetention(
           `SELECT dasher_retention_api.purge_dashboard(
-            $1::uuid, 6, NULL, $2::uuid, 'task8d-held-purge', $3::uuid)`,
+            $1::uuid, 8, NULL, $2::uuid, 'task8d-held-purge', $3::uuid)`,
           [
             expiryDashboardId,
             "8d000000-0000-4000-8000-00000000f116",
@@ -18886,142 +20411,268 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
     );
     await callRetention(
       `SELECT dasher_retention_api.release_dashboard_legal_hold(
-        $1::uuid, $2::uuid, $3::bytea, 6, $4::uuid,
-        'task8d-release-b', $5::uuid)`,
+        $1::uuid, $2::uuid, $3::bytea, 8, $4::uuid,
+        'task8d-release-c', $5::uuid)`,
       [
         expiryDashboardId,
-        holdB,
-        reasonB,
-        "8d000000-0000-4000-8000-00000000f117",
+        holdC,
+        reasonC,
+        "8d000000-0000-4000-8000-00000000f144",
         task8dOrganizationId,
       ],
     );
-    await ownerPool.query(
-      `UPDATE dasher.dashboard_cleanup_coordination
-       SET next_attempt_at = statement_timestamp()
-       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
-      [task8dOrganizationId, expiryDashboardId],
+    // Still 'quarantined': purge_dashboard only ever acts on a 'purge_eligible'
+    // dashboard, and reaching that state is the claim's job, not its own.
+    await expectDasherBoundaryError(
+      (async () => {
+        await callRetention(
+          `SELECT dasher_retention_api.purge_dashboard(
+            $1::uuid, 9, NULL, $2::uuid, 'task8d-purge', $3::uuid)`,
+          [
+            expiryDashboardId,
+            "8d000000-0000-4000-8000-00000000f145",
+            task8dOrganizationId,
+          ],
+        );
+      })(),
+      "P1001",
+      "dasher_denied",
     );
-    await setTask8dDashboardBoundary("purge_after", "five_minutes_from_now");
+
+    // quarantined -> purge_eligible. Every proof-carrying claim consumes a
+    // drain proof taken at the revision it is claiming, so the traversal drains
+    // once more at revision 9 before it can spend that proof on the transition.
+    await task8dDrainStep(
+      9,
+      "prepare_finalizers",
+      "8d000000-0000-4000-8000-00000000fa01",
+      "8d000000-0000-4000-8000-00000000fa02",
+      "task8d-prepare",
+    );
+    const purgeEligibleProof = await task8dUnconsumedDrainProof();
+    await task8dReleaseCleanupLease();
     await callRetention(
       `SELECT dasher_retention_api.claim_dashboard_cleanup(
-        $1::uuid, 7, NULL, interval '1 minute', $2::uuid,
-        'task8d-before-purge', $3::uuid)`,
+        $1::uuid, 9, $2::bytea, interval '1 minute', $3::uuid,
+        'task8d-purge-eligible', $4::uuid)`,
       [
         expiryDashboardId,
-        "8d000000-0000-4000-8000-00000000f118",
+        purgeEligibleProof,
+        "8d000000-0000-4000-8000-00000000fa03",
         task8dOrganizationId,
       ],
     );
-    await callRetention(
-      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
-        $1::uuid, $2::uuid, 'prepare_finalizers', 'succeeded', 0, 0, 0,
-        $3::bytea, $4::uuid)`,
-      [
-        expiryDashboardId,
-        "8d000000-0000-4000-8000-00000000f122",
-        Buffer.alloc(32, 0xc4),
-        task8dOrganizationId,
-      ],
+    // purge_dashboard's own drain-proof gate wants a consumed proof taken at
+    // the revision it is purging, so the traversal drains and consumes once
+    // more at revision 10. This claim transitions nothing - the dashboard is
+    // already 'purge_eligible' - it exists to spend the proof.
+    await task8dDrainStep(
+      10,
+      "purge_finalizing",
+      "8d000000-0000-4000-8000-00000000fa04",
+      "8d000000-0000-4000-8000-00000000fa05",
+      "task8d-final-drain",
     );
-    const beforeBoundary = await ownerPool.query(
-      `SELECT lifecycle_state, lifecycle_revision::text
-       FROM dasher.dashboards
-       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
-      [task8dOrganizationId, expiryDashboardId],
-    );
-    expect(beforeBoundary.rows[0]).toEqual({
-      lifecycle_revision: "7",
-      lifecycle_state: "quarantined",
-    });
-    await setTask8dDashboardBoundary("purge_after", "now");
+    const finalDrainProof = await task8dUnconsumedDrainProof();
+    await task8dReleaseCleanupLease();
     await callRetention(
       `SELECT dasher_retention_api.claim_dashboard_cleanup(
-        $1::uuid, 7, NULL, interval '1 minute', $2::uuid,
-        'task8d-at-purge', $3::uuid)`,
+        $1::uuid, 10, $2::bytea, interval '1 minute', $3::uuid,
+        'task8d-final-consume', $4::uuid)`,
       [
         expiryDashboardId,
-        "8d000000-0000-4000-8000-00000000f119",
+        finalDrainProof,
+        "8d000000-0000-4000-8000-00000000fa06",
         task8dOrganizationId,
       ],
     );
-    const beforePurge = await ownerPool.query<{
-      readonly head_version_id: string;
+    const readyForPurge = await ownerPool.query<{
+      readonly consumed_proofs: string;
+      readonly current_step: string;
       readonly lifecycle_revision: string;
-      readonly purge_started_at: null;
+      readonly lifecycle_state: string;
+      readonly unconsumed_proofs: string;
     }>(
-      `SELECT head_version_id::text AS head_version_id,
-         lifecycle_revision::text AS lifecycle_revision, purge_started_at
-       FROM dasher.dashboards
-       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      `SELECT dashboard.lifecycle_state,
+         dashboard.lifecycle_revision::text AS lifecycle_revision,
+         coordination.current_step,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proof_consumptions
+          WHERE organization_id = dashboard.organization_id
+            AND dashboard_id = dashboard.dashboard_id) AS consumed_proofs,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proofs AS proof
+          WHERE proof.organization_id = dashboard.organization_id
+            AND proof.dashboard_id = dashboard.dashboard_id
+            AND NOT EXISTS (
+              SELECT 1
+              FROM dasher.dashboard_agent_drain_proof_consumptions AS consumed
+              WHERE consumed.organization_id = proof.organization_id
+                AND consumed.dashboard_id = proof.dashboard_id
+                AND consumed.proof_id = proof.proof_id
+            )) AS unconsumed_proofs
+       FROM dasher.dashboards AS dashboard
+       JOIN dasher.dashboard_cleanup_coordination AS coordination
+         ON coordination.organization_id = dashboard.organization_id
+         AND coordination.dashboard_id = dashboard.dashboard_id
+       WHERE dashboard.organization_id = $1::uuid
+         AND dashboard.dashboard_id = $2::uuid`,
       [task8dOrganizationId, expiryDashboardId],
     );
-    expect(beforePurge.rows[0]).toEqual({
-      head_version_id: expiryVersionId,
-      lifecycle_revision: "8",
-      purge_started_at: null,
+    expect(readyForPurge.rows[0]).toEqual({
+      consumed_proofs: "3",
+      current_step: "purge_finalizing",
+      lifecycle_revision: "10",
+      lifecycle_state: "purge_eligible",
+      unconsumed_proofs: "0",
     });
 
-    const purgeProof = Buffer.alloc(32, 0xd1);
-    for (let attempt = 0; attempt < 32; attempt += 1) {
-      const state = await ownerPool.query<{ readonly purged: boolean }>(
-        `SELECT purged_at IS NOT NULL AS purged FROM dasher.dashboards
-         WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+    // Frozen purge is a multi-pass state machine, and three of its frozen
+    // semantics decide how the passes chain:
+    //
+    //   * dasher_private.recompute_cleanup_completion_proof_v1 (0007:20685)
+    //     re-derives the completion digest from the latest succeeded attempt
+    //     and returns NULL when the stored digest disagrees, so the coordination
+    //     row's proof has to be re-established from a real recorded attempt
+    //     before each pass that consumes it.
+    //   * the coordination-proof clearing at 0007:22444 - the first pass sets
+    //     completion_proof_sha256 = NULL, and the claim upsert's DO UPDATE does
+    //     the same - so every pass after one that clears it needs a fresh
+    //     claim and a fresh recorded attempt.
+    //   * the final_proof_ready handshake at 0007:23733 - the pass that finds
+    //     the coordination row on any other step records 'finalize_resources',
+    //     moves it to 'final_proof_ready' and returns, and only the next pass
+    //     tears the dashboard down.
+    //
+    // The driver below encodes exactly that and nothing else: read the
+    // coordination row, re-establish the proof when it is missing, otherwise
+    // take one purge pass with a fresh operation id. The observed sequence is
+    // asserted verbatim afterwards, so the number of passes and the step the
+    // dashboard sat on at each one are both pinned.
+    const purgeTrace: string[] = [];
+    let purgeOperation = 0;
+    const nextPurgeOperationId = (): string => {
+      purgeOperation += 1;
+      return `8d000000-0000-4000-8000-00000000fb${purgeOperation
+        .toString(16)
+        .padStart(2, "0")}`;
+    };
+    for (let pass = 0; pass < 32; pass += 1) {
+      const observed = await ownerPool.query<{
+        readonly completion_proof: Buffer | null;
+        readonly current_step: string;
+        readonly lifecycle_revision: string;
+        readonly lifecycle_state: string;
+      }>(
+        `SELECT dashboard.lifecycle_state,
+           dashboard.lifecycle_revision::text AS lifecycle_revision,
+           coordination.current_step,
+           coordination.completion_proof_sha256 AS completion_proof
+         FROM dasher.dashboards AS dashboard
+         JOIN dasher.dashboard_cleanup_coordination AS coordination
+           ON coordination.organization_id = dashboard.organization_id
+           AND coordination.dashboard_id = dashboard.dashboard_id
+         WHERE dashboard.organization_id = $1::uuid
+           AND dashboard.dashboard_id = $2::uuid`,
         [task8dOrganizationId, expiryDashboardId],
       );
-      if (state.rows[0]?.purged === true) break;
-      const identifier = `8d000000-0000-4000-8000-${(0xf200 + attempt)
-        .toString(16)
-        .padStart(12, "0")}`;
+      const state = observed.rows[0];
+      if (state === undefined) {
+        throw new Error("Task 8D lost the dashboard mid-purge");
+      }
+      purgeTrace.push(
+        `${state.lifecycle_state}@${state.lifecycle_revision}/${
+          state.current_step
+        }/${state.completion_proof === null ? "no-proof" : "proof"}`,
+      );
+      if (state.lifecycle_state === "cleaned") {
+        break;
+      }
+      const revision = Number(state.lifecycle_revision);
+      if (state.completion_proof === null) {
+        const attemptId = nextPurgeOperationId();
+        await task8dReleaseCleanupLease();
+        await callRetention(
+          `SELECT dasher_retention_api.claim_dashboard_cleanup(
+            $1::uuid, $2::bigint, NULL, interval '1 minute', $3::uuid,
+            'task8d-purge-release', $4::uuid)`,
+          [expiryDashboardId, revision, attemptId, task8dOrganizationId],
+        );
+        const completionProof = await task8dCleanupCompletionProof(
+          attemptId,
+          "purge_finalizing",
+          "succeeded",
+          0,
+          0,
+          0,
+        );
+        await callRetention(
+          `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+            $1::uuid, $2::uuid, 'purge_finalizing', 'succeeded', 0, 0, 0,
+            $3::bytea, $4::uuid)`,
+          [expiryDashboardId, attemptId, completionProof, task8dOrganizationId],
+        );
+        continue;
+      }
       await callRetention(
         `SELECT dasher_retention_api.purge_dashboard(
-          $1::uuid, 8, $2::bytea, $3::uuid, 'task8d-purge', $4::uuid)`,
+          $1::uuid, $2::bigint, $3::bytea, $4::uuid, 'task8d-purge-pass',
+          $5::uuid)`,
         [
           expiryDashboardId,
-          attempt === 0 ? null : purgeProof,
-          identifier,
+          revision,
+          state.completion_proof,
+          nextPurgeOperationId(),
           task8dOrganizationId,
         ],
       );
-      if (attempt === 0) {
-        const started = await ownerPool.query<{
-          readonly head_version_id: string | null;
-          readonly lifecycle_revision: string;
-          readonly purge_started: boolean;
-          readonly version_exists: boolean;
-        }>(
-          `SELECT head_version_id::text AS head_version_id,
-             purge_started_at IS NOT NULL AS purge_started,
-             lifecycle_revision::text AS lifecycle_revision,
-             EXISTS (
-               SELECT 1 FROM dasher.dashboard_versions AS version
-               WHERE version.organization_id = dashboard.organization_id
-                 AND version.dashboard_id = dashboard.dashboard_id
-                 AND version.version_id = $3::uuid
-             ) AS version_exists
-           FROM dasher.dashboards AS dashboard
-           WHERE dashboard.organization_id = $1::uuid
-             AND dashboard.dashboard_id = $2::uuid`,
-          [task8dOrganizationId, expiryDashboardId, expiryVersionId],
-        );
-        expect(started.rows[0]).toEqual({
-          head_version_id: null,
-          lifecycle_revision: "8",
-          purge_started: true,
-          version_exists: true,
-        });
-      }
     }
+    // Twenty-three passes, and every one of them accounted for: the first
+    // re-establishes the coordination proof the consuming claim cleared, the
+    // second is the pass that sets purge_started_at and clears it again
+    // (0007:22444), the third re-establishes it once more, then eighteen passes
+    // walk the frozen deletion-finalizer batches - each one creates or advances
+    // a batch and returns without touching the coordination row - then the
+    // final_proof_ready handshake (0007:23733) records 'finalize_resources' and
+    // hands over, and the last pass tears the dashboard down. The lifecycle
+    // revision moves exactly once, on that last pass.
+    expect(purgeTrace).toEqual([
+      "purge_eligible@10/purge_finalizing/no-proof",
+      "purge_eligible@10/purge_finalizing/proof",
+      "purge_eligible@10/purge_started/no-proof",
+      ...Array.from(
+        { length: 18 },
+        () => "purge_eligible@10/purge_finalizing/proof",
+      ),
+      "purge_eligible@10/final_proof_ready/proof",
+      "cleaned@11/cleaned/proof",
+    ]);
+
+    // The full traversal has landed. This is the original purge-side
+    // projection: the backup-deletion ledger carries 'purged', every deletion
+    // finalizer reached 'deleted', every governed resource is torn down, every
+    // reference claim is released and the dashboard itself is 'cleaned'.
+    //
+    // Reaching 'deleted' is asserted together with the proof that entitled the
+    // finalizer to get there, for both the evidence and the snapshot side: the
+    // recorded proof_sha256 equals the expected_claim_set_sha256 it was checked
+    // against, bytes_deleted_at is set, and it is not earlier than intent_at.
+    // Those are the three columns the frozen 0003 completion checks constrain,
+    // so a finalizer that reached the terminal state without a valid proof, or
+    // with a deletion stamped before the intent that authorized it, fails here
+    // rather than passing on the state name alone.
     const purged = await ownerPool.query<{
       readonly artifact_count: string;
       readonly evidence_claim_dashboards: string[];
       readonly evidence_count: string;
       readonly evidence_finalizer_proof_valid: boolean;
       readonly evidence_finalizer_states: string[];
+      readonly head_version_id: string | null;
       readonly ledger_events: string[];
       readonly lifecycle_revision: string;
       readonly lifecycle_state: string;
       readonly lineage_count: string;
+      readonly purge_started: boolean;
       readonly purged: boolean;
       readonly resource_count: string;
       readonly snapshot_claim_dashboards: string[];
@@ -19033,6 +20684,8 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       `
         SELECT dashboard.lifecycle_state,
           dashboard.lifecycle_revision::text,
+          dashboard.head_version_id::text AS head_version_id,
+          dashboard.purge_started_at IS NOT NULL AS purge_started,
           dashboard.purged_at IS NOT NULL AS purged,
           (SELECT pg_catalog.array_agg(event_kind ORDER BY ledger_sequence)
            FROM dasher.backup_deletion_ledger
@@ -19123,10 +20776,12 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       evidence_count: "0",
       evidence_finalizer_proof_valid: true,
       evidence_finalizer_states: ["deleted"],
+      head_version_id: null,
       ledger_events: ["access_revoked", "purged"],
-      lifecycle_revision: "9",
+      lifecycle_revision: "11",
       lifecycle_state: "cleaned",
       lineage_count: "0",
+      purge_started: true,
       purged: true,
       resource_count: "0",
       snapshot_claim_dashboards: [],
@@ -19135,6 +20790,43 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       snapshot_finalizer_states: ["deleted"],
       version_count: "0",
     });
+    // The purge wrote its own audit row. The drain-proof ledger is deliberately
+    // not part of what a purge tears down - the three proofs and their
+    // consumptions survive as the record of how the dashboard was drained - so
+    // the helper that verified them still reproduces the latest digest exactly,
+    // now against a dashboard audit trail seven rows longer than it was before
+    // the traversal, and still with nothing outside that dashboard in reach.
+    const purgeAudit = await ownerPool.query<{
+      readonly purged_audit_rows: string;
+    }>(
+      `SELECT pg_catalog.count(*)::text AS purged_audit_rows
+       FROM dasher.audit_events AS audit
+       WHERE audit.organization_id = $1::uuid
+         AND audit.action = 'dashboard.purged'
+         AND audit.target_type = 'dashboard'
+         AND audit.target_id = $2::uuid
+         AND audit.outcome = 'succeeded'`,
+      [task8dOrganizationId, expiryDashboardId],
+    );
+    expect(purgeAudit.rows[0]).toEqual({ purged_audit_rows: "1" });
+    expect(await task8dRecomputedDrainProof("purge")).toEqual({
+      audit_rows_visible: "15",
+      matches_stored: true,
+      out_of_scope_rows_visible: "0",
+      proof_rows_visible: "3",
+      recomputed_is_null: false,
+    });
+    // And the absent-proof contract, on a dashboard that never had one: the
+    // helper returns NULL rather than raising or inventing a digest.
+    expect(
+      await task8dDefinerProbe<{ readonly digest: string | null }>(
+        "purge",
+        `SELECT pg_catalog.encode(
+           dasher_private.recompute_drain_proof_v1($1::uuid, $2::uuid), 'hex')
+           AS digest`,
+        [task8dOrganizationId, "8d000000-0000-4000-8000-0000000000ff"],
+      ),
+    ).toEqual([{ digest: null }]);
     await expectPostgresError(
       ownerPool.query(
         `UPDATE dasher.backup_deletion_ledger SET proof_sha256 = proof_sha256
@@ -19236,3 +20928,2178 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
     }
   }, 120_000);
 });
+
+// Part 6 of 0008 normalizes the age-out's audit INSERT: a unique_violation on
+// the global dasher.audit_events primary key becomes P1002 / dasher_conflict
+// instead of a bare 23505 carrying the constraint name.
+//
+// The collision this closes is the one Part 5's row scoping opened. Frozen
+// 0007 probes audit_events by audit_event_id alone, deliberately globally, but
+// audit_events_retention_select confines the retention definer to the operator
+// context's own organization, target_type 'dashboard' and target dashboard, so
+// an operation id already spent by another dashboard's or another
+// organization's audit row is invisible to that probe. The function proceeds,
+// does the whole age-out, and only the primary key stops it.
+//
+// The age-out is reached here through its real precondition and nothing else.
+// dasher_retention_api.age_out_dashboard_agent_run_metadata requires a
+// dasher.backup_deletion_ledger row for the dashboard's tombstone lineage whose
+// event_kind is 'backup.deleted', and 0008 Part 9 is what makes such a row
+// writable at all: the frozen 0003 CHECK admitted only 'access_revoked' and
+// 'purged', so the entry point could never run and every call died at the
+// ledger lookup's SELECT ... INTO STRICT with an unnormalized P0002. The
+// fixture below seeds a genuine 'backup.deleted' row through the installed
+// vocabulary, exactly as the backup-deletion process would record one after a
+// purge. No test in this block alters the schema the migration installs -
+// there is no CHECK-drop scaffolding anywhere here - so the reachability of
+// this routine is a property of the series and not of the harness.
+describe.sequential("Task 9 age-out audit collision normalization", () => {
+  const task9OrganizationA = "9a000000-0000-4000-8000-000000000001";
+  const task9OrganizationB = "9a000000-0000-4000-8000-000000000002";
+  const task9DashboardA = "9a000000-0000-4000-8000-000000000010";
+  const task9DashboardB = "9a000000-0000-4000-8000-000000000011";
+  const task9DashboardC = "9a000000-0000-4000-8000-000000000012";
+  // Identical to the target in every respect except that its lineage never
+  // receives a 'backup.deleted' ledger event, so it isolates that one row as
+  // the age-out's precondition.
+  const task9DashboardD = "9a000000-0000-4000-8000-000000000013";
+  const task9LineageA = "9a000000-0000-4000-8000-000000000020";
+  const task9LineageB = "9a000000-0000-4000-8000-000000000021";
+  const task9LineageC = "9a000000-0000-4000-8000-000000000022";
+  const task9LineageD = "9a000000-0000-4000-8000-000000000023";
+  const task9UserId = "9a000000-0000-4000-8000-000000000030";
+  const task9PrincipalId = "9a000000-0000-4000-8000-000000000040";
+  const task9Deployment = "task9-ageout-probe";
+
+  // The age-out re-derives this digest inside its own operator context and
+  // refuses any caller that cannot present it. This is frozen 0007's preimage
+  // for dasher_private.recompute_age_out_source_proof_v1, with the two GUCs
+  // the context sets spelled as the values the call will carry: the request id
+  // is the operation id, and the deployment revision is the one passed in.
+  const task9SourceProofSql = `
+    SELECT pg_catalog.sha256(
+      pg_catalog.convert_to('dasher.agent-run-age-out-source.v1', 'UTF8')
+      || pg_catalog.decode('00', 'hex')
+      || pg_catalog.uuid_send($2::uuid)
+      || pg_catalog.int8send(dashboard.lifecycle_revision)
+      || pg_catalog.uuid_send(tombstone.tombstone_lineage_id)
+      || pg_catalog.int8send((extract(epoch FROM
+        tombstone.purged_at) * 1000000)::bigint)
+      || pg_catalog.int8send(ledger.ledger_sequence)
+      || pg_catalog.int4send(pg_catalog.octet_length(ledger.event_kind))
+      || pg_catalog.convert_to(ledger.event_kind, 'UTF8')
+      || pg_catalog.int4send(pg_catalog.octet_length(ledger.proof_sha256))
+      || ledger.proof_sha256
+      || pg_catalog.uuid_send($3::uuid)
+      || pg_catalog.int4send(pg_catalog.octet_length($4::text))
+      || pg_catalog.convert_to($4::text, 'UTF8')
+      || pg_catalog.uuid_send($1::uuid)
+    ) AS source_proof
+    FROM dasher.dashboards AS dashboard
+    JOIN dasher.dashboard_tombstones AS tombstone
+      ON tombstone.organization_id = dashboard.organization_id
+     AND tombstone.tombstone_lineage_id = dashboard.tombstone_lineage_id
+    JOIN dasher.backup_deletion_ledger AS ledger
+      ON ledger.organization_id = tombstone.organization_id
+     AND ledger.tombstone_lineage_id = tombstone.tombstone_lineage_id
+     AND ledger.event_kind = 'backup.deleted'
+    WHERE dashboard.organization_id = $1::uuid
+      AND dashboard.dashboard_id = $2::uuid
+      AND tombstone.purged_at = dashboard.purged_at
+      AND tombstone.purged_lifecycle_revision = dashboard.lifecycle_revision
+    ORDER BY ledger.ledger_sequence DESC LIMIT 1
+  `;
+
+  async function task9CallAgeOut(
+    client: PoolClient,
+    operationId: string,
+    presuppliedSourceProof?: Buffer,
+  ): Promise<void> {
+    let sourceProof = presuppliedSourceProof;
+    if (sourceProof === undefined) {
+      const proof = await client.query<{ readonly source_proof: Buffer }>(
+        task9SourceProofSql,
+        [task9OrganizationA, task9DashboardA, operationId, task9Deployment],
+      );
+      sourceProof = proof.rows[0]?.source_proof;
+      if (sourceProof === undefined) {
+        throw new Error("Task 9 could not derive the age-out source proof");
+      }
+    }
+    await client.query("SET ROLE dasher_retention_operator");
+    try {
+      await client.query(
+        `SELECT dasher_retention_api.age_out_dashboard_agent_run_metadata(
+           $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::text, $6::uuid
+         )`,
+        [
+          task9DashboardA,
+          2,
+          sourceProof,
+          operationId,
+          task9Deployment,
+          task9OrganizationA,
+        ],
+      );
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+    }
+  }
+
+  // Seed one audit row that already spends `operationId`, against whichever
+  // organization and dashboard the probe wants it to belong to. It is committed
+  // rather than written inside the probe transaction, so the residue checks
+  // afterwards can tell the seeded row apart from one the age-out wrote.
+  async function task9SpendOperationId(
+    operationId: string,
+    organizationId: string,
+    dashboardId: string,
+  ): Promise<void> {
+    await ownerPool.query(
+      `INSERT INTO dasher.audit_events (
+         audit_event_id, organization_id, occurred_at, actor_kind,
+         actor_service, authority_revision, request_id, action, target_type,
+         target_id, outcome, content_sha256, deployment_revision
+       ) VALUES (
+         $1::uuid, $2::uuid, transaction_timestamp(), 'service', 'task9-probe',
+         1, pg_catalog.gen_random_uuid(),
+         'dashboard.agent_run_metadata_aged_out', 'dashboard', $3::uuid,
+         'succeeded', pg_catalog.sha256(pg_catalog.convert_to('x', 'UTF8')),
+         'task9-probe'
+       )`,
+      [operationId, organizationId, dashboardId],
+    );
+  }
+
+  async function task9Residue(operationId: string): Promise<{
+    readonly age_out_proof_rows: string;
+    readonly audit_rows_for_operation: string;
+    readonly backup_deleted_ledger_rows: string;
+    readonly ledger_constraint: string | null;
+    readonly seeded_audit_row_survives: boolean;
+  }> {
+    const residue = await ownerPool.query<{
+      readonly age_out_proof_rows: string;
+      readonly audit_rows_for_operation: string;
+      readonly backup_deleted_ledger_rows: string;
+      readonly ledger_constraint: string | null;
+      readonly seeded_audit_row_survives: boolean;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_run_age_out_proofs) AS age_out_proof_rows,
+         (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+          WHERE audit_event_id = $1::uuid) AS audit_rows_for_operation,
+         (SELECT pg_catalog.count(*)::text FROM dasher.backup_deletion_ledger
+          WHERE event_kind = 'backup.deleted') AS backup_deleted_ledger_rows,
+         (SELECT pg_get_constraintdef(oid) FROM pg_catalog.pg_constraint
+          WHERE conname = 'backup_deletion_ledger_event_kind_check')
+           AS ledger_constraint,
+         EXISTS (SELECT 1 FROM dasher.audit_events
+           WHERE audit_event_id = $1::uuid
+             AND actor_service = 'task9-probe') AS seeded_audit_row_survives`,
+      [operationId],
+    );
+    const row = residue.rows[0];
+    if (row === undefined) {
+      throw new Error("Task 9 residue projection returned no row");
+    }
+    return row;
+  }
+
+  beforeAll(async () => {
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+    await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+
+    // Every row below is written in one transaction: the fixture dates the
+    // dashboard and its tombstone off transaction_timestamp(), and the age-out
+    // joins them on purged_at, so the two have to be stamped from the same
+    // clock reading.
+    const fixture = await ownerPool.connect();
+    try {
+      await fixture.query("BEGIN");
+      // A dashboard is age-out eligible when it is 'cleaned', purged more than a
+      // year ago, and its cleanup coordination agrees on the revision. Three of
+      // them: the target, a sibling in the same organization, and one in a second
+      // organization, so a spent operation id can be placed out of the target's
+      // policy scope in each of the two ways that matters.
+      await fixture.query(
+        `INSERT INTO dasher.users (user_id, created_at)
+         VALUES ($1::uuid, transaction_timestamp())`,
+        [task9UserId],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.organizations (organization_id, display_name)
+         VALUES ($1::uuid, 'Task 9 age-out organization A'),
+                ($2::uuid, 'Task 9 age-out organization B')`,
+        [task9OrganizationA, task9OrganizationB],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.dashboard_tombstones (
+           organization_id, tombstone_lineage_id, retention_policy_revision,
+           access_revoked_at, access_revoked_lifecycle_revision,
+           access_revoked_proof_sha256, purged_at, purged_lifecycle_revision,
+           purged_proof_sha256
+         )
+         SELECT org, lineage, 1,
+           transaction_timestamp() - interval '400 days', 1,
+           pg_catalog.sha256(pg_catalog.convert_to('revoked', 'UTF8')),
+           transaction_timestamp() - interval '400 days', 2,
+           pg_catalog.sha256(pg_catalog.convert_to('purged', 'UTF8'))
+         FROM (VALUES ($1::uuid, $3::uuid), ($1::uuid, $4::uuid),
+                      ($2::uuid, $5::uuid), ($1::uuid, $6::uuid))
+              AS t(org, lineage)`,
+        [
+          task9OrganizationA,
+          task9OrganizationB,
+          task9LineageA,
+          task9LineageB,
+          task9LineageC,
+          task9LineageD,
+        ],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.dashboards (
+           organization_id, dashboard_id, title, created_by_user_id, created_at,
+           created_kind, current_kind, lifecycle_state, lifecycle_revision,
+           capability_epoch, cache_epoch, access_revoked_at, revocation_reason,
+           purge_after, purge_started_at, purged_at, retention_policy_revision,
+           tombstone_lineage_id
+         )
+         SELECT org, dash, 'Task 9 age-out probe', $6::uuid,
+           transaction_timestamp() - interval '800 days',
+           'durable', 'durable', 'cleaned', 2, 1, 1,
+           transaction_timestamp() - interval '401 days', 'explicit_delete',
+           transaction_timestamp() - interval '400 days',
+           transaction_timestamp() - interval '400 days',
+           transaction_timestamp() - interval '400 days', 1, lineage
+         FROM (VALUES ($1::uuid, $3::uuid, $7::uuid),
+                      ($1::uuid, $4::uuid, $8::uuid),
+                      ($2::uuid, $5::uuid, $9::uuid),
+                      ($1::uuid, $10::uuid, $11::uuid))
+              AS t(org, dash, lineage)`,
+        [
+          task9OrganizationA,
+          task9OrganizationB,
+          task9DashboardA,
+          task9DashboardB,
+          task9DashboardC,
+          task9UserId,
+          task9LineageA,
+          task9LineageB,
+          task9LineageC,
+          task9DashboardD,
+          task9LineageD,
+        ],
+      );
+      // The ledger as the series actually writes it: the purge records
+      // 'purged', and the backup-deletion process that follows it records
+      // 'backup.deleted' against the same tombstone lineage at a later
+      // sequence. The second kind is the age-out's precondition, and 0008
+      // Part 9 is what admits it - this INSERT is refused with 23514 against
+      // the frozen 0003 vocabulary, so it doubles as the reachability proof.
+      await fixture.query(
+        `INSERT INTO dasher.backup_deletion_ledger (
+           organization_id, ledger_sequence, tombstone_lineage_id,
+           lifecycle_revision, event_kind, event_occurred_at, inserted_at,
+           retention_policy_revision, proof_sha256
+         )
+         SELECT org, seq, lineage, 2, kind,
+           transaction_timestamp() - interval '390 days',
+           transaction_timestamp() - interval '390 days', 1,
+           pg_catalog.sha256(
+             pg_catalog.convert_to(kind || '-' || seq::text, 'UTF8'))
+         FROM (VALUES ($1::uuid, 1::bigint, $3::uuid, 'purged'),
+                      ($1::uuid, 2::bigint, $4::uuid, 'purged'),
+                      ($2::uuid, 1::bigint, $5::uuid, 'purged'),
+                      ($1::uuid, 11::bigint, $3::uuid, 'backup.deleted'),
+                      ($1::uuid, 12::bigint, $4::uuid, 'backup.deleted'),
+                      ($2::uuid, 11::bigint, $5::uuid, 'backup.deleted'),
+                      ($1::uuid, 3::bigint, $6::uuid, 'purged'))
+              AS t(org, seq, lineage, kind)`,
+        [
+          task9OrganizationA,
+          task9OrganizationB,
+          task9LineageA,
+          task9LineageB,
+          task9LineageC,
+          task9LineageD,
+        ],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.dashboard_cleanup_coordination (
+           organization_id, dashboard_id, current_step,
+           expected_lifecycle_revision
+         )
+         SELECT org, dash, 'cleaned', 2
+         FROM (VALUES ($1::uuid, $3::uuid), ($1::uuid, $4::uuid),
+                      ($2::uuid, $5::uuid), ($1::uuid, $6::uuid))
+              AS t(org, dash)`,
+        [
+          task9OrganizationA,
+          task9OrganizationB,
+          task9DashboardA,
+          task9DashboardB,
+          task9DashboardC,
+          task9DashboardD,
+        ],
+      );
+      const ownerName = (
+        await fixture.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        )
+      ).rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("Task 9 could not resolve the database owner");
+      }
+      await fixture.query(
+        `INSERT INTO dasher.retention_service_principal_allowlist (
+           retention_service_principal_id, principal_revision, binding_kind,
+           binding_subject, authority_scope, scope_organization_id,
+           can_initialize, can_materialize_expiry, can_place_hold,
+           can_release_hold, can_claim_cleanup, can_record_attempt, can_purge,
+           enabled, created_at, predecessor_revision, predecessor_sha256,
+           revision_sha256, migration_provenance
+         ) VALUES (
+           $1::uuid, 1, 'postgres_session_user', $2::name, 'platform_operator',
+           NULL, true, true, true, true, true, true, true, true,
+           transaction_timestamp(), NULL, NULL,
+           pg_catalog.decode(pg_catalog.repeat('39', 32), 'hex'),
+           'task9-ageout-probe'
+         )`,
+        [task9PrincipalId, ownerName],
+      );
+      await fixture.query("COMMIT");
+    } catch (error) {
+      await fixture.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      fixture.release();
+    }
+  }, 180_000);
+
+  afterAll(async () => {
+    await resetManagedSchemas();
+  }, 120_000);
+
+  // 0008 Part 9, asserted rather than assumed: the installed vocabulary admits
+  // exactly the frozen two values plus the one the frozen age-out requires, and
+  // it is still a closed vocabulary - every other event kind is refused with
+  // 23514, so widening it by one value did not turn the column into free text.
+  it("admits backup.deleted in the installed ledger vocabulary and still refuses everything else", async () => {
+    const ledger = await ownerPool.query<{
+      readonly definition: string;
+    }>(
+      `SELECT pg_get_constraintdef(oid) AS definition
+       FROM pg_catalog.pg_constraint
+       WHERE conname = 'backup_deletion_ledger_event_kind_check'`,
+    );
+    expect(ledger.rows[0]?.definition).toBe(
+      "CHECK ((event_kind = ANY (ARRAY['access_revoked'::text, 'purged'::text, 'backup.deleted'::text])))",
+    );
+
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      // The admitted value writes, through the ordinary INSERT path.
+      await client.query(
+        `INSERT INTO dasher.backup_deletion_ledger (
+           organization_id, ledger_sequence, tombstone_lineage_id,
+           lifecycle_revision, event_kind, event_occurred_at, inserted_at,
+           retention_policy_revision, proof_sha256
+         ) VALUES ($1::uuid, 99, $2::uuid, 2, 'backup.deleted',
+           transaction_timestamp(), transaction_timestamp(), 1,
+           pg_catalog.sha256(pg_catalog.convert_to('x', 'UTF8')))`,
+        [task9OrganizationA, task9LineageA],
+      );
+      await client.query("SAVEPOINT vocabulary_probe");
+      for (const rejected of [
+        "backup_deleted",
+        "backup.restored",
+        "cleaned",
+        "",
+      ]) {
+        await expect(
+          client.query(
+            `INSERT INTO dasher.backup_deletion_ledger (
+               organization_id, ledger_sequence, tombstone_lineage_id,
+               lifecycle_revision, event_kind, event_occurred_at, inserted_at,
+               retention_policy_revision, proof_sha256
+             ) VALUES ($1::uuid, 100, $2::uuid, 2, $3::text,
+               transaction_timestamp(), transaction_timestamp(), 1,
+               pg_catalog.sha256(pg_catalog.convert_to('x', 'UTF8')))`,
+            [task9OrganizationA, task9LineageA, rejected],
+          ),
+        ).rejects.toMatchObject({
+          code: "23514",
+          constraint: "backup_deletion_ledger_event_kind_check",
+        });
+        await client.query("ROLLBACK TO SAVEPOINT vocabulary_probe");
+      }
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    const residue = await task9Residue("9a000000-0000-4000-8000-00000000ffff");
+    expect(residue.backup_deleted_ledger_rows).toBe("3");
+  }, 60_000);
+
+  // The precondition is real, and the ledger row is what satisfies it. The
+  // fourth fixture dashboard is identical to the target in every way except
+  // that its tombstone lineage carries only the 'purged' ledger event and no
+  // 'backup.deleted' one, so the frozen entry point dies exactly where it died
+  // for every dashboard before Part 9 made such a row writable: at the ledger
+  // lookup's SELECT ... INTO STRICT, with an unnormalized P0002. Nothing is
+  // mutated to produce this - the ledger is append-only and the schema is
+  // untouched - so it is the absence of the row, and only that, being observed.
+  it("dies at the frozen ledger lookup when the lineage has no backup.deleted row", async () => {
+    const operationId = "9a000000-0000-4000-8000-0000000000f1";
+    const client = await ownerPool.connect();
+    try {
+      // The ledger lookup precedes every proof comparison in the frozen body,
+      // so a well-formed 32-byte argument is all this needs to reach it.
+      await client.query("SET ROLE dasher_retention_operator");
+      await expect(
+        client.query(
+          `SELECT dasher_retention_api.age_out_dashboard_agent_run_metadata(
+             $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::text, $6::uuid
+           )`,
+          [
+            task9DashboardD,
+            2,
+            Buffer.alloc(32, 0x9a),
+            operationId,
+            task9Deployment,
+            task9OrganizationA,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "P0002" });
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+    const residue = await task9Residue(operationId);
+    expect(residue.backup_deleted_ledger_rows).toBe("3");
+    expect(residue.age_out_proof_rows).toBe("0");
+    expect(residue.audit_rows_for_operation).toBe("0");
+  }, 60_000);
+
+  // (d) The happy path still completes end to end: the wrap changes an error
+  // path, not the age-out itself.
+  it("completes the full age-out on the happy path", async () => {
+    const operationId = "9a000000-0000-4000-8000-0000000000d1";
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await task9CallAgeOut(client, operationId);
+      const written = await client.query<{
+        readonly audit_rows: string;
+        readonly proof_rows: string;
+      }>(
+        `SELECT
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.dashboard_agent_run_age_out_proofs
+            WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid)
+             AS proof_rows,
+           (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+            WHERE audit_event_id = $3::uuid) AS audit_rows`,
+        [task9OrganizationA, task9DashboardA, operationId],
+      );
+      expect(written.rows[0]).toEqual({ audit_rows: "1", proof_rows: "1" });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    const residue = await task9Residue(operationId);
+    expect(residue.age_out_proof_rows).toBe("0");
+    expect(residue.audit_rows_for_operation).toBe("0");
+  }, 60_000);
+
+  // (a) The frozen global probe still fires first when the collision is one the
+  // Part 5 policy can see. This path is unchanged by Part 6.
+  it("normalizes an in-scope duplicate operation id from the frozen probe", async () => {
+    const operationId = "9a000000-0000-4000-8000-0000000000a1";
+    await task9SpendOperationId(
+      operationId,
+      task9OrganizationA,
+      task9DashboardA,
+    );
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await expect(task9CallAgeOut(client, operationId)).rejects.toMatchObject({
+        code: "P1002",
+        message: "dasher_conflict",
+      });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    const residue = await task9Residue(operationId);
+    expect(residue.age_out_proof_rows).toBe("0");
+    expect(residue.audit_rows_for_operation).toBe("1");
+    expect(residue.seeded_audit_row_survives).toBe(true);
+  }, 60_000);
+
+  // (b) The collision Part 5's scoping hides: the operation id belongs to
+  // another dashboard in the same organization, so the frozen probe cannot see
+  // it and the primary key is what refuses. Part 6 is what makes that refusal
+  // P1002 instead of a raw 23505.
+  it("normalizes a cross-dashboard collision at the audit INSERT and rolls back cleanly", async () => {
+    const operationId = "9a000000-0000-4000-8000-0000000000b1";
+    await task9SpendOperationId(
+      operationId,
+      task9OrganizationA,
+      task9DashboardB,
+    );
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await expect(task9CallAgeOut(client, operationId)).rejects.toMatchObject({
+        code: "P1002",
+        message: "dasher_conflict",
+      });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    // Nothing partial survives: no age-out proof, the installed ledger
+    // vocabulary and its three seeded 'backup.deleted' rows are exactly as the
+    // fixture left them, and the only audit row carrying the operation id is
+    // still the one the probe seeded against the other dashboard.
+    const residue = await task9Residue(operationId);
+    expect(residue).toEqual({
+      age_out_proof_rows: "0",
+      audit_rows_for_operation: "1",
+      backup_deleted_ledger_rows: "3",
+      ledger_constraint:
+        "CHECK ((event_kind = ANY (ARRAY['access_revoked'::text, 'purged'::text, 'backup.deleted'::text])))",
+      seeded_audit_row_survives: true,
+    });
+  }, 60_000);
+
+  // (c) The same collision across an organization boundary.
+  it("normalizes a cross-organization collision at the audit INSERT and rolls back cleanly", async () => {
+    const operationId = "9a000000-0000-4000-8000-0000000000c1";
+    await task9SpendOperationId(
+      operationId,
+      task9OrganizationB,
+      task9DashboardC,
+    );
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await expect(task9CallAgeOut(client, operationId)).rejects.toMatchObject({
+        code: "P1002",
+        message: "dasher_conflict",
+      });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    const residue = await task9Residue(operationId);
+    expect(residue).toEqual({
+      age_out_proof_rows: "0",
+      audit_rows_for_operation: "1",
+      backup_deleted_ledger_rows: "3",
+      ledger_constraint:
+        "CHECK ((event_kind = ANY (ARRAY['access_revoked'::text, 'purged'::text, 'backup.deleted'::text])))",
+      seeded_audit_row_survives: true,
+    });
+  }, 60_000);
+
+  // The counterfactual, so the repair cannot be quietly reverted: with frozen
+  // 0007's body restored, the very same cross-dashboard collision surfaces the
+  // bare uniqueness failure the plan forbids - constraint name and all.
+  it("surfaces a raw 23505 from the frozen 0007 body the correction replaces", async () => {
+    const operationId = "9a000000-0000-4000-8000-0000000000e1";
+    await task9SpendOperationId(
+      operationId,
+      task9OrganizationA,
+      task9DashboardB,
+    );
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozen =
+      /^CREATE FUNCTION dasher_retention_api[.]age_out_dashboard_agent_run_metadata\([\s\S]*?^\$function\$;/mu.exec(
+        migrations[6]?.sql ?? "",
+      )?.[0];
+    if (frozen === undefined) {
+      throw new Error("Task 9 could not extract the frozen 0007 age-out");
+    }
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        frozen.replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION "),
+      );
+      await expect(task9CallAgeOut(client, operationId)).rejects.toMatchObject({
+        code: "23505",
+        constraint: "audit_events_pkey",
+      });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    const residue = await task9Residue(operationId);
+    expect(residue.age_out_proof_rows).toBe("0");
+    expect(residue.audit_rows_for_operation).toBe("1");
+  }, 60_000);
+
+  // Part 6 lives inside a routine body, and pg_get_functiondef is part of the
+  // fingerprinted routine inventory, so reverting it is catalog drift rather
+  // than a silent behavioural regression. Restoring frozen 0007's body moves
+  // the phase-8 fingerprint off its frozen constant - observed as
+  // cbc1f2228f4af4e6fc8a2957ab7cad9eac21c20024d9cbd6d5278cca8394b796 against
+  // the 5e42f3bd... baseline, at an unchanged entry count of 7718, because
+  // replacing a routine renames no identity - and the gate refuses it.
+  it("reads a reverted Part 6 body as phase-8 catalog drift", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozen =
+      /^CREATE FUNCTION dasher_retention_api[.]age_out_dashboard_agent_run_metadata\([\s\S]*?^\$function\$;/mu.exec(
+        migrations[6]?.sql ?? "",
+      )?.[0];
+    if (frozen === undefined) {
+      throw new Error("Task 9 could not extract the frozen 0007 age-out");
+    }
+    const client = await ownerPool.connect();
+    try {
+      const ownerName = (
+        await client.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        )
+      ).rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("Task 9 could not resolve the database owner");
+      }
+      // The installed catalog is on the frozen constant before the revert.
+      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+        true,
+      );
+      await client.query("BEGIN");
+      try {
+        await client.query(
+          frozen.replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION "),
+        );
+        expect(
+          await canonical0008CatalogMatchesForTests(client, ownerName),
+        ).toBe(false);
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+      }
+      // And back on it once the revert is rolled back.
+      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+        true,
+      );
+    } finally {
+      client.release();
+    }
+  }, 60_000);
+});
+
+// Task 9 audit-event-id collision normalization for the three retention entry
+// points 0008 corrects outside the age-out: the cleanup claim (Part 2), the
+// agent-run drain (Part 3) and the dashboard purge (Part 8).
+//
+// dasher.audit_events.audit_event_id is a global primary key, and all three
+// write it from a caller-supplied uuid. Unlike the age-out, none of them has
+// any probe that could observe that uuid being spent somewhere else: every
+// guard they carry is scoped to one organization and one dashboard. So a uuid
+// already spent by an audit row in another scope passes every gate, the call
+// runs its whole write path, and the audit INSERT at the end is what refuses
+// it. Without the wrapper that refusal is a bare 23505 carrying
+// audit_events_pkey; with it, it is the P1002 / dasher_conflict every other
+// conflict path in these functions already raises.
+//
+// Each function below is reached through its real precondition chain - claim
+// the lease, drain, record the attempt, re-claim with the drain proof, purge -
+// driven by the same operator context production uses. Nothing is stubbed and
+// no schema is altered.
+describe.sequential("Task 9 retention audit collision normalization", () => {
+  const t9rOrganization = "9b000000-0000-4000-8000-000000000001";
+  const t9rDashboard = "9b000000-0000-4000-8000-000000000010";
+  const t9rOtherDashboard = "9b000000-0000-4000-8000-000000000011";
+  const t9rLineage = "9b000000-0000-4000-8000-000000000020";
+  const t9rOtherLineage = "9b000000-0000-4000-8000-000000000021";
+  const t9rUserId = "9b000000-0000-4000-8000-000000000030";
+  const t9rPrincipalId = "9b000000-0000-4000-8000-000000000040";
+  const t9rDeployment = "task9-retention-probe";
+  const t9rBaseRevision = 5;
+
+  // Every retention entry point opens its own operator context, and
+  // initialize_operator_context refuses to run when any of its GUCs is already
+  // set. They are set transaction-locally, so one call per transaction is the
+  // contract; each helper here honours it by using a fresh implicit
+  // transaction, exactly as the production caller does.
+  async function callRetentionAs(
+    sql: string,
+    parameters: readonly unknown[],
+  ): Promise<void> {
+    const client = await ownerPool.connect();
+    let failure: unknown;
+    try {
+      await client.query("SET ROLE dasher_retention_operator");
+      await client.query(sql, [...parameters]);
+    } catch (error) {
+      failure = error;
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+    if (failure !== undefined) {
+      throw failure;
+    }
+  }
+
+  async function t9rClaim(
+    revision: number,
+    transitionProof: Buffer | null,
+    operationId: string,
+  ): Promise<void> {
+    await callRetentionAs(
+      `SELECT dasher_retention_api.claim_dashboard_cleanup(
+         $1::uuid, $2::bigint, $3::bytea, interval '5 minutes', $4::uuid,
+         $5::text, $6::uuid)`,
+      [
+        t9rDashboard,
+        revision,
+        transitionProof,
+        operationId,
+        t9rDeployment,
+        t9rOrganization,
+      ],
+    );
+  }
+
+  async function t9rDrainRequestProof(
+    revision: number,
+    operationId: string,
+  ): Promise<Buffer> {
+    const derived = await ownerPool.query<{ readonly request_sha256: Buffer }>(
+      `SELECT pg_catalog.sha256(
+         pg_catalog.convert_to('dasher.agent-run-drain-request.v1', 'UTF8')
+         || pg_catalog.decode('00', 'hex')
+         || pg_catalog.uuid_send($2::uuid)
+         || pg_catalog.int8send($3::bigint)
+         || pg_catalog.uuid_send($4::uuid)
+         || pg_catalog.int4send(pg_catalog.octet_length($5::text))
+         || pg_catalog.convert_to($5::text, 'UTF8')
+         || pg_catalog.uuid_send($1::uuid)
+         || pg_catalog.int4send(
+           pg_catalog.octet_length(coordination.current_step))
+         || pg_catalog.convert_to(coordination.current_step, 'UTF8')
+         || pg_catalog.int4send(
+           pg_catalog.octet_length(coordination.lease_owner::text))
+         || pg_catalog.convert_to(coordination.lease_owner::text, 'UTF8')
+         || pg_catalog.int8send((extract(epoch FROM
+           coordination.lease_expires_at) * 1000000)::bigint)
+         || pg_catalog.uuid_send($6::uuid)
+         || pg_catalog.int8send($7::bigint)
+       ) AS request_sha256
+       FROM dasher.dashboard_cleanup_coordination AS coordination
+       WHERE coordination.organization_id = $1::uuid
+         AND coordination.dashboard_id = $2::uuid`,
+      [
+        t9rOrganization,
+        t9rDashboard,
+        revision,
+        operationId,
+        t9rDeployment,
+        t9rPrincipalId,
+        1,
+      ],
+    );
+    const digest = derived.rows[0]?.request_sha256;
+    if (digest === undefined) {
+      throw new Error("Task 9 could not derive the drain request proof");
+    }
+    return digest;
+  }
+
+  async function t9rDrain(
+    revision: number,
+    requestProof: Buffer,
+    operationId: string,
+  ): Promise<void> {
+    await callRetentionAs(
+      `SELECT dasher_retention_api.drain_dashboard_agent_runs(
+         $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::text, $6::uuid)`,
+      [
+        t9rDashboard,
+        revision,
+        requestProof,
+        operationId,
+        t9rDeployment,
+        t9rOrganization,
+      ],
+    );
+  }
+
+  async function t9rCleanupCompletionProof(
+    cleanupAttemptId: string,
+    step: string,
+    result: string,
+  ): Promise<Buffer> {
+    const derived = await ownerPool.query<{
+      readonly completion_sha256: Buffer;
+    }>(
+      `SELECT pg_catalog.sha256(
+         pg_catalog.convert_to(
+           'dasher.dashboard-cleanup-completion.v1', 'UTF8')
+         || pg_catalog.decode('00', 'hex')
+         || pg_catalog.uuid_send($2::uuid)
+         || pg_catalog.int8send(dashboard.lifecycle_revision)
+         || pg_catalog.uuid_send($3::uuid)
+         || pg_catalog.int4send(pg_catalog.octet_length($4::text))
+         || pg_catalog.convert_to($4::text, 'UTF8')
+         || pg_catalog.int4send(pg_catalog.octet_length($5::text))
+         || pg_catalog.convert_to($5::text, 'UTF8')
+         || pg_catalog.int8send(0::bigint)
+         || pg_catalog.int8send(0::bigint)
+         || pg_catalog.int8send(0::bigint)
+         || CASE WHEN drain.drain_proof_sha256 IS NULL
+           THEN pg_catalog.decode('00', 'hex')
+           ELSE pg_catalog.decode('01', 'hex')
+             || pg_catalog.int4send(
+               pg_catalog.octet_length(drain.drain_proof_sha256))
+             || drain.drain_proof_sha256 END
+         || pg_catalog.uuid_send($1::uuid)
+         || pg_catalog.int4send(
+           pg_catalog.octet_length(coordination.lease_owner::text))
+         || pg_catalog.convert_to(coordination.lease_owner::text, 'UTF8')
+         || pg_catalog.uuid_send($6::uuid)
+         || pg_catalog.int8send($7::bigint)
+       ) AS completion_sha256
+       FROM dasher.dashboards AS dashboard
+       JOIN dasher.dashboard_cleanup_coordination AS coordination
+         ON coordination.organization_id = dashboard.organization_id
+         AND coordination.dashboard_id = dashboard.dashboard_id
+       LEFT JOIN LATERAL (
+         SELECT proof.drain_proof_sha256
+         FROM dasher.dashboard_agent_drain_proofs AS proof
+         WHERE proof.organization_id = dashboard.organization_id
+           AND proof.dashboard_id = dashboard.dashboard_id
+           AND NOT EXISTS (
+             SELECT 1
+             FROM dasher.dashboard_agent_drain_proof_consumptions AS consumed
+             WHERE consumed.organization_id = proof.organization_id
+               AND consumed.dashboard_id = proof.dashboard_id
+               AND consumed.proof_id = proof.proof_id
+           )
+         ORDER BY proof.generated_at DESC,
+           pg_catalog.uuid_send(proof.proof_id) DESC
+         LIMIT 1
+       ) AS drain ON true
+       WHERE dashboard.organization_id = $1::uuid
+         AND dashboard.dashboard_id = $2::uuid`,
+      [
+        t9rOrganization,
+        t9rDashboard,
+        cleanupAttemptId,
+        step,
+        result,
+        t9rPrincipalId,
+        1,
+      ],
+    );
+    const digest = derived.rows[0]?.completion_sha256;
+    if (digest === undefined) {
+      throw new Error("Task 9 could not derive the cleanup completion proof");
+    }
+    return digest;
+  }
+
+  async function t9rUnconsumedDrainProof(): Promise<Buffer> {
+    const derived = await ownerPool.query<{
+      readonly drain_proof_sha256: Buffer;
+    }>(
+      `SELECT proof.drain_proof_sha256
+       FROM dasher.dashboard_agent_drain_proofs AS proof
+       WHERE proof.organization_id = $1::uuid
+         AND proof.dashboard_id = $2::uuid
+         AND NOT EXISTS (
+           SELECT 1
+           FROM dasher.dashboard_agent_drain_proof_consumptions AS consumed
+           WHERE consumed.organization_id = proof.organization_id
+             AND consumed.dashboard_id = proof.dashboard_id
+             AND consumed.proof_id = proof.proof_id
+         )
+       ORDER BY proof.generated_at DESC,
+         pg_catalog.uuid_send(proof.proof_id) DESC
+       LIMIT 1`,
+      [t9rOrganization, t9rDashboard],
+    );
+    const digest = derived.rows[0]?.drain_proof_sha256;
+    if (digest === undefined) {
+      throw new Error("Task 9 could not find an unconsumed drain proof");
+    }
+    return digest;
+  }
+
+  // The frozen claim only takes the coordination lease when the current one has
+  // expired, so the harness expires it the way a real operator would wait it
+  // out. Nothing else about the row is touched.
+  async function t9rReleaseLease(): Promise<void> {
+    await ownerPool.query(
+      `UPDATE dasher.dashboard_cleanup_coordination
+       SET lease_expires_at = statement_timestamp() - interval '1 second'
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid
+         AND lease_expires_at IS NOT NULL`,
+      [t9rOrganization, t9rDashboard],
+    );
+  }
+
+  // Commit one audit row that spends `operationId` against a different
+  // dashboard in the same organization. None of the three functions has a
+  // probe that can see it, so it is invisible to every gate and the primary
+  // key is what stops the call.
+  async function t9rSpend(operationId: string): Promise<void> {
+    await ownerPool.query(
+      `INSERT INTO dasher.audit_events (
+         audit_event_id, organization_id, occurred_at, actor_kind,
+         actor_service, authority_revision, request_id, action, target_type,
+         target_id, outcome, content_sha256, deployment_revision
+       ) VALUES (
+         $1::uuid, $2::uuid, transaction_timestamp(), 'service',
+         'task9-retention-probe', 1, pg_catalog.gen_random_uuid(),
+         'dashboard.cleanup_started', 'dashboard', $3::uuid, 'succeeded',
+         pg_catalog.sha256(pg_catalog.convert_to('x', 'UTF8')),
+         'task9-retention-probe'
+       )`,
+      [operationId, t9rOrganization, t9rOtherDashboard],
+    );
+  }
+
+  async function t9rResidue(operationId: string): Promise<{
+    readonly audit_rows_for_operation: string;
+    readonly drain_proofs: string;
+    readonly lifecycle_events_for_operation: string;
+    readonly lifecycle_state: string;
+    readonly seeded_audit_row_survives: boolean;
+  }> {
+    const residue = await ownerPool.query<{
+      readonly audit_rows_for_operation: string;
+      readonly drain_proofs: string;
+      readonly lifecycle_events_for_operation: string;
+      readonly lifecycle_state: string;
+      readonly seeded_audit_row_survives: boolean;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+          WHERE audit_event_id = $1::uuid) AS audit_rows_for_operation,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_lifecycle_events
+          WHERE lifecycle_event_id = $1::uuid)
+           AS lifecycle_events_for_operation,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.dashboard_agent_drain_proofs
+          WHERE organization_id = $2::uuid AND dashboard_id = $3::uuid)
+           AS drain_proofs,
+         (SELECT dashboard.lifecycle_state FROM dasher.dashboards AS dashboard
+          WHERE dashboard.organization_id = $2::uuid
+            AND dashboard.dashboard_id = $3::uuid) AS lifecycle_state,
+         EXISTS (SELECT 1 FROM dasher.audit_events
+           WHERE audit_event_id = $1::uuid
+             AND actor_service = 'task9-retention-probe')
+           AS seeded_audit_row_survives`,
+      [operationId, t9rOrganization, t9rDashboard],
+    );
+    const row = residue.rows[0];
+    if (row === undefined) {
+      throw new Error("Task 9 retention residue projection returned no row");
+    }
+    return row;
+  }
+
+  // Install a frozen 0007 body, run the probe against it, and put the 0008
+  // body back. The replacement is committed rather than held in an open
+  // transaction because the caller has to reach it through its own operator
+  // context in a separate transaction; the finally clause restores the
+  // corrected body and the phase-8 gate is re-asserted afterwards.
+  async function t9rWithFrozenBody(
+    routine: string,
+    probe: () => Promise<void>,
+  ): Promise<void> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozenSource = migrations[6]?.sql ?? "";
+    const correctedSource = migrations[7]?.sql ?? "";
+    const pattern = new RegExp(
+      `^CREATE (?:OR REPLACE )?FUNCTION ${routine.replaceAll(".", "[.]")}\\([\\s\\S]*?^\\$function\\$;`,
+      "mu",
+    );
+    const frozen = pattern.exec(frozenSource)?.[0];
+    const corrected = pattern.exec(correctedSource)?.[0];
+    if (frozen === undefined || corrected === undefined) {
+      throw new Error(`Task 9 could not extract both bodies for ${routine}`);
+    }
+    try {
+      await ownerPool.query(
+        frozen.replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION "),
+      );
+      await probe();
+    } finally {
+      await ownerPool.query(corrected);
+    }
+    const client = await ownerPool.connect();
+    try {
+      const ownerName = (
+        await client.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        )
+      ).rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("Task 9 could not resolve the database owner");
+      }
+      // The corrected body really is back: the phase-8 gate hashes it.
+      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+        true,
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async function t9rRecordAttempt(
+    attemptId: string,
+    step: string,
+    result: string,
+  ): Promise<void> {
+    const completionProof = await t9rCleanupCompletionProof(
+      attemptId,
+      step,
+      result,
+    );
+    await callRetentionAs(
+      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+         $1::uuid, $2::uuid, $3::text, $4::text, 0, 0, 0, $5::bytea, $6::uuid)`,
+      [t9rDashboard, attemptId, step, result, completionProof, t9rOrganization],
+    );
+  }
+
+  // One full claim/drain/record cycle at a revision, the way the retention
+  // operator runs it. Mirrors the frozen sequence exactly: take the lease,
+  // drain under it, then close the attempt that the next claim consumes.
+  async function t9rDrainCycle(
+    revision: number,
+    step: string,
+    claimId: string,
+    drainId: string,
+  ): Promise<void> {
+    await t9rReleaseLease();
+    await t9rClaim(revision, null, claimId);
+    const requestProof = await t9rDrainRequestProof(revision, drainId);
+    await t9rDrain(revision, requestProof, drainId);
+    await t9rRecordAttempt(drainId, step, "succeeded");
+  }
+
+  async function t9rPurge(
+    revision: number,
+    completionProof: Buffer | null,
+    operationId: string,
+  ): Promise<void> {
+    await callRetentionAs(
+      `SELECT dasher_retention_api.purge_dashboard(
+         $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::text, $6::uuid)`,
+      [
+        t9rDashboard,
+        revision,
+        completionProof,
+        operationId,
+        t9rDeployment,
+        t9rOrganization,
+      ],
+    );
+  }
+
+  async function t9rPurgeState(): Promise<{
+    readonly completion_proof: Buffer | null;
+    readonly current_step: string;
+    readonly lifecycle_revision: string;
+    readonly lifecycle_state: string;
+  }> {
+    const observed = await ownerPool.query<{
+      readonly completion_proof: Buffer | null;
+      readonly current_step: string;
+      readonly lifecycle_revision: string;
+      readonly lifecycle_state: string;
+    }>(
+      `SELECT dashboard.lifecycle_state,
+         dashboard.lifecycle_revision::text AS lifecycle_revision,
+         coordination.current_step,
+         coordination.completion_proof_sha256 AS completion_proof
+       FROM dasher.dashboards AS dashboard
+       JOIN dasher.dashboard_cleanup_coordination AS coordination
+         ON coordination.organization_id = dashboard.organization_id
+         AND coordination.dashboard_id = dashboard.dashboard_id
+       WHERE dashboard.organization_id = $1::uuid
+         AND dashboard.dashboard_id = $2::uuid`,
+      [t9rOrganization, t9rDashboard],
+    );
+    const row = observed.rows[0];
+    if (row === undefined) {
+      throw new Error("Task 9 lost the dashboard mid-purge");
+    }
+    return row;
+  }
+
+  // The wrapper-only counterfactual. It takes the body 0008 actually installs
+  // and removes exactly the four lines of the collision wrapper, leaving every
+  // other correction that body carries in place. That isolates the wrapper as
+  // the thing under test: for claim_dashboard_cleanup the frozen 0007 body
+  // cannot be used as the counterfactual at all, because its ON CONFLICT
+  // inference list - the defect Part 2 repairs - makes every call fail with
+  // 42P10 long before the audit INSERT.
+  function t9rUnwrapAuditInsert(body: string): string {
+    const wrapper =
+      /^([ ]*)BEGIN\n((?:[ ]*INSERT INTO dasher\.audit_events[\s\S]*?))\n\1EXCEPTION WHEN unique_violation THEN\n\1 {2}RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';\n\1END;$/mu;
+    const match = wrapper.exec(body);
+    if (match === null) {
+      throw new Error("Task 9 could not locate the audit collision wrapper");
+    }
+    const inner = match[2] ?? "";
+    const unwrapped = inner
+      .split("\n")
+      .map((line) => (line.startsWith("  ") ? line.slice(2) : line))
+      .join("\n");
+    // A function replacer, not a string: these bodies use positional $1..$5
+    // parameter references, which String.replace would read as capture groups.
+    const stripped = body.replace(wrapper, () => unwrapped);
+    if (stripped.includes("EXCEPTION WHEN unique_violation")) {
+      throw new Error("Task 9 left a collision wrapper behind");
+    }
+    return stripped;
+  }
+
+  async function t9rWithUnwrappedBody(
+    routine: string,
+    probe: () => Promise<void>,
+  ): Promise<void> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const pattern = new RegExp(
+      `^CREATE (?:OR REPLACE )?FUNCTION ${routine.replaceAll(".", "[.]")}\\([\\s\\S]*?^\\$function\\$;`,
+      "mu",
+    );
+    const corrected = pattern.exec(migrations[7]?.sql ?? "")?.[0];
+    if (corrected === undefined) {
+      throw new Error(`Task 9 could not extract the 0008 body for ${routine}`);
+    }
+    try {
+      await ownerPool.query(t9rUnwrapAuditInsert(corrected));
+      await probe();
+    } finally {
+      await ownerPool.query(corrected);
+    }
+    const client = await ownerPool.connect();
+    try {
+      const ownerName = (
+        await client.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        )
+      ).rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("Task 9 could not resolve the database owner");
+      }
+      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+        true,
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  beforeAll(async () => {
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+    await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+
+    const fixture = await ownerPool.connect();
+    try {
+      await fixture.query("BEGIN");
+      await fixture.query(
+        `INSERT INTO dasher.users (user_id, created_at)
+         VALUES ($1::uuid, transaction_timestamp())`,
+        [t9rUserId],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.organizations (organization_id, display_name)
+         VALUES ($1::uuid, 'Task 9 retention collision organization')`,
+        [t9rOrganization],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.dashboard_lifecycle_policies (
+           organization_id, policy_revision, default_disposable_ttl_seconds,
+           retention_policy_revision, created_at, created_by_user_id,
+           provenance
+         ) VALUES ($1::uuid, 1, 86400, 1, transaction_timestamp(), $2::uuid,
+           'task9-retention-probe')`,
+        [t9rOrganization, t9rUserId],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.dashboard_tombstones (
+           organization_id, tombstone_lineage_id, retention_policy_revision,
+           access_revoked_at, access_revoked_lifecycle_revision,
+           access_revoked_proof_sha256
+         )
+         SELECT $1::uuid, lineage, 1,
+           transaction_timestamp() - interval '48 hours', $2::bigint,
+           pg_catalog.sha256(pg_catalog.convert_to('revoked', 'UTF8'))
+         FROM (VALUES ($3::uuid), ($4::uuid)) AS t(lineage)`,
+        [t9rOrganization, t9rBaseRevision, t9rLineage, t9rOtherLineage],
+      );
+      // Both dashboards are 'access_revoked' and past their purge_after, which
+      // is the state the cleanup claim, the drain and the purge all start from.
+      await fixture.query(
+        `INSERT INTO dasher.dashboards (
+           organization_id, dashboard_id, title, created_by_user_id, created_at,
+           created_kind, current_kind, lifecycle_state, lifecycle_revision,
+           capability_epoch, cache_epoch, access_revoked_at, revocation_reason,
+           purge_after, retention_policy_revision, tombstone_lineage_id
+         )
+         SELECT $1::uuid, dash, 'Task 9 retention collision probe', $2::uuid,
+           transaction_timestamp() - interval '30 days',
+           'durable', 'durable', 'access_revoked', $3::bigint, 1, 1,
+           transaction_timestamp() - interval '48 hours', 'explicit_delete',
+           transaction_timestamp() - interval '24 hours', 1, lineage
+         FROM (VALUES ($4::uuid, $5::uuid), ($6::uuid, $7::uuid))
+              AS t(dash, lineage)`,
+        [
+          t9rOrganization,
+          t9rUserId,
+          t9rBaseRevision,
+          t9rDashboard,
+          t9rLineage,
+          t9rOtherDashboard,
+          t9rOtherLineage,
+        ],
+      );
+      await fixture.query(
+        `INSERT INTO dasher.dashboard_cleanup_coordination (
+           organization_id, dashboard_id, current_step,
+           expected_lifecycle_revision
+         )
+         SELECT $1::uuid, dash, 'access_revoked', $2::bigint
+         FROM (VALUES ($3::uuid), ($4::uuid)) AS t(dash)`,
+        [t9rOrganization, t9rBaseRevision, t9rDashboard, t9rOtherDashboard],
+      );
+      const ownerName = (
+        await fixture.query<{ readonly owner_name: string }>(
+          "SELECT session_user::text AS owner_name",
+        )
+      ).rows[0]?.owner_name;
+      if (ownerName === undefined) {
+        throw new Error("Task 9 could not resolve the database owner");
+      }
+      await fixture.query(
+        `INSERT INTO dasher.retention_service_principal_allowlist (
+           retention_service_principal_id, principal_revision, binding_kind,
+           binding_subject, authority_scope, scope_organization_id,
+           can_initialize, can_materialize_expiry, can_place_hold,
+           can_release_hold, can_claim_cleanup, can_record_attempt, can_purge,
+           enabled, created_at, predecessor_revision, predecessor_sha256,
+           revision_sha256, migration_provenance
+         ) VALUES (
+           $1::uuid, 1, 'postgres_session_user', $2::name, 'platform_operator',
+           NULL, true, true, true, true, true, true, true, true,
+           transaction_timestamp(), NULL, NULL,
+           pg_catalog.decode(pg_catalog.repeat('9b', 32), 'hex'),
+           'task9-retention-probe'
+         )`,
+        [t9rPrincipalId, ownerName],
+      );
+      await fixture.query("COMMIT");
+    } catch (error) {
+      await fixture.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      fixture.release();
+    }
+
+    // Take the lease the drain requires. This claim transitions nothing - it
+    // carries no drain proof - so it writes no audit row and spends no
+    // audit_event_id on the path under test.
+    await t9rClaim(
+      t9rBaseRevision,
+      null,
+      "9b000000-0000-4000-8000-0000000000a0",
+    );
+  }, 180_000);
+
+  // dasher_retention_api.drain_dashboard_agent_runs. On the first-drain path
+  // there is no audit probe at all, so a uuid spent by another dashboard's
+  // audit row passes every gate and only the primary key refuses it.
+  it("normalizes a cross-scope drain collision at the audit INSERT and leaves no residue", async () => {
+    const operationId = "9b000000-0000-4000-8000-0000000000b1";
+    await t9rSpend(operationId);
+    const requestProof = await t9rDrainRequestProof(
+      t9rBaseRevision,
+      operationId,
+    );
+    await expect(
+      t9rDrain(t9rBaseRevision, requestProof, operationId),
+    ).rejects.toMatchObject({ code: "P1002", message: "dasher_conflict" });
+    const residue = await t9rResidue(operationId);
+    expect(residue).toEqual({
+      audit_rows_for_operation: "1",
+      drain_proofs: "0",
+      lifecycle_events_for_operation: "0",
+      lifecycle_state: "access_revoked",
+      seeded_audit_row_survives: true,
+    });
+  }, 60_000);
+
+  // The counterfactual: with frozen 0007's body installed, the very same call
+  // surfaces the bare uniqueness failure the plan forbids, constraint name and
+  // all. The 0008 body is restored afterwards and the phase-8 gate re-checked.
+  it("surfaces a raw 23505 from the frozen 0007 drain body", async () => {
+    const operationId = "9b000000-0000-4000-8000-0000000000b2";
+    await t9rSpend(operationId);
+    const requestProof = await t9rDrainRequestProof(
+      t9rBaseRevision,
+      operationId,
+    );
+    await t9rWithFrozenBody(
+      "dasher_retention_api.drain_dashboard_agent_runs",
+      async () => {
+        await expect(
+          t9rDrain(t9rBaseRevision, requestProof, operationId),
+        ).rejects.toMatchObject({
+          code: "23505",
+          constraint: "audit_events_pkey",
+        });
+      },
+    );
+    const residue = await t9rResidue(operationId);
+    expect(residue.drain_proofs).toBe("0");
+    expect(residue.audit_rows_for_operation).toBe("1");
+  }, 60_000);
+
+  // The happy path is unchanged: an unspent operation id drains, writes its
+  // proof and writes its audit row.
+  it("drains normally on an unspent operation id", async () => {
+    const operationId = "9b000000-0000-4000-8000-0000000000b3";
+    const requestProof = await t9rDrainRequestProof(
+      t9rBaseRevision,
+      operationId,
+    );
+    await t9rDrain(t9rBaseRevision, requestProof, operationId);
+    const residue = await t9rResidue(operationId);
+    expect(residue).toEqual({
+      audit_rows_for_operation: "1",
+      drain_proofs: "1",
+      lifecycle_events_for_operation: "0",
+      lifecycle_state: "access_revoked",
+      seeded_audit_row_survives: false,
+    });
+    const written = await ownerPool.query<{ readonly action: string }>(
+      "SELECT action FROM dasher.audit_events WHERE audit_event_id = $1::uuid",
+      [operationId],
+    );
+    expect(written.rows[0]?.action).toBe("dashboard.agent_runs_drained");
+  }, 60_000);
+
+  // dasher_retention_api.claim_dashboard_cleanup reaches its audit INSERT only
+  // when it transitions the dashboard, which needs the drain proof the step
+  // above produced and the successful cleanup attempt that closed it. Both are
+  // recorded here through the frozen entry points, so the claim below is
+  // reached through the real chain.
+  it("records the cleanup attempt that closes the drain", async () => {
+    const attemptId = "9b000000-0000-4000-8000-0000000000b3";
+    const completionProof = await t9rCleanupCompletionProof(
+      attemptId,
+      "drain_and_cancel",
+      "succeeded",
+    );
+    await callRetentionAs(
+      `SELECT dasher_retention_api.record_dashboard_cleanup_attempt(
+         $1::uuid, $2::uuid, 'drain_and_cancel', 'succeeded', 0, 0, 0,
+         $3::bytea, $4::uuid)`,
+      [t9rDashboard, attemptId, completionProof, t9rOrganization],
+    );
+    const attempts = await ownerPool.query<{ readonly result: string }>(
+      `SELECT result FROM dasher.dashboard_cleanup_attempts
+       WHERE organization_id = $1::uuid AND dashboard_id = $2::uuid`,
+      [t9rOrganization, t9rDashboard],
+    );
+    expect(attempts.rows.map((row) => row.result)).toEqual(["succeeded"]);
+  }, 60_000);
+
+  it("normalizes a cross-scope claim collision at the audit INSERT and leaves no residue", async () => {
+    const operationId = "9b000000-0000-4000-8000-0000000000c1";
+    await t9rSpend(operationId);
+    const drainProof = await t9rUnconsumedDrainProof();
+    await t9rReleaseLease();
+    await expect(
+      t9rClaim(t9rBaseRevision, drainProof, operationId),
+    ).rejects.toMatchObject({ code: "P1002", message: "dasher_conflict" });
+    const residue = await t9rResidue(operationId);
+    expect(residue).toEqual({
+      audit_rows_for_operation: "1",
+      drain_proofs: "1",
+      lifecycle_events_for_operation: "0",
+      lifecycle_state: "access_revoked",
+      seeded_audit_row_survives: true,
+    });
+  }, 60_000);
+
+  it("surfaces a raw 23505 from the unwrapped claim body", async () => {
+    const operationId = "9b000000-0000-4000-8000-0000000000c2";
+    await t9rSpend(operationId);
+    const drainProof = await t9rUnconsumedDrainProof();
+    await t9rReleaseLease();
+    await t9rWithUnwrappedBody(
+      "dasher_retention_api.claim_dashboard_cleanup",
+      async () => {
+        await expect(
+          t9rClaim(t9rBaseRevision, drainProof, operationId),
+        ).rejects.toMatchObject({
+          code: "23505",
+          constraint: "audit_events_pkey",
+        });
+      },
+    );
+    const residue = await t9rResidue(operationId);
+    expect(residue.lifecycle_state).toBe("access_revoked");
+    expect(residue.audit_rows_for_operation).toBe("1");
+  }, 60_000);
+
+  it("claims and transitions normally on an unspent operation id", async () => {
+    const operationId = "9b000000-0000-4000-8000-0000000000c3";
+    const drainProof = await t9rUnconsumedDrainProof();
+    await t9rReleaseLease();
+    await t9rClaim(t9rBaseRevision, drainProof, operationId);
+    const residue = await t9rResidue(operationId);
+    expect(residue).toEqual({
+      audit_rows_for_operation: "1",
+      drain_proofs: "1",
+      lifecycle_events_for_operation: "1",
+      lifecycle_state: "quarantined",
+      seeded_audit_row_survives: false,
+    });
+    const written = await ownerPool.query<{ readonly action: string }>(
+      "SELECT action FROM dasher.audit_events WHERE audit_event_id = $1::uuid",
+      [operationId],
+    );
+    expect(written.rows[0]?.action).toBe("dashboard.cleanup_started");
+  }, 60_000);
+
+  // dasher_retention_api.purge_dashboard. Its audit INSERT is on the last pass
+  // of the frozen multi-pass traversal, so the dashboard is walked there
+  // through the real chain and the probes are taken at exactly that pass -
+  // identified, as the frozen body identifies it, by the coordination row
+  // standing at 'final_proof_ready' with its completion proof present.
+  it("normalizes a cross-scope purge collision on the final pass and completes on an unspent id", async () => {
+    const collisionId = "9b000000-0000-4000-8000-0000000000d1";
+    const counterfactualId = "9b000000-0000-4000-8000-0000000000d2";
+    await t9rSpend(collisionId);
+    await t9rSpend(counterfactualId);
+
+    // quarantined@6 -> purge_eligible@7, then one more drain and consumption at
+    // revision 7, which is what purge_dashboard's own gate requires.
+    await t9rDrainCycle(
+      6,
+      "prepare_finalizers",
+      "9b000000-0000-4000-8000-0000000000d3",
+      "9b000000-0000-4000-8000-0000000000d4",
+    );
+    const purgeEligibleProof = await t9rUnconsumedDrainProof();
+    await t9rReleaseLease();
+    await t9rClaim(
+      6,
+      purgeEligibleProof,
+      "9b000000-0000-4000-8000-0000000000d5",
+    );
+    await t9rDrainCycle(
+      7,
+      "purge_finalizing",
+      "9b000000-0000-4000-8000-0000000000d6",
+      "9b000000-0000-4000-8000-0000000000d7",
+    );
+    const finalDrainProof = await t9rUnconsumedDrainProof();
+    await t9rReleaseLease();
+    await t9rClaim(7, finalDrainProof, "9b000000-0000-4000-8000-0000000000d8");
+
+    const trace: string[] = [];
+    let probedFinalPass = false;
+    let pass = 0;
+    for (;;) {
+      pass += 1;
+      if (pass > 40) {
+        throw new Error(`Task 9 purge traversal did not converge: ${trace}`);
+      }
+      const state = await t9rPurgeState();
+      trace.push(
+        `${state.lifecycle_state}@${state.lifecycle_revision}/${state.current_step}`,
+      );
+      if (state.lifecycle_state === "cleaned") {
+        break;
+      }
+      const revision = Number(state.lifecycle_revision);
+      if (state.completion_proof === null) {
+        const attemptId = randomUUID();
+        await t9rReleaseLease();
+        await t9rClaim(revision, null, attemptId);
+        await t9rRecordAttempt(attemptId, "purge_finalizing", "succeeded");
+        continue;
+      }
+      if (state.current_step === "final_proof_ready" && !probedFinalPass) {
+        probedFinalPass = true;
+        // (a) The collision. Every gate above passes - the spent uuid belongs
+        // to another dashboard's audit row and nothing here can see it - so
+        // the whole purge runs and the audit INSERT is what refuses.
+        await expect(
+          t9rPurge(revision, state.completion_proof, collisionId),
+        ).rejects.toMatchObject({ code: "P1002", message: "dasher_conflict" });
+        // Nothing partial survives: the dashboard is still purge_eligible and
+        // the coordination row is exactly where the failed pass found it.
+        const afterCollision = await t9rPurgeState();
+        expect(afterCollision).toMatchObject({
+          current_step: "final_proof_ready",
+          lifecycle_revision: state.lifecycle_revision,
+          lifecycle_state: "purge_eligible",
+        });
+        expect((await t9rResidue(collisionId)).audit_rows_for_operation).toBe(
+          "1",
+        );
+
+        // (b) The counterfactual, on the same pass.
+        await t9rWithUnwrappedBody(
+          "dasher_retention_api.purge_dashboard",
+          async () => {
+            await expect(
+              t9rPurge(revision, state.completion_proof, counterfactualId),
+            ).rejects.toMatchObject({
+              code: "23505",
+              constraint: "audit_events_pkey",
+            });
+          },
+        );
+        expect(await t9rPurgeState()).toMatchObject({
+          current_step: "final_proof_ready",
+          lifecycle_state: "purge_eligible",
+        });
+      }
+      await t9rPurge(revision, state.completion_proof, randomUUID());
+    }
+
+    // (c) The happy path: the traversal reached 'cleaned' with the last pass
+    // run on an unspent id, so neither probe changed what the purge does.
+    expect(probedFinalPass).toBe(true);
+    const purged = await ownerPool.query<{
+      readonly lifecycle_state: string;
+      readonly purged_at_set: boolean;
+      readonly purged_audit_rows: string;
+    }>(
+      `SELECT dashboard.lifecycle_state,
+         dashboard.purged_at IS NOT NULL AS purged_at_set,
+         (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+          WHERE organization_id = $1::uuid AND action = 'dashboard.purged'
+            AND target_id = $2::uuid) AS purged_audit_rows
+       FROM dasher.dashboards AS dashboard
+       WHERE dashboard.organization_id = $1::uuid
+         AND dashboard.dashboard_id = $2::uuid`,
+      [t9rOrganization, t9rDashboard],
+    );
+    expect(purged.rows[0]).toEqual({
+      lifecycle_state: "cleaned",
+      purged_at_set: true,
+      purged_audit_rows: "1",
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    await resetManagedSchemas();
+  }, 120_000);
+});
+
+// The installed shape of every audit-event-id collision wrapper 0008 issues.
+//
+// Four of the five wrapped routines are proven behaviourally elsewhere in this
+// file: the age-out, the cleanup claim, the agent-run drain and the dashboard
+// purge each get a live cross-scope collision, a residue check and a
+// counterfactual. The fifth, dasher_api.request_agent_run, is not reachable
+// from a seeded fixture without also building the field-catalog snapshot,
+// metric-contract and evidence layers its frozen validators demand, so it is
+// pinned here structurally instead: the definition PostgreSQL actually
+// installed has to carry the wrapper, in the right place, around the right
+// statement, and nowhere else. The unit suite carries the matching mechanical
+// proof that the 0008 body is the frozen 0007 body plus exactly those four
+// lines.
+describe.sequential("Task 9 audit collision wrapper installed shape", () => {
+  const wrappedRoutines = [
+    "dasher_api.request_agent_run",
+    "dasher_retention_api.claim_dashboard_cleanup",
+    "dasher_retention_api.drain_dashboard_agent_runs",
+    "dasher_retention_api.purge_dashboard",
+    "dasher_retention_api.age_out_dashboard_agent_run_metadata",
+  ] as const;
+
+  beforeAll(async () => {
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+    await runMigrations(ownerPool, canonicalMigrationDirectory, []);
+  }, 180_000);
+
+  afterAll(async () => {
+    await resetManagedSchemas();
+  }, 120_000);
+
+  it.each(wrappedRoutines)(
+    "installs exactly one audit-INSERT collision wrapper in %s",
+    async (routine) => {
+      const installed = await ownerPool.query<{ readonly definition: string }>(
+        `SELECT pg_catalog.pg_get_functiondef(routine.oid) AS definition
+         FROM pg_catalog.pg_proc AS routine
+         JOIN pg_catalog.pg_namespace AS namespace
+           ON namespace.oid = routine.pronamespace
+         WHERE namespace.nspname || '.' || routine.proname = $1::text`,
+        [routine],
+      );
+      expect(installed.rows).toHaveLength(1);
+      const definition = installed.rows[0]?.definition ?? "";
+
+      // Exactly one wrapper, and it is the collision wrapper.
+      expect(
+        definition.match(/EXCEPTION WHEN unique_violation THEN/gu),
+      ).toHaveLength(1);
+      expect(
+        definition.match(
+          /EXCEPTION WHEN unique_violation THEN\n[ ]*RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';\n[ ]*END;/gu,
+        ),
+      ).toHaveLength(1);
+
+      // It wraps the audit INSERT and nothing else: the block opens
+      // immediately before that INSERT and closes immediately after its
+      // terminator, with no other statement inside it.
+      const block =
+        /^([ ]*)BEGIN\n(\1[ ]{2}INSERT INTO dasher\.audit_events \((?:.|\n)*?)\n\1EXCEPTION WHEN unique_violation THEN\n\1[ ]{2}RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_conflict';\n\1END;$/mu.exec(
+          definition,
+        );
+      expect(block).not.toBeNull();
+      const body = block?.[2] ?? "";
+      expect(body.trimEnd()).toMatch(/\);$/u);
+      // One statement: the only semicolon in the block terminates the INSERT.
+      expect(body.match(/;/gu)).toHaveLength(1);
+      // And no row mark was pulled inside the subtransaction with it.
+      expect(body).not.toMatch(/FOR (?:UPDATE|KEY SHARE|SHARE|NO KEY UPDATE)/u);
+
+      // dasher_api.request_agent_run has no live collision probe in this file,
+      // so its own guarantee is spelled out here: the routine is still
+      // SECURITY DEFINER over the same audit relation the wrapped INSERT
+      // writes, and the wrapper is the last thing before the result is built.
+      if (routine === "dasher_api.request_agent_run") {
+        expect(definition).toContain("SECURITY DEFINER");
+        expect(definition).toMatch(/END;\n\n[ ]*v_result := ROW\(/u);
+      }
+    },
+    60_000,
+  );
+});
+
+// Part 10's collision wrapper on dasher_api.cancel_agent_run, exercised as a
+// live race rather than as installed text.
+//
+// The frozen body's defence was an advisory lock plus a global probe over
+// dasher.audit_events. Neither closes the hole this covers. The advisory key is
+// 'dasher:agent-run-cancel-operation:v1|' || <operation id>, so it orders cancel
+// against cancel and against nothing else: dasher.audit_events.audit_event_id is
+// one global primary key, and the other five frozen entry points spend it from
+// their own caller-supplied parameters under no such key. A writer that is not a
+// cancel therefore never waits on that lock, and the probe cannot see its row
+// until it commits, so the id is spent between the probe and the INSERT.
+//
+// The competing writer here is a direct INSERT into dasher.audit_events, held
+// open in its own transaction. That is deliberate and is the strongest available
+// stand-in for dasher_api.request_agent_run, which this file already documents
+// as unreachable from a seeded fixture without also building the field-catalog,
+// metric-contract and evidence layers its frozen validators demand. What reaches
+// the cancel is identical either way - a concurrently committed row holding that
+// primary key - and the substitution is conservative in the direction that
+// matters: the stand-in takes no lock in the cancel namespace at all, which is
+// exactly the cross-entry-point condition being reproduced. The lock-witness
+// assertion below proves that, rather than assuming it.
+//
+// Four cases, and the first two are what stop the last two from being vacuous:
+//   (a) an unspent id cancels successfully, so the fixture provably reaches and
+//       passes the audit INSERT;
+//   (b) an id already committed before the call is refused by the frozen probe,
+//       so the lock and the probe still stand as defence in depth;
+//   (c) and (d) an id spent by a concurrent uncommitted transaction is refused
+//       by the wrapper, at READ COMMITTED and at REPEATABLE READ. The probe
+//       cannot see the competing row in either case - it is uncommitted when the
+//       probe runs - so the INSERT is what raises, and the distinct error code
+//       from (b) is what proves which of the two paths fired.
+describe.sequential(
+  "Task 9 cancel_agent_run audit collision concurrency",
+  () => {
+    const cancelReason =
+      '{"reason":"user_requested","schema":"run-cancel-reason-v1"}';
+    const cancelDeployment = "task9-cancel-race";
+    let actor: Task4Actor;
+    const counterfactualDashboardId = randomUUID();
+    const raceDashboardId = randomUUID();
+    const counterfactualRunId = randomUUID();
+    const raceRunId = randomUUID();
+
+    // The policy digest is derived from the installed validator rather than from a
+    // re-typed copy of its preimage: dasher_private.validate_agent_run_policy_chain_v1
+    // recomputes it over every revision and the cancel refuses the whole call if it
+    // disagrees, so a hand-copied preimage that drifted would silently turn this
+    // fixture into a P1001 test of nothing.
+    async function policySha256Expression(): Promise<string> {
+      const definition = (
+        await ownerPool.query<{ readonly definition: string }>(
+          "SELECT pg_catalog.pg_get_functiondef('dasher_private.validate_agent_run_policy_chain_v1()'::regprocedure) AS definition",
+        )
+      ).rows[0]?.definition;
+      if (definition === undefined) {
+        throw new Error("the policy chain validator is not installed");
+      }
+      const opener = "v_expected_sha := pg_catalog.sha256(";
+      const start = definition.indexOf(opener);
+      const end = definition.indexOf("\n    );", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      return definition
+        .slice(start + "v_expected_sha := ".length, end + "\n    )".length)
+        .replaceAll("v_revision.", "policy.");
+    }
+
+    async function seedAgentRun(
+      dashboardId: string,
+      runId: string,
+    ): Promise<void> {
+      await ownerPool.query(
+        `INSERT INTO dasher.agent_runs (
+         organization_id, dashboard_id, run_id, run_request_id,
+         requesting_user_id, requesting_membership_id,
+         requesting_authority_revision, policy_revision, requested_at, state,
+         run_revision, current_event_sequence, current_event_sha256, lease_epoch
+       ) VALUES (
+         $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, 1, 1,
+         transaction_timestamp(), 'requested', 1, 1,
+         pg_catalog.sha256(pg_catalog.convert_to($3::text, 'UTF8')), 0
+       )`,
+        [
+          actor.organizationId,
+          dashboardId,
+          runId,
+          randomUUID(),
+          actor.userId,
+          actor.membershipId,
+        ],
+      );
+    }
+
+    async function callCancel(
+      client: PoolClient,
+      runId: string,
+      auditId: string,
+    ): Promise<void> {
+      await client.query(
+        `SELECT dasher_api.cancel_agent_run(
+         $1::uuid, 1::bigint, pg_catalog.convert_to($2::text, 'UTF8'),
+         $3::uuid, 1::smallint, $4::bytea, $5::text
+       )`,
+        [runId, cancelReason, auditId, actor.csrfDigest, cancelDeployment],
+      );
+    }
+
+    // Commit one audit row holding `auditId`, from a transaction the cancel is not
+    // serialized against.
+    async function spendAuditId(auditId: string): Promise<void> {
+      await ownerPool.query(
+        `INSERT INTO dasher.audit_events (
+         audit_event_id, organization_id, occurred_at, actor_kind,
+         actor_service, authority_revision, request_id, action, target_type,
+         target_id, outcome, content_sha256, deployment_revision
+       ) VALUES (
+         $1::uuid, $2::uuid, transaction_timestamp(), 'service',
+         'task9-cancel-race', 1, pg_catalog.gen_random_uuid(),
+         'dashboard.agent_run_requested', 'agent_run', $3::uuid, 'succeeded',
+         pg_catalog.sha256(pg_catalog.convert_to('x', 'UTF8')),
+         $4::text
+       )`,
+        [auditId, actor.organizationId, raceRunId, cancelDeployment],
+      );
+    }
+
+    async function waitForLockWait(pid: number): Promise<string> {
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        const waiting = await ownerPool.query<{
+          readonly wait_event_type: string | null;
+          readonly state: string | null;
+        }>(
+          `SELECT activity.wait_event_type, activity.state
+         FROM pg_catalog.pg_stat_activity AS activity
+         WHERE activity.pid = $1::int`,
+          [pid],
+        );
+        const row = waiting.rows[0];
+        if (row?.state === "active" && row.wait_event_type === "Lock") {
+          return row.wait_event_type;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("the cancel never blocked on the audit primary key");
+    }
+
+    beforeAll(async () => {
+      await closeAppPoolBeforeLoginTeardown();
+      if (appLoginCreated) {
+        await dropTemporaryAppLogin(
+          ownerPool,
+          config.appDatabase,
+          config.appUsername,
+        );
+        appLoginCreated = false;
+      }
+      await resetManagedSchemas();
+      await createTemporaryAppLogin(
+        ownerPool,
+        config.appDsn,
+        config.appUsername,
+      );
+      appLoginCreated = true;
+      await runMigrations(ownerPool, canonicalMigrationDirectory, [
+        config.appUsername,
+      ]);
+      appPool = new Pool({ connectionString: config.appDsn, max: 4 });
+
+      const client = await appPool.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        actor = await createTask4Actor(client, "admin");
+        for (const dashboardId of [
+          counterfactualDashboardId,
+          raceDashboardId,
+        ] as const) {
+          await runContextOperation(
+            client,
+            actor.sessionDigest,
+            randomUUID(),
+            () =>
+              client.query(
+                `SELECT * FROM dasher_api.create_dashboard(
+                 $1::uuid, 'Task 9 cancel race', 'durable', NULL, false,
+                 $2::uuid, $3::uuid, 1::smallint, $4::bytea, $5::text
+               )`,
+                [
+                  dashboardId,
+                  randomUUID(),
+                  randomUUID(),
+                  actor.csrfDigest,
+                  cancelDeployment,
+                ],
+              ),
+          );
+        }
+        await client.query("RESET ROLE");
+      } finally {
+        client.release();
+      }
+
+      await ownerPool.query(
+        `WITH candidate AS (
+         SELECT 1::bigint AS policy_revision,
+           NULL::bigint AS previous_policy_revision,
+           NULL::bytea AS previous_policy_sha256, true AS enabled,
+           'fake-provider-v1'::text AS adapter_id,
+           'fake-model-v1'::text AS model_id,
+           'fake-price-book-v1'::text AS price_book_revision,
+           0::bigint AS input_token_micros, 0::bigint AS output_token_micros,
+           ROW(4,2,1,0,1,20000,8000,8000,20000,8000,24000,36000,32000,120000)
+             ::dasher_run_api.attempt_resource_vector
+             AS generation_limit_vector,
+           ROW(1,0,0,1,0,5000,2000,2000,5000,2000,6000,9000,8000,30000)
+             ::dasher_run_api.attempt_resource_vector AS review_limit_vector,
+           2::smallint AS active_organization_run_limit,
+           1::smallint AS active_dashboard_run_limit,
+           2::smallint AS approval_required_dashboard_limit,
+           1::smallint AS provider_concurrency_limit,
+           0::smallint AS tool_attempt_limit, 1::smallint AS retry_limit,
+           pg_catalog.sha256(pg_catalog.convert_to('planner', 'UTF8'))
+             AS planner_instructions_sha256,
+           pg_catalog.sha256(pg_catalog.convert_to('generator', 'UTF8'))
+             AS generator_instructions_sha256,
+           pg_catalog.sha256(pg_catalog.convert_to('specialist', 'UTF8'))
+             AS specialist_instructions_sha256,
+           pg_catalog.sha256(pg_catalog.convert_to('repair', 'UTF8'))
+             AS repair_instructions_sha256,
+           pg_catalog.sha256(pg_catalog.convert_to('reviewer', 'UTF8'))
+             AS reviewer_instructions_sha256
+       )
+       INSERT INTO dasher.agent_run_policy_revisions (
+         policy_revision, previous_policy_revision, previous_policy_sha256,
+         policy_sha256, enabled, adapter_id, model_id, price_book_revision,
+         input_token_micros, output_token_micros, generation_limit_vector,
+         review_limit_vector, active_organization_run_limit,
+         active_dashboard_run_limit, approval_required_dashboard_limit,
+         provider_concurrency_limit, tool_attempt_limit, retry_limit,
+         planner_instructions_sha256, generator_instructions_sha256,
+         specialist_instructions_sha256, repair_instructions_sha256,
+         reviewer_instructions_sha256, created_at
+       )
+       SELECT policy.policy_revision, policy.previous_policy_revision,
+         policy.previous_policy_sha256, ${await policySha256Expression()},
+         policy.enabled, policy.adapter_id, policy.model_id,
+         policy.price_book_revision, policy.input_token_micros,
+         policy.output_token_micros, policy.generation_limit_vector,
+         policy.review_limit_vector, policy.active_organization_run_limit,
+         policy.active_dashboard_run_limit,
+         policy.approval_required_dashboard_limit,
+         policy.provider_concurrency_limit, policy.tool_attempt_limit,
+         policy.retry_limit, policy.planner_instructions_sha256,
+         policy.generator_instructions_sha256,
+         policy.specialist_instructions_sha256,
+         policy.repair_instructions_sha256,
+         policy.reviewer_instructions_sha256, transaction_timestamp()
+       FROM candidate AS policy`,
+      );
+      // The fixture is worthless if the chain it just wrote does not validate:
+      // the cancel calls this and refuses with P1001 when it returns false.
+      const chain = await ownerPool.query<{ readonly valid: boolean }>(
+        "SELECT dasher_private.validate_agent_run_policy_chain_v1() AS valid",
+      );
+      expect(chain.rows[0]?.valid).toBe(true);
+
+      await seedAgentRun(counterfactualDashboardId, counterfactualRunId);
+      await seedAgentRun(raceDashboardId, raceRunId);
+    }, 180_000);
+
+    afterAll(async () => {
+      await resetManagedSchemas();
+    }, 120_000);
+
+    it("cancels on an unspent audit id, so the fixture reaches the audit INSERT", async () => {
+      const auditId = randomUUID();
+      const client = await appPool!.connect();
+      try {
+        await client.query("SET ROLE dasher_app");
+        await runContextOperation(
+          client,
+          actor.sessionDigest,
+          randomUUID(),
+          () => callCancel(client, counterfactualRunId, auditId),
+        );
+        await client.query("RESET ROLE");
+      } finally {
+        client.release();
+      }
+
+      const written = await ownerPool.query<{
+        readonly action: string;
+        readonly state: string;
+      }>(
+        `SELECT audit.action,
+         (SELECT run.state FROM dasher.agent_runs AS run
+          WHERE run.organization_id = $2::uuid AND run.run_id = $3::uuid)
+           AS state
+       FROM dasher.audit_events AS audit
+       WHERE audit.audit_event_id = $1::uuid`,
+        [auditId, actor.organizationId, counterfactualRunId],
+      );
+      expect(written.rows[0]).toEqual({
+        action: "dashboard.agent_run_cancelled",
+        state: "cancelled",
+      });
+    }, 60_000);
+
+    it("refuses an already-committed audit id at the frozen probe, before any write", async () => {
+      const auditId = randomUUID();
+      await spendAuditId(auditId);
+
+      const client = await appPool!.connect();
+      let raised: unknown;
+      try {
+        await client.query("SET ROLE dasher_app");
+        await runContextOperation(
+          client,
+          actor.sessionDigest,
+          randomUUID(),
+          () => callCancel(client, raceRunId, auditId),
+        ).catch((error: unknown) => {
+          raised = error;
+        });
+        await client.query("RESET ROLE");
+      } finally {
+        client.release();
+      }
+
+      // The frozen probe sees the committed row and refuses. This is the
+      // defence-in-depth half: it is a different code from the wrapper's, which
+      // is what makes the concurrent cases below provably wrapper-driven.
+      expect(raised).toMatchObject({ code: "P1001", message: "dasher_denied" });
+      const untouched = await ownerPool.query<{ readonly state: string }>(
+        `SELECT run.state FROM dasher.agent_runs AS run
+       WHERE run.organization_id = $1::uuid AND run.run_id = $2::uuid`,
+        [actor.organizationId, raceRunId],
+      );
+      expect(untouched.rows[0]?.state).toBe("requested");
+    }, 60_000);
+
+    it.each(["READ COMMITTED", "REPEATABLE READ"] as const)(
+      "normalizes a concurrently spent audit id to P1002 at %s",
+      async (isolationLevel) => {
+        const auditId = randomUUID();
+        const competitor = await ownerPool.connect();
+        const client = await appPool!.connect();
+        let raised: unknown;
+        let competitorOpen = false;
+
+        try {
+          // The competing writer spends the id and holds it uncommitted, so the
+          // cancel's probe cannot see it at any isolation level.
+          await competitor.query("BEGIN");
+          competitorOpen = true;
+          const competitorPid = (
+            await competitor.query<{ readonly pid: number }>(
+              "SELECT pg_catalog.pg_backend_pid() AS pid",
+            )
+          ).rows[0]?.pid;
+          if (competitorPid === undefined) {
+            throw new Error("PostgreSQL did not return the competitor pid");
+          }
+          await competitor.query(
+            `INSERT INTO dasher.audit_events (
+             audit_event_id, organization_id, occurred_at, actor_kind,
+             actor_service, authority_revision, request_id, action,
+             target_type, target_id, outcome, content_sha256,
+             deployment_revision
+           ) VALUES (
+             $1::uuid, $2::uuid, transaction_timestamp(), 'service',
+             'task9-cancel-race', 1, pg_catalog.gen_random_uuid(),
+             'dashboard.agent_run_requested', 'agent_run', $3::uuid,
+             'succeeded',
+             pg_catalog.sha256(pg_catalog.convert_to('x', 'UTF8')), $4::text
+           )`,
+            [auditId, actor.organizationId, raceRunId, cancelDeployment],
+          );
+
+          await client.query("SET ROLE dasher_app");
+          await client.query(`BEGIN ISOLATION LEVEL ${isolationLevel}`);
+          await client.query(
+            `SELECT * FROM dasher_api.initialize_context(
+             1::smallint, $1::bytea, $2::uuid
+           )`,
+            [actor.sessionDigest, randomUUID()],
+          );
+          // The isolation level is asserted rather than assumed: the whole point
+          // of the REPEATABLE READ row is that nothing on the dasher_api path
+          // pins it, so a silent downgrade would make that row a duplicate of the
+          // READ COMMITTED one.
+          const level = await client.query<{
+            readonly transaction_isolation: string;
+          }>("SHOW transaction_isolation");
+          expect(level.rows[0]?.transaction_isolation.toUpperCase()).toBe(
+            isolationLevel,
+          );
+          const cancelPid = (
+            await client.query<{ readonly pid: number }>(
+              "SELECT pg_catalog.pg_backend_pid() AS pid",
+            )
+          ).rows[0]?.pid;
+          if (cancelPid === undefined) {
+            throw new Error("PostgreSQL did not return the cancel backend pid");
+          }
+
+          const pending = callCancel(client, raceRunId, auditId).catch(
+            (error: unknown) => {
+              raised = error;
+            },
+          );
+
+          // The cancel gets all the way to the audit INSERT and blocks there on
+          // the global primary key. Two things follow, and both are asserted: the
+          // probe did not refuse it, and the competitor is not waiting on the
+          // cancel's advisory lock - it holds no lock in that namespace at all,
+          // which is the cross-entry-point hole the wrapper closes.
+          await waitForLockWait(cancelPid);
+          const advisoryWitness = await ownerPool.query<{
+            readonly count: string;
+          }>(
+            `SELECT pg_catalog.count(*)::text AS count
+           FROM pg_catalog.pg_locks AS lock_row
+           WHERE lock_row.locktype = 'advisory'
+             AND lock_row.pid = $1::int`,
+            [competitorPid],
+          );
+          expect(advisoryWitness.rows[0]?.count).toBe("0");
+
+          await competitor.query("COMMIT");
+          competitorOpen = false;
+          await pending;
+        } finally {
+          if (competitorOpen) {
+            await competitor.query("ROLLBACK").catch(() => undefined);
+          }
+          competitor.release();
+          // Both statements have to run even when an assertion above threw, or
+          // the pooled client goes back dirty and the next row of this it.each
+          // fails on a transaction it did not open.
+          await client.query("ROLLBACK").catch(() => undefined);
+          await client.query("RESET ROLE").catch(() => undefined);
+          client.release();
+        }
+
+        // The wrapper, not the probe: P1002 / dasher_conflict, with no SQLSTATE
+        // 23505, no constraint name and no relation name anywhere in the error.
+        expect(raised).toMatchObject({
+          code: "P1002",
+          message: "dasher_conflict",
+        });
+        const serialized = JSON.stringify(
+          raised,
+          Object.getOwnPropertyNames(raised as object),
+        );
+        expect(serialized).not.toContain("23505");
+        expect(serialized).not.toContain("audit_events_pkey");
+        expect(serialized).not.toContain("duplicate key");
+        expect(serialized).not.toContain("unique constraint");
+
+        // The losing side wrote nothing: the competitor's row is the only one
+        // holding that id, and the run is still cancellable.
+        const residue = await ownerPool.query<{
+          readonly actor_service: string | null;
+          readonly state: string;
+        }>(
+          `SELECT audit.actor_service,
+           (SELECT run.state FROM dasher.agent_runs AS run
+            WHERE run.organization_id = $2::uuid AND run.run_id = $3::uuid)
+             AS state
+         FROM dasher.audit_events AS audit
+         WHERE audit.audit_event_id = $1::uuid`,
+          [auditId, actor.organizationId, raceRunId],
+        );
+        expect(residue.rows[0]).toEqual({
+          actor_service: "task9-cancel-race",
+          state: "requested",
+        });
+      },
+      120_000,
+    );
+  },
+);
