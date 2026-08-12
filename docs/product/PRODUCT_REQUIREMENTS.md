@@ -6,6 +6,14 @@ Updated: 2026-08-01
 Domain: `luckbutton.com`
 Repository: `alindebergASL/dasher`
 
+> **Proposed amendment (2026-08-12):** Owner decisions recorded in
+> [product direction decisions](2026-08-12-product-direction-decisions.md) contradict
+> clauses in this baseline. The replacement text is proposed in
+> [Requirements Amendment 01](2026-08-12-requirements-amendment-01.md) and affects
+> the BYOK pilot default (`:203`), the multi-dashboard workspace and disposable
+> TTLs, the alerting and safety-non-goal pair, and the deferred Compose canvas.
+> Until that amendment is accepted, the clauses below govern unchanged.
+
 ## Product thesis
 
 Dasher is not an AI dashboard generator. It is a governed decision loop that

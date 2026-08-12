@@ -4,6 +4,14 @@ Status: Accepted
 Date: 2026-07-30
 Depends on: ADR-003
 
+> **Proposed amendment (2026-08-12):**
+> [Requirements Amendment 01](../product/2026-08-12-requirements-amendment-01.md)
+> proposes a Dasher-operated platform credential class as the pilot default,
+> selected explicitly per organization and never reached by fallback, and proposes
+> that the first live provider be chosen by measured dashboard quality rather than
+> fixed in advance. The no-cross-credential-fallback rule below is unchanged and is
+> the reason the platform credential is a selection rather than a fallback.
+
 ## Decision
 
 Dasher will use a provider-neutral model gateway for inference and a separate,

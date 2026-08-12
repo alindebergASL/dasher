@@ -56,6 +56,10 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - [ADR-003: Multi-tenant control plane](docs/architecture/ADR-003-multi-tenant-control-plane.md)
 - [ADR-004: Provider, OAuth, and MCP boundaries](docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md)
 - [ADR-005: Agentic dashboard harness](docs/architecture/ADR-005-agentic-dashboard-harness.md)
+- [ADR-006: Schema freeze point and immutability tiers](docs/architecture/ADR-006-schema-freeze-point.md)
+  (proposed; not accepted)
+- [Requirements Amendment 01](docs/product/2026-08-12-requirements-amendment-01.md)
+  (proposed; not accepted)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
 - [Project and process efficiency review](docs/review/2026-08-12-project-efficiency-review.md)
   (advisory; no gate outcome) and its

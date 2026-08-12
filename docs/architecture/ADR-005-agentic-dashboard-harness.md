@@ -4,6 +4,15 @@ Status: Proposed
 Date: 2026-07-31
 Depends on: ADR-001, ADR-003, ADR-004
 
+> **Proposed amendments (2026-08-12):**
+> [Requirements Amendment 01](../product/2026-08-12-requirements-amendment-01.md)
+> proposes removing Scratch, disposable kind, TTL policy, promotion, and quarantine
+> from the normative product grammar below, and proposes making `count_distinct`,
+> `median`, and percentile executable in registry v1 rather than declarable-but-
+> abstaining. [ADR-006](ADR-006-schema-freeze-point.md) proposes replacing this
+> ADR's rule that lifecycle rules "must exist in the first dashboard migration"
+> with a Freeze Point that begins at first deployment holding real data.
+
 ## Context
 
 Dasher is a multi-dashboard workspace, not a one-request, one-dashboard
