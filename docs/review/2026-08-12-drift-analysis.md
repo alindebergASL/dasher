@@ -199,3 +199,99 @@ It does not claim the infrastructure work was wrong to do, only that it was done
 without a corrective signal. It does not evaluate the correctness of any schema,
 policy, or contract. It makes no estimate of remaining effort. It passes and
 fails nothing.
+
+---
+
+# Appendix: Task 9D as a live case study
+
+Added 2026-08-12, after a Task 9D status report was relayed by the owner. It is
+the clearest single instance of the mechanism above, because in it the loop's
+real signal fired, worked, and was then overruled by its synthetic one.
+
+**Sourcing.** The status details below are as reported by the implementing agent
+and relayed by the owner; they were not independently verified here. Two facts
+were verified directly against the repository: `origin/main` contains exactly
+eight migrations, and its head is still `d01eedc`. All of the work described
+below is uncommitted.
+
+## What happened
+
+1. A real failure was reproduced against PostgreSQL 16.14 —
+   `permission denied for schema dasher`, occurring during deferred guard
+   execution at `COMMIT`.
+2. It was corrected by a new migration whose entire content is one statement:
+   `ALTER FUNCTION dasher_private.calculation_graph_constraint_guard_v1() SECURITY DEFINER;`
+3. The catalog fingerprint was regenerated: 7,734 entries.
+4. Full gates were run and passed: frozen install, formatting, lint, typecheck,
+   1,187 unit tests, production build, generated-code gate, and the complete
+   serial PostgreSQL suite at 147/147 with clean-residue proofs.
+5. Security review returned **APPROVE**, finding no material ACL, migration, RLS,
+   `SECURITY DEFINER`, rollback, or reachability defect.
+6. Specification review returned **HOLD** on three findings.
+7. Because specification review held, the security approval and all gate evidence
+   were declared unable to authorize publication.
+8. A new bounded writer was launched against three files. Nothing was committed,
+   pushed, or merged.
+
+## Five observations
+
+**The migration count moved from `0008` to `0012` in roughly a day.** ADR-006
+argues that the squash window narrows with every migration added before a Freeze
+Point. It narrowed by four files during the review that proposed it. The clearest
+illustration is the content of the fix itself: a one-line permission correction
+now requires a permanent, immutable, checksum-pinned migration file and a
+regenerated 7,734-entry fingerprint. Under a Freeze Point it is an edit to a
+baseline.
+
+**The external signal worked.** A real database found a real defect at `COMMIT`
+time that no specification had caught. This is the corrective signal this document
+argues for, it already exists in the PostgreSQL suite, and it did its job. That
+deserves recording as plainly as the failures.
+
+**The synthetic signal then voided the real one.** Two of the three
+specification findings are genuine correctness issues — non-contiguous replay
+consumption, and candidate proof phases accepted outside `validating`. The third
+is that the permanent tests did not exercise six of a required twenty-two
+operator methods, which is the governing plan checking its own coverage
+requirement rather than a defect in behaviour.
+
+The problem is not the review. It is the **coupling**: a correctness finding in
+one TypeScript reducer voided an independently valuable, execution-verified,
+security-approved schema permission fix in a different file. Those were separable
+and were treated as one indivisible artifact.
+
+**The verifier was itself unverified.** The report records that the original
+non-PostgreSQL wrapper "lacked `set -e`, allowing a failed `pnpm test` to be
+hidden by a later successful build," and that the resulting evidence was rejected.
+This is a fourth face of the substitution described above, and the most
+concerning, because it means prior green results from that harness are of unknown
+value. It was caught — but by inspection, not by the harness.
+
+**The cost of correction is constant and large.** The report states it directly:
+"any correction creates new bytes requiring complete regating and fresh reviews."
+A bounded fix to one reducer file requires re-running the full unit and 147-test
+PostgreSQL suites, regenerating the fingerprint, constructing a new tree
+manifest, and obtaining two fresh full reviews. The stated next checkpoint has
+seven steps before a single commit may land.
+
+## The state that should worry most
+
+No commit. No push. No pull request. Days of work, four migrations, and a
+reproduced-and-fixed runtime defect exist only in a working tree.
+
+This follows from treating **commit as endorsement**. It is not. A commit on a
+branch is a save: free, reversible, and endorsing nothing. Making it a
+gate-level event is precisely what causes verified work to accumulate unshipped
+and unrecoverable.
+
+## What this case study supports
+
+- Slices over layers: the fix and the reducer corrections were independent and
+  should have been independently shippable.
+- Separating review authority: security review checks reality and should block;
+  specification review checks a document and should file follow-up work.
+- A not-verified register: "six of twenty-two operator methods lack permanent
+  tests" is a coverage decision to record, not a defect to block on.
+- ADR-006: a one-line permission fix should not require a permanent migration in
+  a system that has never been deployed.
+- Commit granularity: the loop's memory, and its recovery path.
