@@ -60,6 +60,8 @@ and [security status](docs/security/2026-07-30-security-status.md).
   (proposed; not accepted)
 - [Requirements Amendment 01](docs/product/2026-08-12-requirements-amendment-01.md)
   (proposed; not accepted)
+- [How Dasher drifted](docs/review/2026-08-12-drift-analysis.md) (advisory
+  root-cause analysis)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
 - [Project and process efficiency review](docs/review/2026-08-12-project-efficiency-review.md)
   (advisory; no gate outcome) and its
