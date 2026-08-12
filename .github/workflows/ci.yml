@@ -13,11 +13,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  # Static gates only. Split from `verify` so a formatting, lint, or type error
+  # reports in roughly two minutes instead of behind the build and browser
+  # suites. Runs in parallel with `verify`, not before it.
+  fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -36,17 +37,56 @@ jobs:
 
       - run: pnpm typecheck
 
+      - run: "grep -qx 'Status: CLOSED' docs/security/GENERATED_CODE_GATE.md"
+
+      - run: test -z "$(git status --porcelain)"
+
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
       - run: pnpm test
 
       - run: pnpm build
 
-      - run: pnpm --filter @dasher/web exec playwright install --with-deps chromium
+      - id: playwright-version
+        run: |
+          version="$(node -p "require('./apps/web/package.json').devDependencies['@playwright/test']")"
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+
+      # The browser download is the expensive half of `install --with-deps` and
+      # only changes when @playwright/test changes, so it is cached on that
+      # exact pinned version. The apt half is not cacheable and still runs.
+      - id: playwright-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - run: pnpm --filter @dasher/web exec playwright install-deps chromium
+
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @dasher/web exec playwright install chromium
 
       - run: pnpm test:e2e
 
+      # `pnpm audit --prod` is deliberately absent: the production dependency
+      # set is a subset of the full set and the audit level is identical, so it
+      # cannot fail unless the full audit above has already failed.
       - run: pnpm audit --audit-level high
-
-      - run: pnpm audit --prod --audit-level high
 
       - run: "grep -qx 'Status: CLOSED' docs/security/GENERATED_CODE_GATE.md"
 

@@ -15,7 +15,6 @@
     "./verified-principal": "./src/verified-principal.ts"
   },
   "scripts": {
-    "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude test/postgres.integration.test.ts",
     "test:postgres": "vitest run test/postgres.integration.test.ts --no-file-parallelism"
