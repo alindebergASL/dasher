@@ -157,10 +157,60 @@ deterministic calculation engine.
   an environment that could hold historically affected lifecycle rows, either a
   target-specific zero-inconsistency inventory or a separately planned bounded
   remediation.
+- **A `DashboardSpec` version able to carry claim-level evidence state.** See §5.
+- **The gates that unblock customer content**, and a forward migration to widen
+  an immutable constraint. See §6.
 
 Nothing is deployed in any environment.
 
-## 5. What this means for scope
+## 5. Claims cannot reach the screen without an unplanned spec version
+
+Task 9 builds stable Claims, ClaimEvidence support/contradiction/context edges,
+and one immutable evidence manifest per candidate. That is the epistemic
+contract ADR-005 describes, and it is the part of Task 9 with direct product
+value rather than substrate value.
+
+It cannot be displayed. Task 9 excludes, at lines 80–82:
+
+> changes to `DashboardSpec` 1.0 or 1.1. Candidate metadata and claim manifests
+> remain outside serialized specs; any future spec expansion requires a new
+> separately planned schema version.
+
+and §10 rejects the alternative deliberately, at line 6438: putting typed graphs
+inside 1.1 "would silently change a stable rendering contract."
+
+The renderer draws a `DashboardSpec`, and the spec has no field for claim-level
+evidence state. Delivering the epistemic contract to a user therefore requires a
+`DashboardSpec` 1.2 that no plan schedules — **two unplanned steps between Claims
+and a reader, not one.**
+
+The deferral is a reasonable contract-stability decision. It is recorded here
+because it is invisible from the Task 9 plan alone.
+
+## 6. Customer content is blocked by the merged schema and four unwritten gates
+
+`0003_immutable_content.sql:460` constrains source kind by CHECK to exactly two
+values:
+
+> `CHECK ((source_kind = ANY (ARRAY['synthetic_fixture'::text, 'public_usgs_fixture'::text])))`
+
+The lifecycle plan (`:489-492`) adds that these are shape constraints only, that
+"no route/repository/ingestion boundary may accept raw bytes until a separately
+reviewed classification/admission gate exists", and that `0003` "exposes no
+runtime/app source-byte create function or grant."
+
+ADR-005 (`:250-256`) names the full unblocking chain. Customer, confidential, or
+uploaded content remains blocked until the admission gate **plus
+envelope-encrypted object storage, key-erasure, and reference/retention-claim
+gates** are reviewed.
+
+Roadmap Gate 4 — the first customer-owned-data value proof — therefore depends
+on four gates with no plan, one forward migration to widen an immutable CHECK
+constraint, and a source-byte create function and grant that do not exist. §4
+lists Gate 4 as unplanned; this is its specific shape, and it is further from
+reachable than the roadmap's ordering implies.
+
+## 7. What this means for scope
 
 Two facts, stated separately from any judgement about them.
 
@@ -179,7 +229,7 @@ narrower: **the work that has a plan is the substrate, and the work that makes
 Dasher a product is unplanned.** The current work stream ends with the
 application still showing a fixture.
 
-## 6. Where the planner spike sits
+## 8. Where the planner spike sits
 
 Task 9E plans `packages/agent-harness` as the home for a fake provider,
 orchestrator, replay, claims, and ranker. The `packages/planner` spike added on
@@ -192,7 +242,7 @@ immutable evidence manifest, and no content-addressed replay. It is currently th
 only path in the repository connecting a plain-language request to a rendered
 dashboard, and no accepted plan schedules that connection.
 
-## 7. Open questions for the owner
+## 9. Open questions for the owner
 
 1. Was Task 9 implementation authorized as the plan requires, and should that
    decision be recorded in the repository?

@@ -100,8 +100,7 @@ that cannot touch those things.
 
 ## Process proposals
 
-Each is stated with the measurement that motivates it. All three are owner
-decisions.
+Each is stated with the measurement that motivates it. All are owner decisions.
 
 ### P1 — Derive the catalog manifests instead of authoring them
 
@@ -135,7 +134,7 @@ maintainability, and the review does not assert which side wins. It asserts that
 the current cost is 47× on the smallest observed migration and that the decision
 is worth making deliberately.
 
-### P2 — Resolve the dual evaluator before Tasks 9D–9G
+### P2 — Resolve the dual evaluator before Task 9F
 
 `dasher_private.evaluate_calculation_graph_v1`
 (`../../packages/control-plane/migrations/0007_agent_run_ledger_and_calculations.sql:12766`,
@@ -144,8 +143,12 @@ is worth making deliberately.
 rounding, currency conversion, grouping, and window ordering must agree
 bit-for-bit between them, permanently. Neither is imported by application code.
 
-Either outcome is defensible; deciding after 9G is more expensive than deciding
-now, because 9D–9G add ledger, replay, and conformance surface on top of both.
+Either outcome is defensible, but the decision point is narrower than it first
+appears. Task 9D adds no migration and touches neither evaluator, so work in
+flight there is unaffected. **Task 9F is the lock-in**: at 298 lines it is the
+largest task in the plan, and it is where the PL/pgSQL evaluator gains an
+adversarial conformance surface. Deciding before 9F is cheap; deciding after
+means unwinding the plan's biggest task.
 
 ### P3 — Move the freeze point, and cap reviewable diffs
 
@@ -161,6 +164,81 @@ begins.
 pull request, and no approval attestation on a diff above the cap unless the
 reviewer records what was actually read. Generated files under P1 are excluded
 from the cap, which is a further argument for P1.
+
+### P4 — Two tracks with different rules, not only a different order
+
+The two-track proposal above changes what is built in what order. It leaves both
+tracks under one set of process rules. Make the rules differ, because the risk
+differs:
+
+| Aspect         | Product track               | Trust track         |
+| -------------- | --------------------------- | ------------------- |
+| Data           | synthetic and fixture only  | unchanged           |
+| Migrations     | none, or provisional (P6)   | immutable, as today |
+| Pull requests  | capped at a reviewable size | unchanged           |
+| Spikes         | expected                    | forbidden, as today |
+| Exhaustiveness | explicitly not required     | unchanged           |
+
+The hard boundary is the one ADR-003 already draws. Nothing from the product
+track may touch real customer data, a credential, or a deployment until it has
+been re-specified under trust-track rules. Code graduates by being rewritten to
+that standard, never by being waved across.
+
+### P5 — Make tests the specification, not prose about tests
+
+The Task 9 plan is 6,471 lines in large part because it narrates in prose which
+assertions must exist. `canonical-migrations.test.ts` then contains 90 `it()`
+blocks implementing that narration.
+
+Proposed: a plan ships the test file rather than a description of it. The same
+contract is stated once, in the language that actually enforces it, and the class
+of drift where plan prose and test code disagree disappears. This also shortens
+the plan-review cycle, which is currently a gate in its own right.
+
+### P6 — A provisional migration tier before the freeze point
+
+"Immutable from birth" is the most expensive constraint in the project. ADR-005
+states the forcing function directly: lifecycle rules "must exist in the first
+dashboard migration; they cannot be deferred behind a minimal dashboard row."
+That is what produced a 5,868-line `0003` and the amplification measured in the
+review.
+
+Proposed: a development schema that may be squashed and rewritten freely, which
+freezes into an immutable migration at exactly one moment — when real data
+becomes possible, a boundary ADR-003 already defines. Iterate the lifecycle
+design cheaply; pay the immutability cost once, on a design that learning has
+already corrected.
+
+This is the largest change proposed here and it should be rejected if the answer
+is that the schema was already right. It was not. Three of eight migrations are
+corrections, `0008` corrects `0006`, and on 2026-08-12 the owner decided to
+remove disposable dashboards entirely — a feature whose schema is now permanent
+because it was frozen before the product decision was tested. That is the cost of
+the current rule, stated concretely rather than hypothetically.
+
+### P7 — Pose the build-versus-buy question for the identity spine
+
+Verified absence: a search across every ADR and plan finds no consideration of a
+managed identity provider and no build-versus-buy analysis of any kind. The
+alternatives sections are architecturally rigorous and commercially silent.
+
+Dasher is hand-building invitations, sessions, rotation, CSRF, membership, roles,
+and a provider-neutral `(issuer, subject)` principal, with the passwordless path
+still entirely unbuilt and unplanned. That is a commodity with mature vendors.
+Building it may still be correct given the row-level-security coupling, but the
+question has never been asked, and sign-in is the next thing on the critical path
+to a pilot user.
+
+### P8 — A stopping rule for gate rework
+
+The roadmap advances stages by evidence rather than dates, which is sound, but it
+has no stopping rule for the cost of that evidence. Task 8A was declared closed
+four times across three pull requests, and 30% of everything ever written to
+`migrator.ts` has been deleted.
+
+Proposed: when a gate's evidence fails more than a set number of times, treat it
+as a signal that the gate is mis-specified rather than that the work is
+unfinished, and review the gate itself.
 
 ## If this proposal is declined
 
