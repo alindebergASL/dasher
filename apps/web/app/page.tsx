@@ -1,24 +1,19 @@
-import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import {
-  createRiverDashboard,
-  parseUsgsInstantaneousValues,
-} from "@dasher/river-domain";
+import { RequestWorkspace } from "@/components/request-workspace";
 
-import { DashboardShell } from "@/components/dashboard-shell";
+import { planDashboard } from "./actions";
+import { DEFAULT_REQUEST } from "./planning";
 
-export default function Home() {
-  const gauges = parseUsgsInstantaneousValues(fixture);
-  const dashboard = createRiverDashboard(gauges, {
-    asOf: "2026-07-29T12:02:00.000Z",
-    thresholds: [
-      {
-        id: "freeport-demo-threshold",
-        siteId: "11447650",
-        label: "Freeport watch level",
-        stageAbove: 14.5,
-      },
-    ],
-  });
+export default async function Home() {
+  const result = await planDashboard(DEFAULT_REQUEST);
 
-  return <DashboardShell dashboard={dashboard} />;
+  if (!result.ok || !result.dashboard) {
+    throw new Error(result.error ?? "Could not plan the default dashboard");
+  }
+
+  return (
+    <RequestWorkspace
+      initialDashboard={result.dashboard}
+      initialRequest={DEFAULT_REQUEST}
+    />
+  );
 }

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@dasher/dashboard-schema": "workspace:*",
+    "@dasher/planner": "workspace:*",
     "@dasher/river-domain": "workspace:*",
     "next": "16.2.12",
     "react": "19.2.8",

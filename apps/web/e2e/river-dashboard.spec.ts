@@ -274,9 +274,10 @@ test("river dashboard interactions, evidence, and architecture", async ({
     name: "How this dashboard works",
   });
   await expect(architecture).toBeVisible();
-  await expect(
-    architecture.getByText("optional planning context"),
-  ).toBeVisible();
+  // The planner is now in the path, so the diagram shows the proposed layout
+  // going to validation rather than describing AI as unused.
+  await expect(architecture.getByText("proposed layout")).toBeVisible();
+  await expect(architecture.getByText("corrections")).toBeVisible();
   const closeArchitecture = page.getByRole("button", {
     name: "Close architecture",
   });
@@ -367,9 +368,10 @@ test("mobile keeps the two-column brief, freshness, and contained scrolling reac
     name: "How this dashboard works",
   });
   await expect(architecture).toBeVisible();
-  await expect(
-    architecture.getByText("optional planning context"),
-  ).toBeVisible();
+  // The planner is now in the path, so the diagram shows the proposed layout
+  // going to validation rather than describing AI as unused.
+  await expect(architecture.getByText("proposed layout")).toBeVisible();
+  await expect(architecture.getByText("corrections")).toBeVisible();
   const architectureBounds = await architecture.boundingBox();
   expect(architectureBounds).not.toBeNull();
   expect(architectureBounds!.x).toBeGreaterThanOrEqual(0);

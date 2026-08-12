@@ -1,0 +1,110 @@
+"use client";
+
+import type { DashboardSpec } from "@dasher/dashboard-schema";
+import { useState, useTransition } from "react";
+
+import { planDashboard } from "@/app/actions";
+import { REQUEST_MAX_LENGTH } from "@/app/planning";
+
+import { DashboardShell } from "./dashboard-shell";
+
+const EXAMPLES = [
+  "Create a live dashboard monitoring river gauges near Sacramento",
+  "I need a flood watch view for emergency response",
+  "Which gauges are rising fastest?",
+  "How is the American river doing?",
+] as const;
+
+export function RequestWorkspace({
+  initialDashboard,
+  initialRequest,
+}: {
+  initialDashboard: DashboardSpec;
+  initialRequest: string;
+}) {
+  const [dashboard, setDashboard] = useState(initialDashboard);
+  const [request, setRequest] = useState(initialRequest);
+  const [activeRequest, setActiveRequest] = useState(initialRequest);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [revised, setRevised] = useState(false);
+  const [pending, startTransition] = useTransition();
+
+  function submit(text: string) {
+    setRequest(text);
+    startTransition(async () => {
+      const result = await planDashboard(text);
+      if (result.ok && result.dashboard) {
+        setDashboard(result.dashboard);
+        setActiveRequest(text);
+        setError(undefined);
+        setRevised((result.attempts ?? 1) > 1);
+        return;
+      }
+      setError(result.error ?? "That request could not be planned.");
+    });
+  }
+
+  return (
+    <div className="request-workspace">
+      <form
+        className="request-bar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit(request);
+        }}
+      >
+        <label className="request-label" htmlFor="dashboard-request">
+          What do you want to monitor?
+        </label>
+        <div className="request-row">
+          <input
+            autoComplete="off"
+            className="request-input"
+            id="dashboard-request"
+            maxLength={REQUEST_MAX_LENGTH}
+            name="request"
+            onChange={(event) => setRequest(event.target.value)}
+            placeholder="Create a live dashboard monitoring river gauges near Sacramento"
+            type="text"
+            value={request}
+          />
+          <button className="request-submit" disabled={pending} type="submit">
+            {pending ? "Building…" : "Build dashboard"}
+          </button>
+        </div>
+
+        <div className="request-examples">
+          <span className="request-examples-label">Try:</span>
+          {EXAMPLES.map((example) => (
+            <button
+              className="request-example"
+              disabled={pending}
+              key={example}
+              onClick={() => submit(example)}
+              type="button"
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+
+        {error ? (
+          <p className="request-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+
+        <p className="request-note">
+          Fixture mode. A planning stand-in chose this layout, framing, and
+          gauge selection from your words. Every number below is calculated by
+          Dasher from the source readings.
+          {revised
+            ? " Its first plan named a gauge Dasher does not have; that plan was rejected and corrected before anything rendered."
+            : ""}
+        </p>
+      </form>
+
+      <DashboardShell dashboard={dashboard} key={activeRequest} />
+    </div>
+  );
+}
