@@ -33,21 +33,17 @@
 --     and service-principal allowlist tables, which enforced a privilege
 --     boundary between components that run in one process as one database user
 --
--- IN PROGRESS. `dasher_api` below is the write and authentication seam that
--- replaces the direct table grants this file first shipped with. Three states
--- are closed: a forged request context no longer authorizes anything, a
--- session token resolves without needing the context it establishes, and an
--- invitation is accepted without needing the membership acceptance creates.
+-- `dasher_app` holds no INSERT or UPDATE on any table. Every state change goes
+-- through a `dasher_api` function that derives the acting principal from the
+-- verified context rather than accepting it, so actor attribution cannot be
+-- forged; and each writes its own audit event in the same statement, so audit
+-- atomicity is a property of the schema rather than a convention.
 --
--- 23 states this schema still wrongly accepts are enumerated as failing cases
--- in test/accepted-invalid-states.integration.test.ts. Those markers are the
--- remaining work: closing one turns its marker red, which forces it off.
---
--- Still open: dashboards and agent runs remain directly writable, so actor
--- attribution is forgeable, lifecycle transitions are unchecked, terminal runs
--- are rewritable, published claim sets are unsealed, and audit events cannot be
--- written at all outside accept_invitation. Snapshots and evidence records have
--- no write path and no immutability trigger.
+-- 25 of the 26 states enumerated in
+-- test/accepted-invalid-states.integration.test.ts are closed. The one that
+-- remains is self-serve provisioning: creating an organization and its first
+-- owner has no entry point yet, since every existing route in assumes an
+-- organization already exists.
 
 -- ---------------------------------------------------------------------------
 -- Schemas and default privileges
@@ -402,6 +398,13 @@ CREATE TABLE dasher.invitations (
   ),
   CONSTRAINT invitations_terminal_state_check CHECK (
     accepted_at IS NULL OR revoked_at IS NULL
+  ),
+  CONSTRAINT invitations_accepted_window_check CHECK (
+    accepted_at IS NULL
+    OR (accepted_at >= created_at AND accepted_at < expires_at)
+  ),
+  CONSTRAINT invitations_revoked_order_check CHECK (
+    revoked_at IS NULL OR revoked_at >= created_at
   )
 );
 
@@ -464,7 +467,9 @@ CREATE TABLE dasher.sessions (
     pg_catalog.octet_length(csrf_digest) = 32
   ),
   CONSTRAINT sessions_last_seen_check CHECK (
-    issued_at <= last_seen_at AND last_seen_at < absolute_expires_at
+    issued_at <= last_seen_at
+    AND last_seen_at < idle_expires_at
+    AND last_seen_at < absolute_expires_at
   ),
   CONSTRAINT sessions_idle_expiry_check CHECK (
     issued_at < idle_expires_at AND idle_expires_at <= absolute_expires_at
@@ -618,7 +623,7 @@ CREATE TABLE dasher.source_snapshots (
   CONSTRAINT source_snapshots_organization_fkey FOREIGN KEY (organization_id)
     REFERENCES dasher.organizations (organization_id),
   CONSTRAINT source_snapshots_content_sha256_check CHECK (
-    pg_catalog.octet_length(content_sha256) = 32
+    content_sha256 = pg_catalog.sha256(canonical_bytes)
   ),
   CONSTRAINT source_snapshots_source_kind_check CHECK (
     source_kind = pg_catalog.btrim(source_kind)
@@ -708,6 +713,9 @@ CREATE TABLE dasher.dashboards (
   CONSTRAINT dashboards_archived_at_check CHECK (
     (lifecycle_state = 'archived') = (archived_at IS NOT NULL)
   ),
+  CONSTRAINT dashboards_archived_order_check CHECK (
+    archived_at IS NULL OR archived_at >= created_at
+  ),
   -- A draft has no published head; active and archived states do.
   CONSTRAINT dashboards_head_check CHECK (
     (lifecycle_state = 'draft' AND head_version_id IS NULL)
@@ -755,8 +763,10 @@ CREATE TABLE dasher.dashboard_versions (
     organization_id,
     created_by_user_id
   ) REFERENCES dasher.memberships (organization_id, user_id),
+  -- Not merely 32 bytes: the digest must actually summarise the bytes stored
+  -- beside it, so a row cannot claim a hash unrelated to its content.
   CONSTRAINT dashboard_versions_spec_sha256_check CHECK (
-    pg_catalog.octet_length(canonical_spec_sha256) = 32
+    canonical_spec_sha256 = pg_catalog.sha256(canonical_spec_bytes)
   ),
   CONSTRAINT dashboard_versions_validation_state_check CHECK (
     validation_state IN ('valid', 'invalid')
@@ -942,8 +952,13 @@ CREATE TABLE dasher.agent_runs (
   ) REFERENCES dasher.memberships (organization_id, user_id),
   CONSTRAINT agent_runs_version_fkey FOREIGN KEY (
     organization_id,
+    dashboard_id,
     produced_version_id
-  ) REFERENCES dasher.dashboard_versions (organization_id, version_id),
+  ) REFERENCES dasher.dashboard_versions (
+    organization_id,
+    dashboard_id,
+    version_id
+  ),
   CONSTRAINT agent_runs_state_check CHECK (
     state IN ('running', 'succeeded', 'failed')
   ),
@@ -959,6 +974,7 @@ CREATE TABLE dasher.agent_runs (
   ),
   CONSTRAINT agent_runs_success_check CHECK (
     (state = 'succeeded' AND produced_version_id IS NOT NULL
+      AND dashboard_id IS NOT NULL
       AND failure_reason IS NULL)
     OR (state = 'failed' AND produced_version_id IS NULL
       AND failure_reason IS NOT NULL)
@@ -1161,14 +1177,14 @@ GRANT SELECT ON
   dasher.evidence_records
 TO dasher_app;
 
-GRANT SELECT, INSERT ON
+-- Read-only, all of it. Every state change goes through `dasher_api`, which is
+-- what makes actor attribution, legal transitions, and audit atomicity
+-- properties of the schema rather than conventions the caller may follow.
+GRANT SELECT ON
+  dasher.dashboards,
   dasher.dashboard_versions,
   dasher.claims,
-  dasher.claim_evidence
-TO dasher_app;
-
-GRANT SELECT, INSERT, UPDATE ON
-  dasher.dashboards,
+  dasher.claim_evidence,
   dasher.agent_runs
 TO dasher_app;
 
@@ -1184,6 +1200,212 @@ GRANT EXECUTE ON FUNCTION dasher_private.context_organization_id()
 GRANT EXECUTE ON FUNCTION dasher_private.context_allows(uuid, text)
   TO dasher_app;
 GRANT USAGE ON SCHEMA dasher_private TO dasher_app;
+
+-- ---------------------------------------------------------------------------
+-- Enforcement triggers
+--
+-- These hold whoever the writer is, including the owner and the seam functions
+-- themselves. A CHECK constraint cannot see the previous row or another table,
+-- so transitions, terminal immutability, and sealing live here.
+-- ---------------------------------------------------------------------------
+
+-- A run's request is what was asked. It cannot be edited afterwards, and once
+-- the run reaches a terminal state nothing about it may change at all.
+CREATE FUNCTION dasher_private.guard_agent_run_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+  IF OLD.state <> 'running' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'terminal agent run rejects further change';
+  END IF;
+
+  IF NEW.run_id <> OLD.run_id
+    OR NEW.organization_id <> OLD.organization_id
+    OR NEW.requested_by_user_id <> OLD.requested_by_user_id
+    OR NEW.request_text <> OLD.request_text
+    OR NEW.started_at <> OLD.started_at
+    OR NEW.dashboard_id IS DISTINCT FROM OLD.dashboard_id
+  THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'agent run request fields are immutable';
+  END IF;
+
+  IF NEW.state NOT IN ('succeeded', 'failed') THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'agent run may only settle to succeeded or failed';
+  END IF;
+
+  RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER agent_runs_guard
+BEFORE UPDATE ON dasher.agent_runs
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.guard_agent_run_update();
+
+-- draft -> active -> archived, archive reversible, and nothing goes back to
+-- draft. Revision advances by exactly one so a promotion cannot be replayed or
+-- reordered, and provenance columns are fixed at creation.
+CREATE FUNCTION dasher_private.guard_dashboard_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  head_state text;
+BEGIN
+  IF NEW.dashboard_id <> OLD.dashboard_id
+    OR NEW.organization_id <> OLD.organization_id
+    OR NEW.created_by_user_id <> OLD.created_by_user_id
+    OR NEW.created_at <> OLD.created_at
+  THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'dashboard provenance is immutable';
+  END IF;
+
+  IF NEW.lifecycle_state <> OLD.lifecycle_state THEN
+    IF NOT (
+      (OLD.lifecycle_state = 'draft' AND NEW.lifecycle_state = 'active')
+      OR (OLD.lifecycle_state = 'active' AND NEW.lifecycle_state = 'archived')
+      OR (OLD.lifecycle_state = 'archived' AND NEW.lifecycle_state = 'active')
+    ) THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '55000',
+        MESSAGE = 'illegal dashboard lifecycle transition';
+    END IF;
+  END IF;
+
+  IF NEW.lifecycle_revision <> OLD.lifecycle_revision + 1 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'dashboard lifecycle revision must advance by one';
+  END IF;
+
+  -- A head must be a version of this dashboard that validated. The composite
+  -- foreign key already proves the first half; only the second needs a lookup.
+  IF NEW.head_version_id IS NOT NULL
+    AND NEW.head_version_id IS DISTINCT FROM OLD.head_version_id
+  THEN
+    SELECT version_row.validation_state INTO head_state
+    FROM dasher.dashboard_versions AS version_row
+    WHERE version_row.organization_id = NEW.organization_id
+      AND version_row.dashboard_id = NEW.dashboard_id
+      AND version_row.version_id = NEW.head_version_id;
+
+    IF head_state IS DISTINCT FROM 'valid' THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '55000',
+        MESSAGE = 'only a valid version may become the head';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER dashboards_guard
+BEFORE UPDATE ON dasher.dashboards
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.guard_dashboard_update();
+
+-- Once a version is published its assertions are fixed. Adding a claim later
+-- would change what a published dashboard means without changing its bytes,
+-- its digest, or its identifier.
+CREATE FUNCTION dasher_private.guard_claim_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM dasher.dashboards AS dashboard_row
+    WHERE dashboard_row.organization_id = NEW.organization_id
+      AND dashboard_row.dashboard_id = NEW.dashboard_id
+      AND dashboard_row.head_version_id = NEW.version_id
+  ) THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'published version rejects further claims';
+  END IF;
+  RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER claims_seal
+BEFORE INSERT ON dasher.claims
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.guard_claim_insert();
+
+CREATE TRIGGER claim_evidence_seal
+BEFORE INSERT ON dasher.claim_evidence
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.guard_claim_insert();
+
+-- Retrieved bytes and what was read out of them are the root of every claim.
+-- Immutability here is intrinsic, not a consequence of withholding a grant.
+CREATE TRIGGER source_snapshots_immutable
+BEFORE UPDATE OR DELETE ON dasher.source_snapshots
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.reject_immutable_mutation();
+
+CREATE TRIGGER evidence_records_immutable
+BEFORE UPDATE OR DELETE ON dasher.evidence_records
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.reject_immutable_mutation();
+
+-- A claim asserted as fully supported must cite something. Deferred, because
+-- the claim necessarily exists before the edge that supports it.
+CREATE FUNCTION dasher_private.guard_claim_support()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+  IF NEW.evidence_state = 'complete' AND NOT EXISTS (
+    SELECT 1 FROM dasher.claim_evidence AS edge
+    WHERE edge.organization_id = NEW.organization_id
+      AND edge.dashboard_id = NEW.dashboard_id
+      AND edge.version_id = NEW.version_id
+      AND edge.claim_id = NEW.claim_id
+      AND edge.relation = 'supports'
+  ) THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      MESSAGE = 'a complete claim must cite supporting evidence';
+  END IF;
+  RETURN NEW;
+END
+$function$;
+
+CREATE CONSTRAINT TRIGGER claims_require_support
+AFTER INSERT ON dasher.claims
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.guard_claim_support();
+
+-- One version is produced by at most one run.
+CREATE UNIQUE INDEX agent_runs_produced_version_key
+  ON dasher.agent_runs USING btree (organization_id, produced_version_id)
+  WHERE produced_version_id IS NOT NULL;
+
+-- Foreign keys the planner would otherwise scan for on every parent update.
+CREATE INDEX dashboards_creator_idx
+  ON dasher.dashboards USING btree (organization_id, created_by_user_id);
+CREATE INDEX dashboard_versions_creator_idx
+  ON dasher.dashboard_versions USING btree (
+    organization_id,
+    created_by_user_id
+  );
+CREATE INDEX agent_runs_requester_idx
+  ON dasher.agent_runs USING btree (organization_id, requested_by_user_id);
 
 -- ---------------------------------------------------------------------------
 -- dasher_api — the write and authentication seam
@@ -1413,7 +1635,446 @@ BEGIN
 END
 $function$;
 
+-- The acting principal, or a denial. Every mutating function starts here, so
+-- no caller ever supplies its own identity.
+CREATE FUNCTION dasher_api.acting_principal(p_required_role text)
+RETURNS TABLE (user_id uuid, organization_id uuid)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+  SELECT verified.user_id, verified.organization_id
+  INTO user_id, organization_id
+  FROM dasher_private.verified_context() AS verified;
+
+  IF user_id IS NULL
+    OR NOT dasher_private.context_allows(organization_id, p_required_role)
+  THEN
+    RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'dasher_denied';
+  END IF;
+  RETURN NEXT;
+END
+$function$;
+
+CREATE FUNCTION dasher_api.create_dashboard(
+  p_title text,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+  new_dashboard uuid := pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  INSERT INTO dasher.dashboards (
+    organization_id, dashboard_id, title, lifecycle_state,
+    lifecycle_revision, created_by_user_id
+  )
+  VALUES (
+    actor.organization_id, new_dashboard, p_title, 'draft', 1, actor.user_id
+  );
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(), actor.organization_id, 'user', actor.user_id,
+    1, p_request_id, 'dashboard.created', 'dashboard', new_dashboard,
+    'succeeded', p_deployment_revision
+  );
+
+  RETURN new_dashboard;
+END
+$function$;
+
+CREATE FUNCTION dasher_api.set_dashboard_archived(
+  p_dashboard_id uuid,
+  p_expected_revision bigint,
+  p_archived boolean,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS bigint
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+  next_revision bigint;
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  -- Compare-and-swap on the revision the caller believed it was acting on, so
+  -- two concurrent transitions cannot both apply.
+  UPDATE dasher.dashboards AS held
+  SET lifecycle_state = CASE WHEN p_archived THEN 'archived' ELSE 'active' END,
+      archived_at = CASE
+        WHEN p_archived THEN pg_catalog.clock_timestamp() ELSE NULL
+      END,
+      lifecycle_revision = held.lifecycle_revision + 1,
+      updated_at = pg_catalog.clock_timestamp()
+  WHERE held.organization_id = actor.organization_id
+    AND held.dashboard_id = p_dashboard_id
+    AND held.lifecycle_revision = p_expected_revision
+  RETURNING held.lifecycle_revision INTO next_revision;
+
+  IF next_revision IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = '40001', MESSAGE = 'dasher_conflict';
+  END IF;
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(), actor.organization_id, 'user', actor.user_id,
+    1, p_request_id,
+    CASE WHEN p_archived THEN 'dashboard.archived' ELSE 'dashboard.unarchived' END,
+    'dashboard', p_dashboard_id, 'succeeded', p_deployment_revision
+  );
+
+  RETURN next_revision;
+END
+$function$;
+
+CREATE FUNCTION dasher_api.record_source_snapshot(
+  p_source_kind text,
+  p_source_ref text,
+  p_canonical_bytes bytea,
+  p_observed_at timestamptz,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+  new_snapshot uuid := pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  -- The digest is derived here rather than accepted, so it cannot disagree
+  -- with the bytes it summarises.
+  INSERT INTO dasher.source_snapshots (
+    organization_id, snapshot_id, source_kind, source_ref, canonical_bytes,
+    content_sha256, observed_at, retrieved_at
+  )
+  VALUES (
+    actor.organization_id, new_snapshot, p_source_kind, p_source_ref,
+    p_canonical_bytes, pg_catalog.sha256(p_canonical_bytes), p_observed_at,
+    pg_catalog.clock_timestamp()
+  );
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, content_sha256, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(), actor.organization_id, 'user', actor.user_id,
+    1, p_request_id, 'source_snapshot.created', 'source_snapshot', new_snapshot,
+    'succeeded', pg_catalog.sha256(p_canonical_bytes), p_deployment_revision
+  );
+
+  RETURN new_snapshot;
+END
+$function$;
+
+CREATE FUNCTION dasher_api.record_evidence(
+  p_snapshot_id uuid,
+  p_evidence_kind text,
+  p_coordinates text,
+  p_transformation text,
+  p_content_sha256 bytea,
+  p_observed_at timestamptz
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+  new_evidence uuid := pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  INSERT INTO dasher.evidence_records (
+    organization_id, evidence_id, snapshot_id, evidence_kind, coordinates,
+    transformation, content_sha256, observed_at
+  )
+  VALUES (
+    actor.organization_id, new_evidence, p_snapshot_id, p_evidence_kind,
+    p_coordinates, p_transformation, p_content_sha256, p_observed_at
+  );
+
+  RETURN new_evidence;
+END
+$function$;
+
+CREATE FUNCTION dasher_api.start_run(
+  p_dashboard_id uuid,
+  p_request_text text,
+  p_provider text,
+  p_model text,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+  new_run uuid := pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  INSERT INTO dasher.agent_runs (
+    organization_id, run_id, dashboard_id, requested_by_user_id,
+    request_text, state, provider, model
+  )
+  VALUES (
+    actor.organization_id, new_run, p_dashboard_id, actor.user_id,
+    p_request_text, 'running', p_provider, p_model
+  );
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(), actor.organization_id, 'user', actor.user_id,
+    1, p_request_id, 'agent_run.started', 'agent_run', new_run, 'succeeded',
+    p_deployment_revision
+  );
+
+  RETURN new_run;
+END
+$function$;
+
+CREATE FUNCTION dasher_api.fail_run(
+  p_run_id uuid,
+  p_failure_reason text,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  UPDATE dasher.agent_runs AS held
+  SET state = 'failed',
+      failure_reason = p_failure_reason,
+      finished_at = pg_catalog.clock_timestamp()
+  WHERE held.organization_id = actor.organization_id
+    AND held.run_id = p_run_id
+    AND held.state = 'running';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION USING ERRCODE = '40001', MESSAGE = 'dasher_conflict';
+  END IF;
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(), actor.organization_id, 'user', actor.user_id,
+    1, p_request_id, 'agent_run.finished', 'agent_run', p_run_id, 'succeeded',
+    p_deployment_revision
+  );
+END
+$function$;
+
+-- The whole publication act, in one statement.
+--
+-- Version bytes, the complete claim set, its citation edges, the run's terminal
+-- state, the head promotion, and the audit events either all commit or none do.
+-- That is what makes audit atomicity a property of the schema rather than a
+-- convention the caller is trusted to follow, and it is why claims cannot be
+-- appended later: they are written before the promotion that seals them.
+CREATE FUNCTION dasher_api.finalize_run(
+  p_run_id uuid,
+  p_canonical_spec_bytes bytea,
+  p_claims jsonb,
+  p_expected_revision bigint,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  actor record;
+  run_row dasher.agent_runs%ROWTYPE;
+  new_version uuid := pg_catalog.gen_random_uuid();
+  claim_entry jsonb;
+  edge_entry jsonb;
+  new_claim uuid;
+  promoted bigint;
+BEGIN
+  SELECT * INTO actor FROM dasher_api.acting_principal('editor');
+
+  SELECT * INTO run_row
+  FROM dasher.agent_runs AS candidate
+  WHERE candidate.organization_id = actor.organization_id
+    AND candidate.run_id = p_run_id
+  FOR UPDATE;
+
+  IF NOT FOUND
+    OR run_row.state <> 'running'
+    OR run_row.dashboard_id IS NULL
+  THEN
+    RAISE EXCEPTION USING ERRCODE = '40001', MESSAGE = 'dasher_conflict';
+  END IF;
+
+  INSERT INTO dasher.dashboard_versions (
+    organization_id, dashboard_id, version_id, canonical_spec_bytes,
+    canonical_spec_sha256, validation_state, run_id, created_by_user_id
+  )
+  VALUES (
+    actor.organization_id, run_row.dashboard_id, new_version,
+    p_canonical_spec_bytes, pg_catalog.sha256(p_canonical_spec_bytes),
+    'valid', p_run_id, actor.user_id
+  );
+
+  FOR claim_entry IN
+    SELECT * FROM pg_catalog.jsonb_array_elements(
+      coalesce(p_claims, '[]'::jsonb)
+    )
+  LOOP
+    new_claim := pg_catalog.gen_random_uuid();
+    INSERT INTO dasher.claims (
+      organization_id, dashboard_id, version_id, claim_id, json_pointer,
+      label, salience, evidence_state, assertion_sha256
+    )
+    VALUES (
+      actor.organization_id, run_row.dashboard_id, new_version, new_claim,
+      claim_entry ->> 'pointer',
+      claim_entry ->> 'label',
+      coalesce(claim_entry ->> 'salience', 'normal'),
+      claim_entry ->> 'evidence_state',
+      pg_catalog.decode(claim_entry ->> 'assertion_sha256', 'hex')
+    );
+
+    FOR edge_entry IN
+      SELECT * FROM pg_catalog.jsonb_array_elements(
+        coalesce(claim_entry -> 'evidence', '[]'::jsonb)
+      )
+    LOOP
+      INSERT INTO dasher.claim_evidence (
+        organization_id, dashboard_id, version_id, claim_id, evidence_id,
+        relation
+      )
+      VALUES (
+        actor.organization_id, run_row.dashboard_id, new_version, new_claim,
+        (edge_entry ->> 'evidence_id')::uuid,
+        coalesce(edge_entry ->> 'relation', 'supports')
+      );
+    END LOOP;
+  END LOOP;
+
+  UPDATE dasher.agent_runs AS held
+  SET state = 'succeeded',
+      produced_version_id = new_version,
+      finished_at = pg_catalog.clock_timestamp()
+  WHERE held.organization_id = actor.organization_id
+    AND held.run_id = p_run_id;
+
+  UPDATE dasher.dashboards AS held
+  SET head_version_id = new_version,
+      lifecycle_state = 'active',
+      lifecycle_revision = held.lifecycle_revision + 1,
+      updated_at = pg_catalog.clock_timestamp()
+  WHERE held.organization_id = actor.organization_id
+    AND held.dashboard_id = run_row.dashboard_id
+    AND held.lifecycle_revision = p_expected_revision
+  RETURNING held.lifecycle_revision INTO promoted;
+
+  IF promoted IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = '40001', MESSAGE = 'dasher_conflict';
+  END IF;
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, content_sha256, deployment_revision
+  )
+  VALUES
+    (
+      pg_catalog.gen_random_uuid(), actor.organization_id, 'user',
+      actor.user_id, 1, p_request_id, 'dashboard_version.created',
+      'dashboard_version', new_version, 'succeeded',
+      pg_catalog.sha256(p_canonical_spec_bytes), p_deployment_revision
+    ),
+    (
+      pg_catalog.gen_random_uuid(), actor.organization_id, 'user',
+      actor.user_id, 1, p_request_id, 'dashboard_head.promoted',
+      'dashboard', run_row.dashboard_id, 'succeeded', NULL,
+      p_deployment_revision
+    ),
+    (
+      pg_catalog.gen_random_uuid(), actor.organization_id, 'user',
+      actor.user_id, 1, p_request_id, 'agent_run.finished', 'agent_run',
+      p_run_id, 'succeeded', NULL, p_deployment_revision
+    );
+
+  RETURN new_version;
+END
+$function$;
+
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA dasher_api FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.create_dashboard(text, uuid, text) TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.set_dashboard_archived(uuid, bigint, boolean, uuid, text)
+  TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.record_source_snapshot(text, text, bytea, timestamptz, uuid, text)
+  TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.record_evidence(uuid, text, text, text, bytea, timestamptz)
+  TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.start_run(uuid, text, text, text, uuid, text) TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.fail_run(uuid, text, uuid, text) TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.finalize_run(uuid, bytea, jsonb, bigint, uuid, text) TO dasher_app;
 GRANT EXECUTE ON FUNCTION
   dasher_api.resolve_external_identity(text, text) TO dasher_app;
 GRANT EXECUTE ON FUNCTION

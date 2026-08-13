@@ -431,12 +431,16 @@ describe("composite tenant foreign keys", () => {
   });
 
   it("rejects a claim citing evidence from another organization", async () => {
+    // `unsupported` on purpose: a `complete` claim must cite something, which
+    // is a different property checked below. This isolates the composite
+    // foreign key.
     const claimId = randomUUID();
     await ownerPool.query(
       `INSERT INTO dasher.claims
          (organization_id, dashboard_id, version_id, claim_id, json_pointer,
           label, salience, evidence_state, assertion_sha256)
-       VALUES ($1, $2, $3, $4, '/pages/0/title', 'observed', 'normal', 'complete', $5)`,
+       VALUES ($1, $2, $3, $4, '/pages/0/title', 'observed', 'normal',
+               'unsupported', $5)`,
       [orgA, dashboardA, versionA, claimId, sha256("assertion")],
     );
 
@@ -452,26 +456,59 @@ describe("composite tenant foreign keys", () => {
   });
 
   it("accepts a claim citing evidence from its own organization", async () => {
+    // One transaction, because a `complete` claim and the edge supporting it
+    // are checked together at commit: the claim necessarily exists before the
+    // edge that supports it.
     const claimId = randomUUID();
-    await ownerPool.query(
-      `INSERT INTO dasher.claims
-         (organization_id, dashboard_id, version_id, claim_id, json_pointer,
-          label, salience, evidence_state, assertion_sha256)
-       VALUES ($1, $2, $3, $4, '/pages/0/sections/0', 'calculated', 'high', 'complete', $5)`,
-      [orgA, dashboardA, versionA, claimId, sha256("calculated")],
-    );
-    await ownerPool.query(
-      `INSERT INTO dasher.claim_evidence
-         (organization_id, dashboard_id, version_id, claim_id, evidence_id, relation)
-       VALUES ($1, $2, $3, $4, $5, 'supports')`,
-      [orgA, dashboardA, versionA, claimId, evidenceA],
-    );
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO dasher.claims
+           (organization_id, dashboard_id, version_id, claim_id, json_pointer,
+            label, salience, evidence_state, assertion_sha256)
+         VALUES ($1, $2, $3, $4, '/pages/0/sections/0', 'calculated', 'high',
+                 'complete', $5)`,
+        [orgA, dashboardA, versionA, claimId, sha256("calculated")],
+      );
+      await client.query(
+        `INSERT INTO dasher.claim_evidence
+           (organization_id, dashboard_id, version_id, claim_id, evidence_id, relation)
+         VALUES ($1, $2, $3, $4, $5, 'supports')`,
+        [orgA, dashboardA, versionA, claimId, evidenceA],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
 
     const rows = await ownerPool.query(
       "SELECT 1 FROM dasher.claim_evidence WHERE claim_id = $1",
       [claimId],
     );
     expect(rows.rowCount).toBe(1);
+  });
+
+  it("rejects a complete claim that cites nothing", async () => {
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO dasher.claims
+           (organization_id, dashboard_id, version_id, claim_id, json_pointer,
+            label, salience, evidence_state, assertion_sha256)
+         VALUES ($1, $2, $3, $4, '/pages/0/uncited', 'observed', 'normal',
+                 'complete', $5)`,
+        [orgA, dashboardA, versionA, randomUUID(), sha256("uncited")],
+      );
+      await expectSqlState(client.query("COMMIT"), "23514");
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
   });
 });
 

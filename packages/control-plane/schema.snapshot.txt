@@ -141,9 +141,9 @@ dasher.agent_runs agent_runs_pkey PRIMARY KEY (organization_id, run_id)
 dasher.agent_runs agent_runs_request_text_check CHECK (((char_length(request_text) >= 1) AND (char_length(request_text) <= 4000)))
 dasher.agent_runs agent_runs_requester_fkey FOREIGN KEY (organization_id, requested_by_user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.agent_runs agent_runs_state_check CHECK (((state)::text = ANY ((ARRAY['running'::character varying, 'succeeded'::character varying, 'failed'::character varying])::text[])))
-dasher.agent_runs agent_runs_success_check CHECK (((((state)::text = 'succeeded'::text) AND (produced_version_id IS NOT NULL) AND (failure_reason IS NULL)) OR (((state)::text = 'failed'::text) AND (produced_version_id IS NULL) AND (failure_reason IS NOT NULL)) OR (((state)::text = 'running'::text) AND (produced_version_id IS NULL) AND (failure_reason IS NULL))))
+dasher.agent_runs agent_runs_success_check CHECK (((((state)::text = 'succeeded'::text) AND (produced_version_id IS NOT NULL) AND (dashboard_id IS NOT NULL) AND (failure_reason IS NULL)) OR (((state)::text = 'failed'::text) AND (produced_version_id IS NULL) AND (failure_reason IS NOT NULL)) OR (((state)::text = 'running'::text) AND (produced_version_id IS NULL) AND (failure_reason IS NULL))))
 dasher.agent_runs agent_runs_terminal_check CHECK (((((state)::text = 'running'::text) AND (finished_at IS NULL)) OR (((state)::text <> 'running'::text) AND (finished_at IS NOT NULL))))
-dasher.agent_runs agent_runs_version_fkey FOREIGN KEY (organization_id, produced_version_id) REFERENCES dasher.dashboard_versions(organization_id, version_id)
+dasher.agent_runs agent_runs_version_fkey FOREIGN KEY (organization_id, dashboard_id, produced_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)
 dasher.audit_events audit_events_action_check CHECK (((action)::text = ANY ((ARRAY['membership.role_changed'::character varying, 'membership.revoked'::character varying, 'invitation.issued'::character varying, 'invitation.revoked'::character varying, 'invitation.accepted'::character varying, 'invitation.accepted_existing_membership'::character varying, 'session.issued'::character varying, 'session.rotated'::character varying, 'session.revoked'::character varying, 'source_snapshot.created'::character varying, 'evidence_record.created'::character varying, 'dashboard.created'::character varying, 'dashboard.archived'::character varying, 'dashboard.unarchived'::character varying, 'dashboard_version.created'::character varying, 'dashboard_head.promoted'::character varying, 'agent_run.started'::character varying, 'agent_run.finished'::character varying])::text[])))
 dasher.audit_events audit_events_actor_check CHECK (((((actor_kind)::text = 'user'::text) AND (actor_user_id IS NOT NULL) AND (actor_service IS NULL)) OR (((actor_kind)::text = 'service'::text) AND (actor_user_id IS NULL) AND (actor_service IS NOT NULL))))
 dasher.audit_events audit_events_actor_fkey FOREIGN KEY (organization_id, actor_user_id) REFERENCES dasher.memberships(organization_id, user_id)
@@ -167,6 +167,7 @@ dasher.claims claims_json_pointer_check CHECK (((json_pointer)::text ~ '^(?:/(?:
 dasher.claims claims_label_check CHECK (((label)::text = ANY ((ARRAY['observed'::character varying, 'calculated'::character varying, 'hypothesis'::character varying, 'recommendation'::character varying, 'unknown'::character varying, 'blocked'::character varying])::text[])))
 dasher.claims claims_pkey PRIMARY KEY (organization_id, dashboard_id, version_id, claim_id)
 dasher.claims claims_pointer_key UNIQUE (organization_id, dashboard_id, version_id, json_pointer)
+dasher.claims claims_require_support TRIGGER DEFERRABLE INITIALLY DEFERRED
 dasher.claims claims_salience_check CHECK (((salience)::text = ANY ((ARRAY['high'::character varying, 'normal'::character varying])::text[])))
 dasher.claims claims_version_fkey FOREIGN KEY (organization_id, dashboard_id, version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)
 dasher.dashboard_versions dashboard_versions_creator_fkey FOREIGN KEY (organization_id, created_by_user_id) REFERENCES dasher.memberships(organization_id, user_id)
@@ -175,9 +176,10 @@ dasher.dashboard_versions dashboard_versions_org_version_key UNIQUE (organizatio
 dasher.dashboard_versions dashboard_versions_parent_check CHECK (((parent_version_id IS NULL) OR (parent_version_id <> version_id)))
 dasher.dashboard_versions dashboard_versions_parent_fkey FOREIGN KEY (organization_id, dashboard_id, parent_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)
 dasher.dashboard_versions dashboard_versions_pkey PRIMARY KEY (organization_id, dashboard_id, version_id)
-dasher.dashboard_versions dashboard_versions_spec_sha256_check CHECK ((octet_length(canonical_spec_sha256) = 32))
+dasher.dashboard_versions dashboard_versions_spec_sha256_check CHECK ((canonical_spec_sha256 = sha256(canonical_spec_bytes)))
 dasher.dashboard_versions dashboard_versions_validation_state_check CHECK (((validation_state)::text = ANY ((ARRAY['valid'::character varying, 'invalid'::character varying])::text[])))
 dasher.dashboards dashboards_archived_at_check CHECK ((((lifecycle_state)::text = 'archived'::text) = (archived_at IS NOT NULL)))
+dasher.dashboards dashboards_archived_order_check CHECK (((archived_at IS NULL) OR (archived_at >= created_at)))
 dasher.dashboards dashboards_creator_fkey FOREIGN KEY (organization_id, created_by_user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.dashboards dashboards_head_check CHECK (((((lifecycle_state)::text = 'draft'::text) AND (head_version_id IS NULL)) OR (((lifecycle_state)::text <> 'draft'::text) AND (head_version_id IS NOT NULL))))
 dasher.dashboards dashboards_head_version_fkey FOREIGN KEY (organization_id, dashboard_id, head_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id) DEFERRABLE INITIALLY DEFERRED
@@ -200,6 +202,7 @@ dasher.external_identities external_identities_user_fkey FOREIGN KEY (user_id) R
 dasher.external_identities external_identities_user_key UNIQUE (user_id)
 dasher.invitations invitations_accepted_fields_check CHECK (((accepted_at IS NULL) = (accepted_user_id IS NULL)))
 dasher.invitations invitations_accepted_user_fkey FOREIGN KEY (accepted_user_id) REFERENCES dasher.users(user_id)
+dasher.invitations invitations_accepted_window_check CHECK (((accepted_at IS NULL) OR ((accepted_at >= created_at) AND (accepted_at < expires_at))))
 dasher.invitations invitations_creator_fkey FOREIGN KEY (organization_id, created_by_user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.invitations invitations_expiry_check CHECK ((expires_at > created_at))
 dasher.invitations invitations_granted_role_check CHECK (((granted_role)::text = ANY ((ARRAY['admin'::character varying, 'editor'::character varying, 'viewer'::character varying])::text[])))
@@ -208,6 +211,7 @@ dasher.invitations invitations_org_id_key UNIQUE (organization_id, invitation_id
 dasher.invitations invitations_organization_fkey FOREIGN KEY (organization_id) REFERENCES dasher.organizations(organization_id)
 dasher.invitations invitations_pkey PRIMARY KEY (invitation_id)
 dasher.invitations invitations_revoked_fields_check CHECK (((revoked_at IS NULL) = (revoked_by_user_id IS NULL)))
+dasher.invitations invitations_revoked_order_check CHECK (((revoked_at IS NULL) OR (revoked_at >= created_at)))
 dasher.invitations invitations_revoker_fkey FOREIGN KEY (organization_id, revoked_by_user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.invitations invitations_role_ceiling_check CHECK (((role_ceiling)::text = ANY ((ARRAY['admin'::character varying, 'editor'::character varying, 'viewer'::character varying])::text[])))
 dasher.invitations invitations_role_order_check CHECK (( CASE granted_role WHEN 'viewer'::text THEN 1 WHEN 'editor'::text THEN 2 WHEN 'admin'::text THEN 3 ELSE NULL::integer END <= CASE role_ceiling WHEN 'viewer'::text THEN 1 WHEN 'editor'::text THEN 2 WHEN 'admin'::text THEN 3 ELSE NULL::integer END))
@@ -232,7 +236,7 @@ dasher.sessions sessions_csrf_digest_check CHECK ((octet_length(csrf_digest) = 3
 dasher.sessions sessions_csrf_key UNIQUE (csrf_key_version, csrf_digest)
 dasher.sessions sessions_csrf_key_version_check CHECK (((csrf_key_version >= 1) AND (csrf_key_version <= 32767)))
 dasher.sessions sessions_idle_expiry_check CHECK (((issued_at < idle_expires_at) AND (idle_expires_at <= absolute_expires_at)))
-dasher.sessions sessions_last_seen_check CHECK (((issued_at <= last_seen_at) AND (last_seen_at < absolute_expires_at)))
+dasher.sessions sessions_last_seen_check CHECK (((issued_at <= last_seen_at) AND (last_seen_at < idle_expires_at) AND (last_seen_at < absolute_expires_at)))
 dasher.sessions sessions_lineage_check CHECK ((((rotated_from_session_id IS NULL) OR (rotated_from_session_id <> session_id)) AND ((replaced_by_session_id IS NULL) OR (replaced_by_session_id <> session_id)) AND ((rotated_from_session_id IS NULL) OR (replaced_by_session_id IS NULL) OR (rotated_from_session_id <> replaced_by_session_id))))
 dasher.sessions sessions_membership_fkey FOREIGN KEY (organization_id, user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.sessions sessions_org_id_key UNIQUE (organization_id, session_id)
@@ -245,7 +249,7 @@ dasher.sessions sessions_rotated_from_fkey FOREIGN KEY (organization_id, rotated
 dasher.sessions sessions_token_digest_check CHECK ((octet_length(token_digest) = 32))
 dasher.sessions sessions_token_key UNIQUE (token_key_version, token_digest)
 dasher.sessions sessions_token_key_version_check CHECK (((token_key_version >= 1) AND (token_key_version <= 32767)))
-dasher.source_snapshots source_snapshots_content_sha256_check CHECK ((octet_length(content_sha256) = 32))
+dasher.source_snapshots source_snapshots_content_sha256_check CHECK ((content_sha256 = sha256(canonical_bytes)))
 dasher.source_snapshots source_snapshots_organization_fkey FOREIGN KEY (organization_id) REFERENCES dasher.organizations(organization_id)
 dasher.source_snapshots source_snapshots_pkey PRIMARY KEY (organization_id, snapshot_id)
 dasher.source_snapshots source_snapshots_retrieved_check CHECK ((retrieved_at >= observed_at))
@@ -258,11 +262,14 @@ dasher_private.context_keys context_keys_singleton_check CHECK (singleton)
 
 -- indexes
 CREATE INDEX agent_runs_dashboard_idx ON dasher.agent_runs USING btree (organization_id, dashboard_id, started_at DESC)
+CREATE INDEX agent_runs_requester_idx ON dasher.agent_runs USING btree (organization_id, requested_by_user_id)
 CREATE INDEX audit_events_actor_idx ON dasher.audit_events USING btree (organization_id, actor_user_id)
 CREATE INDEX audit_events_occurred_idx ON dasher.audit_events USING btree (organization_id, occurred_at, audit_event_id)
 CREATE INDEX claim_evidence_evidence_idx ON dasher.claim_evidence USING btree (organization_id, evidence_id)
+CREATE INDEX dashboard_versions_creator_idx ON dasher.dashboard_versions USING btree (organization_id, created_by_user_id)
 CREATE INDEX dashboard_versions_dashboard_created_idx ON dasher.dashboard_versions USING btree (organization_id, dashboard_id, created_at DESC)
 CREATE INDEX dashboards_active_idx ON dasher.dashboards USING btree (organization_id, updated_at DESC) WHERE ((lifecycle_state)::text <> 'archived'::text)
+CREATE INDEX dashboards_creator_idx ON dasher.dashboards USING btree (organization_id, created_by_user_id)
 CREATE INDEX evidence_records_snapshot_idx ON dasher.evidence_records USING btree (organization_id, snapshot_id)
 CREATE INDEX invitations_accepted_user_idx ON dasher.invitations USING btree (accepted_user_id)
 CREATE INDEX invitations_creator_idx ON dasher.invitations USING btree (organization_id, created_by_user_id)
@@ -274,6 +281,7 @@ CREATE INDEX sessions_live_user_idx ON dasher.sessions USING btree (organization
 CREATE INDEX sessions_replaced_by_idx ON dasher.sessions USING btree (organization_id, replaced_by_session_id)
 CREATE INDEX sessions_rotated_from_idx ON dasher.sessions USING btree (organization_id, rotated_from_session_id)
 CREATE UNIQUE INDEX agent_runs_pkey ON dasher.agent_runs USING btree (organization_id, run_id)
+CREATE UNIQUE INDEX agent_runs_produced_version_key ON dasher.agent_runs USING btree (organization_id, produced_version_id) WHERE (produced_version_id IS NOT NULL)
 CREATE UNIQUE INDEX audit_events_org_id_key ON dasher.audit_events USING btree (organization_id, audit_event_id)
 CREATE UNIQUE INDEX audit_events_pkey ON dasher.audit_events USING btree (audit_event_id)
 CREATE UNIQUE INDEX claim_evidence_pkey ON dasher.claim_evidence USING btree (organization_id, dashboard_id, version_id, claim_id, evidence_id, relation)
@@ -337,23 +345,32 @@ dasher.sessions sessions_read r PERMISSIVE roles=dasher_app using=(dasher_privat
 dasher.source_snapshots source_snapshots_read r PERMISSIVE roles=dasher_app using=dasher_private.context_allows(organization_id, 'viewer'::text) check=none
 
 -- triggers
+CREATE CONSTRAINT TRIGGER claims_require_support AFTER INSERT ON dasher.claims DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_claim_support()
+CREATE TRIGGER agent_runs_guard BEFORE UPDATE ON dasher.agent_runs FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_agent_run_update()
 CREATE TRIGGER audit_events_immutable BEFORE DELETE OR UPDATE ON dasher.audit_events FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 CREATE TRIGGER claim_evidence_immutable BEFORE DELETE OR UPDATE ON dasher.claim_evidence FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
+CREATE TRIGGER claim_evidence_seal BEFORE INSERT ON dasher.claim_evidence FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_claim_insert()
 CREATE TRIGGER claims_immutable BEFORE DELETE OR UPDATE ON dasher.claims FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
+CREATE TRIGGER claims_seal BEFORE INSERT ON dasher.claims FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_claim_insert()
 CREATE TRIGGER dashboard_versions_immutable BEFORE DELETE OR UPDATE ON dasher.dashboard_versions FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
+CREATE TRIGGER dashboards_guard BEFORE UPDATE ON dasher.dashboards FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_dashboard_update()
+CREATE TRIGGER evidence_records_immutable BEFORE DELETE OR UPDATE ON dasher.evidence_records FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
+CREATE TRIGGER source_snapshots_immutable BEFORE DELETE OR UPDATE ON dasher.source_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 
 -- functions
 dasher_private.context_allows(p_organization_id uuid, p_required_role text) -> boolean volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_digest(p_user_id uuid, p_organization_id uuid) -> bytea volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_organization_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
 dasher_private.context_user_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
+dasher_private.guard_agent_run_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.guard_claim_insert() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.guard_claim_support() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.guard_dashboard_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.reject_immutable_mutation() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.verified_context() -> record volatility=s security_definer=true search_path=search_path=pg_catalog
 
 -- grants
-dasher.agent_runs dasher_app INSERT
 dasher.agent_runs dasher_app SELECT
-dasher.agent_runs dasher_app UPDATE
 dasher.agent_runs dasher_ci_owner DELETE
 dasher.agent_runs dasher_ci_owner INSERT
 dasher.agent_runs dasher_ci_owner REFERENCES
@@ -369,7 +386,6 @@ dasher.audit_events dasher_ci_owner SELECT
 dasher.audit_events dasher_ci_owner TRIGGER
 dasher.audit_events dasher_ci_owner TRUNCATE
 dasher.audit_events dasher_ci_owner UPDATE
-dasher.claim_evidence dasher_app INSERT
 dasher.claim_evidence dasher_app SELECT
 dasher.claim_evidence dasher_ci_owner DELETE
 dasher.claim_evidence dasher_ci_owner INSERT
@@ -378,7 +394,6 @@ dasher.claim_evidence dasher_ci_owner SELECT
 dasher.claim_evidence dasher_ci_owner TRIGGER
 dasher.claim_evidence dasher_ci_owner TRUNCATE
 dasher.claim_evidence dasher_ci_owner UPDATE
-dasher.claims dasher_app INSERT
 dasher.claims dasher_app SELECT
 dasher.claims dasher_ci_owner DELETE
 dasher.claims dasher_ci_owner INSERT
@@ -387,7 +402,6 @@ dasher.claims dasher_ci_owner SELECT
 dasher.claims dasher_ci_owner TRIGGER
 dasher.claims dasher_ci_owner TRUNCATE
 dasher.claims dasher_ci_owner UPDATE
-dasher.dashboard_versions dasher_app INSERT
 dasher.dashboard_versions dasher_app SELECT
 dasher.dashboard_versions dasher_ci_owner DELETE
 dasher.dashboard_versions dasher_ci_owner INSERT
@@ -396,9 +410,7 @@ dasher.dashboard_versions dasher_ci_owner SELECT
 dasher.dashboard_versions dasher_ci_owner TRIGGER
 dasher.dashboard_versions dasher_ci_owner TRUNCATE
 dasher.dashboard_versions dasher_ci_owner UPDATE
-dasher.dashboards dasher_app INSERT
 dasher.dashboards dasher_app SELECT
-dasher.dashboards dasher_app UPDATE
 dasher.dashboards dasher_ci_owner DELETE
 dasher.dashboards dasher_ci_owner INSERT
 dasher.dashboards dasher_ci_owner REFERENCES

@@ -150,6 +150,34 @@ async function publishDashboard(dashboardId: string): Promise<string> {
   return versionId;
 }
 
+/** Creates a dashboard and publishes a version through the seam. */
+async function publishThroughSeam(
+  organizationId: string,
+  userId: string,
+): Promise<{
+  readonly dashboardId: string;
+  readonly versionId: string;
+  readonly runId: string;
+}> {
+  return asTenant(organizationId, userId, async (client) => {
+    const dashboard = await client.query<{ readonly id: string }>(
+      "SELECT dasher_api.create_dashboard($1, $2, 'test') AS id",
+      ["seam dashboard", randomUUID()],
+    );
+    const dashboardId = dashboard.rows[0]!.id;
+    const run = await client.query<{ readonly id: string }>(
+      "SELECT dasher_api.start_run($1, $2, 'fake', 'fake-v1', $3, 'test') AS id",
+      [dashboardId, "publish me", randomUUID()],
+    );
+    const runId = run.rows[0]!.id;
+    const version = await client.query<{ readonly id: string }>(
+      `SELECT dasher_api.finalize_run($1, $2, '[]'::jsonb, 1, $3, 'test') AS id`,
+      [runId, Buffer.from('{"pages":[]}'), randomUUID()],
+    );
+    return { dashboardId, versionId: version.rows[0]!.id, runId };
+  });
+}
+
 beforeAll(async () => {
   ownerPool = new Pool({ connectionString: config.ownerDsn, max: 4 });
   const client = await ownerPool.connect();
@@ -279,43 +307,37 @@ describe("request identity", () => {
 });
 
 describe("attribution", () => {
-  it.fails(
-    "an editor cannot attribute a dashboard to another member",
-    async () => {
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.dashboards
+  it("an editor cannot attribute a dashboard to another member", async () => {
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.dashboards
              (organization_id, dashboard_id, title, lifecycle_state,
               lifecycle_revision, created_by_user_id)
            VALUES ($1, $2, 'forged', 'draft', 1, $3)`,
-            [org, randomUUID(), bob],
-          ),
+          [org, randomUUID(), bob],
         ),
-      );
-    },
-  );
+      ),
+    );
+  });
 
-  it.fails(
-    "an editor cannot attribute an agent run to another member",
-    async () => {
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.agent_runs
+  it("an editor cannot attribute an agent run to another member", async () => {
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.agent_runs
              (organization_id, run_id, dashboard_id, requested_by_user_id,
               request_text, state)
            VALUES ($1, $2, $3, $4, 'forged request', 'running')`,
-            [org, randomUUID(), dashboardOne, bob],
-          ),
+          [org, randomUUID(), dashboardOne, bob],
         ),
-      );
-    },
-  );
+      ),
+    );
+  });
 });
 
 describe("dashboard lifecycle", () => {
-  it.fails("an active dashboard cannot roll back to draft", async () => {
+  it("an active dashboard cannot roll back to draft", async () => {
     const dashboardId = randomUUID();
     await ownerPool.query(
       `INSERT INTO dasher.dashboards
@@ -338,81 +360,60 @@ describe("dashboard lifecycle", () => {
     );
   });
 
-  it.fails("lifecycle_revision cannot move backwards", async () => {
-    // Raised to 5 first on purpose. Decrementing from 1 would be refused by the
-    // `lifecycle_revision >= 1` floor, which would make this test pass without
-    // monotonicity being enforced anywhere.
-    await ownerPool.query(
-      `UPDATE dasher.dashboards SET lifecycle_revision = 5
-       WHERE organization_id = $1 AND dashboard_id = $2`,
-      [org, dashboardTwo],
-    );
+  it("lifecycle_revision cannot move backwards", async () => {
+    const published = await publishThroughSeam(org, alice);
 
+    // Attempted as the owner, because the invariant belongs to the table
+    // rather than to a grant: the guard holds whoever the writer is.
     await expectRejected(
-      asTenant(org, alice, (client) =>
-        client.query(
-          `UPDATE dasher.dashboards SET lifecycle_revision = 2
-           WHERE organization_id = $1 AND dashboard_id = $2`,
-          [org, dashboardTwo],
-        ),
+      ownerPool.query(
+        `UPDATE dasher.dashboards SET lifecycle_revision = lifecycle_revision - 1
+         WHERE organization_id = $1 AND dashboard_id = $2`,
+        [org, published.dashboardId],
       ),
     );
   });
 
-  it.fails("an invalid version cannot become the head", async () => {
-    const dashboardId = randomUUID();
-    const badVersion = randomUUID();
+  it("an invalid version cannot become the head", async () => {
+    const published = await publishThroughSeam(org, alice);
+    const invalidVersion = randomUUID();
     await ownerPool.query(
-      `INSERT INTO dasher.dashboards
-         (organization_id, dashboard_id, title, lifecycle_state,
-          lifecycle_revision, created_by_user_id)
-       VALUES ($1, $2, 'invalid head', 'draft', 1, $3)`,
-      [org, dashboardId, alice],
-    );
-    await asTenant(org, alice, (client) =>
-      client.query(
-        `INSERT INTO dasher.dashboard_versions
-           (organization_id, dashboard_id, version_id, canonical_spec_bytes,
-            canonical_spec_sha256, validation_state, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, 'invalid', $6)`,
-        [org, dashboardId, badVersion, Buffer.from("{}"), sha256("{}"), alice],
-      ),
+      `INSERT INTO dasher.dashboard_versions
+         (organization_id, dashboard_id, version_id, canonical_spec_bytes,
+          canonical_spec_sha256, validation_state, created_by_user_id)
+       VALUES ($1, $2, $3, $4, sha256($4), 'invalid', $5)`,
+      [org, published.dashboardId, invalidVersion, Buffer.from("{}"), alice],
     );
 
     await expectRejected(
-      asTenant(org, alice, (client) =>
-        client.query(
-          `UPDATE dasher.dashboards
-             SET lifecycle_state = 'active', head_version_id = $3,
-                 lifecycle_revision = lifecycle_revision + 1
-           WHERE organization_id = $1 AND dashboard_id = $2`,
-          [org, dashboardId, badVersion],
-        ),
+      ownerPool.query(
+        `UPDATE dasher.dashboards
+           SET head_version_id = $3,
+               lifecycle_revision = lifecycle_revision + 1
+         WHERE organization_id = $1 AND dashboard_id = $2`,
+        [org, published.dashboardId, invalidVersion],
       ),
     );
   });
 });
 
 describe("run and version provenance", () => {
-  it.fails(
-    "a run cannot claim a version belonging to another dashboard",
-    async () => {
-      const foreignVersion = await publishDashboard(dashboardTwo);
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.agent_runs
+  it("a run cannot claim a version belonging to another dashboard", async () => {
+    const foreignVersion = await publishDashboard(dashboardTwo);
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.agent_runs
              (organization_id, run_id, dashboard_id, requested_by_user_id,
               request_text, state, produced_version_id, finished_at)
            VALUES ($1, $2, $3, $4, 'cross-dashboard', 'succeeded', $5, now())`,
-            [org, randomUUID(), dashboardOne, alice, foreignVersion],
-          ),
+          [org, randomUUID(), dashboardOne, alice, foreignVersion],
         ),
-      );
-    },
-  );
+      ),
+    );
+  });
 
-  it.fails("a version cannot cite a run that does not exist", async () => {
+  it("a version cannot cite a run that does not exist", async () => {
     await expectRejected(
       asTenant(org, alice, (client) =>
         client.query(
@@ -434,176 +435,101 @@ describe("run and version provenance", () => {
     );
   });
 
-  it.fails("a terminal run cannot be reopened", async () => {
-    const runId = randomUUID();
-    const versionId = await publishDashboard(dashboardOne);
-    await asTenant(org, alice, (client) =>
-      client.query(
-        `INSERT INTO dasher.agent_runs
-           (organization_id, run_id, dashboard_id, requested_by_user_id,
-            request_text, state, produced_version_id, finished_at)
-         VALUES ($1, $2, $3, $4, 'original request', 'succeeded', $5, now())`,
-        [org, runId, dashboardOne, alice, versionId],
-      ),
-    );
+  it("a terminal run cannot be reopened", async () => {
+    const published = await publishThroughSeam(org, alice);
 
     await expectRejected(
-      asTenant(org, alice, (client) =>
-        client.query(
-          `UPDATE dasher.agent_runs
-             SET state = 'running', produced_version_id = NULL, finished_at = NULL
-           WHERE organization_id = $1 AND run_id = $2`,
-          [org, runId],
-        ),
+      ownerPool.query(
+        `UPDATE dasher.agent_runs
+           SET state = 'running', produced_version_id = NULL, finished_at = NULL
+         WHERE organization_id = $1 AND run_id = $2`,
+        [org, published.runId],
       ),
     );
   });
 
-  it.fails("a completed run's request text cannot be rewritten", async () => {
-    const runId = randomUUID();
-    await asTenant(org, alice, (client) =>
-      client.query(
-        `INSERT INTO dasher.agent_runs
-           (organization_id, run_id, dashboard_id, requested_by_user_id,
-            request_text, state, failure_reason, finished_at)
-         VALUES ($1, $2, $3, $4, 'what was actually asked', 'failed',
-                 'planner_rejected', now())`,
-        [org, runId, dashboardOne, alice],
-      ),
-    );
+  it("a completed run's request text cannot be rewritten", async () => {
+    const published = await publishThroughSeam(org, alice);
 
     await expectRejected(
-      asTenant(org, alice, (client) =>
-        client.query(
-          `UPDATE dasher.agent_runs SET request_text = 'something else'
-           WHERE organization_id = $1 AND run_id = $2`,
-          [org, runId],
-        ),
+      ownerPool.query(
+        `UPDATE dasher.agent_runs SET request_text = 'something else'
+         WHERE organization_id = $1 AND run_id = $2`,
+        [org, published.runId],
       ),
     );
   });
 });
 
 describe("published bundles", () => {
-  it.fails(
-    "a claim cannot be attached after its version is published",
-    async () => {
-      const dashboardId = randomUUID();
-      await ownerPool.query(
-        `INSERT INTO dasher.dashboards
+  it("a claim cannot be attached after its version is published", async () => {
+    const dashboardId = randomUUID();
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboards
          (organization_id, dashboard_id, title, lifecycle_state,
           lifecycle_revision, created_by_user_id)
        VALUES ($1, $2, 'sealed', 'draft', 1, $3)`,
-        [org, dashboardId, alice],
-      );
-      const versionId = await publishDashboard(dashboardId);
+      [org, dashboardId, alice],
+    );
+    const versionId = await publishDashboard(dashboardId);
 
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.claims
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.claims
              (organization_id, dashboard_id, version_id, claim_id, json_pointer,
               label, salience, evidence_state, assertion_sha256)
            VALUES ($1, $2, $3, $4, '/pages/0/title', 'observed', 'normal',
                    'complete', $5)`,
-            [org, dashboardId, versionId, randomUUID(), sha256("late")],
-          ),
+          [org, dashboardId, versionId, randomUUID(), sha256("late")],
         ),
-      );
-    },
-  );
+      ),
+    );
+  });
 
-  it.fails(
-    "a version's stored digest must match its stored bytes",
-    async () => {
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.dashboard_versions
+  it("a version's stored digest must match its stored bytes", async () => {
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.dashboard_versions
              (organization_id, dashboard_id, version_id, canonical_spec_bytes,
               canonical_spec_sha256, validation_state, created_by_user_id)
            VALUES ($1, $2, $3, $4, $5, 'valid', $6)`,
-            [
-              org,
-              dashboardOne,
-              randomUUID(),
-              Buffer.from('{"real":"bytes"}'),
-              sha256("a completely different string"),
-              alice,
-            ],
-          ),
+          [
+            org,
+            dashboardOne,
+            randomUUID(),
+            Buffer.from('{"real":"bytes"}'),
+            sha256("a completely different string"),
+            alice,
+          ],
         ),
-      );
-    },
-  );
+      ),
+    );
+  });
 });
 
 describe("audit and evidence write paths", () => {
-  it.fails(
-    "the application role can record an audit event for its own mutation",
-    async () => {
-      await asTenant(org, alice, async (client) => {
-        await client.query(
-          `UPDATE dasher.dashboards SET title = 'renamed'
-         WHERE organization_id = $1 AND dashboard_id = $2`,
-          [org, dashboardTwo],
-        );
-        await client.query(
-          `INSERT INTO dasher.audit_events
-           (audit_event_id, organization_id, actor_kind, actor_user_id,
-            authority_revision, request_id, action, target_type, target_id,
-            outcome, deployment_revision)
-         VALUES ($1, $2, 'user', $3, 1, $4, 'dashboard.created', 'dashboard',
-                 $5, 'succeeded', 'test')`,
-          [randomUUID(), org, alice, randomUUID(), dashboardTwo],
-        );
-      });
-    },
-  );
+  it("a mutation and its audit event commit together or not at all", async () => {
+    // Audit atomicity is now a property of the schema rather than a
+    // convention: the application role cannot write either the dashboard or
+    // the audit row directly, and the one function that writes the dashboard
+    // writes the audit row in the same statement.
+    const created = await asTenant(org, alice, async (client) => {
+      const result = await client.query<{ readonly id: string }>(
+        "SELECT dasher_api.create_dashboard($1, $2, 'test') AS id",
+        ["audited dashboard", randomUUID()],
+      );
+      return result.rows[0]!.id;
+    });
 
-  it.fails(
-    "the application role can record a source snapshot and its evidence",
-    async () => {
-      const snapshotId = randomUUID();
-      await asTenant(org, alice, async (client) => {
-        await client.query(
-          `INSERT INTO dasher.source_snapshots
-           (organization_id, snapshot_id, source_kind, source_ref,
-            canonical_bytes, content_sha256, observed_at, retrieved_at)
-         VALUES ($1, $2, 'usgs', 'gauge/11447650', $3, $4, now(), now())`,
-          [org, snapshotId, Buffer.from("bytes"), sha256("bytes")],
-        );
-        await client.query(
-          `INSERT INTO dasher.evidence_records
-           (organization_id, evidence_id, snapshot_id, evidence_kind,
-            coordinates, transformation, content_sha256, observed_at)
-         VALUES ($1, $2, $3, 'gauge_reading', '/value/0', 'identity', $4, now())`,
-          [org, randomUUID(), snapshotId, sha256("bytes")],
-        );
-      });
-    },
-  );
-
-  it.fails("a recorded source snapshot cannot be rewritten", async () => {
-    const snapshotId = randomUUID();
-    await ownerPool.query(
-      `INSERT INTO dasher.source_snapshots
-         (organization_id, snapshot_id, source_kind, source_ref,
-          canonical_bytes, content_sha256, observed_at, retrieved_at)
-       VALUES ($1, $2, 'usgs', 'gauge/11447650', $3, $4, now(), now())`,
-      [org, snapshotId, Buffer.from("original"), sha256("original")],
+    const audited = await ownerPool.query(
+      `SELECT 1 FROM dasher.audit_events
+       WHERE organization_id = $1 AND action = 'dashboard.created'
+         AND target_id = $2 AND actor_user_id = $3`,
+      [org, created, alice],
     );
-
-    // Asserted against the owner, because the invariant under test is whether
-    // the table itself refuses rewriting — not whether a grant happens to be
-    // withheld from one role today.
-    await expectRejected(
-      ownerPool.query(
-        `UPDATE dasher.source_snapshots SET canonical_bytes = $3
-         WHERE organization_id = $1 AND snapshot_id = $2`,
-        [org, snapshotId, Buffer.from("rewritten")],
-      ),
-    );
+    expect(audited.rowCount).toBe(1);
   });
 });
 
@@ -666,6 +592,9 @@ describe("sign-in and onboarding", () => {
     }
   });
 
+  // Still open, and deliberately so: creating an organization and its first
+  // owner is self-serve provisioning, which no seam function covers yet. Every
+  // other identity workflow now has an entry point; this one is the last.
   it.fails(
     "the application role can create the first organization and its owner",
     async () => {
@@ -772,7 +701,7 @@ describe("sign-in and onboarding", () => {
 });
 
 describe("timestamp coherence", () => {
-  it.fails("a session cannot have been seen after it idled out", async () => {
+  it("a session cannot have been seen after it idled out", async () => {
     await expectRejected(
       ownerPool.query(
         `INSERT INTO dasher.sessions
@@ -789,24 +718,21 @@ describe("timestamp coherence", () => {
     );
   });
 
-  it.fails(
-    "an invitation cannot be accepted before it was created",
-    async () => {
-      await expectRejected(
-        ownerPool.query(
-          `INSERT INTO dasher.invitations
+  it("an invitation cannot be accepted before it was created", async () => {
+    await expectRejected(
+      ownerPool.query(
+        `INSERT INTO dasher.invitations
            (invitation_id, organization_id, normalized_email, granted_role,
             role_ceiling, token_key_version, token_digest, created_by_user_id,
             created_at, expires_at, accepted_at, accepted_user_id)
          VALUES ($1, $2, 'invitee@example.com', 'viewer', 'admin', 1, $3, $4,
                  now(), now() + interval '7 days', now() - interval '1 day', $5)`,
-          [randomUUID(), org, sha256(randomUUID()), alice, bob],
-        ),
-      );
-    },
-  );
+        [randomUUID(), org, sha256(randomUUID()), alice, bob],
+      ),
+    );
+  });
 
-  it.fails("an invitation cannot be accepted after it expired", async () => {
+  it("an invitation cannot be accepted after it expired", async () => {
     await expectRejected(
       ownerPool.query(
         `INSERT INTO dasher.invitations
@@ -821,7 +747,7 @@ describe("timestamp coherence", () => {
     );
   });
 
-  it.fails("a dashboard cannot be archived before it was created", async () => {
+  it("a dashboard cannot be archived before it was created", async () => {
     // Published first, then archived by UPDATE. Inserting an archived row
     // outright is refused by the deferred head foreign key, which would make
     // this pass without any timestamp rule existing.
@@ -848,100 +774,96 @@ describe("timestamp coherence", () => {
 });
 
 describe("run and version cardinality", () => {
-  it.fails(
-    "a succeeded run must name the dashboard it produced a version for",
-    async () => {
-      await expectRejected(
-        asTenant(org, alice, async (client) => {
-          const versionId = await publishDashboard(dashboardOne);
-          return client.query(
-            `INSERT INTO dasher.agent_runs
+  it("a succeeded run must name the dashboard it produced a version for", async () => {
+    await expectRejected(
+      asTenant(org, alice, async (client) => {
+        const versionId = await publishDashboard(dashboardOne);
+        return client.query(
+          `INSERT INTO dasher.agent_runs
              (organization_id, run_id, dashboard_id, requested_by_user_id,
               request_text, state, produced_version_id, finished_at)
            VALUES ($1, $2, NULL, $3, 'orphan success', 'succeeded', $4, now())`,
-            [org, randomUUID(), alice, versionId],
-          );
-        }),
-      );
-    },
-  );
+          [org, randomUUID(), alice, versionId],
+        );
+      }),
+    );
+  });
 
-  it.fails(
-    "two runs cannot claim to have produced the same version",
-    async () => {
-      const versionId = await publishDashboard(dashboardOne);
-      await asTenant(org, alice, (client) =>
-        client.query(
-          `INSERT INTO dasher.agent_runs
+  it("two runs cannot claim to have produced the same version", async () => {
+    const published = await publishThroughSeam(org, alice);
+
+    await expectRejected(
+      ownerPool.query(
+        `INSERT INTO dasher.agent_runs
            (organization_id, run_id, dashboard_id, requested_by_user_id,
             request_text, state, produced_version_id, finished_at)
-         VALUES ($1, $2, $3, $4, 'first', 'succeeded', $5, now())`,
-          [org, randomUUID(), dashboardOne, alice, versionId],
-        ),
-      );
-
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.agent_runs
-             (organization_id, run_id, dashboard_id, requested_by_user_id,
-              request_text, state, produced_version_id, finished_at)
-           VALUES ($1, $2, $3, $4, 'second', 'succeeded', $5, now())`,
-            [org, randomUUID(), dashboardOne, alice, versionId],
-          ),
-        ),
-      );
-    },
-  );
+         VALUES ($1, $2, $3, $4, 'second claimant', 'succeeded', $5, now())`,
+        [org, randomUUID(), published.dashboardId, alice, published.versionId],
+      ),
+    );
+  });
 });
 
-describe("provenance completeness", () => {
-  it.fails(
-    "a claim marked complete must cite at least one supporting evidence edge",
-    async () => {
-      const dashboardId = randomUUID();
-      await ownerPool.query(
-        `INSERT INTO dasher.dashboards
-         (organization_id, dashboard_id, title, lifecycle_state,
-          lifecycle_revision, created_by_user_id)
-       VALUES ($1, $2, 'uncited', 'draft', 1, $3)`,
-        [org, dashboardId, alice],
+describe("evidence immutability and completeness", () => {
+  it("the application role can record a source snapshot and its evidence", async () => {
+    const recorded = await asTenant(org, alice, async (client) => {
+      const snapshot = await client.query<{ readonly id: string }>(
+        `SELECT dasher_api.record_source_snapshot(
+           'usgs', 'gauge/11447650', $1, now(), $2, 'test') AS id`,
+        [Buffer.from('{"value":42}'), randomUUID()],
       );
-      const versionId = randomUUID();
-      await asTenant(org, alice, (client) =>
-        client.query(
-          `INSERT INTO dasher.dashboard_versions
-           (organization_id, dashboard_id, version_id, canonical_spec_bytes,
-            canonical_spec_sha256, validation_state, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, 'valid', $6)`,
-          [org, dashboardId, versionId, Buffer.from("{}"), sha256("{}"), alice],
-        ),
+      const evidence = await client.query<{ readonly id: string }>(
+        `SELECT dasher_api.record_evidence(
+           $1, 'gauge_reading', '/value', 'identity', $2, now()) AS id`,
+        [snapshot.rows[0]!.id, sha256("42")],
       );
+      return {
+        snapshot: snapshot.rows[0]!.id,
+        evidence: evidence.rows[0]!.id,
+      };
+    });
 
-      await expectRejected(
-        asTenant(org, alice, (client) =>
-          client.query(
-            `INSERT INTO dasher.claims
-             (organization_id, dashboard_id, version_id, claim_id, json_pointer,
-              label, salience, evidence_state, assertion_sha256)
-           VALUES ($1, $2, $3, $4, '/pages/0/sections/0/value', 'observed',
-                   'high', 'complete', $5)`,
-            [org, dashboardId, versionId, randomUUID(), sha256("uncited")],
-          ),
-        ),
-      );
-    },
-  );
+    // The digest is derived inside the function rather than accepted from the
+    // caller, so it cannot disagree with the bytes stored beside it.
+    const stored = await ownerPool.query<{ readonly matches: boolean }>(
+      `SELECT content_sha256 = sha256(canonical_bytes) AS matches
+       FROM dasher.source_snapshots WHERE snapshot_id = $1`,
+      [recorded.snapshot],
+    );
+    expect(stored.rows[0]?.matches).toBe(true);
+    expect(recorded.evidence).toEqual(expect.any(String));
+  });
 
-  it.fails("a recorded evidence record cannot be rewritten", async () => {
+  it("a recorded source snapshot cannot be rewritten", async () => {
+    const snapshotId = randomUUID();
+    await ownerPool.query(
+      `INSERT INTO dasher.source_snapshots
+         (organization_id, snapshot_id, source_kind, source_ref,
+          canonical_bytes, content_sha256, observed_at, retrieved_at)
+       VALUES ($1, $2, 'usgs', 'gauge/11447650', $3, sha256($3), now(), now())`,
+      [org, snapshotId, Buffer.from("original")],
+    );
+
+    // Asserted against the owner: the invariant must belong to the table, not
+    // to a grant that happens to be withheld today.
+    await expectRejected(
+      ownerPool.query(
+        `UPDATE dasher.source_snapshots SET canonical_bytes = $3
+         WHERE organization_id = $1 AND snapshot_id = $2`,
+        [org, snapshotId, Buffer.from("rewritten")],
+      ),
+    );
+  });
+
+  it("a recorded evidence record cannot be rewritten", async () => {
     const snapshotId = randomUUID();
     const evidenceId = randomUUID();
     await ownerPool.query(
       `INSERT INTO dasher.source_snapshots
          (organization_id, snapshot_id, source_kind, source_ref,
           canonical_bytes, content_sha256, observed_at, retrieved_at)
-       VALUES ($1, $2, 'usgs', 'gauge/11447650', $3, $4, now(), now())`,
-      [org, snapshotId, Buffer.from("evidence base"), sha256("evidence base")],
+       VALUES ($1, $2, 'usgs', 'gauge/11447650', $3, sha256($3), now(), now())`,
+      [org, snapshotId, Buffer.from("evidence base")],
     );
     await ownerPool.query(
       `INSERT INTO dasher.evidence_records
@@ -958,5 +880,36 @@ describe("provenance completeness", () => {
         [org, evidenceId],
       ),
     );
+  });
+
+  it("a claim marked complete must cite at least one supporting evidence edge", async () => {
+    const published = await publishThroughSeam(org, alice);
+    const draftVersion = randomUUID();
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboard_versions
+         (organization_id, dashboard_id, version_id, canonical_spec_bytes,
+          canonical_spec_sha256, validation_state, created_by_user_id)
+       VALUES ($1, $2, $3, $4, sha256($4), 'valid', $5)`,
+      [org, published.dashboardId, draftVersion, Buffer.from("{}"), alice],
+    );
+
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO dasher.claims
+           (organization_id, dashboard_id, version_id, claim_id, json_pointer,
+            label, salience, evidence_state, assertion_sha256)
+         VALUES ($1, $2, $3, $4, '/pages/0/uncited', 'observed', 'high',
+                 'complete', $5)`,
+        [org, published.dashboardId, draftVersion, randomUUID(), sha256("x")],
+      );
+      // Deferred to commit, because the claim necessarily exists before the
+      // edge that would support it.
+      await expectRejected(client.query("COMMIT"));
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
   });
 });
