@@ -298,5 +298,24 @@ security, composite tenant foreign keys, audit atomicity, or the rule that
 deterministic services compute every displayed value. No change to the
 documentation's practice of labelling its own overclaims.
 
+> **Correction, 2026-08-13.** The baseline schema written under this proposal
+> does not hold to that paragraph. Independent review found, and adversarial
+> tests now confirm, that it relaxes forced row-level security on `memberships`
+> and makes audit atomicity unreachable — `dasher_app` has no INSERT privilege
+> on `dasher.audit_events` at all, so the application cannot record an audit
+> event for a mutation it just made.
+>
+> The cause was a bad distinction in §2. Cutting "the multi-role apparatus" was
+> right; that section treated it as a privilege boundary between co-located
+> components, when in fact the same functions were the _only_ write path and
+> carried actor identity, transition legality, and audit atomicity with them.
+> Direct table grants replaced the ceremony and the enforcement together.
+>
+> Fifteen states the schema wrongly accepts are enumerated as failing tests in
+> `packages/control-plane/test/accepted-invalid-states.integration.test.ts`.
+> Closing them needs a trusted mutation seam, not the sixteen-table ledger back.
+> Smaller and less governed are separate choices, and only the first was
+> intended.
+
 The engineering judgment in this project is good. What needs changing is the
 sequence it was applied in.

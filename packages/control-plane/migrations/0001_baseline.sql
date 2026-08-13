@@ -10,7 +10,9 @@
 -- forward-only and append-only, and this file becomes immutable.
 --
 -- What is deliberately kept from the superseded series:
---   * forced row-level security on every tenant-scoped table
+--   * row-level security on every tenant-scoped table, FORCEd on all but
+--     `memberships` — see the note above `context_allows` for why that one
+--     cannot be forced without recursing
 --   * composite (organization_id, ...) foreign keys, so a child row can never
 --     reference a parent in another organization
 --   * a single restricted NOBYPASSRLS application role
@@ -24,8 +26,18 @@
 --     content-addressed replay
 --   * the PL/pgSQL calculation evaluator, superseded by
 --     @dasher/calculation-engine
---   * the multi-role SECURITY DEFINER apparatus, which enforced a privilege
+--   * the multi-role apparatus: several restricted roles, retention operators,
+--     and service-principal allowlist tables, which enforced a privilege
 --     boundary between components that run in one process as one database user
+--
+-- KNOWN GAP, tracked in test/accepted-invalid-states.integration.test.ts.
+-- The superseded series granted `dasher_app` no direct table writes at all:
+-- every mutation went through a `dasher_api` SECURITY DEFINER function that
+-- checked actor identity, legal transitions, and audit atomicity. Replacing
+-- that with direct INSERT/UPDATE grants dropped the enforcement along with the
+-- ceremony, which was not intended. Fifteen states this schema wrongly accepts
+-- are enumerated as failing tests. Closing them needs a trusted mutation seam,
+-- not the sixteen-table ledger back.
 
 -- ---------------------------------------------------------------------------
 -- Schemas and default privileges
@@ -77,8 +89,13 @@ ALTER DEFAULT PRIVILEGES REVOKE ALL ON TYPES FROM PUBLIC;
 -- Request context
 --
 -- The application sets two GUCs per request and every row-level security
--- policy reads them. These are plain STABLE readers: `current_setting` with
--- `missing_ok` needs no elevated rights, so no SECURITY DEFINER is involved.
+-- policy reads them. These two readers are plain STABLE functions:
+-- `current_setting` with `missing_ok` needs no elevated rights. The
+-- authorization helper further down, `context_allows`, *is* SECURITY DEFINER
+-- for a reason recorded there.
+--
+-- These read whatever the session was told. They do not establish it, and
+-- nothing here verifies that the caller is entitled to the identity it names.
 -- ---------------------------------------------------------------------------
 
 CREATE FUNCTION dasher_private.context_user_id()
@@ -853,9 +870,16 @@ CREATE INDEX agent_runs_dashboard_idx
 -- ---------------------------------------------------------------------------
 -- Row-level security
 --
--- Every tenant-scoped table forces RLS. The application connects as
--- dasher_app, which is NOBYPASSRLS, so a missing or wrong request context
--- yields zero rows rather than another organization's rows.
+-- Every tenant-scoped table enables RLS, and every one but `memberships`
+-- forces it. The application connects as dasher_app, which is NOBYPASSRLS, so
+-- a missing request context yields zero rows rather than another
+-- organization's rows.
+--
+-- A *wrong* context is a different matter and is not currently prevented:
+-- dasher_app sets these GUCs itself and nothing binds them to a verified
+-- session, so anything able to issue SQL on this connection can name any
+-- member of any organization. See the request-identity case in
+-- test/accepted-invalid-states.integration.test.ts.
 -- ---------------------------------------------------------------------------
 
 -- True when the request context names this organization and the acting user
