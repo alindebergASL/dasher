@@ -15,7 +15,11 @@ import type { MigrationClient } from "./migrator.js";
  * generated-code gate forbids execution sinks in first-party source, and
  * because it removes a dependency on a client binary matching the server.
  *
- * Ordering is explicit everywhere so the output is stable across servers.
+ * Every ORDER BY forces the C collation. Plain `ORDER BY 1` sorts under the
+ * server's collation, which orders `dashboard_versions_...` against
+ * `dashboards_...` differently on a C cluster than on an en_US.utf8 one — the
+ * same schema then renders two ways and the comparison fails on ordering
+ * alone. Explicit ordering is not the same as deterministic ordering.
  */
 
 const managedSchemas = ["dasher", "dasher_private"] as const;
@@ -29,8 +33,23 @@ async function lines(
   client: MigrationClient,
   sql: string,
 ): Promise<readonly string[]> {
-  const result = await client.query<TextRow>(sql);
-  return result.rows.map((row) => row.line);
+  // Ordering lives here, not in the section queries, so no caller can forget
+  // it and no caller can get it subtly wrong. `COLLATE "C"` forces byte order:
+  // under a locale collation such as en_US.UTF-8, `_` is ignored at the primary
+  // level, so `dashboards_active_idx` sorts before
+  // `dashboard_versions_dashboard_created_idx` while byte order puts them the
+  // other way round. The same schema would then render two ways and the
+  // comparison would fail on ordering alone. Explicit ordering is not the same
+  // as deterministic ordering.
+  const result = await client.query<TextRow>(
+    `SELECT rendered.line FROM (${sql}) AS rendered
+     ORDER BY rendered.line COLLATE "C"`,
+  );
+  // One catalog object per physical line. PostgreSQL pretty-prints some
+  // definitions across several lines (a CHECK carrying a CASE, for one), which
+  // would make an entry span lines and turn a one-object change into a
+  // multi-line diff hunk.
+  return result.rows.map((row) => row.line.replace(/\s+/gu, " ").trim());
 }
 
 function section(title: string, body: readonly string[]): readonly string[] {
@@ -69,7 +88,6 @@ export async function renderSchemaSnapshot(
       AND relation.relkind = 'r'
       AND attribute.attnum > 0
       AND NOT attribute.attisdropped
-    ORDER BY 1
   `,
   );
 
@@ -87,7 +105,6 @@ export async function renderSchemaSnapshot(
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN (${schemaList})
-    ORDER BY 1
   `,
   );
 
@@ -100,7 +117,6 @@ export async function renderSchemaSnapshot(
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN (${schemaList})
-    ORDER BY 1
   `,
   );
 
@@ -116,7 +132,6 @@ export async function renderSchemaSnapshot(
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN (${schemaList}) AND relation.relkind = 'r'
-    ORDER BY 1
   `,
   );
 
@@ -130,7 +145,7 @@ export async function renderSchemaSnapshot(
                           ELSE 'RESTRICTIVE' END,
       COALESCE(
         (
-          SELECT pg_catalog.string_agg(role_row.rolname::text, ',' ORDER BY 1)
+          SELECT pg_catalog.string_agg(role_row.rolname::text, ',' ORDER BY role_row.rolname COLLATE "C")
           FROM pg_catalog.pg_roles AS role_row
           WHERE role_row.oid = ANY (policy.polroles)
         ),
@@ -148,7 +163,6 @@ export async function renderSchemaSnapshot(
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN (${schemaList})
-    ORDER BY 1
   `,
   );
 
@@ -162,7 +176,6 @@ export async function renderSchemaSnapshot(
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN (${schemaList})
       AND NOT trigger_row.tgisinternal
-    ORDER BY 1
   `,
   );
 
@@ -181,7 +194,6 @@ export async function renderSchemaSnapshot(
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = routine.pronamespace
     WHERE namespace.nspname IN (${schemaList})
-    ORDER BY 1
   `,
   );
 
@@ -195,7 +207,6 @@ export async function renderSchemaSnapshot(
     ) AS line
     FROM information_schema.role_table_grants AS grant_row
     WHERE grant_row.table_schema IN (${schemaList})
-    ORDER BY 1
   `,
   );
 
@@ -209,7 +220,6 @@ export async function renderSchemaSnapshot(
     ) AS line
     FROM pg_catalog.pg_roles AS role_row
     WHERE role_row.rolname = 'dasher_app'
-    ORDER BY 1
   `,
   );
 

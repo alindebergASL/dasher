@@ -98,3 +98,25 @@ it("the snapshot records forced row security on every table but memberships", as
 
   expect(unforced).toEqual(["dasher.memberships rls=true force=false"]);
 });
+
+it("orders every section by bytes, so the render does not depend on the server collation", async () => {
+  // This is the property that broke CI: `ORDER BY` without an explicit
+  // collation sorts under the server's locale, and en_US.UTF-8 ignores `_` at
+  // the primary level while byte order does not. Asserting byte order here
+  // catches a regression on any machine, without needing a second locale
+  // installed to reproduce it.
+  const committed = await readFile(snapshotPath, "utf8");
+
+  const sections = committed.split("\n\n");
+  expect(sections.length).toBeGreaterThan(1);
+
+  for (const block of sections) {
+    const body = block
+      .split("\n")
+      .filter((line) => line !== "" && !line.startsWith("-- "));
+    const byteSorted = [...body].sort((left, right) =>
+      Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+    );
+    expect(body).toEqual(byteSorted);
+  }
+});

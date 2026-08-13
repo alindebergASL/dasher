@@ -207,19 +207,7 @@ dasher.invitations invitations_pkey PRIMARY KEY (invitation_id)
 dasher.invitations invitations_revoked_fields_check CHECK (((revoked_at IS NULL) = (revoked_by_user_id IS NULL)))
 dasher.invitations invitations_revoker_fkey FOREIGN KEY (organization_id, revoked_by_user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.invitations invitations_role_ceiling_check CHECK (((role_ceiling)::text = ANY ((ARRAY['admin'::character varying, 'editor'::character varying, 'viewer'::character varying])::text[])))
-dasher.invitations invitations_role_order_check CHECK ((
-CASE granted_role
-    WHEN 'viewer'::text THEN 1
-    WHEN 'editor'::text THEN 2
-    WHEN 'admin'::text THEN 3
-    ELSE NULL::integer
-END <=
-CASE role_ceiling
-    WHEN 'viewer'::text THEN 1
-    WHEN 'editor'::text THEN 2
-    WHEN 'admin'::text THEN 3
-    ELSE NULL::integer
-END))
+dasher.invitations invitations_role_order_check CHECK (( CASE granted_role WHEN 'viewer'::text THEN 1 WHEN 'editor'::text THEN 2 WHEN 'admin'::text THEN 3 ELSE NULL::integer END <= CASE role_ceiling WHEN 'viewer'::text THEN 1 WHEN 'editor'::text THEN 2 WHEN 'admin'::text THEN 3 ELSE NULL::integer END))
 dasher.invitations invitations_terminal_state_check CHECK (((accepted_at IS NULL) OR (revoked_at IS NULL)))
 dasher.invitations invitations_token_digest_check CHECK ((octet_length(token_digest) = 32))
 dasher.invitations invitations_token_key UNIQUE (token_key_version, token_digest)
