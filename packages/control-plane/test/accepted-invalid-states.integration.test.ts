@@ -31,6 +31,21 @@ import {
  * atomicity. Replacing that with direct INSERT/UPDATE grants dropped the
  * enforcement along with the ceremony. Smaller and less governed are separate
  * choices, and only the first was intended.
+ *
+ * The states fall into two classes, and the second is worse than the first:
+ *
+ *   * under-enforcement — the schema accepts histories it should refuse:
+ *     forged actors, illegal transitions, incoherent provenance, unsealed
+ *     bundles, digests unrelated to the bytes they claim to summarise;
+ *
+ *   * incompleteness — the application role cannot perform the workflows the
+ *     tables exist to serve. Two of those are circular rather than merely
+ *     ungranted: resolving a session token needs the request context that the
+ *     resolution would establish, and accepting an invitation needs the
+ *     membership that acceptance would create. No grant fixes a cycle.
+ *
+ * Closing these needs a trusted mutation seam — a small set of narrow,
+ * server-derived entry points — not the sixteen-table ledger back.
  */
 
 const config = parsePostgresIntegrationEnv(process.env);
@@ -541,6 +556,288 @@ describe("audit and evidence write paths", () => {
         `UPDATE dasher.source_snapshots SET canonical_bytes = $3
          WHERE organization_id = $1 AND snapshot_id = $2`,
         [org, snapshotId, Buffer.from("rewritten")],
+      ),
+    );
+  });
+});
+
+/**
+ * A second review found a class the first one missed: the baseline is not only
+ * under-enforced, it is functionally incomplete. The application role cannot
+ * perform the workflows the identity tables exist to serve, and two of those
+ * are circular rather than merely ungranted.
+ */
+describe("sign-in and onboarding", () => {
+  it.fails(
+    "the application role can find a session by its token digest",
+    async () => {
+      // The circularity: `sessions_read` requires context_user_id() to equal the
+      // row's user_id, but resolving an opaque token to a user is precisely what
+      // the lookup is for. There is no context to set until the lookup succeeds,
+      // and the lookup cannot succeed without one.
+      const sessionId = randomUUID();
+      const digest = sha256(`token:${sessionId}`);
+      await ownerPool.query(
+        `INSERT INTO dasher.sessions
+         (session_id, organization_id, user_id, authority_revision,
+          token_key_version, token_digest, csrf_key_version, csrf_digest,
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+               now() + interval '30 minutes', now() + interval '12 hours')`,
+        [sessionId, org, alice, digest, sha256(`csrf:${sessionId}`)],
+      );
+
+      const client = await appPool.connect();
+      try {
+        const found = await client.query(
+          "SELECT user_id, organization_id FROM dasher.sessions WHERE token_digest = $1",
+          [digest],
+        );
+        expect(found.rowCount).toBe(1);
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  it.fails(
+    "the application role can create the first organization and its owner",
+    async () => {
+      const client = await appPool.connect();
+      try {
+        await client.query("BEGIN");
+        const newUser = randomUUID();
+        const newOrg = randomUUID();
+        await client.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+          newUser,
+        ]);
+        await client.query(
+          "INSERT INTO dasher.organizations (organization_id, display_name) VALUES ($1, 'first org')",
+          [newOrg],
+        );
+        await client.query(
+          `INSERT INTO dasher.memberships
+           (membership_id, organization_id, user_id, role, state, authority_revision)
+         VALUES ($1, $2, $3, 'admin', 'active', 1)`,
+          [randomUUID(), newOrg, newUser],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  it.fails(
+    "the application role can resolve an external identity to a user",
+    async () => {
+      await ownerPool.query(
+        `INSERT INTO dasher.external_identities (issuer, subject, user_id)
+       VALUES ('https://issuer.example', $1, $2)`,
+        [`subject-${alice}`, alice],
+      );
+      const client = await appPool.connect();
+      try {
+        const found = await client.query(
+          "SELECT user_id FROM dasher.external_identities WHERE issuer = $1 AND subject = $2",
+          ["https://issuer.example", `subject-${alice}`],
+        );
+        expect(found.rowCount).toBe(1);
+      } finally {
+        client.release();
+      }
+    },
+  );
+});
+
+describe("timestamp coherence", () => {
+  it.fails("a session cannot have been seen after it idled out", async () => {
+    await expectRejected(
+      ownerPool.query(
+        `INSERT INTO dasher.sessions
+           (session_id, organization_id, user_id, authority_revision,
+            token_key_version, token_digest, csrf_key_version, csrf_digest,
+            issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+         VALUES ($1, $2, $3, 1, 1, $4, 1, $5,
+                 now(),
+                 now() + interval '40 minutes',
+                 now() + interval '30 minutes',
+                 now() + interval '12 hours')`,
+        [randomUUID(), org, alice, sha256(randomUUID()), sha256(randomUUID())],
+      ),
+    );
+  });
+
+  it.fails(
+    "an invitation cannot be accepted before it was created",
+    async () => {
+      await expectRejected(
+        ownerPool.query(
+          `INSERT INTO dasher.invitations
+           (invitation_id, organization_id, normalized_email, granted_role,
+            role_ceiling, token_key_version, token_digest, created_by_user_id,
+            created_at, expires_at, accepted_at, accepted_user_id)
+         VALUES ($1, $2, 'invitee@example.com', 'viewer', 'admin', 1, $3, $4,
+                 now(), now() + interval '7 days', now() - interval '1 day', $5)`,
+          [randomUUID(), org, sha256(randomUUID()), alice, bob],
+        ),
+      );
+    },
+  );
+
+  it.fails("an invitation cannot be accepted after it expired", async () => {
+    await expectRejected(
+      ownerPool.query(
+        `INSERT INTO dasher.invitations
+           (invitation_id, organization_id, normalized_email, granted_role,
+            role_ceiling, token_key_version, token_digest, created_by_user_id,
+            created_at, expires_at, accepted_at, accepted_user_id)
+         VALUES ($1, $2, 'late@example.com', 'viewer', 'admin', 1, $3, $4,
+                 now() - interval '30 days', now() - interval '20 days',
+                 now(), $5)`,
+        [randomUUID(), org, sha256(randomUUID()), alice, bob],
+      ),
+    );
+  });
+
+  it.fails("a dashboard cannot be archived before it was created", async () => {
+    // Published first, then archived by UPDATE. Inserting an archived row
+    // outright is refused by the deferred head foreign key, which would make
+    // this pass without any timestamp rule existing.
+    const dashboardId = randomUUID();
+    await ownerPool.query(
+      `INSERT INTO dasher.dashboards
+         (organization_id, dashboard_id, title, lifecycle_state,
+          lifecycle_revision, created_by_user_id)
+       VALUES ($1, $2, 'time traveller', 'draft', 1, $3)`,
+      [org, dashboardId, alice],
+    );
+    await publishDashboard(dashboardId);
+
+    await expectRejected(
+      ownerPool.query(
+        `UPDATE dasher.dashboards
+           SET lifecycle_state = 'archived',
+               archived_at = created_at - interval '1 day'
+         WHERE organization_id = $1 AND dashboard_id = $2`,
+        [org, dashboardId],
+      ),
+    );
+  });
+});
+
+describe("run and version cardinality", () => {
+  it.fails(
+    "a succeeded run must name the dashboard it produced a version for",
+    async () => {
+      await expectRejected(
+        asTenant(org, alice, async (client) => {
+          const versionId = await publishDashboard(dashboardOne);
+          return client.query(
+            `INSERT INTO dasher.agent_runs
+             (organization_id, run_id, dashboard_id, requested_by_user_id,
+              request_text, state, produced_version_id, finished_at)
+           VALUES ($1, $2, NULL, $3, 'orphan success', 'succeeded', $4, now())`,
+            [org, randomUUID(), alice, versionId],
+          );
+        }),
+      );
+    },
+  );
+
+  it.fails(
+    "two runs cannot claim to have produced the same version",
+    async () => {
+      const versionId = await publishDashboard(dashboardOne);
+      await asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.agent_runs
+           (organization_id, run_id, dashboard_id, requested_by_user_id,
+            request_text, state, produced_version_id, finished_at)
+         VALUES ($1, $2, $3, $4, 'first', 'succeeded', $5, now())`,
+          [org, randomUUID(), dashboardOne, alice, versionId],
+        ),
+      );
+
+      await expectRejected(
+        asTenant(org, alice, (client) =>
+          client.query(
+            `INSERT INTO dasher.agent_runs
+             (organization_id, run_id, dashboard_id, requested_by_user_id,
+              request_text, state, produced_version_id, finished_at)
+           VALUES ($1, $2, $3, $4, 'second', 'succeeded', $5, now())`,
+            [org, randomUUID(), dashboardOne, alice, versionId],
+          ),
+        ),
+      );
+    },
+  );
+});
+
+describe("provenance completeness", () => {
+  it.fails(
+    "a claim marked complete must cite at least one supporting evidence edge",
+    async () => {
+      const dashboardId = randomUUID();
+      await ownerPool.query(
+        `INSERT INTO dasher.dashboards
+         (organization_id, dashboard_id, title, lifecycle_state,
+          lifecycle_revision, created_by_user_id)
+       VALUES ($1, $2, 'uncited', 'draft', 1, $3)`,
+        [org, dashboardId, alice],
+      );
+      const versionId = randomUUID();
+      await asTenant(org, alice, (client) =>
+        client.query(
+          `INSERT INTO dasher.dashboard_versions
+           (organization_id, dashboard_id, version_id, canonical_spec_bytes,
+            canonical_spec_sha256, validation_state, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, 'valid', $6)`,
+          [org, dashboardId, versionId, Buffer.from("{}"), sha256("{}"), alice],
+        ),
+      );
+
+      await expectRejected(
+        asTenant(org, alice, (client) =>
+          client.query(
+            `INSERT INTO dasher.claims
+             (organization_id, dashboard_id, version_id, claim_id, json_pointer,
+              label, salience, evidence_state, assertion_sha256)
+           VALUES ($1, $2, $3, $4, '/pages/0/sections/0/value', 'observed',
+                   'high', 'complete', $5)`,
+            [org, dashboardId, versionId, randomUUID(), sha256("uncited")],
+          ),
+        ),
+      );
+    },
+  );
+
+  it.fails("a recorded evidence record cannot be rewritten", async () => {
+    const snapshotId = randomUUID();
+    const evidenceId = randomUUID();
+    await ownerPool.query(
+      `INSERT INTO dasher.source_snapshots
+         (organization_id, snapshot_id, source_kind, source_ref,
+          canonical_bytes, content_sha256, observed_at, retrieved_at)
+       VALUES ($1, $2, 'usgs', 'gauge/11447650', $3, $4, now(), now())`,
+      [org, snapshotId, Buffer.from("evidence base"), sha256("evidence base")],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.evidence_records
+         (organization_id, evidence_id, snapshot_id, evidence_kind,
+          coordinates, transformation, content_sha256, observed_at)
+       VALUES ($1, $2, $3, 'gauge_reading', '/value/0', 'identity', $4, now())`,
+      [org, evidenceId, snapshotId, sha256("evidence base")],
+    );
+
+    await expectRejected(
+      ownerPool.query(
+        `UPDATE dasher.evidence_records SET transformation = 'rewritten'
+         WHERE organization_id = $1 AND evidence_id = $2`,
+        [org, evidenceId],
       ),
     );
   });

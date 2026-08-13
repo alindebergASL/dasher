@@ -30,7 +30,18 @@
 --     and service-principal allowlist tables, which enforced a privilege
 --     boundary between components that run in one process as one database user
 --
--- KNOWN GAP, tracked in test/accepted-invalid-states.integration.test.ts.
+-- KNOWN GAPS, tracked as 26 failing cases in
+-- test/accepted-invalid-states.integration.test.ts, in two classes.
+--
+-- Incompleteness first, because it is the worse of the two: `dasher_app` holds
+-- no write access to users, external_identities, organizations, memberships,
+-- invitations, sessions, audit_events, source_snapshots, or evidence_records,
+-- so nobody can sign in, be invited, or record evidence. Two of those are
+-- circular rather than merely ungranted — resolving a session token needs the
+-- request context that resolution would establish, and accepting an invitation
+-- needs the membership acceptance would create. No grant fixes a cycle.
+--
+-- Then under-enforcement:
 -- The superseded series granted `dasher_app` no direct table writes at all:
 -- every mutation went through a `dasher_api` SECURITY DEFINER function that
 -- checked actor identity, legal transitions, and audit atomicity. Replacing
