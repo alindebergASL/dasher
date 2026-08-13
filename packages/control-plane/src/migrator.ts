@@ -74,6 +74,39 @@ const canonicalPhase8Series = [
   ...canonicalPhase7Series,
   canonicalPhase8File,
 ] as const;
+const canonicalPhase9File = {
+  checksum: "4c4fddaa975f6f8b468ac88035afa1e069095d8647c64179c7744777fef2f2d9",
+  filename: "0009_agent_run_takeover_settlement_transition_correction.sql",
+} as const;
+const canonicalPhase9Series = [
+  ...canonicalPhase8Series,
+  canonicalPhase9File,
+] as const;
+const canonicalPhase10File = {
+  checksum: "b952454158c6461f664aa9c50c600f269c060d5448f42702bdd6f6b9f671edfa",
+  filename: "0010_agent_run_cancel_attempt_context_correction.sql",
+} as const;
+const canonicalPhase10Series = [
+  ...canonicalPhase9Series,
+  canonicalPhase10File,
+] as const;
+const canonicalPhase11File = {
+  checksum: "2326b53ce76f41ed766c2cdfaa6d35b9efa283b9b09c69a13ebec097c939e8d4",
+  filename: "0011_agent_run_bundle_lock_authorized_phase_correction.sql",
+} as const;
+const canonicalPhase11Series = [
+  ...canonicalPhase10Series,
+  canonicalPhase11File,
+] as const;
+const canonicalPhase12File = {
+  checksum: "e01978476995311a40666779fb4fb9b05c0e71bc61224bc3d45dfe1e9b0c02c0",
+  filename:
+    "0012_agent_run_operator_reachability_and_replay_fence_correction.sql",
+} as const;
+const canonicalPhase12Series = [
+  ...canonicalPhase11Series,
+  canonicalPhase12File,
+] as const;
 const managedRoleCreateSavepointSql = "SAVEPOINT dasher_managed_role_create";
 const managedRoleCreateRollbackSql =
   "ROLLBACK TO SAVEPOINT dasher_managed_role_create";
@@ -6253,9 +6286,9 @@ function hasExactCanonicalPrefixFiles(
   migrations: readonly DiscoveredMigration[],
 ): boolean {
   return (
-    migrations.length <= canonicalPhase8Series.length &&
+    migrations.length <= canonicalPhase12Series.length &&
     migrations.every((migration, index) => {
-      const expected = canonicalPhase8Series[index];
+      const expected = canonicalPhase12Series[index];
       return (
         expected !== undefined &&
         migration.sequence === index + 1 &&
@@ -6308,7 +6341,7 @@ function successorIdentity(
   if (migrations.length < 3) {
     return "none";
   }
-  if (migrations.length > canonicalPhase8Series.length) {
+  if (migrations.length > canonicalPhase12Series.length) {
     return reject("migration_file_mismatch");
   }
   for (const [index, expected] of modeledSuccessorFiles.slice(0, 2).entries()) {
@@ -21926,6 +21959,67 @@ const canonicalPhase8CatalogFingerprintSha256 =
   "a5ea815f68b637d9e557cd6855ddc636b962bf41474f1ecd88f042237326a337";
 const canonicalPhase8CatalogEntryCount = "7718";
 
+// The same normalized inventory, taken after 0009 re-issues one frozen 0007
+// routine - dasher_private.agent_run_transition_guard_v1 - so that the ordered
+// takeover settlement walk in dasher_run_api.claim_agent_run can commit, and
+// adds the one SECURITY DEFINER reader that walk's decision needs.
+//
+// Replacing a routine body renames no identity and contributes no inventory
+// entry, so the guard itself moves only the definition this fingerprint hashes.
+// The reader is additive and does contribute: 7743 is the phase-8 count of 7718
+// plus dasher_private.agent_run_takeover_settlement_v1's own routine, ACL,
+// ownership and shared-dependency entries and the nine column-scoped payload
+// SELECT grants it is the sole holder of, each of which contributes one
+// privilege entry and one shared-dependency entry. No relation, column,
+// constraint, index, policy, role or trigger identity is added, dropped or
+// renamed. Frozen from a
+// pristine postgres:16.14 cluster and never derived from a migration file at
+// runtime; like both constants above it is database-name independent and the
+// integration suite reproduces it on the defeat-name databases dasher,
+// audit_events and dasher_api.
+const canonicalPhase9CatalogFingerprintSha256 =
+  "53bce51b1eb882131eb9f22e94067a82af4637e4ffe3f0fadc92c068a24c2008";
+const canonicalPhase9CatalogEntryCount = "7743";
+
+// The same normalized inventory, taken after 0010 re-issues one routine -
+// dasher_api.cancel_agent_run, whose body frozen 0007 declared and 0008 already
+// replaced once - so that a fresh tenant cancellation installs the run-context
+// settings dasher_private.append_agent_run_event_v1 resolves its run from
+// before the per-attempt settlement walk appends through it, rather than after
+// the walk has closed.
+//
+// 0010 is a pure ordering change inside one routine body: it moves the two
+// set_config calls that install dasher.run_organization_id and
+// dasher.run_dashboard_id from after the attempt loop to immediately before it,
+// and changes nothing else. Replacing a routine body renames no identity and
+// contributes no inventory entry, and 0010 adds no routine, relation, column,
+// constraint, index, policy, role or trigger identity and widens no grant, so
+// the entry count is the same 7743 phase 9 arrives at and only the one routine
+// definition this fingerprint hashes moves. Derived from a pristine
+// postgres:16.14 cluster by applying 0001 through 0010 and reading this exact
+// inventory, never guessed and never derived from a migration file at runtime;
+// like every constant above it is database-name independent and the integration
+// suite reproduces it on the defeat-name databases dasher, audit_events and
+// dasher_api.
+const canonicalPhase10CatalogFingerprintSha256 =
+  "8e2c64aff5a91629388039175261fdba75f8075873d710f35e5ffca6e32b2bea";
+const canonicalPhase10CatalogEntryCount = "7743";
+
+// 0011 changes exactly one existing policy expression and adds no catalog
+// identity or privilege, so the entry count is unchanged from phase 10.
+const canonicalPhase11CatalogFingerprintSha256 =
+  "b725e48cb296a8e9473c95c64a499bc630569c4c533a97eef44972a46ab39e67";
+const canonicalPhase11CatalogEntryCount = "7743";
+
+// 0012 reissues existing policies/functions, removes exactly three run-definer
+// column privileges plus one dead policy, and changes exactly one existing
+// deferred-trigger guard from invoker security to SECURITY DEFINER. The
+// normalized catalog loses the corresponding privilege/shared-dependency and
+// policy entries while retaining the same identity count.
+const canonicalPhase12CatalogFingerprintSha256 =
+  "f6dccccdffe3f08d3f1b0ea7bf0c06236410cc4ab61338573865b1fbc62d4e4e";
+const canonicalPhase12CatalogEntryCount = "7734";
+
 // The whole normalized inventory, as a WITH list with no final statement. Two
 // statements are built from it below: the phase validation both migration paths
 // run, and the test-only extraction of the two inventory families that could
@@ -22556,6 +22650,62 @@ async function canonicalPhase8CatalogMatches(
   );
 }
 
+async function canonicalPhase9CatalogMatches(
+  client: MigrationClient,
+  ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  return canonicalPhaseCatalogMatches(
+    client,
+    ownerName,
+    expectedLoginRoleNames,
+    canonicalPhase9CatalogFingerprintSha256,
+    canonicalPhase9CatalogEntryCount,
+  );
+}
+
+async function canonicalPhase10CatalogMatches(
+  client: MigrationClient,
+  ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  return canonicalPhaseCatalogMatches(
+    client,
+    ownerName,
+    expectedLoginRoleNames,
+    canonicalPhase10CatalogFingerprintSha256,
+    canonicalPhase10CatalogEntryCount,
+  );
+}
+
+async function canonicalPhase11CatalogMatches(
+  client: MigrationClient,
+  ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  return canonicalPhaseCatalogMatches(
+    client,
+    ownerName,
+    expectedLoginRoleNames,
+    canonicalPhase11CatalogFingerprintSha256,
+    canonicalPhase11CatalogEntryCount,
+  );
+}
+
+async function canonicalPhase12CatalogMatches(
+  client: MigrationClient,
+  ownerName: string,
+  expectedLoginRoleNames: readonly string[],
+): Promise<boolean> {
+  return canonicalPhaseCatalogMatches(
+    client,
+    ownerName,
+    expectedLoginRoleNames,
+    canonicalPhase12CatalogFingerprintSha256,
+    canonicalPhase12CatalogEntryCount,
+  );
+}
+
 /** Test-only execution of canonical-0007 cumulative catalog validation. */
 export async function canonical0007CatalogMatchesForTests(
   client: MigrationClient,
@@ -22594,6 +22744,82 @@ export async function canonical0008CatalogMatchesForTests(
   );
 }
 
+/** Test-only execution of canonical-0009 cumulative catalog validation. */
+export async function canonical0009CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<boolean> {
+  return canonicalPhase9CatalogMatches(
+    client,
+    ownerName,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  );
+}
+
+/** Test-only execution of canonical-0010 cumulative catalog validation. */
+export async function canonical0010CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<boolean> {
+  return canonicalPhase10CatalogMatches(
+    client,
+    ownerName,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  );
+}
+
+/** Test-only execution of canonical-0011 cumulative catalog validation. */
+export async function canonical0011CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<boolean> {
+  return canonicalPhase11CatalogMatches(
+    client,
+    ownerName,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  );
+}
+
+/** Test-only execution of canonical-0012 cumulative catalog validation. */
+export async function canonical0012CatalogMatchesForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<boolean> {
+  return canonicalPhase12CatalogMatches(
+    client,
+    ownerName,
+    phase7ExpectedLoginRoleNames(
+      expectedAppLoginRoleNames,
+      expectedRetentionLoginRoleNames,
+      expectedRunLoginRoleNames,
+    ),
+  );
+}
+
 /**
  * Test-only extraction of the two inventory families that could carry the
  * database's own name, taken from the same WITH list the phase validation runs.
@@ -22622,7 +22848,7 @@ export async function canonicalPhaseNameSensitiveInventoryForTests(
     readonly name_sensitive_entry_count: string;
   }>(canonicalPhaseNameSensitiveInventorySql, [
     ownerName,
-    canonicalPhase8CatalogFingerprintSha256,
+    canonicalPhase12CatalogFingerprintSha256,
     phase7ExpectedLoginRoleNames(
       expectedAppLoginRoleNames,
       expectedRetentionLoginRoleNames,
@@ -22640,6 +22866,39 @@ export async function canonicalPhaseNameSensitiveInventoryForTests(
   };
 }
 
+/** Read-only test support for deriving and independently checking phase pins. */
+export async function canonicalPhaseCatalogFingerprintForTests(
+  client: MigrationClient,
+  ownerName: string,
+  expectedAppLoginRoleNames: readonly string[] = [],
+  expectedRetentionLoginRoleNames: readonly string[] = [],
+  expectedRunLoginRoleNames: readonly string[] = [],
+): Promise<{
+  readonly fingerprintSha256: string;
+  readonly entryCount: string;
+}> {
+  const result = await client.query<Phase7CatalogComparisonRow>(
+    canonicalPhase7ExactCatalogValidationSql,
+    [
+      ownerName,
+      "0".repeat(64),
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
+    ],
+  );
+  const row = result.rows[0];
+  if (result.rows.length !== 1 || row === undefined) {
+    return reject("managed_role_drift");
+  }
+  return {
+    fingerprintSha256: row.fingerprint_sha256,
+    entryCount: row.entry_count,
+  };
+}
+
 async function assertCanonicalPrefixObjects(
   client: MigrationClient,
   migrations: readonly DiscoveredMigration[],
@@ -22654,10 +22913,89 @@ async function assertCanonicalPrefixObjects(
   if (!exactCanonicalFiles || journalRows.length === 0) {
     return;
   }
-  // A journal that already carries 0008 has to satisfy the phase-8 catalog;
-  // one that stops at 0007 still has to satisfy the phase-7 catalog. Both
-  // branches read the same normalized inventory under the same declared-login
-  // normalization, so neither can be satisfied by the other phase's catalog.
+  // Validate the newest canonical phase present. Every branch reads the same
+  // normalized inventory under the same declared-login normalization, so none
+  // can be satisfied by another phase's catalog.
+  if (
+    journalRows.some(
+      (row) =>
+        row.sequence === 12 && row.filename === canonicalPhase12File.filename,
+    )
+  ) {
+    const matches = await canonicalPhase12CatalogMatches(
+      client,
+      ownerName,
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
+    );
+    if (!matches) {
+      return reject("managed_role_drift");
+    }
+    return;
+  }
+  if (
+    journalRows.some(
+      (row) =>
+        row.sequence === 11 && row.filename === canonicalPhase11File.filename,
+    )
+  ) {
+    const matches = await canonicalPhase11CatalogMatches(
+      client,
+      ownerName,
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
+    );
+    if (!matches) {
+      return reject("managed_role_drift");
+    }
+    return;
+  }
+  if (
+    journalRows.some(
+      (row) =>
+        row.sequence === 10 && row.filename === canonicalPhase10File.filename,
+    )
+  ) {
+    const matches = await canonicalPhase10CatalogMatches(
+      client,
+      ownerName,
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
+    );
+    if (!matches) {
+      return reject("managed_role_drift");
+    }
+    return;
+  }
+  if (
+    journalRows.some(
+      (row) =>
+        row.sequence === 9 && row.filename === canonicalPhase9File.filename,
+    )
+  ) {
+    const matches = await canonicalPhase9CatalogMatches(
+      client,
+      ownerName,
+      phase7ExpectedLoginRoleNames(
+        expectedAppLoginRoleNames,
+        expectedRetentionLoginRoleNames,
+        expectedRunLoginRoleNames,
+      ),
+    );
+    if (!matches) {
+      return reject("managed_role_drift");
+    }
+    return;
+  }
   if (
     journalRows.some(
       (row) =>
@@ -23789,8 +24127,9 @@ export async function runMigrations(
     const successorPresent = successor === "canonical";
     const exactCanonicalFiles = hasExactCanonicalPrefixFiles(migrations);
     // The run-role bootstrap barrier belongs to 0007. Every canonical series
-    // that carries 0007 - including the phase-8 series that appends 0008 -
-    // has to pause after 0006 and prepare the run roles before applying it.
+    // that carries 0007 - including the phase-8 series that appends 0008 and
+    // the phase-9 series that appends 0009 - has to pause after 0006 and
+    // prepare the run roles before applying it.
     const phase7SuccessorPresent =
       migrations.length >= canonicalPhase7Series.length;
 

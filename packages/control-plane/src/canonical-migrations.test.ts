@@ -2992,7 +2992,7 @@ const task4FunctionIdentities = [
 ] as const;
 
 describe("Task 3, Task 4, Task 8, and Task 9 canonical migration golden guard", () => {
-  it("pins immutable 0001-0007 and exact canonical 0008 source bytes", async () => {
+  it("pins immutable 0001-0009 and exact canonical 0010-0012 source bytes", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
 
     expect(
@@ -3010,13 +3010,30 @@ describe("Task 3, Task 4, Task 8, and Task 9 canonical migration golden guard", 
       lifecycleAccessRetentionGuardCorrectionMigration,
       phase7Migration,
       phase8Migration,
+      phase9Migration,
+      phase10Migration,
+      phase11Migration,
+      phase12Migration,
     ]);
     expect(
       migrations.slice(0, 4).map((migration) => migration.bytes.byteLength),
     ).toEqual([17_033, 101_747, 482_279, 104_489]);
     expect(Buffer.byteLength(migrations[4]?.sql ?? "")).toBe(556);
     expect(Buffer.byteLength(migrations[5]?.sql ?? "")).toBe(34_952);
+    expect(Buffer.byteLength(migrations[6]?.sql ?? "")).toBe(1_121_402);
     expect(Buffer.byteLength(migrations[7]?.sql ?? "")).toBe(294_865);
+    expect(Buffer.byteLength(migrations[8]?.sql ?? "")).toBe(
+      phase9SourceByteLength,
+    );
+    expect(Buffer.byteLength(migrations[9]?.sql ?? "")).toBe(
+      phase10SourceByteLength,
+    );
+    expect(Buffer.byteLength(migrations[10]?.sql ?? "")).toBe(
+      phase11SourceByteLength,
+    );
+    expect(Buffer.byteLength(migrations[11]?.sql ?? "")).toBe(
+      phase12SourceByteLength,
+    );
   });
 
   it("contains no extension, credential, or UUID-generation source", async () => {
@@ -3305,6 +3322,10 @@ describe("Task 8A noncanonical modeled-0003 inventory", () => {
       lifecycleAccessRetentionGuardCorrectionMigration.filename,
       phase7Migration.filename,
       phase8Migration.filename,
+      phase9Migration.filename,
+      phase10Migration.filename,
+      phase11Migration.filename,
+      phase12Migration.filename,
     ]);
     expect(
       Buffer.from(migrations[2]?.checksumSha256 ?? []).toString("hex"),
@@ -7019,9 +7040,9 @@ const lifecycleMutationContracts = [
 ] as const;
 
 describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
-  it("pins the eight-row chain while leaving the modeled probe at three", async () => {
+  it("pins the twelve-row chain while leaving the modeled probe at three", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
-    expect(migrations).toHaveLength(8);
+    expect(migrations).toHaveLength(12);
     expect(
       migrations.map((migration) =>
         Buffer.from(migration.checksumSha256).toString("hex"),
@@ -7035,6 +7056,10 @@ describe("Task 8B.3 canonical lifecycle-correction source contract", () => {
       lifecycleAccessRetentionGuardCorrectionMigration.checksum,
       phase7Migration.checksum,
       phase8Migration.checksum,
+      phase9Migration.checksum,
+      phase10Migration.checksum,
+      phase11Migration.checksum,
+      phase12Migration.checksum,
     ]);
     expect(Buffer.byteLength(migrations[3]?.sql ?? "")).toBe(104_489);
     expect(modeled0003Functions.length).toBeGreaterThan(0);
@@ -7867,6 +7892,31 @@ const phase8Migration = {
   sequence: 8,
   filename: "0008_retention_lock_authority_correction.sql",
   checksum: "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
+} as const;
+
+const phase9Migration = {
+  sequence: 9,
+  filename: "0009_agent_run_takeover_settlement_transition_correction.sql",
+  checksum: "4c4fddaa975f6f8b468ac88035afa1e069095d8647c64179c7744777fef2f2d9",
+} as const;
+
+const phase10Migration = {
+  sequence: 10,
+  filename: "0010_agent_run_cancel_attempt_context_correction.sql",
+  checksum: "b952454158c6461f664aa9c50c600f269c060d5448f42702bdd6f6b9f671edfa",
+} as const;
+
+const phase11Migration = {
+  sequence: 11,
+  filename: "0011_agent_run_bundle_lock_authorized_phase_correction.sql",
+  checksum: "2326b53ce76f41ed766c2cdfaa6d35b9efa283b9b09c69a13ebec097c939e8d4",
+} as const;
+
+const phase12Migration = {
+  sequence: 12,
+  filename:
+    "0012_agent_run_operator_reachability_and_replay_fence_correction.sql",
+  checksum: "e01978476995311a40666779fb4fb9b05c0e71bc61224bc3d45dfe1e9b0c02c0",
 } as const;
 
 function phase7FixedFunctionDefinitions(
@@ -11634,9 +11684,9 @@ const phase7AuxiliarySemanticContracts = {
 
 const phase7NormativePlanSliceHashes = {
   productThroughCalculations:
-    "d8764cb136a41a72f1f9d5ae9e221612942c84edea005fc6be3dad8ec13cfaff",
+    "5b212f317f3d1dd8a941ffe43a778b64c7e24ff763edf32440361d8f2127c213",
   semanticAndProofEncoding:
-    "3136f55d17a0c3e097d7bef6c8b96446593af2725a69495d362ea2e931261953",
+    "134915854899cb33a03680a279377bef3f4167b3c536a72d2e49334dee93beaa",
   fixedFunctionIdentities:
     "bce24db81498d5782d9fd2067eca5f757645f240a0f61174327ddd31fd0e5b6d",
   retentionRlsAclAndDml:
@@ -21489,19 +21539,19 @@ describe("Task 9A phase-7 static contract", () => {
         .update(`${lines.slice(first - 1, last).join("\n")}\n`, "utf8")
         .digest("hex");
 
-    expect(hashLines(122, 5295)).toBe(
+    expect(hashLines(122, 5296)).toBe(
       phase7NormativePlanSliceHashes.productThroughCalculations,
     );
-    expect(hashLines(1501, 2408)).toBe(
+    expect(hashLines(1501, 2409)).toBe(
       phase7NormativePlanSliceHashes.semanticAndProofEncoding,
     );
-    expect(hashLines(2409, 3241)).toBe(
+    expect(hashLines(2410, 3242)).toBe(
       phase7NormativePlanSliceHashes.fixedFunctionIdentities,
     );
-    expect(hashLines(3242, 4079)).toBe(
+    expect(hashLines(3243, 4080)).toBe(
       phase7NormativePlanSliceHashes.retentionRlsAclAndDml,
     );
-    expect(hashLines(4080, 5295)).toBe(
+    expect(hashLines(4081, 5296)).toBe(
       phase7NormativePlanSliceHashes.deterministicCalculations,
     );
   });
@@ -23351,7 +23401,7 @@ describe("Task 9A phase-7 static contract", () => {
       phase6Sql,
     ) as Record<string, readonly string[]>;
 
-    expect(migrations).toHaveLength(8);
+    expect(migrations).toHaveLength(12);
     expect(baseline.functions).toContainEqual(
       expect.stringMatching(
         /^dasher_retention_api[.]claim_dashboard_cleanup\(uuid, bigint, bytea, interval, uuid, text, uuid\)\|/u,
@@ -25994,5 +26044,1790 @@ describe("Task 9B.1 retention allowlist lock-authority correction contract", () 
       /\bON\s+TYPE\b|\bON\s+DOMAIN\b|\bON\s+SEQUENCE\b/iu,
     );
     expect(sql).not.toMatch(/ALTER\s+DEFAULT\s+PRIVILEGES/iu);
+  });
+});
+
+const phase9SourceByteLength = 28792;
+const phase10SourceByteLength = 31531;
+const phase11SourceByteLength = 4931;
+const phase12SourceByteLength = 527634;
+
+/**
+ * Task 9D additive correction. Migration 0009 exists for exactly one reason:
+ * frozen 0007 makes the ordered takeover settlement walk in
+ * `dasher_run_api.claim_agent_run` unreachable, because
+ * `agent_run_transition_guard_v1` forces every `attempt_indeterminate` event to
+ * land the run in `failed` while the same walk then appends further settlement
+ * events the terminal-immutability clause must reject.
+ *
+ * The correction re-issues that one frozen routine and adds exactly one object:
+ * `dasher_private.agent_run_takeover_settlement_v1`, the SECURITY DEFINER
+ * reader the decision needs. The guard is invoker-rights, and frozen 0007
+ * grants the payload relation no SELECT to `dasher_security_definer` or
+ * `dasher_retention_definer` at all and admits `dasher_run_definer`'s column
+ * grant only under `dasher.run_phase = 'checkpoint_replay'`, so a guard that
+ * read that relation itself would deny every tenant cancel and never arm the
+ * branch. The reader is the sole holder of the new payload SELECT grant and
+ * returns one boolean, so no role gains a table read.
+ */
+describe("Task 9D canonical 0009 takeover-settlement correction source", () => {
+  async function phase9Source(): Promise<string> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    return migrations[8]?.sql ?? "";
+  }
+
+  it("re-issues one frozen routine, adds one reader, and declares no other object", async () => {
+    const sql = await phase9Source();
+
+    expect(Buffer.byteLength(sql)).toBe(phase9SourceByteLength);
+    expect([...phase7FixedFunctionDefinitions(sql).keys()]).toEqual([
+      "dasher_private.agent_run_takeover_settlement_v1",
+      "dasher_private.agent_run_transition_guard_v1",
+    ]);
+    expect(sql.match(/^CREATE (?:OR REPLACE )?FUNCTION .*$/gmu)).toEqual([
+      "CREATE FUNCTION dasher_private.agent_run_takeover_settlement_v1(",
+      "CREATE OR REPLACE FUNCTION dasher_private.agent_run_transition_guard_v1()",
+    ]);
+    // No relation, type, schema, policy, trigger, index, role, view, sequence
+    // or domain identity, and no data statement.
+    for (const forbidden of [
+      /^CREATE\s+(?:TABLE|TYPE|SCHEMA|POLICY|TRIGGER|INDEX|ROLE|VIEW|SEQUENCE|DOMAIN)\b/gmu,
+      /^DROP\b/gmu,
+      /^(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/gmu,
+    ]) {
+      expect(sql.match(forbidden)).toBeNull();
+    }
+    // The only ALTER is the reader's ownership, and it lands on the single
+    // managed role frozen 0001 creates with BYPASSRLS.
+    expect(sql.match(/^ALTER\b.*$/gmu)).toEqual([
+      "ALTER FUNCTION dasher_private.agent_run_takeover_settlement_v1(",
+    ]);
+    expect(sql).toContain(
+      "ALTER FUNCTION dasher_private.agent_run_takeover_settlement_v1(\n" +
+        "  uuid, uuid, uuid, uuid, uuid, bigint, bigint, bigint\n" +
+        ") OWNER TO dasher_security_definer;",
+    );
+    // Execute on the reader is closed to PUBLIC and to every app/operator role,
+    // and opened only to the two non-owner definers whose updates reach it.
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION dasher_private.agent_run_takeover_settlement_v1(\n" +
+        "  uuid, uuid, uuid, uuid, uuid, bigint, bigint, bigint\n" +
+        ") FROM PUBLIC, dasher_app, dasher_run_operator, dasher_retention_operator;",
+    );
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION dasher_private.agent_run_takeover_settlement_v1(\n" +
+        "  uuid, uuid, uuid, uuid, uuid, bigint, bigint, bigint\n" +
+        ") TO dasher_run_definer, dasher_retention_definer;",
+    );
+    // The one new table grant is column-scoped, SELECT-only, and held by the
+    // reader's owner alone. No app or operator role is named by any grant.
+    expect(sql.match(/^GRANT\b.*$/gmu)).toEqual([
+      "GRANT EXECUTE ON FUNCTION dasher_private.agent_run_takeover_settlement_v1(",
+      "GRANT SELECT (",
+    ]);
+    expect(sql).toContain(
+      "GRANT SELECT (\n" +
+        "  organization_id, dashboard_id, run_id, event_payload_id, event_id,\n" +
+        "  event_sequence, content_nonce, canonical_bytes, payload_sha256\n" +
+        ") ON TABLE dasher.agent_run_event_payloads TO dasher_security_definer;",
+    );
+    expect(sql).not.toMatch(/TO\s+(?:PUBLIC|dasher_app|\w*_operator)\b/u);
+  });
+
+  it("introduces no extension, credential, generated UUID, dynamic SQL, or transaction wrapper", async () => {
+    const sql = await phase9Source();
+
+    expect(sql).not.toMatch(
+      /CREATE\s+EXTENSION|gen_random_uuid|uuid_generate|PASSWORD\s+'|sk-proj|BEGIN\s+(?:RSA|OPENSSH)\s+PRIVATE|postgres(?:ql)?:\/\//iu,
+    );
+    // No dynamic SQL: the only EXECUTE is the grant keyword, never a
+    // statement, and nothing is assembled with format().
+    expect(sql).not.toMatch(/\bformat\s*\(/iu);
+    expect(sql).not.toMatch(/^\s*EXECUTE\b/gmu);
+    expect(sql.match(/^GRANT EXECUTE\b/gmu)).toHaveLength(1);
+    expect(sql).not.toMatch(/^(?:BEGIN|COMMIT|ROLLBACK)\s*;/gmu);
+    // Exactly one SECURITY DEFINER routine - the reader - and it is STABLE with
+    // the pinned search path, so it can neither write nor be search-path bent.
+    expect(sql.match(/^SECURITY DEFINER$/gmu)).toHaveLength(1);
+    expect(sql).toContain(
+      "RETURNS boolean\nLANGUAGE plpgsql\nSTABLE\nSECURITY DEFINER\n" +
+        "SET search_path = pg_catalog\n",
+    );
+    // The guard keeps the frozen invoker identity and the pinned search path.
+    expect(sql).toContain(
+      "RETURNS trigger\nLANGUAGE plpgsql\nVOLATILE\nSET search_path = pg_catalog\n",
+    );
+  });
+
+  it("changes only the declaration block, the event lookup, and the one indeterminate clause", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const frozen = phase7FixedFunctionDefinitions(migrations[6]?.sql ?? "").get(
+      "dasher_private.agent_run_transition_guard_v1",
+    );
+    const corrected = phase7FixedFunctionDefinitions(
+      migrations[8]?.sql ?? "",
+    ).get("dasher_private.agent_run_transition_guard_v1");
+    expect(frozen).toBeDefined();
+    expect(corrected).toBeDefined();
+
+    const removed = (frozen ?? "")
+      .split("\n")
+      .filter((line) => !(corrected ?? "").split("\n").includes(line));
+    expect(removed).toEqual([
+      "CREATE FUNCTION dasher_private.agent_run_transition_guard_v1()",
+      "  SELECT event.event_kind INTO STRICT v_event_kind",
+      "    OR (v_event_kind = 'attempt_indeterminate' AND NEW.state <> 'failed')",
+    ]);
+    // The frozen chained-event lookup is otherwise untouched: the corrected
+    // guard reads one more column the same relation already stores and joins
+    // nothing, so its privilege footprint is identical to frozen 0007's.
+    expect(corrected).toContain(
+      "  SELECT event.event_kind, event.event_id, event.event_payload_id\n" +
+        "    INTO STRICT v_event_kind, v_event_id, v_event_payload_id\n" +
+        "  FROM dasher.agent_run_events AS event\n" +
+        "  WHERE event.organization_id = NEW.organization_id",
+    );
+    expect(corrected).not.toContain("agent_run_event_payloads");
+
+    // Every other frozen clause survives byte for byte.
+    for (const clause of [
+      "  IF NEW.state = 'accepted'\n" +
+        "    OR OLD.state IN ('rejected', 'cancelled', 'expired', 'failed')\n" +
+        "      AND NEW IS DISTINCT FROM OLD\n" +
+        "    OR NEW.run_revision <> OLD.run_revision + 1\n" +
+        "    OR NEW.current_event_sequence <> OLD.current_event_sequence + 1\n" +
+        "    OR NEW.current_event_sha256 IS NOT DISTINCT FROM OLD.current_event_sha256\n" +
+        "  THEN\n" +
+        "    RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'dasher_invalid';\n" +
+        "  END IF;",
+      "    OR (v_event_kind = 'indeterminate_quarantined' AND NEW.state <> 'failed')",
+      "  IF (v_event_kind = 'run_cancelled' AND NEW.state <> 'cancelled')",
+      "    OR (v_event_kind = 'run_cleanup_cancelled' AND NEW.state <> 'cancelled')",
+      "  IF current_user NOT IN (\n" +
+        "    'dasher_security_definer'::name,\n" +
+        "    'dasher_run_definer'::name,\n" +
+        "    'dasher_retention_definer'::name\n" +
+        "  ) THEN\n" +
+        "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+        "  END IF;",
+    ]) {
+      expect(frozen).toContain(clause);
+      expect(corrected).toContain(clause);
+    }
+  });
+
+  it("admits the preserved state only for a takeover-after-dispatch payload", async () => {
+    const sql = await phase9Source();
+
+    // The narrowed pair: the takeover reason preserves OLD.state from a
+    // claimable state, and every other reason still forces 'failed'.
+    expect(sql).toContain(
+      "    OR (v_event_kind = 'attempt_indeterminate'\n" +
+        "      AND NOT v_takeover_settlement AND NEW.state <> 'failed')\n" +
+        "    OR (v_event_kind = 'attempt_indeterminate' AND v_takeover_settlement\n" +
+        "      AND (\n" +
+        "        NEW.state <> OLD.state\n" +
+        "        OR NEW.lease_epoch <> OLD.lease_epoch\n" +
+        "        OR OLD.state NOT IN (\n" +
+        "          'requested','authorized','planning','generating','revising','validating'\n" +
+        "        )\n" +
+        "      ))",
+    );
+    // The branch is decided from the retained payload of this exact event, read
+    // through the reader on the tuple the guard's own lookup already bound.
+    expect(sql).toContain(
+      "  SELECT payload.canonical_bytes, payload.content_nonce," +
+        " payload.payload_sha256\n" +
+        "    INTO v_canonical_bytes, v_content_nonce, v_payload_sha256\n" +
+        "  FROM dasher.agent_run_event_payloads AS payload\n" +
+        "  WHERE payload.organization_id = p_organization_id\n" +
+        "    AND payload.dashboard_id = p_dashboard_id\n" +
+        "    AND payload.run_id = p_run_id\n" +
+        "    AND payload.event_payload_id = p_event_payload_id\n" +
+        "    AND payload.event_id = p_event_id\n" +
+        "    AND payload.event_sequence = p_event_sequence;",
+    );
+    // The reader reads only the nine granted columns: a whole-row read would
+    // need SELECT on created_at, which nothing grants, and would fail closed.
+    expect(sql).not.toContain("agent_run_event_payloads%ROWTYPE");
+    expect(sql).toContain(
+      "    OR v_body->>'reason_code' <> 'takeover_after_dispatch'",
+    );
+    // It is fail-closed: the flag only ever turns on inside the guarded block,
+    // its declared default is false, and the reader coalesces a NULL verdict.
+    expect(sql).toContain("  v_takeover_settlement boolean := false;");
+    expect(sql.match(/v_takeover_settlement :=/gu)).toHaveLength(1);
+    const reader = sql.slice(
+      sql.indexOf(
+        "CREATE FUNCTION dasher_private.agent_run_takeover_settlement_v1(",
+      ),
+      sql.indexOf("ALTER FUNCTION"),
+    );
+    // Every path out of the reader other than the single fully bound one
+    // returns false, and the trailing handler makes that true of raised errors
+    // as well, so nothing the reader touches can escape as a parser,
+    // privilege or SQL detail.
+    expect(reader.match(/RETURN true;/gu)).toHaveLength(1);
+    expect(reader.match(/RETURN false;/gu)).toHaveLength(9);
+    expect(reader).toContain("EXCEPTION WHEN OTHERS THEN\n  RETURN false;");
+
+    // The retained bytes are rebound to the row's own stored envelope digest
+    // over the row's own nonce, exactly as frozen 0007 constructs it, so
+    // substituted content cannot arm the branch.
+    expect(reader).toContain(
+      "    OR v_payload_sha256 IS DISTINCT FROM pg_catalog.sha256(\n" +
+        "      pg_catalog.convert_to(" +
+        "'dasher.retained-payload-envelope.v1', 'UTF8')",
+    );
+    expect(reader).toContain(
+      "        pg_catalog.convert_to(" +
+        "'dasher.agent-run-event-payload.v1', 'UTF8')",
+    );
+    // Exact envelope and body key sets, not a subset probe.
+    expect(reader).toContain(
+      "        'actor_id','actor_kind','actor_revision','body','event_id',\n" +
+        "        'event_kind','event_sequence','occurred_at','run_id'," +
+        "'run_revision',\n" +
+        "        'schema'\n" +
+        "      ]::text[]",
+    );
+    expect(reader).toContain(
+      "        'attempt_id','fenced_lease_epoch','reason_code'," +
+        "'released_vector',\n" +
+        "        'used_vector'\n" +
+        "      ]::text[]",
+    );
+    // The attempt id is parsed only after it is proven to be a UUID, and the
+    // event id is then rebound to the deterministic identity the frozen claim
+    // walk derives for that attempt and that prior epoch.
+    expect(reader).toContain(
+      "    OR v_body->>'attempt_id' !~\n" +
+        "      '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'",
+    );
+    expect(reader).toContain(
+      "  IF p_event_id <> dasher_private.uuid_v8_from_sha256_v1" +
+        "(pg_catalog.sha256(\n" +
+        "      pg_catalog.convert_to(\n" +
+        "        'dasher.takeover-indeterminate-event-id.v1', 'UTF8'\n" +
+        "      ) || pg_catalog.uuid_send(v_attempt_id)\n" +
+        "      || pg_catalog.int8send(v_prior_epoch)\n" +
+        "    ))",
+    );
+    // The settled attempt row itself is bound: identity, state, epoch, the
+    // surviving dispatch evidence and the frozen takeover reason.
+    expect(reader).toContain(
+      "    OR v_attempt.state <> 'indeterminate_quarantined'\n" +
+        "    OR v_attempt.lease_epoch <> v_prior_epoch\n" +
+        "    OR v_attempt.dispatch_started_at IS NULL\n" +
+        "    OR v_attempt.reconciled_at IS NULL\n" +
+        "    OR v_attempt.actual_vector IS NOT NULL",
+    );
+    // Full fourteen-component vector grammar, conservation, and the
+    // candidate/non-candidate settlement rules.
+    expect(reader).toContain(
+      "  v_vector_keys CONSTANT text[] := ARRAY[\n" +
+        "    'cache_read_tokens','cache_write_tokens','calls','candidates',\n" +
+        "    'cost_micros','input_tokens','output_tokens','reasoning_tokens',\n" +
+        "    'repair_attempts','reviewer_attempts','specialist_attempts',\n" +
+        "    'total_tokens','wall_millis','work_millis'\n" +
+        "  ];",
+    );
+    expect(reader).toContain("!~ '^i64:(0|[1-9][0-9]*)$'");
+    expect(reader).toContain(
+      "      OR (v_used->>v_key)::numeric + (v_released->>v_key)::numeric\n" +
+        "        <> (v_reserved->>v_key)::numeric",
+    );
+    expect(reader).toContain("      OR (v_key = 'candidates' AND (");
+    expect(reader).toContain("      OR (v_key <> 'candidates' AND (");
+
+    // No caller GUC, current_user or run phase decides the branch inside the
+    // guard, and the only context the reader reads is the run-operator
+    // principal identity frozen 0007 stamps into the payload it is checking.
+    const decision = sql.slice(
+      sql.indexOf("IF v_event_kind = 'attempt_indeterminate'"),
+      sql.indexOf("  IF (v_event_kind = 'run_cancelled'"),
+    );
+    expect(decision).not.toMatch(/current_setting|current_user|session_user/u);
+    expect(decision.match(/EXCEPTION/gu)).toBeNull();
+    expect(reader).not.toMatch(/current_user|session_user/u);
+    expect(reader.match(/current_setting\(/gu)).toHaveLength(2);
+    expect(reader).toContain("'dasher.run_principal_id', true");
+    expect(reader).toContain("'dasher.run_principal_revision', true");
+    // Only the two decode SQLSTATEs frozen 0007 already catches for these same
+    // bytes are handled inline, and they fall back to the frozen requirement.
+    expect(reader).toContain(
+      "    WHEN SQLSTATE '22021' OR SQLSTATE '22P02' THEN\n" +
+        "      RETURN false;",
+    );
+    expect(reader.match(/EXCEPTION/gu)).toHaveLength(2);
+  });
+
+  it("leaves migrations 0001-0008 byte-identical", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+
+    expect(
+      migrations
+        .slice(0, 8)
+        .map((migration) =>
+          Buffer.from(migration.checksumSha256).toString("hex"),
+        ),
+    ).toEqual([
+      identityAuditMigration.checksum,
+      securityBoundaryMigration.checksum,
+      immutableContentMigration.checksum,
+      lifecycleApiCorrectionMigration.checksum,
+      securityDefinerCleanupCoordinationMigration.checksum,
+      lifecycleAccessRetentionGuardCorrectionMigration.checksum,
+      phase7Migration.checksum,
+      phase8Migration.checksum,
+    ]);
+    // The frozen conflict is still present in 0007 exactly as reported: only
+    // the additive 0009 correction removes it.
+    expect(migrations[6]?.sql ?? "").toContain(
+      "    OR (v_event_kind = 'attempt_indeterminate' AND NEW.state <> 'failed')",
+    );
+    expect(migrations[7]?.sql ?? "").not.toContain(
+      "agent_run_transition_guard_v1",
+    );
+  });
+});
+
+/**
+ * Task 9D additive correction. Migration 0010 exists for exactly one reason:
+ * frozen 0007 declares `dasher_api.cancel_agent_run` and 0008 re-issues its
+ * body, and in both, the two `set_config` calls that install
+ * `dasher.run_organization_id` and `dasher.run_dashboard_id` run *after* the
+ * per-attempt settlement loop. `dasher_private.append_agent_run_event_v1`
+ * resolves the run it appends to from exactly those two settings, so every
+ * fresh tenant cancellation of a run holding a nonterminal attempt is denied
+ * inside the first per-attempt append and rolls back.
+ *
+ * The correction moves those two statements to immediately before the loop and
+ * changes nothing else: the body below is a line-multiset-identical permutation
+ * of 0008's, differing only in where those two lines sit.
+ */
+describe("Task 9D canonical 0010 cancel attempt-context correction source", () => {
+  async function phase10Source(): Promise<string> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    return migrations[9]?.sql ?? "";
+  }
+
+  async function phase8Source(): Promise<string> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    return migrations[7]?.sql ?? "";
+  }
+
+  const organizationInstall =
+    "  PERFORM pg_catalog.set_config('dasher.run_organization_id', v_run.organization_id::text, true);";
+  const dashboardInstall =
+    "  PERFORM pg_catalog.set_config('dasher.run_dashboard_id', v_run.dashboard_id::text, true);";
+
+  function cancelBody(sql: string): readonly string[] {
+    const lines = sql.split("\n");
+    const start = lines.indexOf(
+      "CREATE OR REPLACE FUNCTION dasher_api.cancel_agent_run(",
+    );
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = lines.indexOf("$function$;", start);
+    expect(end).toBeGreaterThan(start);
+    return lines.slice(start, end + 1);
+  }
+
+  it("re-issues exactly one routine and declares no other object", async () => {
+    const sql = await phase10Source();
+
+    expect(Buffer.byteLength(sql)).toBe(phase10SourceByteLength);
+    expect([...phase7FixedFunctionDefinitions(sql).keys()]).toEqual([
+      "dasher_api.cancel_agent_run",
+    ]);
+    // Exactly one top-level statement: the CREATE OR REPLACE. No new identity,
+    // no ownership change, no grant, and no dynamic SQL.
+    const statements = sql
+      .split("\n")
+      .filter((line) =>
+        /^(?:CREATE|ALTER|GRANT|REVOKE|DROP|COMMENT)\b/u.test(line),
+      );
+    expect(statements).toEqual([
+      "CREATE OR REPLACE FUNCTION dasher_api.cancel_agent_run(",
+    ]);
+    expect(sql).not.toMatch(
+      /\bCREATE\s+(TABLE|INDEX|POLICY|ROLE|TRIGGER|TYPE|SCHEMA)\b/iu,
+    );
+    expect(sql).not.toMatch(/\bEXECUTE\s+(?:format|v_|'|")/iu);
+    expect(sql).not.toMatch(/\bALTER\s+DEFAULT\s+PRIVILEGES\b/iu);
+  });
+
+  it("preserves the exact signature, definer status, and fixed search path", async () => {
+    const body = (await cancelBody(await phase10Source())).join("\n");
+
+    expect(body).toContain(
+      "  p_run_id uuid,\n  p_expected_run_revision bigint,",
+    );
+    expect(body).toContain(
+      "RETURNS dasher_api.agent_run_mutation_result\nLANGUAGE plpgsql\nVOLATILE\nSECURITY DEFINER\nSET search_path = pg_catalog",
+    );
+  });
+
+  it("is a pure two-line relocation of the frozen 0008 body", async () => {
+    const before = cancelBody(await phase8Source());
+    const after = cancelBody(await phase10Source());
+
+    // Same lines, same count - only their order differs.
+    expect(after).toHaveLength(before.length);
+    expect([...after].sort()).toEqual([...before].sort());
+    expect(after).not.toEqual(before);
+
+    // And the only lines that moved are the two run-context installs.
+    const removedTwo = (lines: readonly string[]): readonly string[] =>
+      lines.filter(
+        (line) => line !== organizationInstall && line !== dashboardInstall,
+      );
+    expect(removedTwo(after)).toEqual(removedTwo(before));
+    expect(before.filter((line) => line === organizationInstall)).toHaveLength(
+      1,
+    );
+    expect(after.filter((line) => line === organizationInstall)).toHaveLength(
+      1,
+    );
+    expect(after.filter((line) => line === dashboardInstall)).toHaveLength(1);
+  });
+
+  it("installs both run-context settings before either per-attempt append", async () => {
+    const after = cancelBody(await phase10Source());
+    const before = cancelBody(await phase8Source());
+
+    const organizationAt = after.indexOf(organizationInstall);
+    const dashboardAt = after.indexOf(dashboardInstall);
+    const loopAt = after.indexOf("  FOR v_attempt IN");
+    const chargedAppendAt = after.findIndex((line) =>
+      line.includes("'attempt_cancelled_charged',"),
+    );
+    const releasedAppendAt = after.findIndex((line) =>
+      line.includes("'attempt_cancelled_released',"),
+    );
+    const aggregateAppendAt = after.findIndex((line) =>
+      line.includes("'run_cancelled',"),
+    );
+
+    expect(organizationAt).toBeGreaterThan(-1);
+    expect(dashboardAt).toBe(organizationAt + 1);
+    expect(loopAt).toBe(dashboardAt + 1);
+    expect(chargedAppendAt).toBeGreaterThan(loopAt);
+    expect(releasedAppendAt).toBeGreaterThan(loopAt);
+    expect(aggregateAppendAt).toBeGreaterThan(releasedAppendAt);
+
+    // The frozen defect is still exactly as reported in 0008: there both
+    // installs sit after the whole loop, and so after both per-attempt appends.
+    expect(before.indexOf(organizationInstall)).toBeGreaterThan(
+      before.findIndex((line) =>
+        line.includes("'attempt_cancelled_released',"),
+      ),
+    );
+
+    // The aggregate append still consumes its own directives, which 0010 leaves
+    // exactly where 0008 put them - immediately before it and after the loop.
+    const nextStateAt = after.findIndex((line) =>
+      line.includes("'dasher.run_next_state', 'cancelled'"),
+    );
+    expect(nextStateAt).toBeGreaterThan(releasedAppendAt);
+    expect(nextStateAt).toBeLessThan(aggregateAppendAt);
+  });
+
+  it("leaves migrations 0001-0009 byte-identical", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+
+    expect(
+      migrations
+        .slice(0, 9)
+        .map((migration) =>
+          Buffer.from(migration.checksumSha256).toString("hex"),
+        ),
+    ).toEqual([
+      identityAuditMigration.checksum,
+      securityBoundaryMigration.checksum,
+      immutableContentMigration.checksum,
+      lifecycleApiCorrectionMigration.checksum,
+      securityDefinerCleanupCoordinationMigration.checksum,
+      lifecycleAccessRetentionGuardCorrectionMigration.checksum,
+      phase7Migration.checksum,
+      phase8Migration.checksum,
+      phase9Migration.checksum,
+    ]);
+    // The frozen defect is still present in 0007 and 0008 exactly as reported:
+    // only the additive 0010 correction removes it.
+    expect(migrations[6]?.sql ?? "").toContain(
+      "  SELECT run.* INTO v_run\n  FROM dasher.agent_runs AS run\n  WHERE run.organization_id = current_setting(",
+    );
+    // 0009 mentions the routine only in prose; it never re-issues it, so 0008
+    // remained the authoritative body until 0010.
+    expect([
+      ...phase7FixedFunctionDefinitions(migrations[8]?.sql ?? "").keys(),
+    ]).not.toContain("dasher_api.cancel_agent_run");
+  });
+});
+
+describe("Task 9D canonical 0011 and 0012 bounded closure source", () => {
+  async function closureSources(): Promise<{
+    readonly phase11: string;
+    readonly phase12: string;
+  }> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    return {
+      phase11: migrations[10]?.sql ?? "",
+      phase12: migrations[11]?.sql ?? "",
+    };
+  }
+
+  it("keeps phase 11 to the exact one-policy commit-Brief correction", async () => {
+    const { phase11 } = await closureSources();
+    expect(Buffer.byteLength(phase11)).toBe(phase11SourceByteLength);
+    expect(phase11.match(/^ALTER POLICY\b/gmu)).toHaveLength(1);
+    expect(phase11).toContain(
+      "ALTER POLICY candidate_comparison_bundles_run_lock_update\n" +
+        "ON dasher.candidate_comparison_bundles",
+    );
+    expect(phase11).toContain(
+      "current_setting('dasher.run_phase', true) = 'authorized'\n" +
+        "      AND NULLIF(current_setting('dasher.run_capability', true), '')\n" +
+        "        = 'commit_brief'",
+    );
+    // ALTER POLICY leaves the predecessor WITH CHECK expression untouched;
+    // 0011 therefore must not restate or replace it.
+    expect(phase11).not.toMatch(/^WITH CHECK\b/gmu);
+    expect(phase11).not.toMatch(
+      /^(?:CREATE|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE|TRUNCATE)\b/gmu,
+    );
+  });
+
+  it("pins the exact phase-12 policy and reduction inventory", async () => {
+    const { phase12 } = await closureSources();
+    expect(Buffer.byteLength(phase12)).toBe(phase12SourceByteLength);
+    expect(phase12.match(/^REVOKE UPDATE \(/gmu)).toEqual([
+      "REVOKE UPDATE (",
+      "REVOKE UPDATE (",
+      "REVOKE UPDATE (",
+    ]);
+    expect(phase12.match(/^DROP POLICY .*$/gmu)).toEqual([
+      "DROP POLICY dashboard_versions_run_lock_update ON dasher.dashboard_versions;",
+    ]);
+    expect(
+      [...phase12.matchAll(/^ALTER POLICY ([a-z0-9_]+)$/gmu)].map(
+        (match) => match[1],
+      ),
+    ).toEqual([
+      "memberships_run_reauthorization_select",
+      "memberships_run_reauthorization_lock",
+      "dashboard_lifecycle_policies_run_select",
+      "dashboard_lifecycle_policies_run_lock_update",
+      "agent_run_policy_revisions_run_definer_select",
+      "agent_run_policy_revisions_run_lock_update",
+      "dashboards_run_select",
+      "dashboards_run_lock_update",
+      "agent_runs_run_definer_select",
+      "agent_runs_run_definer_update",
+      "agent_runs_run_discovery_select",
+      "agent_run_request_payloads_run_definer_select",
+      "source_snapshots_run_select",
+      "source_snapshots_run_lock_update",
+      "evidence_records_run_select",
+      "evidence_records_run_lock_update",
+      "candidate_comparison_bundles_run_definer_select",
+      "candidate_comparison_bundles_run_lock_update",
+    ]);
+    expect(phase12).not.toMatch(/^GRANT\b/gmu);
+    expect(phase12).not.toMatch(
+      /^CREATE\s+(?:TABLE|TYPE|SCHEMA|POLICY|TRIGGER|ROLE|VIEW|INDEX|SEQUENCE|DOMAIN)\b/gmu,
+    );
+    expect(phase12).not.toMatch(/ALTER\s+DEFAULT\s+PRIVILEGES/iu);
+  });
+
+  it("reissues exactly the authorized 22 routine bodies and alters only the deferred guard execution mode", async () => {
+    const { phase12 } = await closureSources();
+    expect([...phase7FixedFunctionDefinitions(phase12).keys()]).toEqual([
+      "dasher_private.reauthorize_agent_run_v1",
+      "dasher_private.replay_source_fence_v1",
+      "dasher_api.request_agent_run",
+      "dasher_run_api.get_claimed_agent_run_input",
+      "dasher_run_api.clone_claimed_replay_prerequisites",
+      "dasher_run_api.list_claimed_replay_results",
+      "dasher_run_api.consume_agent_replay_result",
+      "dasher_run_api.write_agent_run_checkpoint",
+      "dasher_run_api.commit_agent_brief",
+      "dasher_run_api.commit_common_evidence_bundle",
+      "dasher_run_api.reserve_agent_run_attempt",
+      "dasher_run_api.reconcile_agent_run_attempt",
+      "dasher_run_api.commit_calculation_graph",
+      "dasher_run_api.commit_agent_candidate",
+      "dasher_run_api.commit_agent_validation_findings",
+      "dasher_run_api.close_agent_candidate_set",
+      "dasher_run_api.commit_candidate_claims",
+      "dasher_run_api.commit_candidate_manifest",
+      "dasher_run_api.commit_run_abstention",
+      "dasher_run_api.finalize_agent_run_ranking",
+      "dasher_run_api.finish_agent_run",
+      "dasher_private.agent_run_transition_guard_v1",
+    ]);
+    expect(phase12.match(/^CREATE OR REPLACE FUNCTION /gmu)).toHaveLength(22);
+    const guardAlter =
+      "ALTER FUNCTION dasher_private.calculation_graph_constraint_guard_v1()\n" +
+      "  SECURITY DEFINER;";
+    expect(phase12.match(/^ALTER FUNCTION[\s\S]*?;$/gmu)).toEqual([guardAlter]);
+    expect(phase12.endsWith(`${guardAlter}\n`)).toBe(true);
+    expect(phase12).not.toContain(
+      "CREATE OR REPLACE FUNCTION dasher_private.calculation_graph_constraint_guard_v1(",
+    );
+    expect(phase12).not.toContain(
+      "CREATE OR REPLACE FUNCTION dasher_private.run_policy_allows_v1(",
+    );
+    expect(phase12).toContain(
+      "CREATE OR REPLACE FUNCTION dasher_private.agent_run_transition_guard_v1()\n" +
+        "RETURNS trigger\n" +
+        "LANGUAGE plpgsql\n" +
+        "VOLATILE\n" +
+        "SET search_path = pg_catalog\n",
+    );
+    for (const omitted of [
+      "dasher_run_api.claim_agent_run",
+      "dasher_run_api.start_agent_run_attempt",
+      "dasher_run_api.authorize_agent_run_attempt_invocation",
+      "dasher_run_api.release_agent_run_attempt",
+    ]) {
+      expect(phase12).not.toContain(`FUNCTION ${omitted}(`);
+    }
+  });
+
+  it("pins the transition guard to the exact one-arm delta from authoritative 0009", async () => {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const phase9Guard = phase7FixedFunctionDefinitions(
+      migrations[8]?.sql ?? "",
+    ).get("dasher_private.agent_run_transition_guard_v1");
+    const phase12Guard = phase7FixedFunctionDefinitions(
+      migrations[11]?.sql ?? "",
+    ).get("dasher_private.agent_run_transition_guard_v1");
+    expect(phase9Guard).toBeDefined();
+    expect(phase12Guard).toBeDefined();
+
+    const expected = (phase9Guard ?? "")
+      .replace(
+        "CREATE FUNCTION dasher_private.agent_run_transition_guard_v1()",
+        "CREATE OR REPLACE FUNCTION dasher_private.agent_run_transition_guard_v1()",
+      )
+      .replace(
+        "    OR (v_event_kind = 'candidate_set_closed' AND NOT (",
+        "    OR (v_event_kind = 'replay_result_consumed' AND NOT (\n" +
+          "      OLD.state = 'planning' AND NEW.state IN ('planning','generating')\n" +
+          "    ))\n" +
+          "    OR (v_event_kind = 'candidate_set_closed' AND NOT (",
+      )
+      .replace(
+        "      'attempt_reserved','replay_prerequisites_cloned','candidate_set_closed'",
+        "      'attempt_reserved','replay_prerequisites_cloned','replay_result_consumed',\n" +
+          "      'candidate_set_closed'",
+      );
+    expect(phase12Guard).toBe(expected);
+    expect(phase12Guard).toContain("  v_takeover_settlement boolean := false;");
+    expect(phase12Guard).toContain(
+      "v_takeover_settlement := dasher_private.agent_run_takeover_settlement_v1(",
+    );
+    expect(phase12Guard).not.toContain("SECURITY DEFINER");
+  });
+
+  it("pins checkpoint reduction to the exact replay-result parity delta from the pre-R18 body", async () => {
+    const { phase12 } = await closureSources();
+    const checkpoint = phase7FixedFunctionDefinitions(phase12).get(
+      "dasher_run_api.write_agent_run_checkpoint",
+    );
+    expect(checkpoint).toBeDefined();
+    const finalBody = checkpoint ?? "";
+    const declarationStart = "  v_reduced_purpose text;\n";
+    const declarationEnd = "  v_reduced_run_request_id text;\n";
+    const armStart = "      WHEN 'replay_result_consumed' THEN\n";
+    const armEnd = "      WHEN 'attempt_reserved' THEN\n";
+    expect(finalBody.split(declarationStart)).toHaveLength(2);
+    expect(finalBody.split(declarationEnd)).toHaveLength(2);
+    expect(finalBody.split(armStart)).toHaveLength(2);
+    expect(finalBody.split(armEnd)).toHaveLength(2);
+
+    const declarationStartAt = finalBody.indexOf(declarationStart);
+    const declarationEndAt = finalBody.indexOf(declarationEnd);
+    const armStartAt = finalBody.indexOf(armStart);
+    const armEndAt = finalBody.indexOf(armEnd, armStartAt);
+    const declarations = finalBody.slice(declarationStartAt, declarationEndAt);
+    const replayArm = finalBody.slice(armStartAt, armEndAt);
+    const preR18Body =
+      finalBody.slice(0, declarationStartAt) +
+      finalBody.slice(declarationEndAt, armStartAt) +
+      finalBody.slice(armEndAt);
+
+    expect(Buffer.byteLength(preR18Body)).toBe(31_850);
+    expect(createHash("sha256").update(preR18Body).digest("hex")).toBe(
+      "fa46f64cc2fa93f48c7ca2d68c4b71a98250812c5fdc9354cc0ad2f08a1e919c",
+    );
+    expect(createHash("sha256").update(declarations).digest("hex")).toBe(
+      "a2b7b592a96e5df507764176ce520a78b96993f40cb3f2d4e6c603aed0227af8",
+    );
+    expect(createHash("sha256").update(replayArm).digest("hex")).toBe(
+      "193a568fddb8dae6c1b89931efb0a7b727458beea6c9464ed2fb91aa1d3f6daa",
+    );
+
+    expect(replayArm).toContain("v_reduced_state IS DISTINCT FROM 'planning'");
+    expect(replayArm).toContain("v_reduced_purpose IS DISTINCT FROM 'replay'");
+    expect(replayArm).toContain(
+      "v_reducer_source_run_id IS DISTINCT FROM\n            v_reduced_replay_source_run_id",
+    );
+    expect(replayArm).toContain("'{body,replay_result_id}'");
+    expect(replayArm).toContain("'^i64:(0|[1-9][0-9]*)$'");
+    expect(replayArm).toContain("'^i64:[3-5]$'");
+    expect(replayArm).toContain("'^[0-9a-f]{64}$'");
+    expect(replayArm).toContain(
+      "'i64:' || v_reduced_consumed_sequence_value::text",
+    );
+    expect(replayArm).toContain(
+      "v_reduced_consumed_sequence_value >\n            v_reduced_replay_source_result_count",
+    );
+    expect(replayArm).toContain(
+      "v_reduced_consumed_sequence := v_reducer_source_result_sequence;",
+    );
+    expect(replayArm).toContain(
+      "v_reduced_consumed_sha := v_reducer_source_result_sha;",
+    );
+    expect(replayArm).toContain("v_reduced_state := 'generating';");
+    expect(replayArm.match(/ERRCODE = 'P1002'/gu)).toHaveLength(2);
+    expect(replayArm).not.toMatch(
+      /^\s*(?:SELECT|FROM|JOIN|FOR UPDATE|INSERT INTO|UPDATE|DELETE FROM|PERFORM)\b|append_agent_run_event|agent_run_checkpoints/imu,
+    );
+
+    const relationFootprint = (source: string): readonly string[] =>
+      [...source.matchAll(/\bdasher[.]([a-z0-9_]+)/gu)]
+        .map((match) => match[1]!)
+        .sort();
+    const statementShape = (source: string): readonly string[] =>
+      source
+        .split("\n")
+        .map((line) => line.trim().toLowerCase())
+        .filter(
+          (line) =>
+            /^(?:select|from|join|for update|insert into|update|delete from|perform)\b/u.test(
+              line,
+            ) ||
+            /append_agent_run_event_v1|agent_run_checkpoints|jsonb_build_object/u.test(
+              line,
+            ),
+        );
+    expect(relationFootprint(finalBody)).toEqual(relationFootprint(preR18Body));
+    expect(statementShape(finalBody)).toEqual(statementShape(preR18Body));
+    expect(finalBody).toContain(
+      "SECURITY DEFINER\nSET search_path = pg_catalog",
+    );
+    expect(finalBody.startsWith(preR18Body.slice(0, declarationStartAt))).toBe(
+      true,
+    );
+    expect(phase12).not.toMatch(
+      /(?:ALTER FUNCTION|GRANT|REVOKE).*write_agent_run_checkpoint/iu,
+    );
+  });
+
+  it("pins the Replay source fence to the exact item-17c candidate-provenance delta", async () => {
+    const { phase12 } = await closureSources();
+    const fence = phase7FixedFunctionDefinitions(phase12).get(
+      "dasher_private.replay_source_fence_v1",
+    );
+    expect(fence).toBeDefined();
+    const finalBody = fence ?? "";
+    expect(Buffer.byteLength(finalBody)).toBe(45_525);
+    expect(createHash("sha256").update(finalBody).digest("hex")).toBe(
+      "a488ae71c40d99ef32ed21cf3266519c89f8d0dec9798bbadbc98834dfa8770b",
+    );
+
+    // R22 changes exactly the two missing-row paths from leaking STRICT's
+    // P0002 to the fixed denial class. Undoing those two fragments must rebuild
+    // the rejected R21 fence byte for byte before the older locality proofs run.
+    const bundleMissingDenial =
+      "  SELECT bundle.* INTO v_source_bundle\n" +
+      "  FROM dasher.candidate_comparison_bundles AS bundle\n" +
+      "  WHERE bundle.organization_id = v_source.organization_id\n" +
+      "    AND bundle.dashboard_id = v_source.dashboard_id\n" +
+      "    AND bundle.run_id = v_source.run_id;\n" +
+      "  IF NOT FOUND THEN\n" +
+      "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "  END IF;\n";
+    const bundleStrictFetch = bundleMissingDenial
+      .replace(" INTO v_source_bundle", " INTO STRICT v_source_bundle")
+      .replace(
+        "  IF NOT FOUND THEN\n" +
+          "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+          "  END IF;\n",
+        "",
+      );
+    const briefMissingDenial =
+      "  SELECT brief.* INTO v_source_brief\n" +
+      "  FROM dasher.briefs AS brief\n" +
+      "  WHERE brief.organization_id = v_source.organization_id\n" +
+      "    AND brief.dashboard_id = v_source.dashboard_id\n" +
+      "    AND brief.run_id = v_source.run_id\n" +
+      "    AND brief.common_bundle_id = v_source_bundle.bundle_id;\n" +
+      "  IF NOT FOUND THEN\n" +
+      "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "  END IF;\n";
+    const briefStrictFetch = briefMissingDenial
+      .replace(" INTO v_source_brief", " INTO STRICT v_source_brief")
+      .replace(
+        "  IF NOT FOUND THEN\n" +
+          "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+          "  END IF;\n",
+        "",
+      );
+    for (const fragment of [bundleMissingDenial, briefMissingDenial]) {
+      expect(finalBody.split(fragment)).toHaveLength(2);
+    }
+    const r21Body = finalBody
+      .replace(bundleMissingDenial, bundleStrictFetch)
+      .replace(briefMissingDenial, briefStrictFetch);
+    expect(Buffer.byteLength(r21Body)).toBe(45_335);
+    expect(createHash("sha256").update(r21Body).digest("hex")).toBe(
+      "e261fda016411491e3dbccbaf2bb62dfd5026f9bb5c9ca7c096fd2e7d141437b",
+    );
+
+    // R21 adds exactly two fence fragments: the source-time equality proof and
+    // the 27th receipt field. Removing only those from the reconstructed R21
+    // body rebuilds the R20 HOLD body byte for byte.
+    const sourceTimeProof =
+      "      -- The selected candidate spec was committed under the source request's\n" +
+      "      -- own evaluation instant, which the later local Replay request can never\n" +
+      "      -- equal. Bind the two source-side texts here, from bytes this fence has\n" +
+      "      -- already canonicalized and payload-proved, and carry that one value into\n" +
+      "      -- the receipt so the consumer proves it without reading any source row.\n" +
+      "      IF v_request_body->>'evaluation_time' IS NULL\n" +
+      "        OR pg_catalog.convert_from(pg_catalog.decode(\n" +
+      "          v_selected_candidate_proof\n" +
+      "            #>> '{materialized,binding,candidate_spec_bytes}', 'hex'\n" +
+      "        ), 'UTF8')::jsonb ->> 'generatedAt' IS NULL\n" +
+      "        OR v_request_body->>'evaluation_time' IS DISTINCT FROM\n" +
+      "          pg_catalog.convert_from(pg_catalog.decode(\n" +
+      "            v_selected_candidate_proof\n" +
+      "              #>> '{materialized,binding,candidate_spec_bytes}', 'hex'\n" +
+      "          ), 'UTF8')::jsonb ->> 'generatedAt'\n" +
+      "      THEN\n" +
+      "        RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "      END IF;\n";
+    const receiptField27 =
+      "        || pg_catalog.int4send(pg_catalog.octet_length(\n" +
+      "          v_request_body->>'evaluation_time'\n" +
+      "        ))\n" +
+      "        || pg_catalog.convert_to(v_request_body->>'evaluation_time', 'UTF8')\n";
+    expect(finalBody.split(sourceTimeProof)).toHaveLength(2);
+    expect(finalBody.split(receiptField27)).toHaveLength(2);
+    // The proof precedes receipt production, and the 27th field is last.
+    expect(finalBody.indexOf(sourceTimeProof)).toBeLessThan(
+      finalBody.indexOf("      v_candidate_receipt_sha := pg_catalog.sha256("),
+    );
+    expect(finalBody.indexOf(receiptField27)).toBeGreaterThan(
+      finalBody.indexOf("        || v_source_brief.brief_sha256\n"),
+    );
+    expect(
+      finalBody.slice(
+        finalBody.indexOf(receiptField27) + receiptField27.length,
+      ),
+    ).toMatch(/^\s*\);\n\s*IF v_candidate_receipt_sha IS NULL THEN\n/u);
+    const r20HoldBody = r21Body
+      .replace(sourceTimeProof, "")
+      .replace(receiptField27, "");
+    expect(Buffer.byteLength(r20HoldBody)).toBe(44_112);
+    expect(createHash("sha256").update(r20HoldBody).digest("hex")).toBe(
+      "845c55fcd5d4a4a76748c1601394b37834b34783cd9922eb912acf4e14911f49",
+    );
+    // The R21 fragments add no relation, row mark, dynamic SQL, or context
+    // write. `IS DISTINCT FROM` is a comparison, not a source read, so it is
+    // removed before the relation scan.
+    for (const fragment of [sourceTimeProof, receiptField27]) {
+      expect(fragment.replaceAll("IS DISTINCT FROM", "")).not.toMatch(
+        /\b(?:FROM|JOIN|INSERT|UPDATE|DELETE|EXECUTE)\b|FOR (?:UPDATE|SHARE)|set_config|current_setting|dasher_private[.]/u,
+      );
+    }
+
+    // Exactly five authorized additions plus one authorized substitution
+    // rebuild the pre-item-17c body byte for byte.
+    const declarations =
+      "  v_local_request_semantic_sha bytea;\n" +
+      "  v_result_spec_bytes bytea;\n" +
+      "  v_result_precommit_bytes bytea;\n" +
+      "  v_source_candidate_results jsonb := '{}'::jsonb;\n" +
+      "  v_selected_candidate_proof jsonb;\n" +
+      "  v_candidate_receipt_sha bytea;\n";
+    const capture = "    v_local_request_semantic_sha := v_semantic_sha;\n";
+    const excise = (
+      body: string,
+      from: string,
+      to: string,
+    ): readonly [string, string] => {
+      const start = body.indexOf(from);
+      const end = body.indexOf(to, start);
+      expect(body.split(from)).toHaveLength(2);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      return [body.slice(0, start) + body.slice(end), body.slice(start, end)];
+    };
+    expect(r20HoldBody.split(declarations)).toHaveLength(2);
+    expect(r20HoldBody.split(capture)).toHaveLength(2);
+    let rebuilt = r20HoldBody.replace(declarations, "").replace(capture, "");
+    const [withoutLoop, loopMaterialization] = excise(
+      rebuilt,
+      "    -- Keyed candidate-provenance proof",
+      "    v_prior_head := v_expected_head;",
+    );
+    const [withoutSelect, selectedCandidateProof] = excise(
+      withoutLoop,
+      "  SELECT pg_catalog.jsonb_build_object(\n      'materialized',",
+      "  IF v_expected_sequence NOT BETWEEN 3 AND 5",
+    );
+    const [withoutReceipt, receiptWrite] = excise(
+      withoutSelect,
+      "    -- Provenance-only receipt",
+      "  END IF;\n  RETURN v_source;",
+    );
+    const boundProof =
+      "    OR v_selected_candidate_proof IS NULL\n" +
+      "    OR v_selected_candidate_proof #> '{materialized,binding}' IS DISTINCT FROM\n" +
+      "      v_selected_candidate_proof -> 'bound'\n";
+    const preItem17cExists =
+      "    OR NOT EXISTS (\n" +
+      "      SELECT 1\n" +
+      "      FROM dasher.agent_candidates AS candidate\n" +
+      "      JOIN dasher.agent_candidate_payloads AS payload\n" +
+      "        ON payload.organization_id = candidate.organization_id\n" +
+      "       AND payload.dashboard_id = candidate.dashboard_id\n" +
+      "       AND payload.run_id = candidate.run_id\n" +
+      "       AND payload.candidate_id = candidate.candidate_id\n" +
+      "      WHERE candidate.organization_id = v_source.organization_id\n" +
+      "        AND candidate.dashboard_id = v_source.dashboard_id\n" +
+      "        AND candidate.run_id = v_source.run_id\n" +
+      "        AND candidate.candidate_id = v_source.selected_candidate_id\n" +
+      "        AND candidate.selected\n" +
+      "        AND candidate.common_bundle_id = v_source_bundle.bundle_id\n" +
+      "        AND candidate.brief_id = v_source_brief.brief_id\n" +
+      "        AND candidate.candidate_spec_sha256 = payload.candidate_spec_sha256\n" +
+      "        AND candidate.candidate_spec_sha256 = pg_catalog.sha256(\n" +
+      "          pg_catalog.convert_to('dasher.dashboard-spec.v1', 'UTF8')\n" +
+      "          || pg_catalog.decode('00', 'hex')\n" +
+      "          || pg_catalog.int4send(pg_catalog.octet_length(\n" +
+      "            payload.canonical_bytes\n" +
+      "          ))\n" +
+      "          || payload.canonical_bytes\n" +
+      "        )\n" +
+      "    )\n";
+    expect(withoutReceipt.split(boundProof)).toHaveLength(2);
+    rebuilt = withoutReceipt.replace(boundProof, preItem17cExists);
+    expect(Buffer.byteLength(rebuilt)).toBe(37_275);
+    expect(createHash("sha256").update(rebuilt).digest("hex")).toBe(
+      "88bb24a9940a9c5731713cc79ce2c340069bfebe3c81f9e4f101c197804877a8",
+    );
+
+    // The three authorized candidate columns appear exactly once each, and the
+    // loop materializes proof without a second source-result read.
+    for (const column of [
+      "candidate.source_result_id",
+      "candidate.source_result_sha256",
+      "candidate.precommit_validation_sha256",
+    ]) {
+      expect(finalBody.split(column)).toHaveLength(2);
+      expect(rebuilt).not.toContain(column);
+    }
+    const relationFootprint = (source: string): readonly string[] =>
+      [...source.matchAll(/\b(?:FROM|JOIN)\s+(dasher[a-z_]*[.][a-z0-9_]+)/gu)]
+        .map((match) => match[1]!)
+        .sort();
+    expect(relationFootprint(finalBody)).toEqual(relationFootprint(rebuilt));
+    for (const token of [
+      "'replay_source_read'",
+      "FOR UPDATE",
+      "FOR NO KEY UPDATE",
+      "FOR SHARE",
+      "FOR KEY SHARE",
+    ]) {
+      expect(finalBody.split(token)).toHaveLength(rebuilt.split(token).length);
+    }
+    expect(loopMaterialization).toContain(
+      "IF v_result.result_kind IN ('candidate_output', 'repair_output') THEN",
+    );
+    expect(loopMaterialization).not.toMatch(
+      /\b(?:FROM|JOIN|INSERT|UPDATE|DELETE|EXECUTE)\b|FOR (?:UPDATE|SHARE)|set_config/u,
+    );
+    expect(selectedCandidateProof).not.toMatch(
+      /set_config|FOR (?:UPDATE|SHARE)|EXECUTE\s/u,
+    );
+    expect(selectedCandidateProof.match(/\bFROM\b|\bJOIN\b/gu)).toHaveLength(2);
+
+    // The receipt is produced only after restoration to `authorized`, only for
+    // the one fixed capability, and only as a transaction-local GUC.
+    expect(receiptWrite).toContain(
+      "    IF NULLIF(current_setting('dasher.run_capability', true), '')\n" +
+        "      = 'commit_candidate'\n" +
+        "    THEN\n",
+    );
+    expect(receiptWrite).toContain(
+      "        pg_catalog.convert_to('dasher.replay-candidate-receipt.v1', 'UTF8')\n" +
+        "        || pg_catalog.decode('00', 'hex')\n",
+    );
+    expect(receiptWrite).toContain(
+      "      PERFORM pg_catalog.set_config(\n" +
+        "        'dasher.run_replay_candidate_receipt_sha256',\n" +
+        "        pg_catalog.encode(v_candidate_receipt_sha, 'hex'), true\n" +
+        "      );\n",
+    );
+    expect(receiptWrite).not.toMatch(
+      /\b(?:FROM|JOIN|INSERT|UPDATE|DELETE|EXECUTE)\b|FOR (?:UPDATE|SHARE)/u,
+    );
+    expect(finalBody.indexOf("    -- Provenance-only receipt")).toBeGreaterThan(
+      finalBody.indexOf(
+        "    PERFORM pg_catalog.set_config('dasher.run_phase', 'authorized', true);",
+      ),
+    );
+
+    // The closed 26-value preimage, in registry order.
+    expect(
+      [
+        ...receiptWrite.matchAll(
+          /^\s*(?:\|\| )?(pg_catalog[.](?:uuid_send|int8send|int4send|convert_to|decode)|v_local_request_semantic_sha|v_source_bundle[.]bundle_sha256|v_source_brief[.]brief_sha256)/gmu,
+        ),
+      ].map((match) => match[1]),
+    ).toEqual([
+      "pg_catalog.convert_to",
+      "pg_catalog.decode",
+      "pg_catalog.uuid_send",
+      "pg_catalog.uuid_send",
+      "pg_catalog.uuid_send",
+      "pg_catalog.uuid_send",
+      "pg_catalog.uuid_send",
+      "v_local_request_semantic_sha",
+      "pg_catalog.int4send",
+      "pg_catalog.convert_to",
+      "pg_catalog.uuid_send",
+      "pg_catalog.int8send",
+      "pg_catalog.decode",
+      "pg_catalog.uuid_send",
+      "pg_catalog.uuid_send",
+      "pg_catalog.int8send",
+      "pg_catalog.int8send",
+      "pg_catalog.int8send",
+      "pg_catalog.uuid_send",
+      "pg_catalog.uuid_send",
+      "pg_catalog.int8send",
+      "pg_catalog.decode",
+      "pg_catalog.int4send",
+      "pg_catalog.convert_to",
+      "pg_catalog.decode",
+      "pg_catalog.decode",
+      "pg_catalog.uuid_send",
+      "v_source_bundle.bundle_sha256",
+      "pg_catalog.uuid_send",
+      "v_source_brief.brief_sha256",
+    ]);
+
+    // The final fence preimage is that same closed list with exactly one
+    // appended 27th field: the source request's evaluation_time, canonical
+    // -binary-v1 text (unsigned-32 byte length, then exact UTF-8 bytes).
+    const finalReceiptWrite = finalBody.slice(
+      finalBody.indexOf("    -- Provenance-only receipt"),
+      finalBody.indexOf("  END IF;\n  RETURN v_source;"),
+    );
+    const finalFields = [
+      ...finalReceiptWrite.matchAll(
+        /^\s*(?:\|\| )?(pg_catalog[.](?:uuid_send|int8send|int4send|convert_to|decode)|v_local_request_semantic_sha|v_source_bundle[.]bundle_sha256|v_source_brief[.]brief_sha256)/gmu,
+      ),
+    ].map((match) => match[1]);
+    expect(finalFields).toHaveLength(32);
+    expect(finalFields.slice(0, 30)).toEqual(
+      [
+        ...receiptWrite.matchAll(
+          /^\s*(?:\|\| )?(pg_catalog[.](?:uuid_send|int8send|int4send|convert_to|decode)|v_local_request_semantic_sha|v_source_bundle[.]bundle_sha256|v_source_brief[.]brief_sha256)/gmu,
+        ),
+      ].map((match) => match[1]),
+    );
+    expect(finalFields.slice(30)).toEqual([
+      "pg_catalog.int4send",
+      "pg_catalog.convert_to",
+    ]);
+    // Field 27 is the already-parsed source request time, never a clock, a
+    // local request value, or a re-read source row.
+    expect(receiptField27).toContain(
+      "pg_catalog.int4send(pg_catalog.octet_length(\n" +
+        "          v_request_body->>'evaluation_time'\n" +
+        "        ))",
+    );
+    expect(receiptField27).toContain(
+      "pg_catalog.convert_to(v_request_body->>'evaluation_time', 'UTF8')",
+    );
+    expect(receiptField27).not.toMatch(
+      /now\(\)|clock_timestamp|current_timestamp|localtimestamp|::timestamp|date_trunc|AT TIME ZONE|v_local_request_body/iu,
+    );
+    // The equality proof reuses the already-parsed request and the already
+    // payload-proved candidate spec bytes; it never consults a clock.
+    expect(sourceTimeProof).not.toMatch(
+      /now\(\)|clock_timestamp|current_timestamp|localtimestamp|::timestamp|date_trunc|AT TIME ZONE/iu,
+    );
+    expect(
+      sourceTimeProof.split("v_request_body->>'evaluation_time'"),
+    ).toHaveLength(3);
+    expect(sourceTimeProof.split("->> 'generatedAt'")).toHaveLength(3);
+  });
+
+  it("pins candidate commit to the exact item-17c receipt and Replay-provenance delta", async () => {
+    const { phase12 } = await closureSources();
+    const commit = phase7FixedFunctionDefinitions(phase12).get(
+      "dasher_run_api.commit_agent_candidate",
+    );
+    expect(commit).toBeDefined();
+    const finalBody = commit ?? "";
+    expect(Buffer.byteLength(finalBody)).toBe(21_760);
+    expect(createHash("sha256").update(finalBody).digest("hex")).toBe(
+      "07ff18f1fb97d90a7eb9cd1d3e774814ec79de90028e3affefdce544119c8dd5",
+    );
+
+    // R21 changes this consumer in exactly two places: the shared local-time
+    // equality becomes Suggest-only, and the receipt gains its 27th field.
+    // Undoing only those two rebuilds the R20 HOLD body byte for byte.
+    const suggestOnlyTimeEquality =
+      "    OR (NOT v_replay AND v_body->>'generatedAt' <> v_request_body->>'evaluation_time')\n";
+    const sharedTimeEquality =
+      "    OR v_body->>'generatedAt' <> v_request_body->>'evaluation_time'\n";
+    const commitReceiptField27 =
+      "      || pg_catalog.int4send(pg_catalog.octet_length(\n" +
+      "        v_body->>'generatedAt'\n" +
+      "      ))\n" +
+      "      || pg_catalog.convert_to(v_body->>'generatedAt', 'UTF8')\n";
+    expect(finalBody.split(suggestOnlyTimeEquality)).toHaveLength(2);
+    expect(finalBody.split(commitReceiptField27)).toHaveLength(2);
+    // The obsolete unguarded comparison is gone from the final bytes.
+    expect(finalBody).not.toContain(sharedTimeEquality);
+    // The 27th field is last in the preimage, immediately before the digest
+    // null check; no source value is read or exposed by this body.
+    expect(finalBody.indexOf(commitReceiptField27)).toBeGreaterThan(
+      finalBody.indexOf("      || v_brief.brief_sha256\n"),
+    );
+    expect(
+      finalBody.slice(
+        finalBody.indexOf(commitReceiptField27) + commitReceiptField27.length,
+      ),
+    ).toMatch(/^\s*\);\n\s*IF v_receipt_sha IS NULL\n/u);
+    expect(commitReceiptField27).not.toMatch(
+      /now\(\)|clock_timestamp|current_timestamp|localtimestamp|::timestamp|date_trunc|AT TIME ZONE|evaluation_time|v_source_|replay_source/iu,
+    );
+    const r20HoldBody = finalBody
+      .replace(suggestOnlyTimeEquality, sharedTimeEquality)
+      .replace(commitReceiptField27, "");
+    expect(Buffer.byteLength(r20HoldBody)).toBe(21_584);
+    expect(createHash("sha256").update(r20HoldBody).digest("hex")).toBe(
+      "c445f12e3508ceff73b680fb16455b9e1c6ef8471e06dcd08bbcea5a681dd909",
+    );
+
+    const dedent = (block: string): string =>
+      block
+        .split("\n")
+        .map((line) => (line.startsWith("    ") ? line.slice(2) : line))
+        .join("\n");
+    const drop = (body: string, fragment: string): string => {
+      expect(body.split(fragment)).toHaveLength(2);
+      return body.replace(fragment, "");
+    };
+    const swap = (body: string, from: string, to: string): string => {
+      expect(body.split(from)).toHaveLength(2);
+      return body.replace(from, to);
+    };
+
+    let rebuilt = drop(
+      r20HoldBody,
+      "  v_replay boolean := false;\n  v_receipt_sha bytea;\n",
+    );
+    rebuilt = drop(
+      rebuilt,
+      "  PERFORM pg_catalog.set_config(\n" +
+        "    'dasher.run_replay_candidate_receipt_sha256', '', true\n" +
+        "  );\n",
+    );
+    rebuilt = drop(
+      rebuilt,
+      "  v_replay := NULLIF(current_setting(\n" +
+        "    'dasher.run_replay_source_id', true\n" +
+        "  ), '') IS NOT NULL;\n",
+    );
+    rebuilt = swap(
+      rebuilt,
+      "    AND (CASE WHEN v_replay\n" +
+        "      THEN result.attempt_id IS NULL\n" +
+        "        AND result.result_payload_id IS NULL\n" +
+        "        AND result.replay_source_run_id IS NOT NULL\n" +
+        "        AND result.replay_source_result_sequence IS NOT NULL\n" +
+        "        AND result.replay_source_result_sha256 IS NOT NULL\n" +
+        "      ELSE result.attempt_id IS NOT NULL\n" +
+        "        AND result.result_payload_id IS NOT NULL\n" +
+        "      END);\n",
+      "    AND result.attempt_id IS NOT NULL\n" +
+        "    AND result.result_payload_id IS NOT NULL;\n",
+    );
+
+    const branchOpen = "  IF NOT v_replay THEN\n";
+    const branchClose = "\n  END IF;\n  v_source_body := ";
+    const branchStart = rebuilt.indexOf(branchOpen);
+    const branchEnd =
+      rebuilt.indexOf(branchClose, branchStart) + "\n  END IF;\n".length;
+    expect(rebuilt.split(branchOpen)).toHaveLength(2);
+    expect(branchStart).toBeGreaterThan(-1);
+    const branch = rebuilt.slice(branchStart, branchEnd);
+    const requestAt = branch.indexOf(
+      "    v_source_request := pg_catalog.convert_from(",
+    );
+    const suggestGuardAt = branch.indexOf(
+      "    IF v_source_result.canonical_bytes <> v_source_payload.canonical_bytes",
+    );
+    const termsAt = branch.indexOf(
+      "      OR v_source_payload.payload_sha256 <> pg_catalog.sha256(",
+    );
+    const termsEnd =
+      branch.indexOf("\n    THEN\n      RAISE EXCEPTION", termsAt) + 1;
+    expect(requestAt).toBeGreaterThan(-1);
+    expect(suggestGuardAt).toBeGreaterThan(requestAt);
+    expect(termsEnd).toBeGreaterThan(termsAt);
+    const attemptReads = dedent(branch.slice(branchOpen.length, requestAt));
+    const attemptRequest = dedent(branch.slice(requestAt, suggestGuardAt));
+    const suggestTerms = dedent(branch.slice(termsAt, termsEnd));
+    const replayBranch = branch.slice(branch.indexOf("  ELSE\n"));
+
+    rebuilt =
+      rebuilt.slice(0, branchStart) + attemptReads + rebuilt.slice(branchEnd);
+    const sourceBody =
+      "  v_source_body := pg_catalog.convert_from(\n" +
+      "    v_source_result.canonical_bytes, 'UTF8'\n" +
+      "  )::jsonb;\n";
+    rebuilt = swap(rebuilt, sourceBody, sourceBody + attemptRequest);
+    rebuilt = swap(
+      rebuilt,
+      "  IF dasher_private.canonical_jsonb_bytes_v1(v_source_body)",
+      "  IF v_source_result.canonical_bytes <> v_source_payload.canonical_bytes\n" +
+        "    OR dasher_private.canonical_jsonb_bytes_v1(v_source_body)",
+    );
+    rebuilt = swap(
+      rebuilt,
+      "    )\n    OR v_nested_spec_bytes IS DISTINCT FROM p_canonical_dashboard_spec_bytes",
+      `    )\n${suggestTerms}    OR v_nested_spec_bytes IS DISTINCT FROM p_canonical_dashboard_spec_bytes`,
+    );
+    const receiptStart = rebuilt.indexOf(
+      "  IF v_replay THEN\n    -- A candidate ID is caller-supplied",
+    );
+    const receiptEnd =
+      rebuilt.indexOf("\n  SELECT candidate.* INTO v_existing", receiptStart) +
+      1;
+    expect(receiptStart).toBeGreaterThan(-1);
+    const receiptProof = rebuilt.slice(receiptStart, receiptEnd);
+    rebuilt = rebuilt.slice(0, receiptStart) + rebuilt.slice(receiptEnd);
+
+    expect(Buffer.byteLength(rebuilt)).toBe(16_294);
+    expect(createHash("sha256").update(rebuilt).digest("hex")).toBe(
+      "759f79e36dd76f244302f878fec460104354f3241eea129675e4b466f4007ac2",
+    );
+
+    // The Replay branch reads no attempt, attempt payload, or attempt request
+    // payload, and the relation multiset is unchanged.
+    expect(replayBranch).not.toMatch(
+      /\b(?:FROM|JOIN)\s+dasher|\b(?:INSERT|DELETE|EXECUTE)\b|FOR (?:UPDATE|SHARE)|v_source_attempt|v_source_payload|v_source_request_payload/u,
+    );
+    expect(replayBranch).toContain("v_request_body->>'purpose' <> 'replay'");
+    expect(replayBranch).toContain(
+      "v_request_body->>'replay_source_selected_candidate_id' <>\n        p_candidate_id::text",
+    );
+    expect(replayBranch).toContain(
+      "v_source_result.replay_source_result_sha256 <>\n        v_source_result.result_sha256",
+    );
+    expect(replayBranch.match(/ERRCODE = 'P1002'/gu)).toHaveLength(1);
+    const relationFootprint = (source: string): readonly string[] =>
+      [...source.matchAll(/\b(?:FROM|JOIN)\s+(dasher[a-z_]*[.][a-z0-9_]+)/gu)]
+        .map((match) => match[1]!)
+        .sort();
+    expect(relationFootprint(finalBody)).toEqual(relationFootprint(rebuilt));
+    expect(finalBody.split("FOR UPDATE")).toHaveLength(
+      rebuilt.split("FOR UPDATE").length,
+    );
+
+    // Receipt lifecycle: cleared at entry, compared after complete proof,
+    // cleared before the idempotency read and every DML.
+    expect(
+      finalBody.split("dasher.run_replay_candidate_receipt_sha256"),
+    ).toHaveLength(5);
+    expect(
+      finalBody.indexOf(
+        "'dasher.run_replay_candidate_receipt_sha256', '', true",
+      ),
+    ).toBeLessThan(
+      finalBody.indexOf("dasher_private.initialize_run_operator_context_v1"),
+    );
+    expect(receiptProof).toContain(
+      "      OR COALESCE(current_setting(\n" +
+        "        'dasher.run_replay_candidate_receipt_sha256', true\n" +
+        "      ), '') !~ '^[0-9a-f]{64}$'\n",
+    );
+    expect(receiptProof).toContain(
+      "    IF pg_catalog.decode(current_setting(\n" +
+        "      'dasher.run_replay_candidate_receipt_sha256', true\n" +
+        "    ), 'hex') IS DISTINCT FROM v_receipt_sha THEN\n",
+    );
+    expect(receiptProof).toContain(
+      "    PERFORM pg_catalog.set_config(\n" +
+        "      'dasher.run_replay_candidate_receipt_sha256', '', true\n" +
+        "    );\n",
+    );
+    expect(receiptProof).not.toMatch(
+      /\b(?:FROM|JOIN)\s+dasher|\b(?:INSERT|DELETE|EXECUTE)\b|FOR (?:UPDATE|SHARE)/u,
+    );
+    expect(receiptEnd).toBeLessThanOrEqual(
+      rebuilt.length + Buffer.byteLength(receiptProof),
+    );
+    for (const later of [
+      "  SELECT candidate.* INTO v_existing FROM dasher.agent_candidates AS candidate",
+      "  INSERT INTO dasher.agent_candidates (",
+      "  INSERT INTO dasher.agent_candidate_payloads (",
+      "  v_mutation := dasher_private.append_agent_run_event_v1(",
+    ]) {
+      expect(finalBody.indexOf(later)).toBeGreaterThan(
+        finalBody.indexOf(
+          "    PERFORM pg_catalog.set_config(\n      'dasher.run_replay_candidate_receipt_sha256', '', true",
+        ),
+      );
+    }
+  });
+
+  it("confines the whole R21 source-time delta to the two authorized bodies", async () => {
+    const { phase12 } = await closureSources();
+    expect(Buffer.byteLength(phase12)).toBe(phase12SourceByteLength);
+
+    // The four R21 fragments, each appearing exactly once in the whole
+    // migration. Uniqueness is what proves no third body was touched.
+    const fenceSourceTimeProof =
+      "      -- The selected candidate spec was committed under the source request's\n" +
+      "      -- own evaluation instant, which the later local Replay request can never\n" +
+      "      -- equal. Bind the two source-side texts here, from bytes this fence has\n" +
+      "      -- already canonicalized and payload-proved, and carry that one value into\n" +
+      "      -- the receipt so the consumer proves it without reading any source row.\n" +
+      "      IF v_request_body->>'evaluation_time' IS NULL\n" +
+      "        OR pg_catalog.convert_from(pg_catalog.decode(\n" +
+      "          v_selected_candidate_proof\n" +
+      "            #>> '{materialized,binding,candidate_spec_bytes}', 'hex'\n" +
+      "        ), 'UTF8')::jsonb ->> 'generatedAt' IS NULL\n" +
+      "        OR v_request_body->>'evaluation_time' IS DISTINCT FROM\n" +
+      "          pg_catalog.convert_from(pg_catalog.decode(\n" +
+      "            v_selected_candidate_proof\n" +
+      "              #>> '{materialized,binding,candidate_spec_bytes}', 'hex'\n" +
+      "          ), 'UTF8')::jsonb ->> 'generatedAt'\n" +
+      "      THEN\n" +
+      "        RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "      END IF;\n";
+    const fenceReceiptField27 =
+      "        || pg_catalog.int4send(pg_catalog.octet_length(\n" +
+      "          v_request_body->>'evaluation_time'\n" +
+      "        ))\n" +
+      "        || pg_catalog.convert_to(v_request_body->>'evaluation_time', 'UTF8')\n";
+    const suggestOnlyTimeEquality =
+      "    OR (NOT v_replay AND v_body->>'generatedAt' <> v_request_body->>'evaluation_time')\n";
+    const sharedTimeEquality =
+      "    OR v_body->>'generatedAt' <> v_request_body->>'evaluation_time'\n";
+    const commitReceiptField27 =
+      "      || pg_catalog.int4send(pg_catalog.octet_length(\n" +
+      "        v_body->>'generatedAt'\n" +
+      "      ))\n" +
+      "      || pg_catalog.convert_to(v_body->>'generatedAt', 'UTF8')\n";
+    for (const fragment of [
+      fenceSourceTimeProof,
+      fenceReceiptField27,
+      suggestOnlyTimeEquality,
+      commitReceiptField27,
+    ]) {
+      expect(phase12.split(fragment)).toHaveLength(2);
+    }
+    // The obsolete unguarded shared predicate survives nowhere in phase 12.
+    expect(phase12).not.toContain(sharedTimeEquality);
+
+    // Undo R22's two denial normalizations first; this must reproduce the
+    // rejected R21 migration exactly before the older R21-to-R20 proof runs.
+    const bundleMissingDenial =
+      "  SELECT bundle.* INTO v_source_bundle\n" +
+      "  FROM dasher.candidate_comparison_bundles AS bundle\n" +
+      "  WHERE bundle.organization_id = v_source.organization_id\n" +
+      "    AND bundle.dashboard_id = v_source.dashboard_id\n" +
+      "    AND bundle.run_id = v_source.run_id;\n" +
+      "  IF NOT FOUND THEN\n" +
+      "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "  END IF;\n";
+    const bundleStrictFetch = bundleMissingDenial
+      .replace(" INTO v_source_bundle", " INTO STRICT v_source_bundle")
+      .replace(
+        "  IF NOT FOUND THEN\n" +
+          "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+          "  END IF;\n",
+        "",
+      );
+    const briefMissingDenial =
+      "  SELECT brief.* INTO v_source_brief\n" +
+      "  FROM dasher.briefs AS brief\n" +
+      "  WHERE brief.organization_id = v_source.organization_id\n" +
+      "    AND brief.dashboard_id = v_source.dashboard_id\n" +
+      "    AND brief.run_id = v_source.run_id\n" +
+      "    AND brief.common_bundle_id = v_source_bundle.bundle_id;\n" +
+      "  IF NOT FOUND THEN\n" +
+      "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "  END IF;\n";
+    const briefStrictFetch = briefMissingDenial
+      .replace(" INTO v_source_brief", " INTO STRICT v_source_brief")
+      .replace(
+        "  IF NOT FOUND THEN\n" +
+          "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+          "  END IF;\n",
+        "",
+      );
+    const r21 = phase12
+      .replace(bundleMissingDenial, bundleStrictFetch)
+      .replace(briefMissingDenial, briefStrictFetch);
+    expect(Buffer.byteLength(r21)).toBe(527_444);
+    expect(createHash("sha256").update(r21).digest("hex")).toBe(
+      "64a50bbd34a4d3794243a4a094851418b505ad560fe1c456f4106fd0b0189f13",
+    );
+
+    // Undoing exactly the four R21 fragments from the reconstructed R21 bytes
+    // reproduces the reviewed R20 HOLD migration byte for byte.
+    const r20Hold = r21
+      .replace(fenceSourceTimeProof, "")
+      .replace(fenceReceiptField27, "")
+      .replace(suggestOnlyTimeEquality, sharedTimeEquality)
+      .replace(commitReceiptField27, "");
+    expect(Buffer.byteLength(r20Hold)).toBe(526_045);
+    expect(createHash("sha256").update(r20Hold).digest("hex")).toBe(
+      "cf90e74fc98dc38540aeb43ba18f2c6047c8c9a1b7339f90f11259363dc1f065",
+    );
+
+    // Only the two authorized bodies differ between R20 HOLD and final bytes.
+    const holdBodies = phase7FixedFunctionDefinitions(r20Hold);
+    const finalBodies = phase7FixedFunctionDefinitions(phase12);
+    expect([...finalBodies.keys()]).toEqual([...holdBodies.keys()]);
+    const changed = [...finalBodies.entries()]
+      .filter(([name, body]) => holdBodies.get(name) !== body)
+      .map(([name]) => name);
+    expect(changed).toEqual([
+      "dasher_private.replay_source_fence_v1",
+      "dasher_run_api.commit_agent_candidate",
+    ]);
+
+    // R21 adds no schema object, authority, or execution-mode statement.
+    const statements = (source: string): readonly string[] =>
+      (
+        source.match(
+          /^(?:CREATE|ALTER|DROP|GRANT|REVOKE|COMMENT|SECURITY)\b.*$/gmu,
+        ) ?? []
+      ).slice();
+    expect(statements(phase12)).toEqual(statements(r20Hold));
+    // No new transaction-local context name appears anywhere in phase 12.
+    const gucNames = (source: string): readonly string[] =>
+      [...source.matchAll(/'(dasher[.][a-z0-9_]+)'/gu)]
+        .map((match) => match[1]!)
+        .sort();
+    expect(gucNames(phase12)).toEqual(gucNames(r20Hold));
+  });
+
+  it("confines the replay-candidate receipt to the two item-17c bodies", async () => {
+    const { phase12 } = await closureSources();
+    const definitions = phase7FixedFunctionDefinitions(phase12);
+    const receipt = "dasher.run_replay_candidate_receipt_sha256";
+    const domain = "dasher.replay-candidate-receipt.v1";
+    const readers = [...definitions.entries()].filter(
+      ([, body]) => body.includes(receipt) || body.includes(domain),
+    );
+    expect(readers.map(([name]) => name)).toEqual([
+      "dasher_private.replay_source_fence_v1",
+      "dasher_run_api.commit_agent_candidate",
+    ]);
+    const outsideBodies = [...definitions.values()].reduce(
+      (rest, body) => rest.replace(body, ""),
+      phase12,
+    );
+    expect(outsideBodies).not.toContain(receipt);
+    expect(outsideBodies).not.toContain(domain);
+    for (const [, body] of readers) {
+      expect(body.split(domain)).toHaveLength(2);
+      expect(body).toMatch(
+        new RegExp(
+          `set_config\\(\\s*'${receipt}'|current_setting\\(\\s*'${receipt}'`,
+          "u",
+        ),
+      );
+    }
+    // No policy, grant, or non-body statement may reference the receipt.
+    expect(phase12).not.toMatch(
+      new RegExp(
+        `(?:POLICY|GRANT|REVOKE|TRIGGER)[\\s\\S]{0,400}${receipt}`,
+        "u",
+      ),
+    );
+  });
+
+  it("removes every forbidden immutable row mark and keeps fixed SQL", async () => {
+    const { phase12 } = await closureSources();
+    const forbiddenRelations = new Set([
+      "agent_recorded_results",
+      "agent_run_request_payloads",
+      "briefs",
+      "calculation_graphs",
+      "calculation_results",
+      "field_catalog_snapshots",
+      "metric_contract_versions",
+    ]);
+    const lines = phase12.split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!lines[index]?.includes("FOR UPDATE")) continue;
+      let markedRelation: string | undefined;
+      for (let cursor = index; cursor >= Math.max(0, index - 40); cursor -= 1) {
+        const relation = /FROM dasher\.([a-z0-9_]+)/u.exec(
+          lines[cursor] ?? "",
+        )?.[1];
+        if (relation !== undefined) {
+          markedRelation = relation;
+          break;
+        }
+      }
+      expect(forbiddenRelations.has(markedRelation ?? "")).toBe(false);
+    }
+    expect(phase12).not.toMatch(/^\s*EXECUTE\b/gmu);
+    expect(phase12).not.toMatch(/\bformat\s*\(/iu);
+    expect(phase12).not.toMatch(
+      /postgres(?:ql)?:\/\/|PASSWORD\s+'|PRIVATE KEY/iu,
+    );
+  });
+
+  it("keeps one immediate Replay fence in the eleven bodies without source windows", async () => {
+    const { phase12 } = await closureSources();
+    const definitions = phase7FixedFunctionDefinitions(phase12);
+    const immediateReplayFence =
+      /PERFORM dasher_private[.]reauthorize_agent_run_v1\(\s*p_run_id,\s*p_lease_epoch,\s*p_attempt_token\s*\);\s*IF NULLIF\(current_setting\(\s*'dasher[.]run_replay_source_id', true\s*\), ''\) IS NOT NULL THEN\s*(?:v_source :=|PERFORM) dasher_private[.]replay_source_fence_v1\(\s*NULLIF\(current_setting\('dasher[.]run_organization_id', true\), ''\)::uuid,\s*NULLIF\(current_setting\('dasher[.]run_replay_source_id', true\), ''\)::uuid\s*\);\s*PERFORM pg_catalog[.]set_config\('dasher[.]run_phase', 'authorized', true\);\s*END IF;/u;
+    for (const name of [
+      "get_claimed_agent_run_input",
+      "write_agent_run_checkpoint",
+      "commit_calculation_graph",
+      "commit_agent_candidate",
+      "commit_agent_validation_findings",
+      "close_agent_candidate_set",
+      "commit_candidate_claims",
+      "commit_candidate_manifest",
+      "commit_run_abstention",
+      "finalize_agent_run_ranking",
+      "finish_agent_run",
+    ]) {
+      const definition = definitions.get(`dasher_run_api.${name}`);
+      expect(definition).toBeDefined();
+      expect(definition).toMatch(immediateReplayFence);
+      expect(
+        definition?.match(/dasher_private[.]replay_source_fence_v1\(/gu),
+      ).toHaveLength(1);
+      expect(
+        definition?.match(
+          /set_config\('dasher[.]run_phase', 'replay_source_read'/gu,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("pins the exact three Design B Replay source windows", async () => {
+    const { phase12 } = await closureSources();
+    const definitions = phase7FixedFunctionDefinitions(phase12);
+    const sourcePhaseEntry =
+      "    PERFORM pg_catalog.set_config('dasher.run_phase', 'replay_source_read', true);\n" +
+      "  ELSE\n" +
+      "    RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+      "  END IF;";
+    const authorizedRestoration =
+      "  PERFORM pg_catalog.set_config('dasher.run_phase', 'authorized', true);";
+    const capabilities = {
+      clone_claimed_replay_prerequisites: "clone_replay",
+      list_claimed_replay_results: "read_replay",
+      consume_agent_replay_result: "consume_replay",
+    } as const;
+    const expectedSourceWindows = {
+      clone_claimed_replay_prerequisites:
+        "\n  SELECT source_bundle.* INTO STRICT v_bundle\n" +
+        "  FROM dasher.candidate_comparison_bundles AS source_bundle\n" +
+        "  WHERE source_bundle.organization_id = v_source.organization_id\n" +
+        "    AND source_bundle.dashboard_id = v_source.dashboard_id\n" +
+        "    AND source_bundle.run_id = v_source.run_id;\n" +
+        "  SELECT source_brief.* INTO STRICT v_brief\n" +
+        "  FROM dasher.briefs AS source_brief\n" +
+        "  WHERE source_brief.organization_id = v_source.organization_id\n" +
+        "    AND source_brief.dashboard_id = v_source.dashboard_id\n" +
+        "    AND source_brief.run_id = v_source.run_id;\n" +
+        "  SELECT pg_catalog.count(*), (\n" +
+        "      pg_catalog.array_agg(\n" +
+        "        result.result_head_sha256 ORDER BY result.result_sequence DESC\n" +
+        "      )\n" +
+        "    )[1]\n" +
+        "    INTO STRICT v_source_result_count, v_source_result_head\n" +
+        "  FROM dasher.agent_recorded_results AS result\n" +
+        "  WHERE result.organization_id = v_source.organization_id\n" +
+        "    AND result.dashboard_id = v_source.dashboard_id\n" +
+        "    AND result.run_id = v_source.run_id;\n" +
+        "  SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(\n" +
+        "      'evidence_id', member.evidence_id::text,\n" +
+        "      'source_snapshot_id', member.source_snapshot_id::text,\n" +
+        "      'evidence_sha256', pg_catalog.encode(member.evidence_sha256, 'hex'),\n" +
+        "      'source_sha256', pg_catalog.encode(member.source_sha256, 'hex'),\n" +
+        "      'freshness', member.freshness,\n" +
+        "      'observed_at', pg_catalog.to_char(\n" +
+        "        member.observed_at AT TIME ZONE 'UTC',\n" +
+        '        \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\'\n' +
+        "      )\n" +
+        "    ) ORDER BY pg_catalog.uuid_send(member.evidence_id))\n" +
+        "    INTO v_source_members\n" +
+        "  FROM dasher.candidate_comparison_bundle_evidence AS member\n" +
+        "  WHERE member.organization_id = v_source.organization_id\n" +
+        "    AND member.dashboard_id = v_source.dashboard_id\n" +
+        "    AND member.run_id = v_source.run_id\n" +
+        "    AND member.bundle_id = v_bundle.bundle_id;\n",
+      list_claimed_replay_results:
+        "\n  RETURN QUERY\n" +
+        "  SELECT\n" +
+        "    v_source.run_id, result.result_sequence, result.result_sha256,\n" +
+        "    result.result_kind, result.canonical_bytes\n" +
+        "  FROM dasher.agent_recorded_results AS result\n" +
+        "  WHERE result.organization_id = v_source.organization_id\n" +
+        "    AND result.dashboard_id = v_source.dashboard_id\n" +
+        "    AND result.run_id = v_source.run_id\n" +
+        "    AND result.result_sequence > p_after_source_sequence\n" +
+        "  ORDER BY result.result_sequence\n" +
+        "  LIMIT p_limit;\n",
+      consume_agent_replay_result:
+        "\n  SELECT result.* INTO v_source_result\n" +
+        "  FROM dasher.agent_recorded_results AS result\n" +
+        "  WHERE result.organization_id = v_source.organization_id\n" +
+        "    AND result.dashboard_id = v_source.dashboard_id\n" +
+        "    AND result.run_id = v_source.run_id\n" +
+        "    AND result.result_sequence = p_source_result_sequence\n" +
+        "    AND result.result_sha256 = p_source_result_sha256;\n",
+    } as const;
+    for (const [name, expectedSourceWindow] of Object.entries(
+      expectedSourceWindows,
+    )) {
+      const definition = definitions.get(`dasher_run_api.${name}`);
+      expect(definition).toBeDefined();
+      expect(
+        definition?.match(/dasher_private[.]replay_source_fence_v1\(/gu),
+      ).toHaveLength(1);
+      expect(definition).toContain(
+        "    IF current_setting('dasher.run_phase', true) <> 'authorized'\n" +
+          "      OR NULLIF(current_setting('dasher.run_capability', true), '')\n" +
+          `        IS DISTINCT FROM '${capabilities[name as keyof typeof capabilities]}'\n` +
+          "      OR NULLIF(current_setting('dasher.run_organization_id', true), '')\n" +
+          "        IS DISTINCT FROM v_source.organization_id::text\n" +
+          "      OR NULLIF(current_setting('dasher.run_dashboard_id', true), '')\n" +
+          "        IS DISTINCT FROM v_source.dashboard_id::text\n" +
+          "      OR NULLIF(current_setting('dasher.run_id', true), '')\n" +
+          "        IS DISTINCT FROM p_run_id::text\n" +
+          "      OR NULLIF(current_setting('dasher.run_replay_source_id', true), '')\n" +
+          "        IS DISTINCT FROM v_source.run_id::text\n" +
+          "    THEN\n" +
+          "      RAISE EXCEPTION USING ERRCODE = 'P1001', MESSAGE = 'dasher_denied';\n" +
+          "    END IF;\n" +
+          "    PERFORM pg_catalog.set_config('dasher.run_phase', 'replay_source_read', true);",
+      );
+      expect(definition?.split(sourcePhaseEntry)).toHaveLength(2);
+      expect(definition?.split(authorizedRestoration)).toHaveLength(2);
+      const sourceStart =
+        (definition?.indexOf(sourcePhaseEntry) ?? -sourcePhaseEntry.length) +
+        sourcePhaseEntry.length;
+      const restorationStart =
+        definition?.indexOf(authorizedRestoration, sourceStart) ?? -1;
+      expect(sourceStart).toBeGreaterThanOrEqual(sourcePhaseEntry.length);
+      expect(restorationStart).toBeGreaterThan(sourceStart);
+      const sourceWindow = definition?.slice(sourceStart, restorationStart);
+      expect(sourceWindow).toBe(expectedSourceWindow);
+      expect(sourceWindow).not.toMatch(
+        /\b(?:INSERT|UPDATE|DELETE|CALL|PERFORM)\b|FOR (?:UPDATE|SHARE)|current_setting|p_run_id|v_run[.]|v_request|dasher_(?:private|run_api)[.][a-z0-9_]+\s*\(/u,
+      );
+      const afterRestoration = definition?.slice(
+        restorationStart + authorizedRestoration.length,
+      );
+      expect(afterRestoration).not.toMatch(
+        /FROM dasher[.](?:candidate_comparison_bundles AS source_bundle|briefs AS source_brief)|WHERE (?:result|member)[.]organization_id = v_source[.]organization_id/u,
+      );
+      for (const returnAt of Array.from(
+        afterRestoration?.matchAll(/^\s*RETURN(?:\s|;)/gmu) ?? [],
+        (match) => match.index,
+      )) {
+        expect(returnAt).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it("derives Replay completion only from the persisted declared count", async () => {
+    const { phase12 } = await closureSources();
+    const consume = phase7FixedFunctionDefinitions(phase12).get(
+      "dasher_run_api.consume_agent_replay_result",
+    );
+    expect(consume).toBeDefined();
+    expect(consume).toContain(
+      "  IF v_request->>'replay_source_result_count' !~ '^i64:[3-5]$' THEN",
+    );
+    expect(consume).toContain(
+      "  IF p_source_result_sequence > v_declared_result_count THEN",
+    );
+    expect(consume).toContain(
+      "  v_next_sequence := COALESCE(v_run.consumed_replay_sequence, 0) + 1;",
+    );
+    expect(consume).toContain(
+      "  IF v_next_sequence = v_declared_result_count THEN\n" +
+        "    PERFORM pg_catalog.set_config('dasher.run_next_state', 'generating', true);\n" +
+        "  END IF;",
+    );
+    expect(consume).not.toMatch(
+      /IF v_source_result[.]result_kind[\s\S]*set_config\('dasher[.]run_next_state'/u,
+    );
+  });
+
+  it("keeps raw accounting confined to the bounded parser", async () => {
+    const { phase12 } = await closureSources();
+    const definitions = phase7FixedFunctionDefinitions(phase12);
+    const reconcile = definitions.get(
+      "dasher_run_api.reconcile_agent_run_attempt",
+    );
+    expect(reconcile).toBeDefined();
+    expect(reconcile).toMatch(
+      /p_actual_accounting_bytes IS NULL\s+OR pg_catalog\.octet_length\(p_actual_accounting_bytes\) NOT BETWEEN 1 AND 1024/u,
+    );
+    expect(reconcile).toContain(
+      "v_accounting_text := pg_catalog.convert_from(\n" +
+        "          p_actual_accounting_bytes, 'UTF8'",
+    );
+    expect(reconcile).toContain(
+      "v_actual := ROW(\n" + "              (v_vector_json->>'calls')::bigint",
+    );
+    expect(reconcile).not.toMatch(
+      /decode\(p_actual_accounting_bytes|sha256\(p_actual_accounting_bytes|RAISE (?:LOG|NOTICE|WARNING)/iu,
+    );
+  });
+
+  it("preserves the semantic agent-run check and closed transaction modes", async () => {
+    const { phase12 } = await closureSources();
+    const updatePolicy = phase12.slice(
+      phase12.indexOf("ALTER POLICY agent_runs_run_definer_update"),
+      phase12.indexOf("ALTER POLICY agent_runs_run_discovery_select"),
+    );
+    expect(updatePolicy).toContain(
+      "WITH CHECK (dasher_private.run_policy_allows_v1(organization_id, dashboard_id, run_id));",
+    );
+    expect(phase12).toContain("'request_replay_locking'");
+    expect(phase12).toContain("'replay_source_fence_request'");
+    expect(phase12).toContain("'replay_discovering'");
+    expect(phase12).toContain("'replay_source_read'");
+    expect(phase12).toContain("'dasher.run_lock_membership_id'");
+    expect(phase12).toContain("'dasher.run_lock_snapshot_id'");
+    expect(phase12).toContain("'dasher.run_lock_evidence_id'");
+    expect(phase12).toContain(
+      "v_request_mode boolean := COALESCE(\n" +
+        "    NULLIF(current_setting('dasher.security_function', true), '') =\n" +
+        "      'request_agent_run',\n" +
+        "    false\n" +
+        "  );",
+    );
   });
 });

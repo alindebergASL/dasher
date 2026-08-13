@@ -2258,6 +2258,7 @@ rule explicitly says JCS:
 | reviewer validation/claim aggregate hashes                                                           | respectively `dasher.candidate-validation-set.v1` and `dasher.candidate-claim-sets.v1`; candidate-set SHA bytes, signed-64 candidate count, then candidate UUID and findings SHA or claim-set SHA pairs in candidate UUID order                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `ranking_proof_sha256`                                                                               | `dasher.candidate-ranking.v1`; candidate-set SHA bytes, candidate count, then candidate UUID/spec SHA/verdict ordinal/contradicted count/weak count/complete-supported count/rank in rank order, selected candidate UUID                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `replay_source_head_sha256`                                                                          | iterative `dasher.replay-result-head.v1`; source run UUID, result sequence, nullable prior head SHA, result UUID, result-kind text, result SHA; sequence 1 starts with nullable prior head and every later row uses the preceding digest                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| transaction-local `replay-candidate-receipt-v1` digest                                               | `dasher.replay-candidate-receipt.v1`; the exact 27 required nonnull values and exact UUID/signed-64/text/raw-SHA encodings in item 17c, in that stated order. The only GUC representation is lowercase 64-hex at `dasher.run_replay_candidate_receipt_sha256`; the GUC text itself is not a preimage value.                                                                                                                                                                                                                                                                                                                                                  |
 | `terminal_operation_sha256`                                                                          | `dasher.run-terminal-operation.v1`; operation-kind text, operation UUID, run UUID, then the exact kind-specific suffix below. No kind uses an unlisted generic concatenation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `cancel reason_sha256`                                                                               | row-hash rule for `dasher.run-cancel-reason.v1` exact JCS fields `schema,reason`, where reason is `user_requested\|authority_revoked\|dashboard_cleanup`; tenant cancel admits only the first, cleanup synthesizes only the third, and authority fencing synthesizes only the second                                                                                                                                                                                                                                                                                                                                                                         |
 | tenant `cancel_operation_sha256`                                                                     | `dasher.run-tenant-cancel-operation.v1`; operation/audit UUID, organization UUID, dashboard UUID, run UUID, signed-64 expected run revision, raw fixed-32 cancel-reason SHA bytes, signed-64 CSRF key version, raw fixed-32 CSRF digest bytes with no length prefix, deployment-revision text, current actor user UUID, current actor membership UUID, and signed-64 actor authority revision. Every value comes from the initialized/locked call; none comes from a purgeable audit payload.                                                                                                                                                                |
@@ -5684,6 +5685,733 @@ functions and reconstruct run state from events.
    failure, and `AggregateError` behavior.
 7. Commit: `feat(control-plane): add fenced agent run repository`.
 
+#### Owner-authorized Task 9D closure amendment (2026-08-12, final-review candidate)
+
+This amendment is prospective authorization for bounded Task 9D closure. It does not
+assert that a correction exists or that any gate passes. The owner authorized the work
+needed to unblock Task 9D and authorized revision and review of this governing plan. The
+same authorization includes the bounded Task 9D commit, push, and scoped Task 9D PR
+needed to obtain exact-head CI; it grants no merge, deployment, Task 9E, Task 9F, or Task
+9G authority. Merge remains a separate exact-SHA owner decision.
+
+The first R7 amendment authorized cancellation migration `0010` and a one-policy bundle
+lock migration `0011`. A PostgreSQL 16.14 RLS review, two complete authority audits, and
+fresh exact-plan specification/security reviews proved that boundary insufficient. Six
+required operator functions contain unreachable row marks; additional fixed bodies omit
+their frozen section 4.7 projections; the Replay helper/call graph does not implement the
+required request-time source-half and post-claim full fences; and the frozen SQL and old
+prose conflict about runtime UPDATE authority over immutable content. The existing Task
+9D PostgreSQL suite exercises only four of 22 operator methods.
+
+The first implementation against that approved boundary then exposed one further
+execution-identity defect at the final legal calculation commit. The deferred
+`calculation_graph_contract_constraint` and `calculation_result_contract_constraint`
+triggers invoke `dasher_private.calculation_graph_constraint_guard_v1()` at `COMMIT`.
+Frozen `0007` owns that private function with `dasher_run_definer`, fixes its search path,
+and revokes caller execution, but leaves it invoker-security. A real restricted
+`dasher_run_operator` transaction therefore reaches the deferred trigger and fails while
+compiling its `%ROWTYPE` declarations with `permission denied for schema dasher`; that
+operator intentionally has no direct schema or guarded-table read authority. An isolated
+PostgreSQL 16.14 one-variable probe proved the legal journey GREEN when only this existing
+function's `prosecdef` changed from false to true, with owner, body, search path, ACL,
+dependencies, triggers, and operator privileges unchanged. This amendment authorizes
+only that least-privilege correction; it does not authorize a schema/table grant or any
+other trigger-function change.
+
+This revision resolves the conflict in favor of least privilege: mutable coordination and
+header rows are locked; immutable content is read and immediately revalidated under those
+parent locks. It supersedes the old migration-count limit, every clause permitting Task
+9D closure with an unreachable method, every assertion that final Task 9 contains only
+seven migrations, and every final-only phase-7 catalog assertion. Original phase-7
+baselines remain immutable predecessor evidence; final closure is cumulative phase 12.
+
+**Frozen bytes, migration attribution, and publication scope:**
+
+1. Migrations `0001`--`0008` remain byte-frozen. Existing migration
+   `0009_agent_run_takeover_settlement_transition_correction.sql` is byte-frozen at
+   SHA-256 `4c4fddaa975f6f8b468ac88035afa1e069095d8647c64179c7744777fef2f2d9` and remains
+   solely the mixed-takeover correction.
+2. R7 may add exactly three migrations, in order:
+   `0010_agent_run_cancel_attempt_context_correction.sql`,
+   `0011_agent_run_bundle_lock_authorized_phase_correction.sql`, and
+   `0012_agent_run_operator_reachability_and_replay_fence_correction.sql`. They MUST
+   remain independently replayable, reviewable, and attributable. If a requirement
+   cannot fit the exact law below, work stops for plan review; no fourth migration is
+   invented.
+3. `0010` may only reissue
+   `dasher_api.cancel_agent_run(uuid,bigint,bytea,uuid,smallint,bytea,text)` far enough
+   to install the already-authoritative run organization/dashboard context before each
+   per-attempt append. It preserves signature, owner, `SECURITY DEFINER`, search path,
+   EXECUTE ACL, authorization, advisory locks, idempotency, digest preimages, unsigned
+   attempt ordering, charged/released equations, conservation, final event/audit bytes,
+   error normalization, and atomicity. It adds no role, relation, column, policy, grant,
+   caller authority, or later-task behavior.
+4. `0011` may only replace `candidate_comparison_bundles_run_lock_update`. It preserves
+   relation, policy name, permissiveness, UPDATE command, role, current-user guard,
+   organization/dashboard/run equalities, `WITH CHECK(false)`, and the existing
+   `locking` arm, and adds exactly one arm: phase `authorized` **and** capability
+   `commit_brief` for the same local run. `candidate_comparison_bundles_uq_01` makes
+   `(organization_id,dashboard_id,run_id)` row-exact; omission of `bundle_id` is not
+   wider authority. It adds no other phase/capability, source branch, grant, role,
+   function, trigger, writable column, or behavior. Phase 11 therefore enables only the
+   correctly ordered Brief lock. `0012` alone owns every final additional local/source
+   bundle capability and body placement.
+5. `0012` is the sole operator-reachability/replay-fence correction. It may reissue or
+   replace only objects enumerated below. It preserves each signature, return/composite
+   order, owner, language, volatility, `SECURITY DEFINER`, `search_path = pg_catalog`,
+   EXECUTE ACL, dependency boundary, semantic DML, event/digest preimage, and behavior
+   not expressly changed. The sole execution-mode exception is item 19a's existing
+   private deferred-trigger guard, which changes from invoker security to
+   `SECURITY DEFINER` without reissuing its body. `0012` creates no role, relation,
+   column, type, overload, runtime content writer, DELETE authority, dynamic SQL,
+   provider/tool/orchestrator seam, or later-task behavior.
+
+**Closed lock/immutable-read doctrine and authority reductions:**
+
+6. No new runtime UPDATE grant or policy is added on immutable request payloads,
+   field-catalog rows, contract rows, Briefs, recorded results, calculation graphs or
+   results, candidates or payloads, event/payload rows, bundle members, or other content.
+   `0012` MUST revoke from `dasher_run_definer` only:
+   `field_catalog_snapshots(catalog_snapshot_id)`,
+   `metric_contract_versions(contract_id)`, and
+   `dashboard_versions(organization_id,dashboard_id,version_id)` UPDATE; joint grants to
+   other definers are unchanged. It MUST drop only the now-dead
+   `dashboard_versions_run_lock_update` policy. Every row mark on a relation absent from
+   item 7 is removed from an authorized reissued body and replaced by bounded exact
+   nonlocking read/revalidation. Final catalog proof expects exactly these three grant
+   reductions and one policy removal, not two.
+7. The run-side lock set is closed and follows the exhaustive section 4.3 order:
+   organization advisory gate; deduplicated requester memberships in unsigned UUID
+   order; proven latest run-principal revision; exact dashboard-lifecycle revision;
+   exact agent-run-policy revision; dashboard; deduplicated local/source runs in
+   unsigned UUID order; exact request-pinned source snapshots in unsigned primary-key
+   order; exact evidence rows in unsigned primary-key order; exact local/source bundle
+   headers in unsigned run UUID then bundle UUID order; then only local mutable
+   counters/attempts/candidates authorized for semantic DML, at their original relation
+   positions. `dashboard_versions` and every immutable body relation are nonlocking.
+8. The nonlocking doctrine is safe because `agent_run_immutable_guard_v1` rejects every
+   UPDATE for every role; retention DELETE is the only content mutation; and drain/purge
+   lock the same dashboard before any Task 9 content lock or DELETE. Source/local run
+   locks fence cancellation/state/pointer change. Source/evidence locks fence their
+   governed deletion. Bundle headers plus one-row-per-run uniqueness fence bundle
+   substitution. Membership rows are read twice under locked run/header parents and
+   compared by physical count, canonical digest, and unsigned evidence UUID set
+   immediately before dependent DML. The exact global agent-run-policy revision has no
+   organization column and is the same predecessor row on every path, so it cannot form
+   a cross-organization lock cycle; the organization advisory gate serializes the
+   remaining run-side lock passes per organization.
+9. `run_policy_allows_v1(uuid,uuid,uuid)` is byte-frozen and not reissuable. It continues
+   to admit only local `authorized|checkpoint_replay`. In
+   `agent_runs_run_definer_update`, added lock branches occur in `USING` only; its
+   `WITH CHECK (run_policy_allows_v1(organization_id,dashboard_id,run_id))` remains
+   byte-identical. Thus neither request-time nor post-claim lock phases can become
+   semantic source-run UPDATE authority.
+
+**Exact policy and transaction-context law:**
+
+10. `0012` may replace exactly these UPDATE policies:
+    `memberships_run_reauthorization_lock`,
+    `dashboard_lifecycle_policies_run_lock_update`,
+    `agent_run_policy_revisions_run_lock_update`,
+    `dashboards_run_lock_update`, `agent_runs_run_definer_update`,
+    `source_snapshots_run_lock_update`, `evidence_records_run_lock_update`, and
+    `candidate_comparison_bundles_run_lock_update`. It may replace exactly these SELECT
+    policies: `memberships_run_reauthorization_select`,
+    `dashboard_lifecycle_policies_run_select`, `agent_run_policy_revisions_run_definer_select`,
+    `dashboards_run_select`, `agent_runs_run_definer_select`,
+    `agent_runs_run_discovery_select`, `agent_run_request_payloads_run_definer_select`,
+    `source_snapshots_run_select`, `evidence_records_run_select`, and
+    `candidate_comparison_bundles_run_definer_select`. No other policy changes.
+11. Every old ordinary arm is preserved verbatim: `run_membership_id`/
+    `run_user_id`/`run_authority_revision` under `locking`; latest-principal/policy;
+    normal dashboard/local-run locking; `run_policy_allows_v1` semantic authority; and
+    all claim and attempt consumers. Added arms are equality-only and closed:
+
+    - post-claim Replay uses phase `locking`, one of exactly
+      `read_input|clone_replay|read_replay|consume_replay|checkpoint|commit_graph|
+commit_candidate|close_candidate_set|commit_validation|commit_claims|commit_manifest|
+commit_abstention|finalize_ranking|finish`, and IDs derived from persisted local/source
+      rows;
+    - request-time source-half uses phase `request_replay_locking`, capability exactly
+      `replay_source_fence_request`, and IDs installed only by reissued
+      `request_agent_run` immediately before its private helper call. These arms do not
+      call `run_policy_allows_v1` or require a run-principal row: they instead require
+      the live fixed tenant context `dasher.security_function = 'request_agent_run'`,
+      the request capability/phase installed by that function, and exact current
+      organization/user/membership/authority equalities. The helper EXECUTE ACL and
+      fixed caller inventory make this mode unreachable to app/run operators;
+    - ordinary local body locks at `authorized` retain only source/evidence capabilities
+      `read_input|commit_bundle|commit_graph|reconcile|commit_validation|commit_claims|
+commit_manifest|finalize_ranking` and bundle capabilities
+      `commit_brief|reserve|reconcile|commit_graph|commit_candidate|commit_validation|
+close_candidate_set|commit_claims|commit_manifest|finalize_ranking`;
+    - post-claim Replay `locking` admits exact local/source snapshots, evidence, and
+      bundle headers for the fourteen Replay capabilities above; request-time locking
+      admits only source rows for its one capability.
+
+    UPDATE lock-only policies use key-column grants and `WITH CHECK(false)`, except the
+    semantic `agent_runs_run_definer_update` clause fixed by item 9. There is no
+    organization-only or dashboard-only row-lock predicate. For every row mark, the
+    relation's SELECT and UPDATE policies receive the identical phase, capability, and
+    key allowlist. No membership, dashboard, snapshot, evidence, catalog, contract, or
+    Brief policy gains a `replay_source_read` arm. The authorized evidence SELECT
+    widening from its frozen `commit_bundle`-only arm to the exact eight capabilities
+    above is an expected phase-12 catalog delta, not inferred slack.
+
+12. Exact transaction-local context includes persistent local
+    `run_id/run_organization_id/run_dashboard_id/run_membership_id/run_user_id/
+run_authority_revision`; source `run_replay_source_id`; exact
+    `run_request_payload_id`; exact `run_lifecycle_policy_revision`; and serial temporary
+    `run_lock_membership_id/run_lock_user_id/run_lock_authority_revision`,
+    `run_lock_snapshot_id`, and `run_lock_evidence_id`, plus existing principal,
+    principal revision/hash, capability, policy, and request IDs. The persistent
+    membership tuple always remains the **local run requester**; the source requester is
+    temporary only. The body sets one temporary tuple before its exact lock and clears it
+    afterward. Every policy and body parses custom GUCs through
+    `NULLIF(current_setting(...,true),'')` before cast. Empty, malformed, stale,
+    caller-preinstalled, nested, or pooled values deny; they never widen or emit raw
+    `22P02`. No array/comma/prefix context is authority. The run-definer SELECT grant on
+    `dashboard_versions` and its ordinary SELECT policy remain unchanged; only its dead
+    UPDATE grant/lock policy are removed.
+
+**Two distinct Replay fence modes:**
+
+13. `0012` may reissue `dasher_api.request_agent_run(...)`,
+    `dasher_private.reauthorize_agent_run_v1(uuid,bigint,bytea)`, and
+    `dasher_private.replay_source_fence_v1(uuid,uuid)`, without overload.
+    `request_agent_run` remains tenant-owned and app-executable; the private helper
+    remains run-definer-owned, executable only by its fixed definer callers, and never by
+    app/run operators. The helper's mode discriminator is total: request-time mode is
+    true only for literal transaction-local
+    `dasher.security_function = 'request_agent_run'`; absent, empty, or any other value
+    selects post-claim mode through exactly
+    `COALESCE(NULLIF(current_setting('dasher.security_function', true), '') =
+'request_agent_run', false)`. This correction changes only the already-authorized
+    helper body. It adds no mode, caller, function identity, policy arm, grant, role,
+    privilege, owner, ACL, signature, language, volatility, `search_path`, or dynamic SQL.
+14. Request-time source-half mode applies before a local Replay run exists.
+    `request_agent_run` performs exact nonlocking source discovery under its existing
+    security-definer/current-tenant boundary, derives the source requester and
+    request-pinned source/artifact IDs, and calls the helper only after installing
+    capability `replay_source_fence_request` and phase `request_replay_locking`. The
+    existing current-input snapshot lock is moved into this ordered helper pass for the
+    Replay branch. The helper locks, in canonical order: deduplicated current/source memberships; exact
+    lifecycle policy; exact agent-run policy; dashboard; source run; request-pinned input
+    and source snapshots; source evidence rows; and source bundle header. It then enters
+    `replay_source_read`, validates the complete source request/result/event/candidate/
+    bundle/member/Brief grammar plus request-pinned catalog/contract identifiers and
+    hashes from the immutable request/result bytes already visible in that phase, and
+    returns the source projection. Exact row-level catalog/entry/contract bytes are
+    validated by the tenant function under its existing security-definer/current-tenant
+    authority after the helper returns and before any DML; no catalog/contract run SELECT
+    policy changes.
+    Before any tenant DML, `request_agent_run` clears every `dasher.run_*` temporary and
+    phase value; it never leaves `authorized`, `locking`, or caller-chosen run authority.
+    The source UUID is a caller argument only to the tenant function; it is not policy
+    authority until that function has bound it to current organization/dashboard,
+    requester, state, request bytes, and all locked rows.
+15. Post-claim mode begins with exact local run discovery by `p_run_id`. Phase
+    `replay_discovering` may expose only that run's
+    `(organization_id,dashboard_id,run_id,request_payload_id,purpose)` pointer and exactly
+    one request-payload row named by transaction-local `run_request_payload_id`. The body
+    validates its canonical bytes/hash, parses only purpose/source ID, requires
+    Suggest-null/Replay-nonnull shape, and discovers exactly the source run through an
+    exact source-ID SELECT arm. No caller source value participates. It derives both
+    requester tuples, takes the organization advisory gate, and locks the item 7 prefix:
+    deduplicated memberships; run principal; exact lifecycle policy; exact run policy;
+    dashboard; and deduplicated local/source runs. After locks, it rereads and
+    byte-compares both run/request pointers and validates local lease/token/purpose.
+16. Suggest then promotes directly to local `authorized`. Replay remains in `locking` and
+    immediately invokes the helper. The helper locks source snapshots, evidence, and
+    local/source bundle headers in item 7 order, then switches to
+    `replay_source_read` for bounded nonlocking immutable validation. Membership,
+    dashboard, snapshot, and evidence columns needed by the proof are captured and
+    validated in their preceding exact locking statements; they are not reread through
+    a widened source-read policy. In source-read phase the helper proves the immutable
+    request/result/event/candidate/bundle/member/source-Brief grammar and the
+    request-pinned catalog/contract IDs and hashes. It proves same organization/
+    dashboard/input bytes+hash; both unchanged active editor/admin requesters; accessible
+    dashboard; source exactly `approval_required`
+    and unleased; result count 3--5, contiguous retry grammar and result/event chains;
+    request-pinned count/head; exact candidate set, selected candidate, bundle,
+    membership and Brief; and exact local clones after prerequisite cloning. It then
+    restores the persistent local tuple and phase `authorized`, validates exact
+    catalog-snapshot/entry/contract rows and the local Brief under the unchanged
+    `run_policy_allows_v1` SELECT arms, and returns only after immediate byte/hash
+    equality. No `field_catalog_snapshots_run_definer_select`,
+    `field_catalog_entries_run_definer_select`,
+    `metric_contract_versions_run_definer_select`, or `briefs_run_definer_select` policy
+    change is authorized. Local DML follows only after this two-stage fence.
+    16a. The helper's successful post-claim contract remains universal: after completing
+    the full source fence and local catalog/contract/Brief validation it returns with the
+    persistent local tuple and phase exactly `authorized`; it never returns across its
+    function boundary in `replay_source_read`. Exactly
+    `clone_claimed_replay_prerequisites`, `list_claimed_replay_results`, and
+    `consume_agent_replay_result`, each already a fixed run-definer-owned
+    `SECURITY DEFINER` body, may immediately open a second transaction-local
+    `replay_source_read` window after that helper returns. The capability installed by the
+    fixed context initializer must respectively be exactly
+    `clone_replay|read_replay|consume_replay`, and the persistent organization,
+    dashboard, local-run and source-run GUCs must still equal the helper-validated tuple;
+    caller-preinstalled context is never authority. The clone window may read only the
+    existing exact source bundle, Brief, result aggregate, and bundle-member relations;
+    the list window may read only its existing bounded ordered source-result page; and the
+    consume window may read only its existing one exact source result by sequence and
+    digest. These windows add no relation, column, row mark, helper invocation, dynamic
+    SQL, local-row/request/artifact/event/catalog/contract/principal/lifecycle/policy
+    read, or DML. Each body materializes its source values and immediately restores phase
+    `authorized` before any local read, lock, validation, helper invocation, idempotent
+    return, DML, event append, exception handling that can return successfully, or final
+    return. A propagated exception rolls back the transaction-local context. No source
+    phase can leak to pooled reuse, and no policy, policy arm, grant, role, membership,
+    privilege, owner, ACL, signature, language, volatility, `search_path`, or helper
+    execute authority changes.
+17. The post-claim fence is mandatory for Replay in exactly fourteen exported bodies:
+    `get_claimed_agent_run_input`, `clone_claimed_replay_prerequisites`,
+    `list_claimed_replay_results`, `consume_agent_replay_result`,
+    `write_agent_run_checkpoint`, `commit_calculation_graph`, `commit_agent_candidate`,
+    `close_agent_candidate_set`, `commit_agent_validation_findings`,
+    `commit_candidate_claims`, `commit_candidate_manifest`, `commit_run_abstention`,
+    `finalize_agent_run_ranking`, and `finish_agent_run`. It is empty for Suggest.
+    After final Replay consumption, each legal deterministic method must fence before any
+    event/DML; source cancellation, drift, revocation, purge, or artifact loss denies
+    with zero local mutation.
+    17a. `consume_agent_replay_result` derives the declared source-result count only from
+    the canonical persisted local Replay request already locked and byte-validated by the
+    helper fence; caller values and source result kind are not transition authority. It
+    requires the next contiguous sequence beginning at `1`, rejects a sequence greater
+    than the request-pinned declared count, and preserves `planning` for every
+    first-through-penultimate consume. It sets transaction-local `run_next_state` to
+    `generating` if and only if the consumed sequence equals that declared count, while
+    retaining the exact final count/head and cloned bundle/Brief proof. Exact same-
+    sequence/hash retry remains zero-event/zero-DML and returns only after phase
+    `authorized` restoration. `0012` may reissue
+    `dasher_private.agent_run_transition_guard_v1()` without overload solely to admit
+    `replay_result_consumed` with `planning -> planning|generating`; `generating` is legal
+    only on the final declared sequence selected by the fixed consume body. Every other
+    event/source/target rule, lease/terminal invariant, projection predicate, owner,
+    invoker-security mode, ACL, signature, language, volatility,
+    `search_path = pg_catalog`, dependency, and trigger identity remains byte-for-byte
+    equivalent to the currently authoritative `0009` corrected body apart from that one
+    transition arm. The `0009` takeover-settlement reader call, event lookup, declaration
+    block, and narrowed `attempt_indeterminate` clauses remain unchanged; migration
+    `0012` neither duplicates nor bypasses that reader. Frozen migrations `0007` and
+    `0009` are never edited.
+    17b. The final-count correction makes one pre-existing reducer mismatch reachable:
+    after final declared consumption the TypeScript reducer is authoritative at
+    `generating`, but the already-reissued `write_agent_run_checkpoint` SQL reducer
+    omits `replay_result_consumed` and reconstructs `planning`. `0012` may change only
+    that existing SQL reducer's event `CASE` far enough to mirror the authoritative
+    TypeScript `replay_result_consumed` arm. The SQL arm requires Replay purpose and
+    prior reduced state `planning`; requires the event's source run to equal the
+    request-pinned Replay source run; validates the replay-result UUID, exact next
+    contiguous tagged sequence beginning at `1`, request-pinned declared count, no
+    overrun, and 32-byte source-result digest; updates only the reducer-local consumed
+    sequence/digest variables; and sets reducer-local state to `generating` if and only
+    if the sequence equals that declared count. It reads authority only from the same
+    canonical persisted local request and retained event bodies the checkpoint function
+    already reads. It adds no relation, column, lock, policy, grant, helper, dynamic SQL,
+    caller input, DML, event, or checkpoint field. Every declaration, fence, identity,
+    source-event/digest check, budget/attempt/candidate reduction arm, checkpoint-byte
+    comparison, write, owner, ACL, signature, language, volatility, and hardened search
+    path in `write_agent_run_checkpoint` remains unchanged except for reducer-local
+    variables mechanically required by that one event arm.
+    17c. The complete restricted Replay journey makes one further pre-existing provenance
+    mismatch reachable after item 17b: consumed Replay results intentionally retain the
+    source result ID/hash/canonical bytes with null local `attempt_id` and
+    `result_payload_id`, but `commit_agent_candidate` admits only a locally generated
+    result with nonnull attempt/payload origin. Candidate IDs are caller-supplied rather
+    than derivable from result bytes, so independently proving the request-pinned selected
+    source candidate and a consumed source result is insufficient: the fixed path must
+    prove that exact selected candidate was produced by that exact result.
+
+    The same journey exposes one preceding time-binding mismatch: the selected source
+    candidate's canonical dashboard spec was committed under the source request's exact
+    `evaluation_time`, while the local Replay request necessarily has a later
+    `evaluation_time`; the shared pre-branch comparison of candidate `generatedAt` to the
+    local request therefore rejects every honest Replay candidate before reaching the
+    null-origin provenance branch. `0012` may correct only this closed Replay
+    candidate-provenance and source-time branch in the already reissued
+    `replay_source_fence_v1` and `commit_agent_candidate`; the Suggest/local-attempt branch,
+    including its candidate-`generatedAt` equality to the local request's
+    `evaluation_time`, remains semantically unchanged. The source fence keeps its existing
+    global relation order and materializes, during its existing ordered source-result
+    loop, the exact result ID, sequence, semantic SHA, kind, canonical candidate-spec bytes
+    and digest, and canonical precommit-validation digest needed for selected-candidate
+    proof. It adds no second source-result query or relation occurrence. Its existing
+    selected-candidate/payload proof may additionally inspect exactly
+    `candidate.source_result_id`, `candidate.source_result_sha256`, and
+    `candidate.precommit_validation_sha256`, and requires those values, candidate payload
+    bytes/spec digest, source bundle/Brief, and request-pinned selected candidate to equal
+    one exact materialized `candidate_output|repair_output` result already fully
+    canonicalized, payload-validated, sequence/head-validated, and kind-validated by the
+    same fence. This is the sole exception to the prior no-new-source-column restriction;
+    it adds no source relation, row mark, consumer-owned source window, policy, grant,
+    role, privilege, helper, caller, dynamic SQL, or projection returned across the helper
+    boundary. The fence already parses both the canonical source request and the selected
+    candidate payload. Without another relation, query, column, row mark, source window,
+    helper call, signature, GUC, or returned projection, it additionally requires the
+    source request's nonnull `evaluation_time` text to byte-equal the selected candidate
+    dashboard spec's nonnull `generatedAt` text and materializes that one equal text value
+    only as receipt-preimage input. Existing canonical request and dashboard-spec
+    validation remain authoritative for their timestamp language; no parsing,
+    normalization, timezone conversion, truncation, or local-clock substitution is
+    authorized.
+
+    In post-claim mode only when the fixed capability is exactly `commit_candidate`, after
+    complete source/local proof and restoration to `authorized`, the fence overwrites the
+    one transaction-local internal GUC `dasher.run_replay_candidate_receipt_sha256` with
+    the lowercase 64-hex rendering of the exact receipt digest registered below. The
+    receipt returns no raw source projection or readable component field.
+
+    The exact receipt registry row is named `replay-candidate-receipt-v1`, domain ASCII
+    `dasher.replay-candidate-receipt.v1` followed by NUL. Its SHA-256 preimage is that
+    domain and then exactly these required, nonnull `canonical-binary-v1` values in this
+    order, with no count, separator, label, PostgreSQL composite/array binary form, or
+    omitted/additional field: organization UUID; dashboard UUID; local run UUID; source
+    run UUID; local request-payload UUID; local semantic request SHA bytes; capability
+    text, exactly `commit_candidate`; principal UUID; principal signed-64 revision;
+    principal SHA bytes; local requesting-membership UUID; local requesting-user UUID;
+    local requesting-authority signed-64 revision; run-policy signed-64 revision;
+    lifecycle-policy signed-64 revision; selected candidate UUID; selected source-result
+    UUID; selected source-result signed-64 sequence; selected source-result SHA bytes;
+    selected source-result kind text; candidate-spec SHA bytes; precommit-validation SHA
+    bytes; source common-bundle UUID; source common-bundle SHA bytes; source Brief UUID;
+    source Brief SHA bytes; source-request evaluation-time text, exactly the text already
+    proved byte-equal to the selected candidate's `generatedAt`. Here every `SHA bytes`
+    value is exactly 32 raw bytes with no
+    length prefix; UUID, signed-64, and text encodings are exactly section 4.9's existing
+    `canonical-binary-v1` encodings. No value is nullable, and any absent, malformed, non-
+    canonical, or wrong-length input denies before receipt production or comparison.
+
+    This closed authority set deliberately includes the run-policy revision, semantic
+    request commitment, lifecycle revision, principal chain commitment, and membership/user
+    authority commitment already available to both fixed bodies without another query or
+    signature/context expansion. It deliberately excludes local run revision, lease epoch,
+    raw attempt token, stored lease-token hash, and lease expiry: the caller has already
+    proved all five against the same locked run in `reauthorize_agent_run_v1`, the helper is
+    invoked immediately inside that same fixed security-definer body, and no caller,
+    statement, trigger, or other function can interpose before the receipt comparison.
+    Requiring those unavailable values in the helper would add a forbidden local-run read,
+    helper signature change, or auxiliary bearer GUC without strengthening the receipt's
+    sole purpose of binding selected candidate to selected result. Current event sequence/
+    hash are likewise excluded because the same locked run cannot change across this fixed
+    call boundary and those fields do not establish candidate-to-result identity. No
+    excluded value may substitute for any registered field or become additional
+    implementer-chosen receipt input. The 27th source-evaluation-time field is provenance,
+    not local execution authority: it binds the replayed source candidate to the source
+    request instant under which those exact candidate bytes were originally admitted and
+    cannot be replaced by the later local Replay request's `evaluation_time`.
+
+    `commit_agent_candidate` clears that receipt before context initialization, performs
+    its unchanged initialization/reauthorization/fence sequence, and selects the Replay
+    branch only for the table-CHECK-enforced provenance form with both local
+    attempt/payload IDs null and all replay-source ID/sequence/SHA fields nonnull. The
+    body first validates canonical local request bytes. The unchanged Suggest branch still
+    requires candidate `generatedAt` to equal that local request's `evaluation_time`; the
+    Replay branch does not apply that structurally impossible local-time comparison. The
+    Replay branch requires canonical local Replay request purpose and request-pinned source run/
+    selected candidate; exact fixed-context equality; positive in-range source sequence;
+    replay-source SHA equal to the local semantic result SHA; exact caller result ID/hash/
+    kind/canonical bytes; and the same dashboard-spec, precommit validator/state/digest,
+    common-bundle/Brief, evidence, material-assertion, and caller-byte/hash validations as
+    the Suggest branch without reading a nonexistent local attempt/request/result payload.
+    Its nonnull candidate `generatedAt` text is the 27th registered receipt value; digest
+    equality therefore proves it byte-equal to the source request `evaluation_time` already
+    checked against the selected source candidate by the fence, without exposing or reading
+    that source field in the consumer.
+    It recomputes exactly the registered `replay-candidate-receipt-v1` digest from that
+    exact local/request/caller/artifact tuple, requires the current setting of
+    `dasher.run_replay_candidate_receipt_sha256` to be exactly 64 lowercase hex characters,
+    decodes it to exactly 32 bytes, and requires byte equality with the recomputed digest.
+    Result kind alone, a copied local row alone, or any caller value is never authority.
+
+    Caller-preinstalled, partial, malformed, stale, cross-run, cross-capability, caught-
+    error, savepoint-restored, or pooled receipt values deny: entry clearing precedes every
+    proof, the helper overwrites the complete digest only after fresh proof, and no caller
+    can interpose between helper return and comparison inside the fixed security-definer
+    body. The body clears `dasher.run_replay_candidate_receipt_sha256` to the empty string
+    immediately after successful comparison and before idempotency read, DML, event append,
+    handled error, or successful return; propagated
+    errors roll back transaction-local state, and every retry clears and re-proves. No RLS
+    policy or other function reads the receipt. No local attempt/payload, counter change,
+    persistent column, schema object, API/event/return change, execution-authority change,
+    or broader error channel is authorized.
+
+18. Replay denies before mutation for capabilities
+    `commit_brief|commit_bundle|reserve|dispatch|reconcile|release`. Thus it cannot create
+    or operate an attempt, authorize provider invocation, commit a live Brief/bundle, or
+    alter counters. Cancellation and retention drain remain separately governed.
+
+**Exact fixed-body correction inventory:**
+
+19. In addition to the tenant/private bodies in item 13 and the fourteen Replay bodies in
+    item 17, `0012` may reissue exactly
+    `commit_agent_brief`, `commit_common_evidence_bundle`,
+    `reserve_agent_run_attempt`, and `reconcile_agent_run_attempt`. The overlap is
+    explicit: `commit_calculation_graph`, `commit_agent_candidate`,
+    `commit_agent_validation_findings`, `close_agent_candidate_set`,
+    `commit_candidate_claims`, `commit_candidate_manifest`, and
+    `finalize_agent_run_ranking` are already among the fourteen and receive both fence
+    and local-projection corrections in one replacement. The unique `0012` exported
+    run-body set is therefore eighteen, plus `request_agent_run` and the two private
+    helpers. `claim_agent_run`, `start_agent_run_attempt`,
+    `authorize_agent_run_attempt_invocation`, and `release_agent_run_attempt` are not
+    reissued.
+    19a. `0012` may additionally execute exactly
+    `ALTER FUNCTION dasher_private.calculation_graph_constraint_guard_v1() SECURITY DEFINER`.
+    It MUST NOT use `CREATE OR REPLACE`, alter the function body, signature, owner
+    (`dasher_run_definer`), language, volatility, `search_path = pg_catalog`, owner-only
+    EXECUTE ACL, dependencies, or either existing deferred constraint trigger. It adds no
+    `USAGE` on `dasher` and no direct table privilege to `dasher_run_operator` or any
+    caller role. The guard remains reachable only as the fixed trigger on INSERTs made by
+    already-authorized security-definer calculation commits; runtime roles remain unable
+    to invoke it directly or insert into the guarded tables. This is the only authorized
+    `prosecdef` delta. Item 17a's transition-guard replacement is the only additional
+    private routine replacement beyond item 19; it remains invoker-security and gains no
+    caller or privilege.
+20. Every reissued body removes forbidden immutable row marks, restores the complete
+    section 4.7 relation/column projection, and puts every retained/new lock at item 7's
+    relation position. In particular:
+
+    - Brief commit validates the sole planner attempt plus request/result payload and
+      recorded-result bytes/hashes against the submitted Brief;
+    - common-bundle commit validates complete request-named input/source/evidence/
+      catalog/contract lineage, bodies, counts and digests;
+    - reserve recomputes complete repair/reviewer candidate payload, finding, Claim/edge,
+      manifest-absence and aggregate projections;
+    - reconcile preserves its exact `bytea` argument, 1,024-byte cap, opaque raw-byte
+      handling, `22021|22P02|22003` parser catch, classification precedence, and
+      nonpersistence, while adding the required locked bundle header and twice-fresh
+      membership proof for bundle-dependent outputs;
+    - graph, candidate, validation, close, calculated/freshness Claims, manifest and
+      ranking restore their exact request/source/catalog/contract/candidate/material/
+      result/reviewer projections and immediate pre-DML revalidation;
+    - candidate commit locks attempt at the attempt position and reads recorded result
+      nonlockingly at its later position; manifest and every restored bundle user locks
+      bundle before candidate/counter/attempt rows.
+
+21. `get_claimed_agent_run_input` uses the request-pinned catalog and exact contract set/
+    versions, validates complete source/request/input/catalog/contract bytes/hashes,
+    invokes the appropriate Replay fence, and returns recorded-result count/final
+    sequence/final result-head digest—not event head—in Replay fields. Suggest Replay
+    fields are all null. Composite order and bounds are unchanged.
+22. Public SQL classification remains closed. Caller shape/range/canonical conflict and
+    legal state/idempotency conflicts use frozen `P1002` literals. Missing/hidden/
+    cross-scope rows, stale authority/lifecycle/lease/source, persisted body/hash drift,
+    `insufficient_privilege`, and persisted parser/cardinality failure use
+    `P1001/dasher_denied`. No SQLSTATE, relation, column, constraint, SQL text, UUID,
+    bytes, DETAIL, HINT, CONTEXT, path, or stack reaches the executable client.
+    Unexpected integrity faults roll back; accounting parser catches remain exactly
+    bounded. The 17-code TypeScript channel and tenant-collision
+    `P1002/dasher_conflict` law are unchanged. The deferred guard executes inside the
+    committing transaction. Its defense-in-depth rejection is server-side fixed
+    `P1002/dasher_invalid`, but the sole exported writer's complete pre-INSERT validation
+    and atomic graph/result/meter insertion entail every guard predicate, so no malformed
+    production journey or direct-row fixture is required or authorized. Any commit-stage
+    guard or unexpected fault remains client-side commit-indeterminate and opaque; it
+    never exposes SQLSTATE, schema, function, or `CONTEXT` text, and this amendment does
+    not change the repository wrapper's classification.
+23. Function/policy inventory is exact: no overload, alternate helper, default privilege,
+    production role membership, grant option, PUBLIC execute, table-wide UPDATE, DELETE,
+    event/member row lock, or dynamic SQL. Function hashes, `proconfig`, owners, ACLs and
+    dependencies pin every replacement. The guard proof separately pins an unchanged
+    `prosrc`, owner, `proconfig`, ACL and dependency/trigger identity with exactly
+    `prosecdef = true`; no other function execution mode changes. Existing
+    `run_membership_id`, normal `locking`, and `run_policy_allows_v1` arms remain verbatim;
+    phase-12 tests re-prove unchanged `claim_agent_run` and all five attempt methods.
+    They separately pin the complete `agent_run_transition_guard_v1` source and catalog
+    identity, proving that its sole delta from the authoritative `0009` body is item
+    17a's exact `replay_result_consumed` transition arm, that every `0009`
+    takeover-settlement correction remains byte-identical, and that no execution-mode,
+    owner, ACL, `proconfig`, dependency, trigger, or unrelated transition changed.
+    They also pin `write_agent_run_checkpoint` against its pre-item-17b phase-12 body and
+    prove its only semantic delta is the exact reducer-local
+    `replay_result_consumed` parity arm: no relation/read/lock/DML/event/checkpoint shape,
+    non-Replay reducer arm, function identity, owner, ACL, security mode, `proconfig`, or
+    dependency changes.
+    They additionally pin `replay_source_fence_v1` and `commit_agent_candidate` against
+    their pre-item-17c phase-12 bodies. The fence proof permits only the exact selected-
+    candidate/result/payload predicates, loop-local materialization, one post-proof
+    receipt write, and fixed-capability guard authorized by item 17c; it proves no new
+    source-result query, source relation occurrence, source-read window, row mark, local
+    operation while in source phase, policy/ACL/dependency change, or receipt read by any
+    third function. The candidate proof pins the complete Suggest branch, attempt lock,
+    result/request-payload validation, idempotency/DML/event bytes, identity, owner, ACL,
+    security mode, `proconfig`, and dependencies, while permitting only the entry clear,
+    closed Replay provenance branch, receipt comparison/clear, and minimum shared
+    canonical-result validation authorized by item 17c.
+
+**Permanent PostgreSQL 16.14 RED -> GREEN and catalog proofs:**
+
+24. Phase 9 characterizes cancellation RED; phase 10 proves cancellation GREEN and
+    bundle RED; phase 11 proves commit-Brief bundle GREEN and all `0012` defects as
+    attributable REDs; phase 12 proves complete GREEN. Production journeys use real
+    `NOINHERIT NOSUPERUSER NOBYPASSRLS` app/run logins and repositories. Owner,
+    superuser, BYPASSRLS, mocks, direct fixture insertion into a target, private-helper
+    stand-ins, or earlier-guard failures do not satisfy production proof.
+    24a. The deferred-guard proof is permanent and attributable. In an isolated diagnostic
+    phase-12 migration copy, removing only item 19a's `ALTER FUNCTION` reproduces the
+    restricted-login legal `commitCalculationGraph` RED at `COMMIT` with PostgreSQL
+    server evidence `permission denied for schema dasher` while the executable client
+    receives only the opaque internal/commit-indeterminate channel and no graph/result/
+    meter residue. The canonical phase 12 then runs the same journey GREEN. A superuser,
+    owner login, manual row insertion, direct private-function call, earlier failure, or
+    extra schema/table grant is not acceptable RED or GREEN evidence.
+25. In an isolated phase database only, the harness may create one ephemeral audit
+    login with `NOINHERIT NOSUPERUSER NOBYPASSRLS` and **SET-only, no-INHERIT,
+    no-ADMIN** membership in `dasher_run_definer`, solely for direct catalog/RLS lock
+    observation. For the observation window it also inserts one ephemeral, complete,
+    enabled `run_service_principal_allowlist` revision-1 row bound to that exact
+    `session_login`, database OID/name, principal UUID/revision/hash, and only the
+    capability under observation. The row and login use test-generated nonsecret IDs,
+    enter no production repository journey, perform no exported mutation, and are absent
+    from every production/login allowlist. After observation all sessions disconnect,
+    the throwaway phase database is dropped (removing the immutable principal row), and
+    the SET membership/login are revoked and dropped with cluster- and database-level
+    owner-visible residue proof before any authoritative final fingerprint. Through
+    `SET ROLE dasher_run_definer` and exact transaction-local context, this observer may
+    distinguish authorized SELECT visibility, RLS-filtered row marks, raw predecessor
+    `42501`, and catalog definitions. It does not satisfy production success; it only
+    attributes the independently reproduced production failure. The final role graph,
+    principal table, and catalog contain no observer residue.
+26. Phase-10 RED/phase-11 GREEN prove commit-Brief's exact local bundle SELECT/lock,
+    rollback, wrong-row and cross-scope denial, stale-principal/membership/lifecycle
+    denial, no grant change, and independent write fences. Phase 11 characterizes every
+    forbidden catalog/contract/Brief/recorded-result/graph/result/request-payload row
+    mark after its preceding guard. Phase 12 proves legal production success without new
+    immutable UPDATE authority.
+27. Phase 12 executes all 22 operator methods. `claimAgentRun` has legal success plus
+    authority/drift denial. Every legal deterministic Replay method in item 17 has a
+    purpose/state-appropriate success plus source cancellation/drift zero-mutation
+    denial. The five attempt methods and live Brief/common-bundle methods prove Replay
+    `P1001` before mutation. Mutually exclusive abstention/ranking/finish journeys may use
+    separate fixtures. Suggest legal successes and contract-required denials remain.
+    The restricted-login Replay success consumes every declared source result in order,
+    proves `planning` after each first-through-penultimate result and `generating` only
+    after the final declared result, then completes checkpoint and downstream candidate
+    operations. Permanent RED controls independently replace only the declared-count
+    condition with the old result-kind condition and omit only the transition-guard arm;
+    each must fail at the intended first/final consume with zero local result/event/run
+    projection residue, while the canonical pair is GREEN. Gap, duplicate, reversal,
+    overrun, wrong digest, source cancellation/drift, caught/propagated failure, and pool
+    reuse prove restoration and fail-closed behavior for clone, list, and consume.
+    A third isolated attributable RED removes only item 17b's checkpoint SQL-reducer arm
+    from the otherwise-final phase-12 migration. After all declared Replay results are
+    consumed, the real restricted-login `writeCheckpoint` call must fail at the reducer
+    state comparison with fixed opaque `P1002`, zero checkpoint/event/run-projection
+    mutation, and reusable pooled context; the canonical migration must run the identical
+    final-consume-then-checkpoint journey GREEN. The RED may not replace the TypeScript
+    reducer, alter stored event bytes, use owner/direct SQL for the production call, or
+    fail at an earlier fence/check.
+    A fourth isolated attributable RED removes only item 17c's selected-candidate receipt
+    production and Replay null-origin candidate-provenance branch from the otherwise-final phase-12
+    migration. After the identical complete restricted final-consume, checkpoint, and
+    calculation journey, the first real restricted-login `commitCandidate` must fail with
+    fixed opacity and zero candidate/payload/event/run-projection mutation; the canonical
+    migration must run that identical call and every downstream candidate operation
+    GREEN. The RED may not fabricate an attempt/payload, alter the source fixture, use an
+    owner/private call, omit the mandatory source fence, restore the obsolete shared
+    local-evaluation-time predicate, or fail before the exact null-origin provenance
+    mismatch. A fifth isolated attributable RED retains the otherwise-final receipt and
+    Replay provenance branch but restores only the old shared comparison of candidate
+    `generatedAt` to the local Replay request's `evaluation_time`, replacing the new
+    Suggest-only comparison. The first real restricted-login `commitCandidate` must then
+    fail at that exact predicate with fixed opacity and zero candidate/payload/event/run-
+    projection mutation, while canonical bytes run the identical source/local request and
+    candidate bytes GREEN. This time-binding RED may not alter either request or candidate,
+    omit the fence/receipt, bypass restricted login, or weaken any other predicate.
+28. Replay/request fence tests cover membership and run UUIDs in both relative orders;
+    canonical snapshot/evidence/bundle order; organization-advisory serialization;
+    request-time source-only mode; post-claim two-run mode; wrong org/dashboard/run/
+    membership/snapshot/evidence/bundle/Brief/result/candidate/catalog/contract; stale
+    principal/capability/membership/lifecycle/lease/source; result gap/head drift; and
+    artifact substitution/removal. Tuple-lock observation and two-order concurrency
+    prove no deadlock against drain/purge.
+    Item 17c adds a legal two-candidate source whose selected and unselected candidate
+    results both satisfy source grammar. Naming the request-pinned selected candidate with
+    the unselected result ID/hash/spec/precommit must deny with zero mutation. One isolated
+    vulnerable migration differs from the otherwise-final phase-12 bytes only by replacing
+    the candidate-to-result-bound receipt comparison with a digest computed from the
+    request-pinned selected candidate fields and the caller-supplied unselected result fields
+    independently, thereby omitting their source-row equality. That weakened migration must
+    incorrectly admit the selected-candidate/unselected-result call and persist the exact
+    candidate, candidate-payload, event, and run-revision mutation that canonical bytes deny
+    with zero mutation; rollback then removes the diagnostic mutation. A diagnostic that
+    merely fails, denies earlier, omits the fence, bypasses restricted login, or changes any
+    other production predicate is not attributable evidence. Wrong candidate/result/
+    sequence/source/kind/spec/precommit/
+    bundle/Brief, copied canonical drift, source candidate/result/payload removal or drift,
+    malformed Replay-nullability shape, and source cancellation/revocation all deny
+    opaquely. Suggest generator and repair candidate successes and their exact local
+    attempt/request/result-payload bindings remain GREEN.
+29. Catalog proofs compare complete grants/policies before/after every phase. They prove
+    exactly three run-definer UPDATE revokes, one dead dashboard-version policy removal,
+    no new immutable UPDATE policy, and the exact policy allowlists/phase/GUC predicates
+    in items 10--12. Direct and no-op/real UPDATE, INSERT, DELETE, SELECT and private
+    helper EXECUTE denial are proved for runtime roles. They additionally prove exactly
+    one false-to-true `prosecdef` delta for
+    `dasher_private.calculation_graph_constraint_guard_v1()`, byte-identical `prosrc`,
+    unchanged owner/search-path/ACL/dependencies and deferred-trigger definitions, and no
+    caller EXECUTE, INSERT, schema-USAGE or guarded-table SELECT grant. They also prove no
+    runtime role can attach the now-definer function to any relation: no runtime role has
+    function EXECUTE or schema CREATE/USAGE authority sufficient to create such a trigger.
+    The calculation guard is recorded as defense in depth whose predicates are entailed by the sole
+    exported writer; direct insertion is neither production proof nor authorized test
+    authority. The ephemeral audit membership is absent from final catalog and role graph.
+    The same catalog proof pins the reissued run transition guard as invoker-security with
+    unchanged owner/search-path/ACL/dependencies/trigger and exactly one source delta;
+    no runtime role gains direct invocation or table authority through that replacement.
+30. Fault injection after every new lock group, validation, semantic DML, event and audit
+    proves full rollback with no run/attempt/counter/content/event/candidate/Claim/
+    manifest/audit/context residue. Pool reuse proves all custom GUCs transaction-local
+    and empty-safe.
+    For each bounded source window, injection immediately after source-phase entry, after
+    source materialization, after `authorized` restoration, and before the first local
+    operation proves rollback or restored-context continuation as appropriate. Static
+    assertions enumerate every successful return and prove restoration precedes it.
+    Receipt-specific probes preinstall empty, malformed, and correct-looking values in
+    literal GUC `dasher.run_replay_candidate_receipt_sha256`;
+    exercise wrong capability/run/principal/lease/membership tuples; catch helper or
+    candidate failure inside a savepoint and roll back to a prior caller value; propagate
+    failure; retry; and reuse the pooled connection. Every fixed call clears before proof,
+    no stale value authorizes or leaks, the receipt is empty before idempotency/DML and on
+    successful return, and only the two item-17c bodies reference its GUC name.
+31. R7 pins literal checksums for `0010`--`0012`, cumulative phase-10/11/12 catalog
+    fingerprints and counts, and an exact twelve-row final journal. It proves clean
+    `0001` -> `0012`, each adjacent/supported cumulative upgrade, separate journal
+    rollback, rerun idempotency, gap/drift rejection, and defeat-name reproduction on
+    `dasher`, `audit_events`, and `dasher_api` at phases 9--12. Every predecessor byte
+    and checksum remains checked.
+    31a. Migration rollback injection immediately after item 19a and at the final journal
+    INSERT restores `prosecdef = false` together with every earlier phase-12 catalog
+    change and leaves no journal row. Retry installs exactly `prosecdef = true`; canonical
+    rerun is a no-op. Defeat-name and supported-upgrade fingerprints include the same
+    single execution-mode delta.
+
+**Remaining closure and publication gates:**
+
+32. The first-reservation budget proof runs on phase 12 through claimed-input, bundle,
+    planner Brief, reservation and reconciliation. Legal maximum planner/specialist/
+    invalid-generator history leaves 20,000 generation total tokens; the first repair
+    reservation fails at 24,000 limit with zero residue. The positive control leaves at
+    most 16,000 and succeeds. No counter mutation, direct Brief, forged result, owner
+    fixture, prior live attempt, or omitted claimed-input substitutes.
+33. Cancellation proof retains pre-dispatch release, dispatched charging, exact vectors/
+    events/counters/run/audit, legal UUID ordering, zero-DML retry, rollback, and the
+    composed retention/purge/age-out/cross-organization operation-reservation journey.
+34. R7 remains one writer. The controller verifies pristine PostgreSQL 16.14 plus
+    ordinary/canonical/control-plane, calculation-engine, typecheck, format, lint, diff,
+    frozen checksum, source, dynamic-SQL, secret, grant, defeat-name and residue gates.
+    Exit 0 is evidence, not approval.
+35. Any production/migration/test/plan byte change invalidates review. Exact final bytes
+    require fresh `SEC-APPROVE` and `SPEC-APPROVE`. Only reviewed bytes may be committed,
+    pushed, and opened as the one scoped Task 9D PR authorized here. Exact pushed-head CI
+    must pass; then work stops for separate owner merge authorization naming that SHA.
+36. This Task 9D PR exception does not authorize Task 9G's later full-release review/PR
+    gate, Task 9E, Task 9F, deployment, or live data. Tasks 9E and 9G remain held; Task 9F
+    remains held behind Task 9E. Merge remains HOLD until explicit exact-SHA authority.
+
 ### Task 9E: add fake-provider orchestration and content-addressed replay
 
 **Objective:** Exercise the run protocol end to end with zero network and zero
@@ -5807,7 +6535,7 @@ budget, graph, claim, replay, and cleanup contract on PostgreSQL 16.14.
 
 **Required matrix:**
 
-- exact seven-row journal, migration hashes, two new managed roles, function/ACL/
+- exact phase-bound journal prefixes (seven rows through `0007`, twelve through final `0012`), migration hashes, two new managed roles, function/ACL/
   RLS/trigger/dependency/owner/no-sequence catalog, exact phase-6 retention baseline
   plus per-function delta, clean/upgrade/replay/rollback/retry paths;
 - app versus run operator versus retention/general-definer/migration-owner
@@ -6101,7 +6829,7 @@ fresh final-byte gate. Any source or docs edit invalidates old evidence.
 
 **Steps:**
 
-1. Freeze exact base/parent/head/tree, seven migration filenames/checksums,
+1. Freeze exact base/parent/head/tree, twelve migration filenames/checksums,
    PostgreSQL image/server identity, new role/catalog/function/ACL/RLS inventory
    hashes, package/fixture hashes, test counts, and cleanup proof. The frozen review
    inventory explicitly includes the two checkpoint hashes, global ordinary/mixed
@@ -6164,14 +6892,14 @@ and must prove explicit owner/app/run-operator login separation and zero skips.
 
 ### Schema and authority
 
-- Journal is exactly seven immutable rows with all predecessor hashes unchanged.
+- Journal is exactly twelve immutable rows at final phase 12, with the seven-row phase-7 prefix and every predecessor hash unchanged.
 - New managed roles are exact NOLOGIN/NOBYPASSRLS identities with no memberships,
   secrets, default privileges, or unrelated authority. `dasher_run_definer` owns only
   the enumerated operator functions and owns no schema, table, type, sequence, or data;
   `dasher_run_operator` owns nothing. Separately allowlisted run logins have only the
   exact SET membership
   in `dasher_run_operator`.
-- Every table/function/policy/grant/trigger/dependency matches phase-7 inventory;
+- Every final table/function/policy/grant/trigger/dependency matches cumulative phase-12 inventory while the phase-7 baseline remains unchanged;
   app/run/retention/PUBLIC authority differs only where explicitly planned.
 - For these two non-tenant relations, the run definer can tuple-lock only the exact
   proven
@@ -6457,7 +7185,7 @@ This docs-only PR changes exactly:
 Before publication:
 
 1. mechanically enforce the two-path allowlist and unchanged repository source;
-2. verify all six migration hashes directly from base and candidate;
+2. verify every migration hash through final phase 12 directly from base and candidate;
 3. run Prettier, `git diff --check`, and the repository aggregate CI commands;
 4. obtain an exact-byte focused verifier and a separate direct
    implementation-grounded reviewer over this complete plan;
