@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,20 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  runCalculation,
+  validateCalculation,
+} from "@dasher/calculation-engine";
+import { AgentRunOperatorRepository } from "../src/agent-run-repository.js";
+import type {
+  AgentRunLeaseHandle,
+  AttemptResourceVector,
+  CancelAgentRunResult,
+  CalculationMeterVector,
+  ClaimAgentRunResult,
+  RequestAgentRunResult,
+} from "../src/agent-run-types.js";
+import {
+  AgentRunRepository,
   DashboardLifecycleRepository,
   InvitationRepository,
   OperationConflictError,
@@ -30,6 +44,10 @@ import {
   canonical0006DependencyInventoryMatchesForTests,
   canonical0007CatalogMatchesForTests,
   canonical0008CatalogMatchesForTests,
+  canonical0009CatalogMatchesForTests,
+  canonical0010CatalogMatchesForTests,
+  canonical0011CatalogMatchesForTests,
+  canonical0012CatalogMatchesForTests,
   canonicalPhaseNameSensitiveInventoryForTests,
   exactCatalogMatchesForTests,
   getCanonical0002ExactCatalogContractForTests,
@@ -46,8 +64,10 @@ import {
   checksumDriftMigrationDirectory,
   createTemporaryAppLogin,
   createTemporaryRetentionLogin,
+  createTemporaryRunLogin,
   dropTemporaryAppLogin,
   dropTemporaryRetentionLogin,
+  dropTemporaryRunLogin,
   executeServerFormattedSql,
   expectMigrationRejection,
   fixtureMigrationDirectory,
@@ -68,12 +88,160 @@ const task8aHarnessTargetOrganizationB = "83000000-0000-4000-8000-000000000002";
 const task8aHarnessTargetDashboard = "83000000-0000-4000-8000-000000000010";
 const task8dOrganizationId = "8d000000-0000-4000-8000-000000000001";
 const task8dRetentionUsername = "dasher_test_task8d_retention";
+// The journal assertions below pin every canonical checksum literally, the way
+// the frozen eight already are. The unit suite owns the byte-level pin for
+// 0009; this is the same digest, restated where the journal is read.
+const phase9MigrationFilename =
+  "0009_agent_run_takeover_settlement_transition_correction.sql";
+const phase9SecurityDefinerOwnedRoutineCount = 41;
+const phase9MigrationChecksum =
+  "4c4fddaa975f6f8b468ac88035afa1e069095d8647c64179c7744777fef2f2d9";
+// The same literal pinning for 0010, the canonical latest phase. The unit suite
+// owns its byte-level pin; this is the same digest, restated where the journal
+// is read.
+const phase10MigrationFilename =
+  "0010_agent_run_cancel_attempt_context_correction.sql";
+const phase10MigrationChecksum =
+  "b952454158c6461f664aa9c50c600f269c060d5448f42702bdd6f6b9f671edfa";
+const phase11MigrationFilename =
+  "0011_agent_run_bundle_lock_authorized_phase_correction.sql";
+const phase11MigrationChecksum =
+  "2326b53ce76f41ed766c2cdfaa6d35b9efa283b9b09c69a13ebec097c939e8d4";
+const phase12MigrationFilename =
+  "0012_agent_run_operator_reachability_and_replay_fence_correction.sql";
+const phase12MigrationChecksum =
+  "e01978476995311a40666779fb4fb9b05c0e71bc61224bc3d45dfe1e9b0c02c0";
+const calculationGraphGuardIdentity =
+  "dasher_private.calculation_graph_constraint_guard_v1()";
+const zeroKeyGroupGrain =
+  "group:0b18bd9caa01215aef2b57feb774f8e36a96fd23a9471c2a4d04b5b3c2a30bb1";
 
 let ownerPool: Pool;
 let appPool: Pool | undefined;
 let canonical0002MigrationDirectory = canonicalMigrationDirectory;
 let disposableStateConfirmed = false;
 let appLoginCreated = false;
+
+interface CalculationGraphGuardCatalog {
+  readonly acl: string;
+  readonly dependencies: readonly string[];
+  readonly effectiveExecuteRoles: readonly string[];
+  readonly language: string;
+  readonly owner: string;
+  readonly parallel: string;
+  readonly result: string;
+  readonly searchPath: string;
+  readonly securityDefiner: boolean;
+  readonly source: string;
+  readonly strict: boolean;
+  readonly triggers: readonly string[];
+  readonly volatility: string;
+}
+
+async function calculationGraphGuardCatalog(
+  client: PoolClient,
+): Promise<CalculationGraphGuardCatalog> {
+  const result = await client.query<CalculationGraphGuardCatalog>(`
+    WITH target AS (
+      SELECT routine.*
+      FROM pg_catalog.pg_proc AS routine
+      WHERE routine.oid =
+        '${calculationGraphGuardIdentity}'::pg_catalog.regprocedure
+    )
+    SELECT
+      pg_catalog.pg_get_userbyid(target.proowner) AS owner,
+      language.lanname::text AS language,
+      target.provolatile::text AS volatility,
+      target.proparallel::text AS parallel,
+      target.proisstrict AS strict,
+      target.prosecdef AS "securityDefiner",
+      pg_catalog.pg_get_function_result(target.oid) AS result,
+      COALESCE(pg_catalog.array_to_string(target.proconfig, ','), '')
+        AS "searchPath",
+      COALESCE(target.proacl::text, '') AS acl,
+      target.prosrc AS source,
+      COALESCE((
+        SELECT pg_catalog.jsonb_agg(role_name ORDER BY role_name)
+        FROM (
+          SELECT CASE WHEN privilege.grantee = 0 THEN 'PUBLIC'
+            ELSE pg_catalog.pg_get_userbyid(privilege.grantee) END AS role_name
+          FROM pg_catalog.aclexplode(COALESCE(
+            target.proacl,
+            pg_catalog.acldefault('f', target.proowner)
+          )) AS privilege
+          WHERE privilege.privilege_type = 'EXECUTE'
+        ) AS roles
+      ), '[]'::jsonb) AS "effectiveExecuteRoles",
+      COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT 'out|' || dependency.deptype::text || '|' ||
+            dependency.refclassid::pg_catalog.regclass::text || '|' ||
+            pg_catalog.pg_describe_object(
+              dependency.refclassid, dependency.refobjid,
+              dependency.refobjsubid
+            ) AS signature
+          FROM pg_catalog.pg_depend AS dependency
+          WHERE dependency.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+            AND dependency.objid = target.oid
+          UNION ALL
+          SELECT 'in|' || dependency.deptype::text || '|' ||
+            dependency.classid::pg_catalog.regclass::text || '|' ||
+            pg_catalog.pg_describe_object(
+              dependency.classid, dependency.objid, dependency.objsubid
+            ) AS signature
+          FROM pg_catalog.pg_depend AS dependency
+          WHERE dependency.refclassid =
+              'pg_catalog.pg_proc'::pg_catalog.regclass
+            AND dependency.refobjid = target.oid
+        ) AS dependency_rows
+      ), '[]'::jsonb) AS dependencies,
+      COALESCE((
+        SELECT pg_catalog.jsonb_agg(signature ORDER BY signature)
+        FROM (
+          SELECT namespace.nspname || '.' || relation.relname || '|' ||
+            trigger_row.tgname || '|' || trigger_row.tgenabled::text || '|' ||
+            pg_catalog.pg_get_triggerdef(trigger_row.oid, false) AS signature
+          FROM pg_catalog.pg_trigger AS trigger_row
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = trigger_row.tgrelid
+          JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = relation.relnamespace
+          WHERE trigger_row.tgfoid = target.oid
+            AND NOT trigger_row.tgisinternal
+        ) AS trigger_rows
+      ), '[]'::jsonb) AS triggers
+    FROM target
+    JOIN pg_catalog.pg_language AS language ON language.oid = target.prolang
+  `);
+  const row = result.rows[0];
+  if (result.rows.length !== 1 || row === undefined) {
+    throw new Error("calculation graph guard catalog identity is absent");
+  }
+  return row;
+}
+
+async function managedFunctionSecurityModes(
+  client: PoolClient,
+): Promise<ReadonlyMap<string, boolean>> {
+  const result = await client.query<{
+    readonly identity: string;
+    readonly security_definer: boolean;
+  }>(`
+    SELECT namespace.nspname || '.' || routine.proname || '(' ||
+        pg_catalog.pg_get_function_identity_arguments(routine.oid) || ')'
+        AS identity,
+      routine.prosecdef AS security_definer
+    FROM pg_catalog.pg_proc AS routine
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname ~ '^dasher(?:_.*)?$'
+    ORDER BY identity
+  `);
+  return new Map(
+    result.rows.map((row) => [row.identity, row.security_definer] as const),
+  );
+}
 let canonicalFirstRun:
   | {
       readonly appliedCount: number;
@@ -2015,7 +2183,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   });
 
-  it("installs fresh canonical 0001 through 0008, reruns idempotently, and proves exact phase upgrades", async () => {
+  it("installs fresh canonical 0001 through 0012, reruns idempotently, and proves exact phase upgrades", async () => {
     try {
       await resetManagedSchemas();
       const first = await runMigrations(
@@ -2024,8 +2192,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         [],
       );
       expect(first).toEqual({
-        appliedCount: 8,
-        discoveredCount: 8,
+        appliedCount: 12,
+        discoveredCount: 12,
         previouslyAppliedCount: 0,
       });
       const second = await runMigrations(
@@ -2035,8 +2203,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       );
       expect(second).toEqual({
         appliedCount: 0,
-        discoveredCount: 8,
-        previouslyAppliedCount: 8,
+        discoveredCount: 12,
+        previouslyAppliedCount: 12,
       });
 
       const client = await ownerPool.connect();
@@ -2049,10 +2217,24 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           throw new Error("PostgreSQL did not return the session owner");
         }
         expect(
-          await canonical0008CatalogMatchesForTests(client, ownerName),
+          await canonical0012CatalogMatchesForTests(client, ownerName),
         ).toBe(true);
-        // The phase-7 catalog is no longer the installed catalog: 0008 added
-        // the retention allowlist lock authority on top of it.
+        // No earlier phase is the installed catalog any more: 0008 added the
+        // retention allowlist lock authority on top of phase 7, 0009 re-issued
+        // the transition guard on top of phase 8, and 0010 re-issued
+        // dasher_api.cancel_agent_run on top of phase 9.
+        expect(
+          await canonical0011CatalogMatchesForTests(client, ownerName),
+        ).toBe(false);
+        expect(
+          await canonical0010CatalogMatchesForTests(client, ownerName),
+        ).toBe(false);
+        expect(
+          await canonical0009CatalogMatchesForTests(client, ownerName),
+        ).toBe(false);
+        expect(
+          await canonical0008CatalogMatchesForTests(client, ownerName),
+        ).toBe(false);
         expect(
           await canonical0007CatalogMatchesForTests(client, ownerName),
         ).toBe(false);
@@ -2120,6 +2302,27 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
           filename: "0008_retention_lock_authority_correction.sql",
           sequence: 8,
+        },
+        {
+          checksum: phase9MigrationChecksum,
+          filename:
+            "0009_agent_run_takeover_settlement_transition_correction.sql",
+          sequence: 9,
+        },
+        {
+          checksum: phase10MigrationChecksum,
+          filename: phase10MigrationFilename,
+          sequence: 10,
+        },
+        {
+          checksum: phase11MigrationChecksum,
+          filename: phase11MigrationFilename,
+          sequence: 11,
+        },
+        {
+          checksum: phase12MigrationChecksum,
+          filename: phase12MigrationFilename,
+          sequence: 12,
         },
       ]);
 
@@ -2352,8 +2555,20 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         } finally {
           phase7Client.release();
         }
+        await writeFile(
+          join(
+            canonical0003Directory,
+            "0008_retention_lock_authority_correction.sql",
+          ),
+          await readFile(
+            join(
+              canonicalMigrationDirectory,
+              "0008_retention_lock_authority_correction.sql",
+            ),
+          ),
+        );
         await expect(
-          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+          runMigrations(ownerPool, canonical0003Directory, []),
         ).resolves.toEqual({
           appliedCount: 1,
           discoveredCount: 8,
@@ -2378,6 +2593,190 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         } finally {
           phase8Client.release();
         }
+        await writeFile(
+          join(canonical0003Directory, phase9MigrationFilename),
+          await readFile(
+            join(canonicalMigrationDirectory, phase9MigrationFilename),
+          ),
+        );
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 9,
+          previouslyAppliedCount: 8,
+        });
+        const phase9Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase9Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await canonical0009CatalogMatchesForTests(phase9Client, ownerName),
+          ).toBe(true);
+          expect(
+            await canonical0008CatalogMatchesForTests(phase9Client, ownerName),
+          ).toBe(false);
+          // Phase 9 is not yet phase 10: 0010 has not been applied here.
+          expect(
+            await canonical0010CatalogMatchesForTests(phase9Client, ownerName),
+          ).toBe(false);
+        } finally {
+          phase9Client.release();
+        }
+        // The 0009 -> 0010 upgrade remains independently attributable.
+        await writeFile(
+          join(canonical0003Directory, phase10MigrationFilename),
+          await readFile(
+            join(canonicalMigrationDirectory, phase10MigrationFilename),
+          ),
+        );
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 10,
+          previouslyAppliedCount: 9,
+        });
+        const phase10Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase10Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await canonical0010CatalogMatchesForTests(phase10Client, ownerName),
+          ).toBe(true);
+          expect(
+            await canonical0011CatalogMatchesForTests(phase10Client, ownerName),
+          ).toBe(false);
+          expect(
+            await canonical0009CatalogMatchesForTests(phase10Client, ownerName),
+          ).toBe(false);
+          expect(
+            await canonical0008CatalogMatchesForTests(phase10Client, ownerName),
+          ).toBe(false);
+        } finally {
+          phase10Client.release();
+        }
+        await writeFile(
+          join(canonical0003Directory, phase11MigrationFilename),
+          await readFile(
+            join(canonicalMigrationDirectory, phase11MigrationFilename),
+          ),
+        );
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 11,
+          previouslyAppliedCount: 10,
+        });
+        let phase11Guard: CalculationGraphGuardCatalog | undefined;
+        let phase11SecurityModes: ReadonlyMap<string, boolean> | undefined;
+        const phase11Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase11Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await canonical0011CatalogMatchesForTests(phase11Client, ownerName),
+          ).toBe(true);
+          expect(
+            await canonical0012CatalogMatchesForTests(phase11Client, ownerName),
+          ).toBe(false);
+          phase11Guard = await calculationGraphGuardCatalog(phase11Client);
+          phase11SecurityModes =
+            await managedFunctionSecurityModes(phase11Client);
+          expect(phase11Guard.securityDefiner).toBe(false);
+        } finally {
+          phase11Client.release();
+        }
+        await writeFile(
+          join(canonical0003Directory, phase12MigrationFilename),
+          await readFile(
+            join(canonicalMigrationDirectory, phase12MigrationFilename),
+          ),
+        );
+        await expect(
+          runMigrations(ownerPool, canonical0003Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 12,
+          previouslyAppliedCount: 11,
+        });
+        const phase12Client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await phase12Client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          expect(
+            await canonical0012CatalogMatchesForTests(phase12Client, ownerName),
+          ).toBe(true);
+          expect(
+            await canonical0011CatalogMatchesForTests(phase12Client, ownerName),
+          ).toBe(false);
+          const phase12Guard =
+            await calculationGraphGuardCatalog(phase12Client);
+          if (
+            phase11Guard === undefined ||
+            phase11SecurityModes === undefined
+          ) {
+            throw new Error("phase-11 guard baseline was not captured");
+          }
+          expect({ ...phase12Guard, securityDefiner: false }).toEqual(
+            phase11Guard,
+          );
+          expect(phase12Guard).toMatchObject({
+            effectiveExecuteRoles: ["dasher_run_definer"],
+            language: "plpgsql",
+            owner: "dasher_run_definer",
+            parallel: "u",
+            result: "trigger",
+            searchPath: "search_path=pg_catalog",
+            securityDefiner: true,
+            strict: false,
+            volatility: "v",
+          });
+          expect(phase12Guard.triggers).toHaveLength(2);
+          const phase12SecurityModes =
+            await managedFunctionSecurityModes(phase12Client);
+          expect(phase12SecurityModes.size).toBe(phase11SecurityModes.size);
+          const securityModeDeltas = [...phase12SecurityModes].flatMap(
+            ([identity, after]) => {
+              const before = phase11SecurityModes!.get(identity);
+              return before === after ? [] : [{ after, before, identity }];
+            },
+          );
+          expect(securityModeDeltas).toEqual([
+            {
+              after: true,
+              before: false,
+              identity: calculationGraphGuardIdentity,
+            },
+          ]);
+        } finally {
+          phase12Client.release();
+        }
       } finally {
         await rm(canonical0003Directory, { recursive: true, force: true });
       }
@@ -2386,27 +2785,176 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     }
   }, 120_000);
 
-  // The phase-7 and phase-8 fingerprints are frozen constants, and the queries
-  // that produce them read pg_database. If any identity they hash carried the
-  // database's own name, the constants would reproduce on a database called
-  // dasher_ci and fail closed on every other one - the gate would pass here and
-  // reject the same schema in production under a different database name. This
-  // applies the whole series to a database whose name is deliberately not the
-  // one the rest of this suite uses, and requires both frozen constants to
-  // reproduce there unchanged.
+  it.each(["guard_alter", "journal_insert"] as const)(
+    "rolls back phase 12 after %s, restores invoker security, and retries to one exact no-op-safe journal row",
+    async (failureStage) => {
+      const phase11Directory = await mkdtemp(
+        join(tmpdir(), "dasher-rollback-0012-pg-"),
+      );
+      const exactPhase12Sql = await readFile(
+        join(canonicalMigrationDirectory, phase12MigrationFilename),
+        "utf8",
+      );
+      let migrationExecutions = 0;
+      let journalInsertions = 0;
+      const instrumentedPool = {
+        async connect(): Promise<MigrationClient> {
+          const client = await ownerPool.connect();
+          return {
+            query: (async (text: string, values?: readonly unknown[]) => {
+              if (text === exactPhase12Sql) {
+                const result = await client.query(
+                  text,
+                  values as unknown[] | undefined,
+                );
+                migrationExecutions += 1;
+                if (failureStage === "guard_alter") {
+                  throw new Error(
+                    "injected immediately after phase-12 guard ALTER",
+                  );
+                }
+                return result;
+              }
+              if (
+                text.includes("INSERT INTO dasher_meta.schema_migrations") &&
+                values?.[0] === 12
+              ) {
+                const result = await client.query(
+                  text,
+                  values as unknown[] | undefined,
+                );
+                journalInsertions += 1;
+                if (failureStage === "journal_insert") {
+                  throw new Error("injected after phase-12 journal INSERT");
+                }
+                return result;
+              }
+              return client.query(text, values as unknown[] | undefined);
+            }) as MigrationClient["query"],
+            release(error) {
+              client.release(error);
+            },
+          };
+        },
+      };
+
+      const expectPhase = async (phase: 11 | 12): Promise<void> => {
+        const client = await ownerPool.connect();
+        try {
+          const ownerName = (
+            await client.query<{ readonly owner_name: string }>(
+              "SELECT session_user::text AS owner_name",
+            )
+          ).rows[0]?.owner_name;
+          if (ownerName === undefined) {
+            throw new Error("PostgreSQL did not return the session owner");
+          }
+          const guard = await calculationGraphGuardCatalog(client);
+          expect(guard.securityDefiner).toBe(phase === 12);
+          expect(
+            await canonical0011CatalogMatchesForTests(client, ownerName),
+          ).toBe(phase === 11);
+          expect(
+            await canonical0012CatalogMatchesForTests(client, ownerName),
+          ).toBe(phase === 12);
+          const journal = await client.query<{
+            readonly checksum: string;
+            readonly filename: string;
+            readonly sequence: number;
+          }>(`
+            SELECT sequence, filename,
+              pg_catalog.encode(checksum_sha256, 'hex') AS checksum
+            FROM dasher_meta.schema_migrations
+            ORDER BY sequence
+          `);
+          expect(journal.rows).toHaveLength(phase);
+          expect(journal.rows.at(-1)).toEqual(
+            phase === 11
+              ? {
+                  checksum: phase11MigrationChecksum,
+                  filename: phase11MigrationFilename,
+                  sequence: 11,
+                }
+              : {
+                  checksum: phase12MigrationChecksum,
+                  filename: phase12MigrationFilename,
+                  sequence: 12,
+                },
+          );
+        } finally {
+          client.release();
+        }
+      };
+
+      try {
+        await cp(canonicalMigrationDirectory, phase11Directory, {
+          recursive: true,
+        });
+        await rm(join(phase11Directory, phase12MigrationFilename));
+        await resetManagedSchemas();
+        await expect(
+          runMigrations(ownerPool, phase11Directory, []),
+        ).resolves.toEqual({
+          appliedCount: 11,
+          discoveredCount: 11,
+          previouslyAppliedCount: 0,
+        });
+        await expectPhase(11);
+
+        await expect(
+          runMigrations(instrumentedPool, canonicalMigrationDirectory, []),
+        ).rejects.toBeDefined();
+        expect(migrationExecutions).toBe(1);
+        expect(journalInsertions).toBe(
+          failureStage === "journal_insert" ? 1 : 0,
+        );
+        await expectPhase(11);
+
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 1,
+          discoveredCount: 12,
+          previouslyAppliedCount: 11,
+        });
+        await expectPhase(12);
+        await expect(
+          runMigrations(ownerPool, canonicalMigrationDirectory, []),
+        ).resolves.toEqual({
+          appliedCount: 0,
+          discoveredCount: 12,
+          previouslyAppliedCount: 12,
+        });
+        await expectPhase(12);
+      } finally {
+        await rm(phase11Directory, { recursive: true, force: true });
+        await resetManagedSchemas();
+      }
+    },
+    300_000,
+  );
+
+  // The phase-7, phase-8 and phase-9 fingerprints are frozen constants, and the
+  // queries that produce them read pg_database. If any identity they hash
+  // carried the database's own name, the constants would reproduce on a
+  // database called dasher_ci and fail closed on every other one - the gate
+  // would pass here and reject the same schema in production under a different
+  // database name. This applies the whole series to a database whose name is
+  // deliberately not the one the rest of this suite uses, and requires all
+  // three frozen constants to reproduce there unchanged.
   //
   // Both databases satisfying the same frozen constant is the identity claim:
   // the phase-7 fingerprint computed here equals the phase-7 fingerprint the
   // test above computed on the primary database, because each is asserted equal
   // to canonicalPhase7CatalogFingerprintSha256. The mutual-exclusion checks
-  // come along too, so neither phase can be satisfied by the other's catalog on
-  // this name any more than on the primary's.
+  // come along too, so no phase can be satisfied by another's catalog on this
+  // name any more than on the primary's.
   //
   // The canonical series is a cluster-wide singleton - a second database cannot
   // hold it while the primary does, because the prepared retention roles are
   // cluster objects and the migrator refuses to install over them - so the
   // primary is reset first and the sibling is torn down completely afterwards.
-  it("reproduces both frozen phase catalogs on a differently named database", async () => {
+  it("reproduces every frozen phase catalog on a differently named database", async () => {
     const databaseName = `dasher_t9_${siblingDatabaseNonce}_altname`;
     // A name-independence proof is vacuous unless the names actually differ.
     expect(databaseName).not.toBe(config.ownerDatabase);
@@ -2419,6 +2967,18 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       | undefined;
     const phase7Directory = await mkdtemp(
       join(tmpdir(), "dasher-altname-phase7-pg-"),
+    );
+    const phase8Directory = await mkdtemp(
+      join(tmpdir(), "dasher-altname-phase8-pg-"),
+    );
+    const phase9Directory = await mkdtemp(
+      join(tmpdir(), "dasher-altname-phase9-pg-"),
+    );
+    const phase10Directory = await mkdtemp(
+      join(tmpdir(), "dasher-altname-phase10-pg-"),
+    );
+    const phase11Directory = await mkdtemp(
+      join(tmpdir(), "dasher-altname-phase11-pg-"),
     );
 
     try {
@@ -2433,7 +2993,9 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         bootstrap.release();
       }
 
-      // Phase 7 first, from a directory holding exactly 0001 through 0007.
+      // Phase 7 first, from a directory holding exactly 0001 through 0007, and
+      // a phase-8 directory that appends 0008 to the same seven, so each frozen
+      // constant can be read on a database that has never seen its successor.
       for (const filename of [
         "0001_identity_audit.sql",
         "0002_security_boundary.sql",
@@ -2443,10 +3005,38 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         "0006_lifecycle_access_retention_guard_correction.sql",
         "0007_agent_run_ledger_and_calculations.sql",
       ] as const) {
-        await writeFile(
-          join(phase7Directory, filename),
-          await readFile(join(canonicalMigrationDirectory, filename)),
+        const bytes = await readFile(
+          join(canonicalMigrationDirectory, filename),
         );
+        await writeFile(join(phase7Directory, filename), bytes);
+        await writeFile(join(phase8Directory, filename), bytes);
+        await writeFile(join(phase9Directory, filename), bytes);
+        await writeFile(join(phase10Directory, filename), bytes);
+        await writeFile(join(phase11Directory, filename), bytes);
+      }
+      for (const [filename, directories] of [
+        [
+          "0008_retention_lock_authority_correction.sql",
+          [
+            phase8Directory,
+            phase9Directory,
+            phase10Directory,
+            phase11Directory,
+          ],
+        ],
+        [
+          phase9MigrationFilename,
+          [phase9Directory, phase10Directory, phase11Directory],
+        ],
+        [phase10MigrationFilename, [phase10Directory, phase11Directory]],
+        [phase11MigrationFilename, [phase11Directory]],
+      ] as const) {
+        const bytes = await readFile(
+          join(canonicalMigrationDirectory, filename),
+        );
+        for (const directory of directories) {
+          await writeFile(join(directory, filename), bytes);
+        }
       }
       await expect(
         runMigrations(siblingPool, phase7Directory, []),
@@ -2484,13 +3074,20 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
             ownerName.owner_name,
           ),
         ).toBe(false);
+        expect(
+          await canonical0009CatalogMatchesForTests(
+            phase7Client,
+            ownerName.owner_name,
+          ),
+        ).toBe(false);
       } finally {
         phase7Client.release();
       }
 
-      // Then 0008 on top, from the canonical directory itself.
+      // Then 0008 on top, from the phase-8 directory, so the phase-8 constant
+      // is read on a database that has never seen 0009.
       await expect(
-        runMigrations(siblingPool, canonicalMigrationDirectory, []),
+        runMigrations(siblingPool, phase8Directory, []),
       ).resolves.toEqual({
         appliedCount: 1,
         discoveredCount: 8,
@@ -2513,10 +3110,115 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         expect(
           await canonical0007CatalogMatchesForTests(phase8Client, ownerName),
         ).toBe(false);
+        expect(
+          await canonical0009CatalogMatchesForTests(phase8Client, ownerName),
+        ).toBe(false);
       } finally {
         phase8Client.release();
       }
+
+      // Walk every correction phase independently before the cumulative final.
+      await expect(
+        runMigrations(siblingPool, phase9Directory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 9,
+        previouslyAppliedCount: 8,
+      });
+
+      const phase9Client = await siblingPool.connect();
+      try {
+        const ownerName = (
+          await phase9Client.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          )
+        ).rows[0]?.owner_name;
+        if (ownerName === undefined) {
+          throw new Error("PostgreSQL did not return the session owner");
+        }
+        expect(
+          await canonical0009CatalogMatchesForTests(phase9Client, ownerName),
+        ).toBe(true);
+        expect(
+          await canonical0008CatalogMatchesForTests(phase9Client, ownerName),
+        ).toBe(false);
+        expect(
+          await canonical0007CatalogMatchesForTests(phase9Client, ownerName),
+        ).toBe(false);
+      } finally {
+        phase9Client.release();
+      }
+      await expect(
+        runMigrations(siblingPool, phase10Directory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 10,
+        previouslyAppliedCount: 9,
+      });
+      const phase10Client = await siblingPool.connect();
+      try {
+        const ownerName = (
+          await phase10Client.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          )
+        ).rows[0]?.owner_name;
+        if (ownerName === undefined)
+          throw new Error("PostgreSQL did not return the session owner");
+        expect(
+          await canonical0010CatalogMatchesForTests(phase10Client, ownerName),
+        ).toBe(true);
+      } finally {
+        phase10Client.release();
+      }
+      await expect(
+        runMigrations(siblingPool, phase11Directory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 11,
+        previouslyAppliedCount: 10,
+      });
+      const phase11Client = await siblingPool.connect();
+      try {
+        const ownerName = (
+          await phase11Client.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          )
+        ).rows[0]?.owner_name;
+        if (ownerName === undefined)
+          throw new Error("PostgreSQL did not return the session owner");
+        expect(
+          await canonical0011CatalogMatchesForTests(phase11Client, ownerName),
+        ).toBe(true);
+      } finally {
+        phase11Client.release();
+      }
+      await expect(
+        runMigrations(siblingPool, canonicalMigrationDirectory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 12,
+        previouslyAppliedCount: 11,
+      });
+      const phase12Client = await siblingPool.connect();
+      try {
+        const ownerName = (
+          await phase12Client.query<{ readonly owner_name: string }>(
+            "SELECT session_user::text AS owner_name",
+          )
+        ).rows[0]?.owner_name;
+        if (ownerName === undefined)
+          throw new Error("PostgreSQL did not return the session owner");
+        expect(
+          await canonical0012CatalogMatchesForTests(phase12Client, ownerName),
+        ).toBe(true);
+      } finally {
+        phase12Client.release();
+      }
     } finally {
+      await rm(phase11Directory, { recursive: true, force: true });
+      await rm(phase10Directory, { recursive: true, force: true });
+      await rm(phase9Directory, { recursive: true, force: true });
+      await rm(phase8Directory, { recursive: true, force: true });
       await rm(phase7Directory, { recursive: true, force: true });
       if (sibling !== undefined) {
         const siblingPool = sibling.pool;
@@ -2566,14 +3268,14 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
   // are asserted on each name as well, so the whole-inventory claim rides
   // along.
   //
-  // Both phases are walked on every name, because the name-dependence hole
-  // lives in the shared WITH list that feeds BOTH phase fingerprints. Stopping
-  // at phase 8 would leave the phase-7 constant proven only negatively - as the
-  // digest that does NOT match a phase-8 catalog - which a name-dependent
-  // normalization satisfies just as easily as a correct one. So each name gets
-  // 0001 through 0007 installed first, the phase-7 catalog asserted positively
-  // and its name-sensitive inventory captured, and only then 0008 on top for
-  // the phase-8 half.
+  // All three phases are walked on every name, because the name-dependence
+  // hole lives in the shared WITH list that feeds EVERY phase fingerprint.
+  // Stopping at the last phase would leave the earlier constants proven only
+  // negatively - as the digests that do NOT match the final catalog - which a
+  // name-dependent normalization satisfies just as easily as a correct one. So
+  // each name gets 0001 through 0007 installed first, the phase-7 catalog
+  // asserted positively and its name-sensitive inventory captured, then 0008
+  // on top for the phase-8 half, and only then 0009 for the phase-9 half.
   it("reproduces the name-sensitive inventories on dasher, audit_events and dasher_api", async () => {
     const defeatNames = ["dasher", "audit_events", "dasher_api"] as const;
     for (const defeatName of defeatNames) {
@@ -2588,12 +3290,16 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     const capturedByPhase = {
       7: new Map<string, CapturedInventory>(),
       8: new Map<string, CapturedInventory>(),
+      9: new Map<string, CapturedInventory>(),
+      10: new Map<string, CapturedInventory>(),
+      11: new Map<string, CapturedInventory>(),
+      12: new Map<string, CapturedInventory>(),
     } as const;
 
     const capture = async (
       pool: Pool,
       expectedName: string,
-      phase: 7 | 8,
+      phase: 7 | 8 | 9 | 10 | 11 | 12,
     ): Promise<void> => {
       const client = await pool.connect();
       try {
@@ -2609,9 +3315,9 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           throw new Error("PostgreSQL did not return the session identity");
         }
         expect(identity.database_name).toBe(expectedName);
-        // Both frozen constants are asserted on this name at this phase: the
-        // one the database is actually at holds, and the other cannot be
-        // satisfied by it any more than on dasher_ci.
+        // Every frozen constant is asserted on this name at this phase: the one
+        // the database is actually at holds, and the others cannot be satisfied
+        // by it any more than on dasher_ci.
         expect(
           await canonical0007CatalogMatchesForTests(
             client,
@@ -2626,6 +3332,34 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           ),
           `${expectedName} phase-8 constant at phase ${phase}`,
         ).toBe(phase === 8);
+        expect(
+          await canonical0009CatalogMatchesForTests(
+            client,
+            identity.owner_name,
+          ),
+          `${expectedName} phase-9 constant at phase ${phase}`,
+        ).toBe(phase === 9);
+        expect(
+          await canonical0010CatalogMatchesForTests(
+            client,
+            identity.owner_name,
+          ),
+          `${expectedName} phase-10 constant at phase ${phase}`,
+        ).toBe(phase === 10);
+        expect(
+          await canonical0011CatalogMatchesForTests(
+            client,
+            identity.owner_name,
+          ),
+          `${expectedName} phase-11 constant at phase ${phase}`,
+        ).toBe(phase === 11);
+        expect(
+          await canonical0012CatalogMatchesForTests(
+            client,
+            identity.owner_name,
+          ),
+          `${expectedName} phase-12 constant at phase ${phase}`,
+        ).toBe(phase === 12);
         capturedByPhase[phase].set(
           expectedName,
           await canonicalPhaseNameSensitiveInventoryForTests(
@@ -2639,12 +3373,25 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     };
 
     // 0001 through 0007 from a directory holding exactly those seven files, so
-    // the phase-7 catalog can be read on a database that has never seen 0008.
+    // the phase-7 catalog can be read on a database that has never seen 0008,
+    // and the same eight-file staging for the phase-8 half against 0009.
     const phase7Directory = await mkdtemp(
       join(tmpdir(), "dasher-defeatname-phase7-pg-"),
     );
+    const phase8Directory = await mkdtemp(
+      join(tmpdir(), "dasher-defeatname-phase8-pg-"),
+    );
+    const phase9Directory = await mkdtemp(
+      join(tmpdir(), "dasher-defeatname-phase9-pg-"),
+    );
+    const phase10Directory = await mkdtemp(
+      join(tmpdir(), "dasher-defeatname-phase10-pg-"),
+    );
+    const phase11Directory = await mkdtemp(
+      join(tmpdir(), "dasher-defeatname-phase11-pg-"),
+    );
 
-    const installBothPhasesAndCapture = async (
+    const installEveryPhaseAndCapture = async (
       pool: Pool,
       name: string,
     ): Promise<void> => {
@@ -2654,14 +3401,38 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         previouslyAppliedCount: 0,
       });
       await capture(pool, name, 7);
-      await expect(
-        runMigrations(pool, canonicalMigrationDirectory, []),
-      ).resolves.toEqual({
+      await expect(runMigrations(pool, phase8Directory, [])).resolves.toEqual({
         appliedCount: 1,
         discoveredCount: 8,
         previouslyAppliedCount: 7,
       });
       await capture(pool, name, 8);
+      await expect(runMigrations(pool, phase9Directory, [])).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 9,
+        previouslyAppliedCount: 8,
+      });
+      await capture(pool, name, 9);
+      await expect(runMigrations(pool, phase10Directory, [])).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 10,
+        previouslyAppliedCount: 9,
+      });
+      await capture(pool, name, 10);
+      await expect(runMigrations(pool, phase11Directory, [])).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 11,
+        previouslyAppliedCount: 10,
+      });
+      await capture(pool, name, 11);
+      await expect(
+        runMigrations(pool, canonicalMigrationDirectory, []),
+      ).resolves.toEqual({
+        appliedCount: 1,
+        discoveredCount: 12,
+        previouslyAppliedCount: 11,
+      });
+      await capture(pool, name, 12);
     };
 
     try {
@@ -2674,10 +3445,38 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         "0006_lifecycle_access_retention_guard_correction.sql",
         "0007_agent_run_ledger_and_calculations.sql",
       ] as const) {
-        await writeFile(
-          join(phase7Directory, filename),
-          await readFile(join(canonicalMigrationDirectory, filename)),
+        const bytes = await readFile(
+          join(canonicalMigrationDirectory, filename),
         );
+        await writeFile(join(phase7Directory, filename), bytes);
+        await writeFile(join(phase8Directory, filename), bytes);
+        await writeFile(join(phase9Directory, filename), bytes);
+        await writeFile(join(phase10Directory, filename), bytes);
+        await writeFile(join(phase11Directory, filename), bytes);
+      }
+      for (const [filename, directories] of [
+        [
+          "0008_retention_lock_authority_correction.sql",
+          [
+            phase8Directory,
+            phase9Directory,
+            phase10Directory,
+            phase11Directory,
+          ],
+        ],
+        [
+          phase9MigrationFilename,
+          [phase9Directory, phase10Directory, phase11Directory],
+        ],
+        [phase10MigrationFilename, [phase10Directory, phase11Directory]],
+        [phase11MigrationFilename, [phase11Directory]],
+      ] as const) {
+        const bytes = await readFile(
+          join(canonicalMigrationDirectory, filename),
+        );
+        for (const directory of directories) {
+          await writeFile(join(directory, filename), bytes);
+        }
       }
 
       // The primary database first. The canonical series is a cluster-wide
@@ -2685,7 +3484,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       // next.
       await resetManagedSchemas();
       try {
-        await installBothPhasesAndCapture(ownerPool, config.ownerDatabase);
+        await installEveryPhaseAndCapture(ownerPool, config.ownerDatabase);
       } finally {
         await resetManagedSchemas();
       }
@@ -2701,7 +3500,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           } finally {
             bootstrap.release();
           }
-          await installBothPhasesAndCapture(sibling.pool, defeatName);
+          await installEveryPhaseAndCapture(sibling.pool, defeatName);
         } finally {
           if (sibling !== undefined) {
             const siblingPool = sibling.pool;
@@ -2722,12 +3521,16 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         }
       }
     } finally {
+      await rm(phase11Directory, { recursive: true, force: true });
+      await rm(phase10Directory, { recursive: true, force: true });
+      await rm(phase9Directory, { recursive: true, force: true });
+      await rm(phase8Directory, { recursive: true, force: true });
       await rm(phase7Directory, { recursive: true, force: true });
     }
 
     const names = [config.ownerDatabase, ...defeatNames] as const;
-    const baselines = new Map<7 | 8, CapturedInventory>();
-    for (const phase of [7, 8] as const) {
+    const baselines = new Map<7 | 8 | 9 | 10 | 11 | 12, CapturedInventory>();
+    for (const phase of [7, 8, 9, 10, 11, 12] as const) {
       const captured = capturedByPhase[phase];
       expect([...captured.keys()].sort(), `phase ${phase}`).toEqual(
         [...names].sort(),
@@ -2767,18 +3570,34 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
       }
     }
 
-    // The two captures per name really are two different catalogs, so the
-    // phase-7 half is not the phase-8 half asserted twice: 0008 grants and
-    // policies land in the privilege family this inventory reads.
+    // The three captures per name really are three different catalogs, so no
+    // half is another asserted twice: 0008 grants and policies land in the
+    // privilege family this inventory reads, and 0009 adds the takeover
+    // settlement reader and its execute grants to the same family.
     const phase7Baseline = baselines.get(7);
     const phase8Baseline = baselines.get(8);
-    if (phase7Baseline === undefined || phase8Baseline === undefined) {
-      throw new Error("both phase baselines must have been captured");
+    const phase9Baseline = baselines.get(9);
+    if (
+      phase7Baseline === undefined ||
+      phase8Baseline === undefined ||
+      phase9Baseline === undefined
+    ) {
+      throw new Error("every phase baseline must have been captured");
     }
-    expect(phase7Baseline.fingerprintSha256).not.toBe(
-      phase8Baseline.fingerprintSha256,
-    );
-    expect(phase7Baseline.inventory).not.toBe(phase8Baseline.inventory);
+    expect(
+      new Set([
+        phase7Baseline.fingerprintSha256,
+        phase8Baseline.fingerprintSha256,
+        phase9Baseline.fingerprintSha256,
+      ]).size,
+    ).toBe(3);
+    expect(
+      new Set([
+        phase7Baseline.inventory,
+        phase8Baseline.inventory,
+        phase9Baseline.inventory,
+      ]).size,
+    ).toBe(3);
   }, 900_000);
 
   it("reproduces the exact 0004 delete authority failure and proves the bounded 0005 correction atomically", async () => {
@@ -4003,7 +4822,7 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
     120_000,
   );
 
-  it("serializes concurrent fresh-8 and exact 4-to-8 runners through the session gate", async () => {
+  it("serializes concurrent fresh-12 and exact 4-to-12 runners through the session gate", async () => {
     const canonical0004Directory = await mkdtemp(
       join(tmpdir(), "dasher-concurrent-0004-pg-"),
     );
@@ -4030,8 +4849,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [0, 8],
-        [8, 0],
+        [0, 12],
+        [12, 0],
       ]);
 
       await resetManagedSchemas();
@@ -4045,8 +4864,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
           .map((result) => [result.previouslyAppliedCount, result.appliedCount])
           .sort((left, right) => left[0]! - right[0]!),
       ).toEqual([
-        [4, 4],
-        [8, 0],
+        [4, 8],
+        [12, 0],
       ]);
     } finally {
       await rm(canonical0004Directory, { recursive: true, force: true });
@@ -4196,8 +5015,8 @@ describe.sequential("Task 2 PostgreSQL migration contract", () => {
         await expect(
           runMigrations(ownerPool, canonicalMigrationDirectory, []),
         ).resolves.toEqual({
-          appliedCount: 6,
-          discoveredCount: 8,
+          appliedCount: 10,
+          discoveredCount: 12,
           previouslyAppliedCount: 2,
         });
       } finally {
@@ -16078,7 +16897,7 @@ describe.sequential("Task 8B.3 lifecycle API correction", () => {
         throw new Error("PostgreSQL did not return the session owner");
       }
       expect(
-        await canonical0008CatalogMatchesForTests(client, ownerName, [
+        await canonical0012CatalogMatchesForTests(client, ownerName, [
           config.appUsername,
         ]),
       ).toBe(true);
@@ -17909,8 +18728,8 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       ),
     ).resolves.toEqual({
       appliedCount: 0,
-      discoveredCount: 8,
-      previouslyAppliedCount: 8,
+      discoveredCount: 12,
+      previouslyAppliedCount: 12,
     });
     appPool = new Pool({ connectionString: config.appDsn, max: 4 });
     retentionPool = new Pool({
@@ -17988,6 +18807,10 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
         "0006_lifecycle_access_retention_guard_correction.sql",
         "0007_agent_run_ledger_and_calculations.sql",
         "0008_retention_lock_authority_correction.sql",
+        phase9MigrationFilename,
+        phase10MigrationFilename,
+        phase11MigrationFilename,
+        phase12MigrationFilename,
       ]);
       expect(journal.rows[4]?.checksum).toBe(
         "f9e33e7a4033d77c1e56f098de68a519f2cfe434119c3bf5ffe13b8a3f9713e7",
@@ -18001,6 +18824,10 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
       expect(journal.rows[7]?.checksum).toBe(
         "9c3e2776e6cb92e1ef37b7f1cf66a76e8fbabe161af0d4bd4cbdc07bca61de9c",
       );
+      expect(journal.rows[8]?.checksum).toBe(phase9MigrationChecksum);
+      expect(journal.rows[9]?.checksum).toBe(phase10MigrationChecksum);
+      expect(journal.rows[10]?.checksum).toBe(phase11MigrationChecksum);
+      expect(journal.rows[11]?.checksum).toBe(phase12MigrationChecksum);
       const owner = await ownerPool.connect();
       try {
         const ownerName = (
@@ -18012,7 +18839,7 @@ describe.sequential("Task 8D authoritative PostgreSQL lifecycle gate", () => {
           throw new Error("Task 8D could not resolve the database owner");
         }
         expect(
-          await canonical0008CatalogMatchesForTests(
+          await canonical0012CatalogMatchesForTests(
             owner,
             ownerName,
             [config.appUsername],
@@ -21557,11 +22384,13 @@ describe.sequential("Task 9 age-out audit collision normalization", () => {
   // Part 6 lives inside a routine body, and pg_get_functiondef is part of the
   // fingerprinted routine inventory, so reverting it is catalog drift rather
   // than a silent behavioural regression. Restoring frozen 0007's body moves
-  // the phase-8 fingerprint off its frozen constant - observed as
-  // cbc1f2228f4af4e6fc8a2957ab7cad9eac21c20024d9cbd6d5278cca8394b796 against
-  // the 5e42f3bd... baseline, at an unchanged entry count of 7718, because
-  // replacing a routine renames no identity - and the gate refuses it.
-  it("reads a reverted Part 6 body as phase-8 catalog drift", async () => {
+  // the installed catalog off its frozen constant - because replacing a routine
+  // renames no identity, the entry count is unchanged and only the digest moves
+  // - and the gate refuses it. The installed series carries 0009, so the
+  // constant under test is the phase-9 one; the phase-8 identity keeps its own
+  // positive proof in the migration-contract block above, on a database that
+  // stops at 0008.
+  it("reads a reverted Part 6 body as phase-9 catalog drift", async () => {
     const migrations = await discoverMigrations(canonicalMigrationDirectory);
     const frozen =
       /^CREATE FUNCTION dasher_retention_api[.]age_out_dashboard_agent_run_metadata\([\s\S]*?^\$function\$;/mu.exec(
@@ -21581,7 +22410,7 @@ describe.sequential("Task 9 age-out audit collision normalization", () => {
         throw new Error("Task 9 could not resolve the database owner");
       }
       // The installed catalog is on the frozen constant before the revert.
-      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+      expect(await canonical0012CatalogMatchesForTests(client, ownerName)).toBe(
         true,
       );
       await client.query("BEGIN");
@@ -21590,13 +22419,13 @@ describe.sequential("Task 9 age-out audit collision normalization", () => {
           frozen.replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION "),
         );
         expect(
-          await canonical0008CatalogMatchesForTests(client, ownerName),
+          await canonical0012CatalogMatchesForTests(client, ownerName),
         ).toBe(false);
       } finally {
         await client.query("ROLLBACK").catch(() => undefined);
       }
       // And back on it once the revert is rolled back.
-      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+      expect(await canonical0012CatalogMatchesForTests(client, ownerName)).toBe(
         true,
       );
     } finally {
@@ -21958,8 +22787,10 @@ describe.sequential("Task 9 retention audit collision normalization", () => {
       if (ownerName === undefined) {
         throw new Error("Task 9 could not resolve the database owner");
       }
-      // The corrected body really is back: the phase-8 gate hashes it.
-      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+      // The corrected body really is back: the installed-phase gate hashes it.
+      // 0009 replaces no retention routine, so the 0008 body restored here is
+      // still the one the phase-9 constant covers.
+      expect(await canonical0012CatalogMatchesForTests(client, ownerName)).toBe(
         true,
       );
     } finally {
@@ -22107,7 +22938,7 @@ describe.sequential("Task 9 retention audit collision normalization", () => {
       if (ownerName === undefined) {
         throw new Error("Task 9 could not resolve the database owner");
       }
-      expect(await canonical0008CatalogMatchesForTests(client, ownerName)).toBe(
+      expect(await canonical0012CatalogMatchesForTests(client, ownerName)).toBe(
         true,
       );
     } finally {
@@ -23103,3 +23934,8245 @@ describe.sequential(
     );
   },
 );
+// Task 9D's takeover correction is proved here against the real
+// dasher_run_api.claim_agent_run walk. Nothing in this suite forges a run
+// advancement, disables a trigger, invents an event or payload hash, or runs
+// the claim as a superuser: every settlement below is written by frozen 0007's
+// own claim path, under a real expired lease, over real attempts, real budget
+// counters and the real event/payload hash machinery, driven by a non-superuser
+// run-operator login that dasher_private.initialize_run_operator_context_v1
+// independently authorizes.
+describe.sequential("Task 9D takeover transition correction", () => {
+  const organizationId = "9d000000-0000-4000-8000-000000000001";
+  const userId = "9d000000-0000-4000-8000-000000000003";
+  const membershipId = "9d000000-0000-4000-8000-000000000004";
+  const secondUserId = "9d000000-0000-4000-8000-000000000007";
+  const secondMembershipId = "9d000000-0000-4000-8000-000000000008";
+  const principalId = "9d000000-0000-4000-8000-000000000005";
+  const task9dRunUsername = "dasher_test_task9d_run_operator";
+  const task9dRunPassword = randomBytes(24).toString("base64url");
+  const plannerReservedVector =
+    "(1,0,0,0,0,4000,2000,2000,4000,2000,6000,9000,8000,16000)";
+  // Alphabetical, because every key-set comparison below - and the reader's own
+  // - is an ordered array_agg over jsonb_object_keys.
+  const vectorFields = [
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "calls",
+    "candidates",
+    "cost_micros",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "repair_attempts",
+    "reviewer_attempts",
+    "specialist_attempts",
+    "total_tokens",
+    "wall_millis",
+    "work_millis",
+  ] as const;
+
+  let runPool: Pool | undefined;
+  let phase8Directory: string | undefined;
+
+  function sha(seed: string): Buffer {
+    return createHash("sha256").update(seed).digest();
+  }
+
+  function ownerClient(): Promise<PoolClient> {
+    return ownerPool.connect();
+  }
+
+  function requireRunPool(): Pool {
+    if (runPool === undefined) {
+      throw new Error("Task 9D run-operator pool was not installed");
+    }
+    return runPool;
+  }
+
+  // dasher_private.reauthorize_agent_run_v1 revalidates the whole policy chain
+  // on every operator call, so the seeded policy revision has to carry its real
+  // dasher.agent-run-policy.v1 digest rather than a placeholder. The digest is
+  // built by the server from the same literals the row is inserted with.
+  function policyVectorDigestSql(column: string): string {
+    return vectorFieldsInStructOrder
+      .map((field) => `pg_catalog.int8send((source.${column}).${field})`)
+      .join("\n         || ");
+  }
+  const vectorFieldsInStructOrder = [
+    "calls",
+    "candidates",
+    "specialist_attempts",
+    "reviewer_attempts",
+    "repair_attempts",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "total_tokens",
+    "wall_millis",
+    "work_millis",
+    "cost_micros",
+  ] as const;
+
+  async function seedRunAuthority(client: PoolClient): Promise<void> {
+    await client.query(
+      `INSERT INTO dasher.organizations (organization_id, display_name)
+       VALUES ($1::uuid, 'Task 9D takeover organization')`,
+      [organizationId],
+    );
+    await client.query(
+      `INSERT INTO dasher.users (user_id) VALUES ($1::uuid), ($2::uuid)`,
+      [userId, secondUserId],
+    );
+    await client.query(
+      `INSERT INTO dasher.memberships (
+         membership_id, organization_id, user_id, role, state,
+         authority_revision
+       ) VALUES ($1::uuid, $3::uuid, $4::uuid, 'admin', 'active', 1),
+         ($2::uuid, $3::uuid, $5::uuid, 'editor', 'active', 1)`,
+      [membershipId, secondMembershipId, organizationId, userId, secondUserId],
+    );
+    await client.query(
+      `INSERT INTO dasher.dashboard_lifecycle_policies (
+         organization_id, policy_revision, default_disposable_ttl_seconds,
+         retention_policy_revision, created_at, created_by_user_id, provenance
+       ) VALUES (
+         $1::uuid, 1, 3600, 1, transaction_timestamp(), $2::uuid,
+         'task9d-takeover-fixture'
+       )`,
+      [organizationId, userId],
+    );
+    await client.query(
+      `WITH source AS (
+         SELECT
+           'fake-provider-v1'::text AS adapter_id,
+           'fake-model-v1'::text AS model_id,
+           'fake-price-book-v1'::text AS price_book_revision,
+           0::bigint AS input_token_micros,
+           0::bigint AS output_token_micros,
+           ROW(4,2,1,0,1,20000,8000,8000,20000,8000,24000,36000,32000,120000)
+             ::dasher_run_api.attempt_resource_vector
+             AS generation_limit_vector,
+           ROW(1,0,0,1,0,5000,2000,2000,5000,2000,6000,9000,8000,30000)
+             ::dasher_run_api.attempt_resource_vector AS review_limit_vector,
+           2::bigint AS active_organization_run_limit,
+           1::bigint AS active_dashboard_run_limit,
+           2::bigint AS approval_required_dashboard_limit,
+           1::bigint AS provider_concurrency_limit,
+           0::bigint AS tool_attempt_limit,
+           1::bigint AS retry_limit,
+           $1::bytea AS planner_instructions_sha256,
+           $2::bytea AS generator_instructions_sha256,
+           $3::bytea AS specialist_instructions_sha256,
+           $4::bytea AS repair_instructions_sha256,
+           $5::bytea AS reviewer_instructions_sha256
+       )
+       INSERT INTO dasher.agent_run_policy_revisions (
+         policy_revision, previous_policy_revision, previous_policy_sha256,
+         policy_sha256, enabled, adapter_id, model_id, price_book_revision,
+         input_token_micros, output_token_micros, generation_limit_vector,
+         review_limit_vector, active_organization_run_limit,
+         active_dashboard_run_limit, approval_required_dashboard_limit,
+         provider_concurrency_limit, tool_attempt_limit, retry_limit,
+         planner_instructions_sha256, generator_instructions_sha256,
+         specialist_instructions_sha256, repair_instructions_sha256,
+         reviewer_instructions_sha256, created_at
+       )
+       SELECT 1, NULL, NULL,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.agent-run-policy.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int8send(1::bigint)
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.int4send(pg_catalog.octet_length(source.adapter_id))
+           || pg_catalog.convert_to(source.adapter_id,'UTF8')
+           || pg_catalog.int4send(pg_catalog.octet_length(source.model_id))
+           || pg_catalog.convert_to(source.model_id,'UTF8')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(source.price_book_revision))
+           || pg_catalog.convert_to(source.price_book_revision,'UTF8')
+           || pg_catalog.int8send(source.input_token_micros)
+           || pg_catalog.int8send(source.output_token_micros)
+           || ${policyVectorDigestSql("generation_limit_vector")}
+           || ${policyVectorDigestSql("review_limit_vector")}
+           || pg_catalog.int8send(source.active_organization_run_limit)
+           || pg_catalog.int8send(source.active_dashboard_run_limit)
+           || pg_catalog.int8send(source.approval_required_dashboard_limit)
+           || pg_catalog.int8send(source.provider_concurrency_limit)
+           || pg_catalog.int8send(source.tool_attempt_limit)
+           || pg_catalog.int8send(source.retry_limit)
+           || pg_catalog.int4send(32) || source.planner_instructions_sha256
+           || pg_catalog.int4send(32) || source.generator_instructions_sha256
+           || pg_catalog.int4send(32) || source.specialist_instructions_sha256
+           || pg_catalog.int4send(32) || source.repair_instructions_sha256
+           || pg_catalog.int4send(32) || source.reviewer_instructions_sha256
+         ),
+         true, source.adapter_id, source.model_id, source.price_book_revision,
+         source.input_token_micros, source.output_token_micros,
+         source.generation_limit_vector, source.review_limit_vector,
+         source.active_organization_run_limit,
+         source.active_dashboard_run_limit,
+         source.approval_required_dashboard_limit,
+         source.provider_concurrency_limit, source.tool_attempt_limit,
+         source.retry_limit, source.planner_instructions_sha256,
+         source.generator_instructions_sha256,
+         source.specialist_instructions_sha256,
+         source.repair_instructions_sha256,
+         source.reviewer_instructions_sha256, transaction_timestamp()
+       FROM source`,
+      [
+        sha("9d:planner"),
+        sha("9d:generator"),
+        sha("9d:specialist"),
+        sha("9d:repair"),
+        sha("9d:reviewer"),
+      ],
+    );
+    // Same story for the principal: initialize_run_operator_context_v1 rebuilds
+    // both digests from the row and refuses the session unless they match.
+    await client.query(
+      `INSERT INTO dasher.run_service_principal_allowlist (
+         run_service_principal_id, principal_revision, session_login, enabled,
+         capabilities, capabilities_sha256, previous_principal_revision,
+         previous_principal_sha256, principal_sha256, database_oid,
+         database_name, created_at
+       )
+       SELECT
+         identity.principal_id, 1, identity.session_login, true,
+         identity.capabilities, identity.capabilities_sha256, NULL, NULL,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.run-principal.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.uuid_send(identity.principal_id)
+           || pg_catalog.int8send(1)
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(identity.session_login::text))
+           || pg_catalog.convert_to(identity.session_login::text,'UTF8')
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.int8send(
+                pg_catalog.cardinality(identity.capabilities))
+           || identity.capability_bytes
+           || pg_catalog.int4send(32)
+           || identity.capabilities_sha256
+           || pg_catalog.int8send(identity.database_oid::bigint)
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(identity.database_name::text))
+           || pg_catalog.convert_to(identity.database_name::text,'UTF8')
+         ),
+         identity.database_oid, identity.database_name,
+         transaction_timestamp()
+       FROM (
+         SELECT $1::uuid AS principal_id, $2::text AS session_login,
+           base.capabilities,
+           (SELECT oid FROM pg_catalog.pg_database
+            WHERE datname = pg_catalog.current_database()) AS database_oid,
+           pg_catalog.current_database() AS database_name,
+           bytes.capability_bytes,
+           pg_catalog.sha256(
+             pg_catalog.convert_to(
+               'dasher.run-principal-capabilities.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int8send(pg_catalog.cardinality(base.capabilities))
+             || bytes.capability_bytes
+           ) AS capabilities_sha256
+         FROM (
+           SELECT ARRAY[
+             'claim','commit_bundle','dispatch','reconcile','reserve'
+           ]::text[] AS capabilities
+         ) AS base
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(pg_catalog.string_agg(
+             pg_catalog.int4send(pg_catalog.octet_length(capability.value))
+             || pg_catalog.convert_to(capability.value,'UTF8'),
+             ''::bytea ORDER BY capability.ordinal
+           ), ''::bytea) AS capability_bytes
+           FROM pg_catalog.unnest(base.capabilities)
+             WITH ORDINALITY AS capability(value, ordinal)
+         ) AS bytes
+       ) AS identity`,
+      [principalId, task9dRunUsername],
+    );
+  }
+
+  /**
+   * Reinstalls a canonical series from scratch and rebuilds the run-operator
+   * login and the run authority behind it. The login has to be dropped before
+   * the reset - `resetManagedSchemas` drops `dasher_run_operator`, and the
+   * migrator's expected-login allowlist would then see a marked login with no
+   * membership - and recreated after, which is also why the run pool is
+   * recycled here rather than held across the reinstall.
+   */
+  async function installSeries(directory: string): Promise<void> {
+    if (runPool !== undefined) {
+      const closing = runPool;
+      runPool = undefined;
+      await closing.end();
+    }
+    await dropTemporaryRunLogin(
+      ownerPool,
+      config.ownerDatabase,
+      task9dRunUsername,
+    );
+    await resetManagedSchemas();
+    await runMigrations(ownerPool, directory, [], [], []);
+    await createTemporaryRunLogin(
+      ownerPool,
+      config.ownerDatabase,
+      task9dRunUsername,
+      task9dRunPassword,
+    );
+    const runDsn = new URL(config.ownerDsn);
+    runDsn.username = task9dRunUsername;
+    runDsn.password = task9dRunPassword;
+    runPool = new Pool({ connectionString: runDsn.toString(), max: 2 });
+    const client = await ownerClient();
+    try {
+      await seedRunAuthority(client);
+    } finally {
+      client.release();
+    }
+  }
+
+  /** One run-operator call, in its own transaction, as the run login. */
+  async function runOperatorCall<T extends Record<string, unknown>>(
+    sql: string,
+    params: readonly unknown[],
+  ): Promise<T> {
+    const client = await requireRunPool().connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL ROLE dasher_run_operator");
+      try {
+        const result = await client.query<T>(sql, [...params]);
+        await client.query("COMMIT");
+        const row = result.rows[0];
+        if (row === undefined) {
+          throw new Error("run-operator call returned no row");
+        }
+        return row;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+  }
+
+  interface StagedRun {
+    readonly attemptId: string;
+    readonly bundleId: string;
+    readonly dashboardId: string;
+    readonly leaseEpoch: string;
+    readonly requestPayloadId: string;
+    readonly runId: string;
+  }
+
+  /**
+   * Drives a run from a seeded 'requested' row through a real ordinary claim,
+   * a real common evidence bundle, a real planner reservation and - depending
+   * on `dispatch` - a real dispatch preparation and invocation authorization,
+   * leaving exactly one attempt in the requested pre-takeover state.
+   */
+  async function stageRun(
+    dispatch: "none" | "ready" | "started",
+    leaseSeconds: number,
+  ): Promise<StagedRun> {
+    const dashboardId = randomUUID();
+    const runId = randomUUID();
+    const runRequestId = randomUUID();
+    const requestPayloadId = randomUUID();
+    const catalogSnapshotId = randomUUID();
+    const contractSetId = randomUUID();
+    const inputSnapshotId = randomUUID();
+    const evidenceId = randomUUID();
+    const fieldId = randomUUID();
+    const contractId = randomUUID();
+    const bundleId = randomUUID();
+    const attemptId = randomUUID();
+
+    const client = await ownerClient();
+    try {
+      await client.query(
+        `INSERT INTO dasher.dashboards (
+           organization_id, dashboard_id, title, created_by_user_id, created_at,
+           created_kind, current_kind, lifecycle_state, lifecycle_revision,
+           capability_epoch, cache_epoch, retention_policy_revision,
+           tombstone_lineage_id
+         ) VALUES (
+           $1::uuid, $2::uuid, 'Task 9D takeover dashboard', $3::uuid,
+           transaction_timestamp(), 'durable', 'durable', 'draft', 0, 0, 0, 1,
+           $4::uuid
+         )`,
+        [organizationId, dashboardId, userId, randomUUID()],
+      );
+      const sourceSnapshot = await client.query<{
+        readonly input_sha256: Buffer;
+      }>(
+        `INSERT INTO dasher.source_snapshots (
+           organization_id, snapshot_id, source_kind, canonical_bytes,
+           content_sha256, observed_at, retrieved_at, created_at
+         ) VALUES (
+           $1::uuid, $2::uuid, 'synthetic_fixture', $3::bytea,
+           pg_catalog.sha256(
+             pg_catalog.convert_to('dasher.canonical-input-table.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int4send(pg_catalog.octet_length($3::bytea))
+             || $3::bytea),
+           '2026-08-01T00:00:00.000000Z', '2026-08-01T00:00:00.000000Z',
+           transaction_timestamp()
+         ) RETURNING content_sha256 AS input_sha256`,
+        [organizationId, inputSnapshotId, Buffer.from("{}", "utf8")],
+      );
+      const inputSha256 = sourceSnapshot.rows[0]!.input_sha256;
+      await client.query(
+        `INSERT INTO dasher.evidence_records (
+           organization_id, evidence_id, snapshot_id, evidence_kind,
+           coordinates, transformation, content_sha256, observed_at,
+           retrieved_at, created_at
+         ) VALUES (
+           $1::uuid, $2::uuid, $3::uuid, 'source_record', 'row:1', 'identity',
+           $4::bytea, '2026-08-01T00:00:00.000000Z',
+           '2026-08-01T00:00:00.000000Z', transaction_timestamp()
+         )`,
+        [organizationId, evidenceId, inputSnapshotId, sha(`${runId}:evidence`)],
+      );
+      await client.query(
+        `WITH field_value AS (
+           SELECT pg_catalog.jsonb_build_object(
+             'field_id', $6::uuid::text,
+             'source_path', '$.value',
+             'logical_name', 'value',
+             'scalar_type', 'integer',
+             'nullable', false,
+             'semantic_type', 'measure',
+             'unit', NULL::text,
+             'currency', NULL::text,
+             'grain', NULL::text,
+             'event_time_field_id', NULL::uuid,
+             'stable_key_ordinal', NULL::text,
+             'max_value_bytes', 'i64:8',
+             'allowed_aggregations', ARRAY['sum']::text[],
+             'allowed_dimensions', ARRAY[]::uuid[],
+             'lineage_evidence_ids', ARRAY[$7::uuid]
+           ) AS body
+         ), document AS (
+           SELECT dasher_private.canonical_jsonb_bytes_v1(
+             pg_catalog.jsonb_build_object(
+               'schema', 'field-catalog-snapshot-v1',
+               'catalog_snapshot_id', $3::uuid::text,
+               'input_snapshot_id', $4::uuid::text,
+               'input_sha256', pg_catalog.encode($5::bytea,'hex'),
+               'input_row_count', 'i64:1',
+               'evaluated_at', pg_catalog.to_char(
+                 transaction_timestamp() AT TIME ZONE 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+               'fields', pg_catalog.jsonb_build_array(field_value.body)))
+             AS bytes
+           FROM field_value
+         )
+         INSERT INTO dasher.field_catalog_snapshots (
+           organization_id, dashboard_id, catalog_snapshot_id,
+           input_snapshot_id, input_sha256, input_row_count, catalog_sha256,
+           evaluated_at, canonical_bytes, created_at
+         ) SELECT $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::bytea, 1,
+           pg_catalog.sha256(
+             pg_catalog.convert_to('dasher.field-catalog-snapshot.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int4send(pg_catalog.octet_length(document.bytes))
+             || document.bytes),
+           transaction_timestamp(), document.bytes, transaction_timestamp()
+         FROM document`,
+        [
+          organizationId,
+          dashboardId,
+          catalogSnapshotId,
+          inputSnapshotId,
+          inputSha256,
+          fieldId,
+          evidenceId,
+        ],
+      );
+      await client.query(
+        `WITH value AS (
+           SELECT pg_catalog.jsonb_build_object(
+             'field_id', $4::uuid::text,
+             'source_path', '$.value',
+             'logical_name', 'value',
+             'scalar_type', 'integer',
+             'nullable', false,
+             'semantic_type', 'measure',
+             'unit', NULL::text,
+             'currency', NULL::text,
+             'grain', NULL::text,
+             'event_time_field_id', NULL::uuid,
+             'stable_key_ordinal', NULL::text,
+             'max_value_bytes', 'i64:8',
+             'allowed_aggregations', ARRAY['sum']::text[],
+             'allowed_dimensions', ARRAY[]::uuid[],
+             'lineage_evidence_ids', ARRAY[$5::uuid]
+           ) AS body
+         ) INSERT INTO dasher.field_catalog_entries (
+           organization_id, dashboard_id, catalog_snapshot_id, field_id,
+           source_path, logical_name, scalar_type, nullable, semantic_type,
+           max_value_bytes, allowed_aggregations, allowed_dimensions,
+           lineage_evidence_ids, entry_sha256
+         ) SELECT
+           $1::uuid, $2::uuid, $3::uuid, $4::uuid, '$.value', 'value',
+           'integer', false, 'measure', 8, ARRAY['sum']::text[],
+           ARRAY[]::uuid[], ARRAY[$5::uuid], pg_catalog.sha256(
+             pg_catalog.convert_to('dasher.field-catalog-entry.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int4send(pg_catalog.octet_length(
+                  dasher_private.canonical_jsonb_bytes_v1(value.body)))
+             || dasher_private.canonical_jsonb_bytes_v1(value.body))
+         FROM value`,
+        [organizationId, dashboardId, catalogSnapshotId, fieldId, evidenceId],
+      );
+      await client.query(
+        `WITH contract_value AS (
+           SELECT pg_catalog.jsonb_build_object(
+             'contract_id', $4::uuid::text,
+             'version', 'i64:1',
+             'business_owner_membership_id', $6::uuid::text,
+             'data_owner_membership_id', $7::uuid::text,
+             'name', 'Task 9D metric',
+             'definition', 'sum of value',
+             'measure_field_id', $8::uuid::text,
+             'aggregation', 'sum',
+             'denominator_contract_id', NULL::uuid,
+             'denominator_contract_version', NULL::text,
+             'value_type', 'integer',
+             'unit', NULL::text,
+             'currency', NULL::text,
+             'direction', 'neutral',
+             'threshold', NULL::text,
+             'target', NULL::text,
+             'grain', 'day',
+             'lag_millis', 'i64:0',
+             'freshness_slo_millis', 'i64:3600000',
+             'allowed_dimension_field_ids', ARRAY[]::uuid[],
+             'calendar', 'gregorian',
+             'timezone', 'UTC',
+             'lineage_evidence_ids', ARRAY[$9::uuid],
+             'review_state', 'reviewed'
+           ) AS body
+         ), set_value AS (
+           SELECT pg_catalog.jsonb_build_object(
+             'schema', 'metric-contract-set-v1',
+             'contract_set_id', $3::uuid::text,
+             'catalog_snapshot_id', $5::uuid::text,
+             'contracts', pg_catalog.jsonb_build_array(contract_value.body)
+           ) AS body
+           FROM contract_value
+         ) INSERT INTO dasher.metric_contract_versions (
+           organization_id, dashboard_id, contract_set_id, contract_set_sha256,
+           contract_id, contract_version, catalog_snapshot_id,
+           business_owner_membership_id, data_owner_membership_id, name,
+           definition, measure_field_id, aggregation, value_type, direction,
+           grain, lag_millis, freshness_slo_millis,
+           allowed_dimension_field_ids, calendar, timezone,
+           lineage_evidence_ids, review_state, contract_sha256, created_at
+         ) SELECT $1::uuid, $2::uuid, $3::uuid,
+           pg_catalog.sha256(
+             pg_catalog.convert_to('dasher.metric-contract-set.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int4send(pg_catalog.octet_length(
+                  dasher_private.canonical_jsonb_bytes_v1(set_value.body)))
+             || dasher_private.canonical_jsonb_bytes_v1(set_value.body)),
+           $4::uuid, 1, $5::uuid, $6::uuid, $7::uuid,
+           'Task 9D metric', 'sum of value', $8::uuid,
+           'sum', 'integer', 'neutral', 'day', 0, 3600000, ARRAY[]::uuid[],
+           'gregorian', 'UTC', ARRAY[$9::uuid], 'reviewed',
+           pg_catalog.sha256(
+             pg_catalog.convert_to(
+               'dasher.metric-contract-version.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int4send(pg_catalog.octet_length(
+                  dasher_private.canonical_jsonb_bytes_v1(
+                    contract_value.body)))
+             || dasher_private.canonical_jsonb_bytes_v1(contract_value.body)),
+           transaction_timestamp()
+         FROM contract_value CROSS JOIN set_value`,
+        [
+          organizationId,
+          dashboardId,
+          contractSetId,
+          contractId,
+          catalogSnapshotId,
+          membershipId,
+          secondMembershipId,
+          fieldId,
+          evidenceId,
+        ],
+      );
+
+      const requestProjection = await client.query<{
+        readonly field_catalog: unknown;
+        readonly metric_contract_set: unknown;
+      }>(
+        `SELECT
+           pg_catalog.convert_from(catalog.canonical_bytes,'UTF8')::jsonb
+             AS field_catalog,
+           pg_catalog.jsonb_build_object(
+             'schema', 'metric-contract-set-v1',
+             'contract_set_id', contract.contract_set_id::text,
+             'catalog_snapshot_id', contract.catalog_snapshot_id::text,
+             'contracts', pg_catalog.jsonb_agg(
+               pg_catalog.jsonb_build_object(
+                 'contract_id', contract.contract_id::text,
+                 'version', 'i64:' || contract.contract_version::text,
+                 'business_owner_membership_id',
+                   contract.business_owner_membership_id::text,
+                 'data_owner_membership_id',
+                   contract.data_owner_membership_id::text,
+                 'name', contract.name,
+                 'definition', contract.definition,
+                 'measure_field_id', contract.measure_field_id::text,
+                 'aggregation', contract.aggregation,
+                 'denominator_contract_id',
+                   contract.denominator_contract_id::text,
+                 'denominator_contract_version', CASE
+                   WHEN contract.denominator_contract_version IS NULL THEN NULL
+                   ELSE 'i64:' || contract.denominator_contract_version::text END,
+                 'value_type', contract.value_type,
+                 'unit', contract.unit,
+                 'currency', contract.currency,
+                 'direction', contract.direction,
+                 'threshold', contract.threshold,
+                 'target', contract.target,
+                 'grain', contract.grain,
+                 'lag_millis', 'i64:' || contract.lag_millis::text,
+                 'freshness_slo_millis',
+                   'i64:' || contract.freshness_slo_millis::text,
+                 'allowed_dimension_field_ids',
+                   contract.allowed_dimension_field_ids,
+                 'calendar', contract.calendar,
+                 'timezone', contract.timezone,
+                 'lineage_evidence_ids', contract.lineage_evidence_ids,
+                 'review_state', contract.review_state
+               ) ORDER BY contract.contract_id, contract.contract_version)
+           ) AS metric_contract_set
+         FROM dasher.field_catalog_snapshots AS catalog
+         JOIN dasher.metric_contract_versions AS contract
+           ON contract.organization_id = catalog.organization_id
+          AND contract.dashboard_id = catalog.dashboard_id
+          AND contract.catalog_snapshot_id = catalog.catalog_snapshot_id
+         WHERE catalog.organization_id = $1::uuid
+           AND catalog.dashboard_id = $2::uuid
+           AND catalog.catalog_snapshot_id = $3::uuid
+           AND contract.contract_set_id = $4::uuid
+         GROUP BY catalog.canonical_bytes, contract.contract_set_id,
+           contract.catalog_snapshot_id`,
+        [organizationId, dashboardId, catalogSnapshotId, contractSetId],
+      );
+
+      const requestCanonical = await canonicalJsonbBytes(client, {
+        schema: "agent-run-request-v1",
+        run_request_id: runRequestId,
+        policy_revision: "i64:1",
+        purpose: "suggest",
+        input_snapshot_id: inputSnapshotId,
+        input_sha256: inputSha256.toString("hex"),
+        input_table: {},
+        field_catalog: requestProjection.rows[0]!.field_catalog,
+        metric_contract_set: requestProjection.rows[0]!.metric_contract_set,
+      });
+      const requestNonce = sha(`${runId}:request-nonce`);
+      const requestEnvelope = await client.query<{ readonly digest: Buffer }>(
+        `SELECT pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.retained-payload-envelope.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length('agent-run-request-v1'))
+           || pg_catalog.convert_to('agent-run-request-v1','UTF8')
+           || pg_catalog.int4send(pg_catalog.octet_length($2::bytea))
+           || $2::bytea
+           || pg_catalog.int4send(32)
+           || pg_catalog.sha256(
+                pg_catalog.convert_to('dasher.agent-run-request.v1','UTF8')
+                || pg_catalog.decode('00','hex')
+                || pg_catalog.int4send(pg_catalog.octet_length($1::bytea))
+                || $1::bytea)
+         ) AS digest`,
+        [requestCanonical, requestNonce],
+      );
+      await client.query(
+        `INSERT INTO dasher.agent_run_request_payloads (
+           organization_id, dashboard_id, request_payload_id, run_request_id,
+           request_idempotency_sha256, content_nonce, canonical_bytes,
+           request_sha256, created_at
+         ) VALUES (
+           $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::bytea, $6::bytea,
+           $7::bytea, $8::bytea, transaction_timestamp()
+         )`,
+        [
+          organizationId,
+          dashboardId,
+          requestPayloadId,
+          runRequestId,
+          sha(`${runId}:idempotency`),
+          requestNonce,
+          requestCanonical,
+          requestEnvelope.rows[0]!.digest,
+        ],
+      );
+      await client.query(
+        `INSERT INTO dasher.agent_runs (
+           organization_id, dashboard_id, run_id, run_request_id,
+           request_payload_id, requesting_user_id, requesting_membership_id,
+           requesting_authority_revision, policy_revision, requested_at, state,
+           run_revision, current_event_sequence, current_event_sha256,
+           lease_epoch
+         ) VALUES (
+           $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid,
+           1, 1, transaction_timestamp(), 'requested', 1, 1, $8::bytea, 1
+         )`,
+        [
+          organizationId,
+          dashboardId,
+          runId,
+          runRequestId,
+          requestPayloadId,
+          userId,
+          membershipId,
+          sha(`${runId}:genesis`),
+        ],
+      );
+      await client.query(
+        `INSERT INTO dasher.agent_run_budget_counters (
+           organization_id, dashboard_id, run_id, partition, vector_field,
+           limit_units, reserved_units, used_units, released_units, updated_at
+         )
+         SELECT $1::uuid, $2::uuid, $3::uuid, source.partition, field.key,
+           field.value::bigint, 0, 0, 0, transaction_timestamp()
+         FROM dasher.agent_run_policy_revisions AS policy
+         CROSS JOIN LATERAL (VALUES
+           ('generation', policy.generation_limit_vector),
+           ('review', policy.review_limit_vector)
+         ) AS source(partition, vector)
+         CROSS JOIN LATERAL pg_catalog.jsonb_each_text(
+           pg_catalog.to_jsonb(source.vector)
+         ) AS field
+         WHERE policy.policy_revision = 1`,
+        [organizationId, dashboardId, runId],
+      );
+
+      const claim = await runOperatorCall<{
+        readonly attempt_token: Buffer;
+        readonly lease_epoch: string;
+        readonly run_id: string;
+        readonly status: string;
+      }>(
+        "SELECT * FROM dasher_run_api.claim_agent_run($1::uuid, $2::integer)",
+        [randomUUID(), leaseSeconds],
+      );
+      expect(claim.status).toBe("claimed");
+      expect(claim.run_id).toBe(runId);
+      const leaseEpoch = claim.lease_epoch;
+      const token = claim.attempt_token;
+
+      const bundle = await runOperatorCall<{
+        readonly content_sha256: Buffer;
+      }>(
+        `SELECT * FROM dasher_run_api.commit_common_evidence_bundle(
+           $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::bytea)`,
+        [
+          runId,
+          leaseEpoch,
+          token,
+          bundleId,
+          await canonicalJsonbBytes(client, {
+            schema: "common-evidence-bundle-v1",
+            bundle_id: bundleId,
+            source_snapshot_id: inputSnapshotId,
+            entries: [
+              {
+                evidence_id: evidenceId,
+                evidence_sha256: sha(`${runId}:evidence`).toString("hex"),
+                source_snapshot_id: inputSnapshotId,
+                source_sha256: inputSha256.toString("hex"),
+                freshness: "current",
+                observed_at: "2026-08-01T00:00:00.000000Z",
+              },
+            ],
+          }),
+        ],
+      );
+
+      const plannerInstructions = await client.query<{
+        readonly digest: string;
+      }>(
+        `SELECT pg_catalog.encode(planner_instructions_sha256,'hex') AS digest
+         FROM dasher.agent_run_policy_revisions WHERE policy_revision = 1`,
+      );
+      const attemptRequest = await canonicalJsonbBytes(client, {
+        schema: "attempt-request-v1",
+        attempt_id: attemptId,
+        attempt_kind: "planner",
+        adapter_id: "fake-provider-v1",
+        model_id: "fake-model-v1",
+        policy_revision: "i64:1",
+        price_book_revision: "fake-price-book-v1",
+        candidate_slot: null,
+        retry_of_attempt_id: null,
+        input_sha256: inputSha256.toString("hex"),
+        common_bundle_sha256: bundle.content_sha256.toString("hex"),
+        brief_sha256: null,
+        specialist_result_id: null,
+        specialist_result_sha256: null,
+        candidate_set_sha256: null,
+        candidate_validation_set_sha256: null,
+        candidate_claim_sets_sha256: null,
+        invalid_result_id: null,
+        invalid_result_sha256: null,
+        invalid_validation_sha256: null,
+        instructions_sha256: plannerInstructions.rows[0]!.digest,
+      });
+      await runOperatorCall(
+        `SELECT * FROM dasher_run_api.reserve_agent_run_attempt(
+           $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::text, $6::text,
+           $7::dasher_run_api.attempt_resource_vector, $8::bytea)`,
+        [
+          runId,
+          leaseEpoch,
+          token,
+          attemptId,
+          "generation",
+          "planner",
+          plannerReservedVector,
+          attemptRequest,
+        ],
+      );
+
+      if (dispatch !== "none") {
+        const dispatchDigest = await client.query<{ readonly digest: Buffer }>(
+          `SELECT pg_catalog.sha256(
+             pg_catalog.convert_to(
+               'dasher.attempt-dispatch-request.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.int8send($2::bigint)
+             || pg_catalog.uuid_send($3::uuid)
+             || pg_catalog.sha256(
+                  pg_catalog.convert_to('dasher.attempt-request.v1','UTF8')
+                  || pg_catalog.decode('00','hex')
+                  || pg_catalog.int4send(pg_catalog.octet_length($4::bytea))
+                  || $4::bytea)
+             || pg_catalog.int4send(
+                  pg_catalog.octet_length('fake-provider-v1'))
+             || pg_catalog.convert_to('fake-provider-v1','UTF8')
+             || pg_catalog.int4send(pg_catalog.octet_length('fake-model-v1'))
+             || pg_catalog.convert_to('fake-model-v1','UTF8')
+             || pg_catalog.int8send(1::bigint)
+             || pg_catalog.int4send(
+                  pg_catalog.octet_length('fake-price-book-v1'))
+             || pg_catalog.convert_to('fake-price-book-v1','UTF8')
+           ) AS digest`,
+          [runId, leaseEpoch, attemptId, attemptRequest],
+        );
+        await runOperatorCall(
+          `SELECT * FROM dasher_run_api.start_agent_run_attempt(
+             $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::bytea)`,
+          [runId, leaseEpoch, token, attemptId, dispatchDigest.rows[0]!.digest],
+        );
+        if (dispatch === "started") {
+          await runOperatorCall(
+            `SELECT * FROM
+               dasher_run_api.authorize_agent_run_attempt_invocation(
+                 $1::uuid, $2::bigint, $3::bytea, $4::uuid, $5::bytea)`,
+            [
+              runId,
+              leaseEpoch,
+              token,
+              attemptId,
+              dispatchDigest.rows[0]!.digest,
+            ],
+          );
+        }
+      }
+
+      return {
+        attemptId,
+        bundleId,
+        dashboardId,
+        leaseEpoch,
+        requestPayloadId,
+        runId,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async function canonicalJsonbBytes(
+    client: PoolClient,
+    value: unknown,
+  ): Promise<Buffer> {
+    const result = await client.query<{ readonly bytes: Buffer }>(
+      "SELECT dasher_private.canonical_jsonb_bytes_v1($1::jsonb) AS bytes",
+      [JSON.stringify(value)],
+    );
+    return result.rows[0]!.bytes;
+  }
+
+  /** Blocks until the run's own lease has actually expired on the server. */
+  async function awaitLeaseExpiry(runId: string): Promise<void> {
+    await ownerPool.query(
+      `SELECT pg_catalog.pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM (
+         (SELECT run.lease_expires_at FROM dasher.agent_runs AS run
+          WHERE run.run_id = $1::uuid) - pg_catalog.clock_timestamp()
+       )) + 0.25))`,
+      [runId],
+    );
+  }
+
+  interface RunSnapshot {
+    readonly current_event_sequence: string;
+    readonly lease_epoch: string;
+    readonly run_revision: string;
+    readonly state: string;
+    readonly terminal_operation_kind: string | null;
+  }
+
+  async function readRun(runId: string): Promise<RunSnapshot> {
+    const result = await ownerPool.query<RunSnapshot>(
+      `SELECT run.state, run.run_revision::text, run.lease_epoch::text,
+         run.current_event_sequence::text, run.terminal_operation_kind
+       FROM dasher.agent_runs AS run WHERE run.run_id = $1::uuid`,
+      [runId],
+    );
+    return result.rows[0]!;
+  }
+
+  async function readEventKinds(runId: string): Promise<readonly string[]> {
+    const result = await ownerPool.query<{ readonly event_kind: string }>(
+      `SELECT event.event_kind FROM dasher.agent_run_events AS event
+       WHERE event.run_id = $1::uuid ORDER BY event.event_sequence`,
+      [runId],
+    );
+    return result.rows.map((row) => row.event_kind);
+  }
+
+  beforeAll(async () => {
+    // The suite before this one leaves its temporary app login in place for the
+    // global teardown, and an unlisted login binding is exactly the
+    // managed_role_drift the migrator is meant to refuse. This suite declares
+    // only its own run login, so it drops that one first - the same order every
+    // other no-app-login suite in this file uses - rather than widening the
+    // allowlist or relaxing the migrator's fail-closed login check.
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    phase8Directory = await mkdtemp(join(tmpdir(), "dasher-task9d-phase8-"));
+    await cp(canonicalMigrationDirectory, phase8Directory, {
+      recursive: true,
+    });
+    for (const filename of [
+      phase9MigrationFilename,
+      phase10MigrationFilename,
+      phase11MigrationFilename,
+      phase12MigrationFilename,
+    ]) {
+      await rm(join(phase8Directory, filename));
+    }
+    await installSeries(canonicalMigrationDirectory);
+  }, 300_000);
+
+  afterAll(async () => {
+    if (runPool !== undefined) {
+      const closing = runPool;
+      runPool = undefined;
+      await closing.end();
+    }
+    await dropTemporaryRunLogin(
+      ownerPool,
+      config.ownerDatabase,
+      task9dRunUsername,
+    );
+    if (phase8Directory !== undefined) {
+      await rm(phase8Directory, { force: true, recursive: true });
+      phase8Directory = undefined;
+    }
+    await resetManagedSchemas();
+  }, 300_000);
+
+  it("commits the real claim takeover settlement, aggregate and terminal operation", async () => {
+    const staged = await stageRun("started", 2);
+    const before = await readRun(staged.runId);
+    expect(before).toMatchObject({
+      current_event_sequence: "6",
+      lease_epoch: "2",
+      run_revision: "6",
+      state: "planning",
+      terminal_operation_kind: null,
+    });
+
+    await awaitLeaseExpiry(staged.runId);
+    const claimRequestId = randomUUID();
+    const takeover = await runOperatorCall<{
+      readonly attempt_token: Buffer | null;
+      readonly input_sha256: Buffer | null;
+      readonly lease_epoch: string;
+      readonly lease_expires_at: Date | null;
+      readonly run_id: string;
+      readonly state: string;
+      readonly status: string;
+    }>("SELECT * FROM dasher_run_api.claim_agent_run($1::uuid, $2::integer)", [
+      claimRequestId,
+      20,
+    ]);
+
+    expect(takeover.status).toBe("terminalized_indeterminate");
+    expect(takeover.run_id).toBe(staged.runId);
+    expect(takeover.state).toBe("failed");
+    expect(takeover.lease_epoch).toBe("3");
+    expect(takeover.attempt_token).toBeNull();
+    expect(takeover.lease_expires_at).toBeNull();
+    expect(takeover.input_sha256).toBeNull();
+
+    // The settlement and the aggregate are two ordered appends, in that
+    // order, and the run terminalizes on the aggregate alone.
+    expect(await readEventKinds(staged.runId)).toEqual([
+      "lease_acquired",
+      "common_bundle_committed",
+      "attempt_reserved",
+      "attempt_dispatch_prepared",
+      "attempt_dispatch_started",
+      "attempt_indeterminate",
+      "indeterminate_quarantined",
+    ]);
+    expect(await readRun(staged.runId)).toMatchObject({
+      current_event_sequence: "8",
+      lease_epoch: "3",
+      run_revision: "8",
+      state: "failed",
+      terminal_operation_kind: "indeterminate_takeover",
+    });
+
+    const operation = await ownerPool.query<{
+      readonly claim_operation_kind: string;
+      readonly claim_request_id: string;
+      readonly claim_result_state: string;
+      readonly terminal_operation_id: string;
+    }>(
+      `SELECT event.claim_operation_kind, event.claim_request_id::text,
+           event.claim_result_state, run.terminal_operation_id::text
+         FROM dasher.agent_run_events AS event
+         JOIN dasher.agent_runs AS run ON run.run_id = event.run_id
+         WHERE event.run_id = $1::uuid AND event.event_sequence = 8`,
+      [staged.runId],
+    );
+    expect(operation.rows[0]).toEqual({
+      claim_operation_kind: "indeterminate_takeover",
+      claim_request_id: claimRequestId,
+      claim_result_state: "failed",
+      terminal_operation_id: claimRequestId,
+    });
+
+    const attempt = await ownerPool.query<{
+      readonly actual_vector: string | null;
+      readonly lease_epoch: string;
+      readonly outstanding: string;
+      readonly reason: string;
+      readonly released: string;
+      readonly reserved: string;
+      readonly state: string;
+      readonly used: string;
+    }>(
+      `SELECT attempt.state, attempt.lease_epoch::text,
+           attempt.actual_vector::text AS actual_vector,
+           attempt.reserved_vector::text AS reserved,
+           attempt.used_vector::text AS used,
+           attempt.released_vector::text AS released,
+           attempt.outstanding_vector::text AS outstanding,
+           pg_catalog.encode(attempt.terminal_reason_sha256,'hex') AS reason
+         FROM dasher.agent_run_attempts AS attempt
+         WHERE attempt.run_id = $1::uuid`,
+      [staged.runId],
+    );
+    expect(attempt.rows[0]).toEqual({
+      actual_vector: null,
+      lease_epoch: "2",
+      outstanding: "(0,0,0,0,0,0,0,0,0,0,0,0,0,0)",
+      reason: createHash("sha256")
+        .update("takeover_after_dispatch")
+        .digest("hex"),
+      released: "(0,0,0,0,0,0,0,0,0,0,0,0,0,0)",
+      reserved: plannerReservedVector,
+      state: "indeterminate_quarantined",
+      used: plannerReservedVector,
+    });
+
+    // Accounting: a dispatched attempt is charged, never released, and the
+    // counters carry exactly the reservation.
+    const counters = await ownerPool.query<{
+      readonly released_units: string;
+      readonly reserved_units: string;
+      readonly used_units: string;
+      readonly vector_field: string;
+    }>(
+      `SELECT counter.vector_field, counter.reserved_units::text,
+           counter.used_units::text, counter.released_units::text
+         FROM dasher.agent_run_budget_counters AS counter
+         WHERE counter.run_id = $1::uuid AND counter.partition = 'generation'
+         ORDER BY counter.vector_field`,
+      [staged.runId],
+    );
+    const reserved: Record<string, string> = {
+      cache_read_tokens: "4000",
+      cache_write_tokens: "2000",
+      calls: "1",
+      candidates: "0",
+      cost_micros: "16000",
+      input_tokens: "4000",
+      output_tokens: "2000",
+      reasoning_tokens: "2000",
+      repair_attempts: "0",
+      reviewer_attempts: "0",
+      specialist_attempts: "0",
+      total_tokens: "6000",
+      wall_millis: "9000",
+      work_millis: "8000",
+    };
+    expect(counters.rows).toEqual(
+      [...vectorFields].map((field) => ({
+        released_units: "0",
+        reserved_units: reserved[field]!,
+        used_units: reserved[field]!,
+        vector_field: field,
+      })),
+    );
+
+    // The settlement payload the guard read is the one frozen 0007 built.
+    const payload = await ownerPool.query<{ readonly body: string }>(
+      `SELECT pg_catalog.convert_from(payload.canonical_bytes,'UTF8') AS body
+         FROM dasher.agent_run_event_payloads AS payload
+         WHERE payload.run_id = $1::uuid AND payload.event_sequence = 7`,
+      [staged.runId],
+    );
+    const envelope = JSON.parse(payload.rows[0]!.body) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(envelope).sort()).toEqual([
+      "actor_id",
+      "actor_kind",
+      "actor_revision",
+      "body",
+      "event_id",
+      "event_kind",
+      "event_sequence",
+      "occurred_at",
+      "run_id",
+      "run_revision",
+      "schema",
+    ]);
+    expect(envelope["actor_kind"]).toBe("run_operator");
+    expect(envelope["actor_id"]).toBe(principalId);
+    expect(envelope["event_kind"]).toBe("attempt_indeterminate");
+    const body = envelope["body"] as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      "attempt_id",
+      "fenced_lease_epoch",
+      "reason_code",
+      "released_vector",
+      "used_vector",
+    ]);
+    expect(body["attempt_id"]).toBe(staged.attemptId);
+    expect(body["reason_code"]).toBe("takeover_after_dispatch");
+    expect(body["fenced_lease_epoch"]).toBe("i64:3");
+    expect(body["used_vector"]).toEqual({
+      cache_read_tokens: "i64:4000",
+      cache_write_tokens: "i64:2000",
+      calls: "i64:1",
+      candidates: "i64:0",
+      cost_micros: "i64:16000",
+      input_tokens: "i64:4000",
+      output_tokens: "i64:2000",
+      reasoning_tokens: "i64:2000",
+      repair_attempts: "i64:0",
+      reviewer_attempts: "i64:0",
+      specialist_attempts: "i64:0",
+      total_tokens: "i64:6000",
+      wall_millis: "i64:9000",
+      work_millis: "i64:8000",
+    });
+    expect(body["released_vector"]).toEqual(
+      Object.fromEntries([...vectorFields].map((field) => [field, "i64:0"])),
+    );
+  }, 180_000);
+
+  it("settles a pre-dispatch attempt as an ordinary claim without terminalizing", async () => {
+    const staged = await stageRun("ready", 2);
+    await awaitLeaseExpiry(staged.runId);
+    const reclaim = await runOperatorCall<{
+      readonly lease_epoch: string;
+      readonly run_id: string;
+      readonly state: string;
+      readonly status: string;
+    }>("SELECT * FROM dasher_run_api.claim_agent_run($1::uuid, $2::integer)", [
+      randomUUID(),
+      900,
+    ]);
+    expect(reclaim.status).toBe("claimed");
+    expect(reclaim.run_id).toBe(staged.runId);
+    expect(reclaim.state).toBe("planning");
+    expect(reclaim.lease_epoch).toBe("3");
+
+    expect(await readEventKinds(staged.runId)).toEqual([
+      "lease_acquired",
+      "common_bundle_committed",
+      "attempt_reserved",
+      "attempt_dispatch_prepared",
+      "attempt_released",
+      "lease_acquired",
+    ]);
+    const attempt = await ownerPool.query<{
+      readonly reason: string;
+      readonly released: string;
+      readonly state: string;
+      readonly used: string;
+    }>(
+      `SELECT attempt.state, attempt.used_vector::text AS used,
+           attempt.released_vector::text AS released,
+           pg_catalog.encode(attempt.terminal_reason_sha256,'hex') AS reason
+         FROM dasher.agent_run_attempts AS attempt
+         WHERE attempt.run_id = $1::uuid`,
+      [staged.runId],
+    );
+    expect(attempt.rows[0]).toEqual({
+      reason: createHash("sha256").update("takeover").digest("hex"),
+      released: plannerReservedVector,
+      state: "released_takeover",
+      used: "(0,0,0,0,0,0,0,0,0,0,0,0,0,0)",
+    });
+    const counters = await ownerPool.query<{ readonly total: string }>(
+      `SELECT pg_catalog.sum(counter.used_units)::text AS total
+         FROM dasher.agent_run_budget_counters AS counter
+         WHERE counter.run_id = $1::uuid`,
+      [staged.runId],
+    );
+    expect(counters.rows[0]?.total).toBe("0");
+    expect(await readRun(staged.runId)).toMatchObject({
+      state: "planning",
+      terminal_operation_kind: null,
+    });
+  }, 180_000);
+
+  it("still terminalizes a non-takeover indeterminate reconcile immediately", async () => {
+    const staged = await stageRun("started", 900);
+    const lease = await ownerPool.query<{ readonly token: Buffer }>(
+      `SELECT event.claim_result_attempt_token AS token
+         FROM dasher.agent_run_events AS event
+         WHERE event.run_id = $1::uuid AND event.event_sequence = 2`,
+      [staged.runId],
+    );
+    await runOperatorCall(
+      `SELECT * FROM dasher_run_api.reconcile_agent_run_attempt(
+           $1::uuid, $2::bigint, $3::bytea, $4::uuid, 'indeterminate',
+           NULL::bytea, NULL::bytea, NULL::bytea)`,
+      [staged.runId, staged.leaseEpoch, lease.rows[0]!.token, staged.attemptId],
+    );
+    expect(await readRun(staged.runId)).toMatchObject({ state: "failed" });
+    expect(await readEventKinds(staged.runId)).toEqual([
+      "lease_acquired",
+      "common_bundle_committed",
+      "attempt_reserved",
+      "attempt_dispatch_prepared",
+      "attempt_dispatch_started",
+      "attempt_indeterminate",
+    ]);
+    const reason = await ownerPool.query<{ readonly reason_code: string }>(
+      `SELECT pg_catalog.convert_from(
+           payload.canonical_bytes,'UTF8'
+         )::jsonb#>>'{body,reason_code}' AS reason_code
+         FROM dasher.agent_run_event_payloads AS payload
+         WHERE payload.run_id = $1::uuid AND payload.event_sequence = 7`,
+      [staged.runId],
+    );
+    expect(reason.rows[0]?.reason_code).toBe("caller_indeterminate");
+  }, 180_000);
+
+  it("fails the settlement reader closed on every corrupted binding", async () => {
+    // The corruption matrix below is derived from a settlement the real claim
+    // walk actually wrote: `genuine` is that event's own envelope, and every
+    // case changes exactly one thing about it - or about the attempt row it
+    // binds to - so a `false` result names precisely what was corrupted. The
+    // unmutated control is included for the same reason: without it a reader
+    // that returned false unconditionally would pass the whole matrix.
+    const staged = await stageRun("started", 2);
+    await awaitLeaseExpiry(staged.runId);
+    const takeover = await runOperatorCall<{ readonly status: string }>(
+      "SELECT * FROM dasher_run_api.claim_agent_run($1::uuid, $2::integer)",
+      [randomUUID(), 20],
+    );
+    expect(takeover.status).toBe("terminalized_indeterminate");
+
+    const settlement = await ownerPool.query<{
+      readonly envelope: string;
+      readonly event_id: string;
+      readonly event_payload_id: string;
+    }>(
+      `SELECT payload.event_payload_id::text, payload.event_id::text,
+           pg_catalog.convert_from(payload.canonical_bytes,'UTF8') AS envelope
+         FROM dasher.agent_run_event_payloads AS payload
+         WHERE payload.run_id = $1::uuid AND payload.event_sequence = 7`,
+      [staged.runId],
+    );
+    const genuine = JSON.parse(settlement.rows[0]!.envelope) as Record<
+      string,
+      unknown
+    >;
+    const fencedLeaseEpoch = 3;
+    const priorLeaseEpoch = 2;
+    const settlementRunRevision = 7;
+
+    const owner = await ownerClient();
+    let nextSequence = 1000;
+
+    /** Calls the reader exactly as the guard does, under the run definer. */
+    async function readerSays(argv: {
+      readonly dashboardId?: string;
+      readonly eventId: string;
+      readonly eventSequence: number;
+      readonly fencedLeaseEpoch?: number;
+      readonly organizationId?: string;
+      readonly payloadId: string;
+      readonly runId?: string;
+      readonly runRevision?: number;
+    }): Promise<boolean> {
+      await owner.query("BEGIN");
+      try {
+        await owner.query("SET LOCAL ROLE dasher_run_definer");
+        await owner.query(
+          "SELECT pg_catalog.set_config('dasher.run_principal_id',$1,true)",
+          [principalId],
+        );
+        await owner.query(
+          `SELECT pg_catalog.set_config(
+               'dasher.run_principal_revision','1',true)`,
+        );
+        const result = await owner.query<{ readonly admitted: boolean }>(
+          `SELECT dasher_private.agent_run_takeover_settlement_v1(
+               $1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6::bigint,
+               $7::bigint,$8::bigint) AS admitted`,
+          [
+            argv.organizationId ?? organizationId,
+            argv.dashboardId ?? staged.dashboardId,
+            argv.runId ?? staged.runId,
+            argv.payloadId,
+            argv.eventId,
+            argv.eventSequence,
+            argv.runRevision ?? settlementRunRevision,
+            argv.fencedLeaseEpoch ?? fencedLeaseEpoch,
+          ],
+        );
+        return result.rows[0]!.admitted;
+      } finally {
+        await owner.query("ROLLBACK").catch(() => undefined);
+        await owner.query("RESET ROLE").catch(() => undefined);
+      }
+    }
+
+    /**
+     * Clones the settled attempt under a fresh identity, applies the
+     * requested attempt-row and envelope mutations, stores the result as a
+     * real payload row, and asks the reader about it.
+     */
+    async function probe(mutation: {
+      readonly attemptOverrides?: Readonly<Record<string, string>>;
+      readonly body?: Record<string, unknown>;
+      readonly bytes?: Buffer;
+      readonly envelope?: Record<string, unknown>;
+      readonly eventIdOverride?: string;
+      readonly forgePayloadHash?: boolean;
+      readonly skipPayloadRow?: boolean;
+    }): Promise<boolean> {
+      const attemptId = randomUUID();
+      const payloadId = randomUUID();
+      const sequence = (nextSequence += 1);
+      const clonedColumns = [
+        "lease_epoch",
+        "partition",
+        "attempt_kind",
+        "candidate_slot",
+        "retry_of_attempt_id",
+        "state",
+        "reserved_vector",
+        "actual_vector",
+        "used_vector",
+        "released_vector",
+        "outstanding_vector",
+        "reserved_at",
+        "dispatch_ready_at",
+        "dispatch_started_at",
+        "reconciled_at",
+        "terminal_reason_sha256",
+      ];
+      const clonedExpressions = clonedColumns
+        .map(
+          (column) => mutation.attemptOverrides?.[column] ?? `source.${column}`,
+        )
+        .join(", ");
+      await owner.query(
+        `INSERT INTO dasher.agent_run_attempts (
+             organization_id, dashboard_id, run_id, attempt_id,
+             request_payload_id, result_payload_id, ${clonedColumns.join(", ")}
+           )
+           SELECT source.organization_id, source.dashboard_id, source.run_id,
+             $2::uuid, NULL, NULL, ${clonedExpressions}
+           FROM dasher.agent_run_attempts AS source
+           WHERE source.run_id = $1::uuid AND source.attempt_id = $3::uuid`,
+        [staged.runId, attemptId, staged.attemptId],
+      );
+      const derived = await owner.query<{ readonly event_id: string }>(
+        `SELECT dasher_private.uuid_v8_from_sha256_v1(pg_catalog.sha256(
+             pg_catalog.convert_to(
+               'dasher.takeover-indeterminate-event-id.v1','UTF8')
+             || pg_catalog.uuid_send($1::uuid)
+             || pg_catalog.int8send($2::bigint)
+           ))::text AS event_id`,
+        [attemptId, priorLeaseEpoch],
+      );
+      const eventId = mutation.eventIdOverride ?? derived.rows[0]!.event_id;
+      const envelope: Record<string, unknown> = {
+        ...genuine,
+        event_id: eventId,
+        event_sequence: `i64:${String(sequence)}`,
+        body: {
+          ...(genuine["body"] as Record<string, unknown>),
+          attempt_id: attemptId,
+          ...(mutation.body ?? {}),
+        },
+        ...(mutation.envelope ?? {}),
+      };
+      if (mutation.envelope !== undefined) {
+        for (const [key, value] of Object.entries(mutation.envelope)) {
+          if (value === undefined) {
+            delete envelope[key];
+          }
+        }
+      }
+      const bytes =
+        mutation.bytes ?? Buffer.from(JSON.stringify(envelope), "utf8");
+      if (!(mutation.skipPayloadRow ?? false)) {
+        await owner.query(
+          `INSERT INTO dasher.agent_run_event_payloads (
+               organization_id, dashboard_id, run_id, event_payload_id,
+               event_id, event_sequence, content_nonce, canonical_bytes,
+               payload_sha256, created_at
+             )
+             SELECT $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
+               $6::bigint, nonce.value, $7::bytea,
+               CASE WHEN $8::boolean THEN pg_catalog.sha256(
+                 pg_catalog.convert_to('forged','UTF8'))
+               ELSE pg_catalog.sha256(
+                 pg_catalog.convert_to(
+                   'dasher.retained-payload-envelope.v1','UTF8')
+                 || pg_catalog.decode('00','hex')
+                 || pg_catalog.int4send(
+                      pg_catalog.octet_length('agent-run-event-payload-v1'))
+                 || pg_catalog.convert_to('agent-run-event-payload-v1','UTF8')
+                 || pg_catalog.int4send(32) || nonce.value
+                 || pg_catalog.int4send(32)
+                 || pg_catalog.sha256(
+                      pg_catalog.convert_to(
+                        'dasher.agent-run-event-payload.v1','UTF8')
+                      || pg_catalog.decode('00','hex')
+                      || pg_catalog.int4send(
+                           pg_catalog.octet_length($7::bytea))
+                      || $7::bytea)
+               ) END,
+               transaction_timestamp()
+             FROM (SELECT pg_catalog.sha256(
+                     pg_catalog.convert_to($4::text,'UTF8')) AS value) AS nonce`,
+          [
+            organizationId,
+            staged.dashboardId,
+            staged.runId,
+            payloadId,
+            eventId,
+            sequence,
+            bytes,
+            mutation.forgePayloadHash ?? false,
+          ],
+        );
+      }
+      return readerSays({
+        eventId,
+        eventSequence: sequence,
+        payloadId,
+      });
+    }
+
+    const genuineBody = genuine["body"] as Record<string, unknown>;
+    const genuineUsed = genuineBody["used_vector"] as Record<string, string>;
+    const observed: Record<string, boolean> = {};
+
+    observed["control"] = await probe({});
+    observed["missing payload row"] = await probe({ skipPayloadRow: true });
+    observed["non-JSON bytes"] = await probe({
+      bytes: Buffer.from([0xc3, 0x28, 0x7b]),
+    });
+    observed["JSON array envelope"] = await probe({
+      bytes: Buffer.from("[]", "utf8"),
+    });
+    observed["forged payload hash"] = await probe({
+      forgePayloadHash: true,
+    });
+    observed["extra envelope key"] = await probe({
+      envelope: { injected: "x" },
+    });
+    observed["missing envelope key"] = await probe({
+      envelope: { occurred_at: undefined },
+    });
+    observed["wrong schema"] = await probe({
+      envelope: { schema: "agent-run-event-payload-v2" },
+    });
+    observed["wrong event kind"] = await probe({
+      envelope: { event_kind: "attempt_released" },
+    });
+    observed["wrong actor kind"] = await probe({
+      envelope: { actor_kind: "tenant" },
+    });
+    observed["wrong actor id"] = await probe({
+      envelope: { actor_id: randomUUID() },
+    });
+    observed["wrong actor revision"] = await probe({
+      envelope: { actor_revision: "i64:2" },
+    });
+    observed["wrong run revision"] = await probe({
+      envelope: { run_revision: "i64:99" },
+    });
+    observed["wrong event sequence"] = await probe({
+      envelope: { event_sequence: "i64:99" },
+    });
+    observed["wrong run id"] = await probe({
+      envelope: { run_id: randomUUID() },
+    });
+    observed["mismatched event id"] = await probe({
+      eventIdOverride: randomUUID(),
+    });
+    observed["extra body key"] = await probe({ body: { injected: "x" } });
+    observed["missing body key"] = await probe({
+      body: { released_vector: undefined },
+    });
+    observed["wrong reason code"] = await probe({
+      body: { reason_code: "caller_indeterminate" },
+    });
+    observed["wrong fence"] = await probe({
+      body: { fenced_lease_epoch: "i64:2" },
+    });
+    observed["non-UUID attempt id"] = await probe({
+      body: { attempt_id: "not-a-uuid" },
+    });
+    observed["foreign attempt id"] = await probe({
+      body: { attempt_id: staged.attemptId },
+    });
+    observed["empty used vector"] = await probe({ body: { used_vector: {} } });
+    observed["untagged vector value"] = await probe({
+      body: { used_vector: { ...genuineUsed, calls: "1" } },
+    });
+    observed["non-canonical vector value"] = await probe({
+      body: { used_vector: { ...genuineUsed, calls: "i64:01" } },
+    });
+    observed["vector missing a component"] = await probe({
+      body: {
+        used_vector: Object.fromEntries(
+          Object.entries(genuineUsed).filter(([key]) => key !== "calls"),
+        ),
+      },
+    });
+    observed["vector unbound from the attempt row"] = await probe({
+      body: { used_vector: { ...genuineUsed, calls: "i64:2" } },
+    });
+    observed["attempt not quarantined"] = await probe({
+      attemptOverrides: { state: "'succeeded'" },
+    });
+    observed["attempt on the wrong epoch"] = await probe({
+      attemptOverrides: { lease_epoch: "1::bigint" },
+    });
+    observed["attempt never dispatched"] = await probe({
+      attemptOverrides: { dispatch_started_at: "NULL::timestamptz" },
+    });
+    observed["attempt not reconciled"] = await probe({
+      attemptOverrides: { reconciled_at: "NULL::timestamptz" },
+    });
+    observed["attempt carries an actual vector"] = await probe({
+      attemptOverrides: { actual_vector: "source.reserved_vector" },
+    });
+    observed["attempt reason is not the takeover reason"] = await probe({
+      attemptOverrides: {
+        terminal_reason_sha256:
+          "pg_catalog.sha256(pg_catalog.convert_to('takeover','UTF8'))",
+      },
+    });
+    observed["settlement does not conserve the reservation"] = await probe({
+      attemptOverrides: {
+        used_vector:
+          "ROW(0,0,0,0,0,0,0,0,0,0,0,0,0,0)" +
+          "::dasher_run_api.attempt_resource_vector",
+      },
+    });
+    observed["candidate component charged instead of released"] = await probe({
+      attemptOverrides: {
+        reserved_vector:
+          "ROW(1,1,0,0,0,4000,2000,2000,4000,2000,6000,9000,8000,16000)" +
+          "::dasher_run_api.attempt_resource_vector",
+        used_vector:
+          "ROW(1,1,0,0,0,4000,2000,2000,4000,2000,6000,9000,8000,16000)" +
+          "::dasher_run_api.attempt_resource_vector",
+      },
+    });
+    observed["outstanding reservation not drained"] = await probe({
+      attemptOverrides: {
+        outstanding_vector:
+          "ROW(1,0,0,0,0,0,0,0,0,0,0,0,0,0)" +
+          "::dasher_run_api.attempt_resource_vector",
+      },
+    });
+
+    // The genuine settlement itself, probed with one argument moved. These
+    // are the guard's own cross-bindings, and they are also what stops the
+    // reader being a cross-run or cross-tenant oracle over retained payload
+    // bytes.
+    const genuineArgs = {
+      eventId: settlement.rows[0]!.event_id,
+      eventSequence: 7,
+      payloadId: settlement.rows[0]!.event_payload_id,
+    };
+    observed["genuine settlement"] = await readerSays(genuineArgs);
+    observed["genuine settlement, foreign organization"] = await readerSays({
+      ...genuineArgs,
+      organizationId: randomUUID(),
+    });
+    observed["genuine settlement, foreign dashboard"] = await readerSays({
+      ...genuineArgs,
+      dashboardId: randomUUID(),
+    });
+    observed["genuine settlement, foreign run"] = await readerSays({
+      ...genuineArgs,
+      runId: randomUUID(),
+    });
+    observed["genuine settlement, shifted revision"] = await readerSays({
+      ...genuineArgs,
+      runRevision: 6,
+    });
+    observed["genuine settlement, shifted fence"] = await readerSays({
+      ...genuineArgs,
+      fencedLeaseEpoch: 4,
+    });
+    observed["genuine settlement, shifted sequence"] = await readerSays({
+      ...genuineArgs,
+      eventSequence: 6,
+    });
+    owner.release();
+
+    const admitted = Object.entries(observed)
+      .filter(([, value]) => value)
+      .map(([name]) => name)
+      .sort();
+    expect(admitted).toEqual(["control", "genuine settlement"]);
+  }, 300_000);
+
+  it("keeps the settlement reader least-privileged and unreachable from callers", async () => {
+    const routine = await ownerPool.query<{
+      readonly config: string | null;
+      readonly execute_acl: string;
+      readonly owner: string;
+      readonly provolatile: string;
+      readonly security_definer: boolean;
+    }>(
+      `SELECT pg_catalog.pg_get_userbyid(routine.proowner) AS owner,
+           routine.prosecdef AS security_definer,
+           routine.provolatile::text,
+           pg_catalog.array_to_string(routine.proconfig, ',') AS config,
+           COALESCE((
+             SELECT pg_catalog.string_agg(
+               COALESCE(NULLIF(
+                 pg_catalog.pg_get_userbyid(privilege.grantee), ''
+               ), 'PUBLIC'), ',' ORDER BY
+               pg_catalog.pg_get_userbyid(privilege.grantee)
+             )
+             FROM pg_catalog.aclexplode(routine.proacl) AS privilege
+             WHERE privilege.privilege_type = 'EXECUTE'
+           ), '') AS execute_acl
+         FROM pg_catalog.pg_proc AS routine
+         JOIN pg_catalog.pg_namespace AS schema
+           ON schema.oid = routine.pronamespace
+         WHERE schema.nspname = 'dasher_private'
+           AND routine.proname = 'agent_run_takeover_settlement_v1'`,
+    );
+    expect(routine.rows).toHaveLength(1);
+    expect(routine.rows[0]).toEqual({
+      config: "search_path=pg_catalog",
+      execute_acl:
+        "dasher_retention_definer,dasher_run_definer,dasher_security_definer",
+      owner: "dasher_security_definer",
+      provolatile: "s",
+      security_definer: true,
+    });
+
+    // No caller-reachable role can invoke it, so no operator or application
+    // session can turn the reader into a payload oracle of its own.
+    for (const role of [
+      "dasher_app",
+      "dasher_run_operator",
+      "dasher_retention_operator",
+    ]) {
+      const allowed = await ownerPool.query<{ readonly allowed: boolean }>(
+        `SELECT pg_catalog.has_function_privilege(
+             $1::text,
+             'dasher_private.agent_run_takeover_settlement_v1(uuid,uuid,uuid,uuid,uuid,bigint,bigint,bigint)',
+             'EXECUTE'
+           ) AS allowed`,
+        [role],
+      );
+      expect({ allowed: allowed.rows[0]?.allowed, role }).toEqual({
+        allowed: false,
+        role,
+      });
+    }
+
+    // The one new table privilege is column-scoped, held by exactly one
+    // role, and covers exactly the nine columns frozen 0007 already grants
+    // dasher_run_definer.
+    const columnGrants = await ownerPool.query<{
+      readonly columns: string;
+      readonly grantee: string;
+    }>(
+      `SELECT pg_catalog.pg_get_userbyid(privilege.grantee) AS grantee,
+           pg_catalog.string_agg(
+             attribute.attname::text, ',' ORDER BY attribute.attname
+           ) AS columns
+         FROM pg_catalog.pg_attribute AS attribute
+         CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+         WHERE attribute.attrelid =
+             'dasher.agent_run_event_payloads'::pg_catalog.regclass
+           AND privilege.privilege_type = 'SELECT'
+         GROUP BY privilege.grantee
+         ORDER BY 1`,
+    );
+    const payloadColumns = [
+      "canonical_bytes",
+      "content_nonce",
+      "dashboard_id",
+      "event_id",
+      "event_payload_id",
+      "event_sequence",
+      "organization_id",
+      "payload_sha256",
+      "run_id",
+    ].join(",");
+    expect(columnGrants.rows).toEqual([
+      { columns: payloadColumns, grantee: "dasher_run_definer" },
+      { columns: payloadColumns, grantee: "dasher_security_definer" },
+    ]);
+    // Whole-table SELECT stays with the relation owner alone: no managed
+    // role - the reader's owner included - holds it.
+    const tableGrants = await ownerPool.query<{ readonly grantee: string }>(
+      `SELECT pg_catalog.pg_get_userbyid(privilege.grantee) AS grantee
+         FROM pg_catalog.pg_class AS relation
+         CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privilege
+         WHERE relation.oid =
+             'dasher.agent_run_event_payloads'::pg_catalog.regclass
+           AND privilege.privilege_type = 'SELECT'
+           AND privilege.grantee <> relation.relowner
+         ORDER BY 1`,
+    );
+    expect(tableGrants.rows).toEqual([]);
+
+    // Nothing else that runs as the BYPASSRLS owner can reach those bytes:
+    // this is the complete set of routines that execute as
+    // dasher_security_definer, and only the new reader names the relation.
+    const definerRoutines = await ownerPool.query<{
+      readonly identity: string;
+      readonly mentions_payloads: boolean;
+      readonly reads_payloads: boolean;
+    }>(
+      `SELECT schema.nspname || '.' || routine.proname AS identity,
+           routine.prosrc LIKE '%FROM dasher.agent_run_event_payloads%'
+             AS reads_payloads,
+           routine.prosrc LIKE '%dasher.agent_run_event_payloads%'
+             AS mentions_payloads
+         FROM pg_catalog.pg_proc AS routine
+         JOIN pg_catalog.pg_namespace AS schema
+           ON schema.oid = routine.pronamespace
+         WHERE routine.prosecdef
+           AND pg_catalog.pg_get_userbyid(routine.proowner)
+             = 'dasher_security_definer'
+         ORDER BY 1`,
+    );
+    expect(
+      definerRoutines.rows
+        .filter((row) => row.reads_payloads)
+        .map((row) => row.identity),
+    ).toEqual(["dasher_private.agent_run_takeover_settlement_v1"]);
+    // The only other routine running as the BYPASSRLS owner that names the
+    // relation at all is the frozen tenant request path, and it only inserts.
+    expect(
+      definerRoutines.rows
+        .filter((row) => row.mentions_payloads)
+        .map((row) => row.identity),
+    ).toEqual([
+      "dasher_api.request_agent_run",
+      "dasher_private.agent_run_takeover_settlement_v1",
+    ]);
+    // Pinned literally so that a new routine running as the BYPASSRLS owner
+    // has to be reviewed against this grant rather than inherit it silently.
+    expect(definerRoutines.rows).toHaveLength(
+      phase9SecurityDefinerOwnedRoutineCount,
+    );
+
+    // Fixed body, no dynamic SQL, no caller-supplied identifier.
+    const source = await readFile(
+      join(canonicalMigrationDirectory, phase9MigrationFilename),
+      "utf8",
+    );
+    expect(source).not.toMatch(/\bEXECUTE\s+(?:format|v_|'|")/iu);
+    expect(source).not.toMatch(/GRANT[^;]*\bTO\s+PUBLIC\b/iu);
+    expect(source).not.toMatch(/GRANT\s+ALL\b/iu);
+  }, 300_000);
+
+  it("refuses the same real takeover on the frozen 0001-0008 series", async () => {
+    // The correction is load-bearing, not cosmetic: on the reviewed tree
+    // minus 0009 the identical real claim walk cannot commit at all.
+    await installSeries(phase8Directory!);
+    try {
+      const staged = await stageRun("started", 2);
+      await awaitLeaseExpiry(staged.runId);
+      let raised: unknown;
+      await runOperatorCall(
+        "SELECT * FROM dasher_run_api.claim_agent_run($1::uuid, $2::integer)",
+        [randomUUID(), 20],
+      ).catch((error: unknown) => {
+        raised = error;
+      });
+      expect(raised).toMatchObject({
+        code: "P1002",
+        message: "dasher_invalid",
+      });
+      // The whole claim transaction rolled back: no settlement, no
+      // aggregate, no revision or epoch movement.
+      expect(await readEventKinds(staged.runId)).toEqual([
+        "lease_acquired",
+        "common_bundle_committed",
+        "attempt_reserved",
+        "attempt_dispatch_prepared",
+        "attempt_dispatch_started",
+      ]);
+      expect(await readRun(staged.runId)).toMatchObject({
+        current_event_sequence: "6",
+        lease_epoch: "2",
+        run_revision: "6",
+        state: "planning",
+        terminal_operation_kind: null,
+      });
+      const attempt = await ownerPool.query<{ readonly state: string }>(
+        `SELECT attempt.state FROM dasher.agent_run_attempts AS attempt
+           WHERE attempt.run_id = $1::uuid`,
+        [staged.runId],
+      );
+      expect(attempt.rows[0]?.state).toBe("dispatch_started");
+    } finally {
+      await installSeries(canonicalMigrationDirectory);
+    }
+  }, 300_000);
+});
+
+// Task 9D's request/cancel semantics and the operator fence matrix are proved
+// here against the production repository classes, over real PostgreSQL. The
+// tenant calls go through a real `dasher_app` login carrying a real
+// `dasher_api.issue_session` session and CSRF pair; the operator calls go
+// through a real non-superuser run login that
+// `dasher_private.initialize_run_operator_context_v1` independently
+// authorizes. No SQLSTATE is programmed, no trigger is disabled, no digest is
+// invented: every fixture digest below is computed by the server with the same
+// expression the frozen function recomputes, and every denial is raised by the
+// frozen function itself. Owner SQL is used only to seed predecessor rows the
+// fixed functions do not create, to drive an authoritative predecessor
+// transition, and to observe state before and after.
+describe.sequential("Task 9D repository semantics", () => {
+  const runUsername = "dasher_test_task9d_semantics";
+  const runPassword = randomBytes(24).toString("base64url");
+  const principalId = "9d100000-0000-4000-8000-000000000001";
+  const deploymentRevision = "task9d-r6-repository";
+  const evaluatedAt = "2026-08-01T00:00:20.000000Z";
+
+  let keyRing: SecretKeyRing;
+  let requester: Task4Actor;
+  let requesterSessionToken: string;
+  let requesterCsrfValue: string;
+  let bystander: Task4Actor;
+  let bystanderSessionToken: string;
+  let bystanderCsrfValue: string;
+  let runPool: Pool | undefined;
+  let deferredGuardRedEvidence:
+    | {
+        readonly client: {
+          readonly code: string;
+          readonly message: string;
+          readonly outcome: string;
+          readonly ownProperties: readonly string[];
+          readonly retrySafe: boolean;
+        };
+        readonly residueAfter: Projection;
+        readonly residueBefore: Projection;
+        readonly server: {
+          readonly code: string | undefined;
+          readonly message: string | undefined;
+          readonly schema: string | undefined;
+        };
+      }
+    | undefined;
+  let replayRedEvidence:
+    | Record<
+        "old_result_kind" | "without_transition_arm",
+        {
+          readonly error: unknown;
+          readonly ledgerAfter: Projection;
+          readonly ledgerBefore: Projection;
+          readonly runAfter: Projection;
+          readonly runBefore: Projection;
+        }
+      >
+    | undefined;
+  let checkpointReducerRedEvidence:
+    Awaited<ReturnType<typeof checkpointReducerJourney>> | undefined;
+  let nullOriginRedEvidence:
+    Awaited<ReturnType<typeof replayCandidateJourney>> | undefined;
+  let timeBindingRedEvidence:
+    Awaited<ReturnType<typeof replayCandidateJourney>> | undefined;
+  let unboundReceiptEvidence:
+    Awaited<ReturnType<typeof replayCandidateJourney>> | undefined;
+
+  function organizationId(): string {
+    return requester.organizationId;
+  }
+
+  function requireRunPool(): Pool {
+    if (runPool === undefined) {
+      throw new Error("Task 9D semantics run-operator pool was not installed");
+    }
+    return runPool;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Independent TypeScript digest constructions                       */
+  /* ---------------------------------------------------------------- */
+
+  function uuidBytes(value: string): Buffer {
+    return Buffer.from(value.replaceAll("-", ""), "hex");
+  }
+
+  function int4(value: number): Buffer {
+    const buffer = Buffer.alloc(4);
+    buffer.writeInt32BE(value);
+    return buffer;
+  }
+
+  function int8(value: number): Buffer {
+    const buffer = Buffer.alloc(8);
+    buffer.writeBigInt64BE(BigInt(value));
+    return buffer;
+  }
+
+  function utf8(value: string): Buffer {
+    return Buffer.from(value, "utf8");
+  }
+
+  function lengthPrefixed(value: string): Buffer {
+    const encoded = utf8(value);
+    return Buffer.concat([int4(encoded.length), encoded]);
+  }
+
+  interface RequestBinding {
+    readonly dashboardId: string;
+    readonly deploymentRevision?: string;
+    readonly expectedInputSha256: Buffer;
+    readonly expectedLifecycleRevision: number;
+    readonly inputSnapshotId: string;
+    readonly purpose: "replay" | "suggest";
+    readonly replaySourceRunId: string | null;
+    readonly runRequestId: string;
+  }
+
+  /**
+   * The frozen `dasher.agent-run-request-idempotency.v1` construction, written
+   * independently in TypeScript. `dasher_api.request_agent_run` recomputes it
+   * from its own parameters and refuses any digest that does not match, so a
+   * caller that drifts one bound field without recomputing is denied here, and
+   * a caller that recomputes it reaches the stored-request comparison instead.
+   */
+  function requestIdempotencyDigest(binding: RequestBinding): Buffer {
+    return createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.agent-run-request-idempotency.v1"),
+          Buffer.from([0]),
+          uuidBytes(binding.dashboardId),
+          uuidBytes(binding.inputSnapshotId),
+          uuidBytes(binding.runRequestId),
+          lengthPrefixed(binding.purpose),
+          int8(binding.expectedLifecycleRevision),
+          binding.expectedInputSha256,
+          binding.replaySourceRunId === null
+            ? Buffer.from([0])
+            : Buffer.concat([
+                Buffer.from([1]),
+                uuidBytes(binding.replaySourceRunId),
+              ]),
+          lengthPrefixed(binding.deploymentRevision ?? deploymentRevision),
+        ]),
+      )
+      .digest();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Repository construction                                           */
+  /* ---------------------------------------------------------------- */
+
+  function tenantRepository(
+    client: PoolClient,
+    uuidValues: readonly string[],
+    revision: string = deploymentRevision,
+  ): AgentRunRepository {
+    return new AgentRunRepository({
+      pool: task6BorrowedPool(client),
+      keyRing,
+      deploymentRevision: revision,
+      uuidSource: task6UuidSource(uuidValues),
+    });
+  }
+
+  function operatorRepository(): AgentRunOperatorRepository {
+    return new AgentRunOperatorRepository({
+      pool: requireRunPool() as unknown as PgCompatiblePool,
+      runLoginRole: runUsername,
+    });
+  }
+
+  /**
+   * Uses the real restricted run-login pool while retaining the raw PostgreSQL
+   * code that the repository deliberately normalizes at its public boundary.
+   */
+  function observedOperatorRepository(
+    observeDatabaseError: (error: unknown) => void,
+  ): AgentRunOperatorRepository {
+    const pool = requireRunPool();
+    const observedPool: PgCompatiblePool = {
+      async connect() {
+        const client = await pool.connect();
+        return {
+          async query(text: string, values?: unknown[]) {
+            try {
+              return await client.query(text, values);
+            } catch (error) {
+              observeDatabaseError(error);
+              throw error;
+            }
+          },
+          release(destroy?: boolean) {
+            client.release(destroy);
+          },
+        };
+      },
+    };
+    return new AgentRunOperatorRepository({
+      pool: observedPool,
+      runLoginRole: runUsername,
+    });
+  }
+
+  /** Runs one tenant repository call on a fresh `dasher_app` client. */
+  async function asTenant<Result>(
+    use: (repository: AgentRunRepository) => Promise<Result>,
+    uuidValues: readonly string[],
+    revision: string = deploymentRevision,
+  ): Promise<Result> {
+    const client = await appPool!.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      return await use(tenantRepository(client, uuidValues, revision));
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Observation                                                       */
+  /* ---------------------------------------------------------------- */
+
+  type Projection = Readonly<Record<string, string | null>>;
+
+  /**
+   * Every row family a tenant request or cancel can write, counted for this
+   * organization. An unchanged snapshot across a denied call is the zero-DML
+   * proof: no run, request payload, event, event payload, budget counter,
+   * attempt or audit row appeared or disappeared.
+   */
+  async function ledgerCounts(): Promise<Projection> {
+    const result = await ownerPool.query<Projection>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_runs
+          WHERE organization_id = $1::uuid) AS runs,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.agent_run_request_payloads
+          WHERE organization_id = $1::uuid) AS request_payloads,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_events
+          WHERE organization_id = $1::uuid) AS events,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_event_payloads
+          WHERE organization_id = $1::uuid) AS event_payloads,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_attempts
+          WHERE organization_id = $1::uuid) AS attempts,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.agent_run_budget_counters
+          WHERE organization_id = $1::uuid) AS budget_counters,
+         (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+          WHERE organization_id = $1::uuid) AS audit_events,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_policy_revisions)
+           AS policy_revisions`,
+      [organizationId()],
+    );
+    return result.rows[0]!;
+  }
+
+  /** The full mutable head of one run, including its cancel projections. */
+  async function runProjection(runId: string): Promise<Projection> {
+    const result = await ownerPool.query<Projection>(
+      `SELECT run.state, run.run_revision::text AS run_revision,
+         run.current_event_sequence::text AS current_event_sequence,
+         pg_catalog.encode(run.current_event_sha256,'hex') AS head_sha256,
+         run.lease_epoch::text AS lease_epoch,
+         run.policy_revision::text AS policy_revision,
+         run.request_payload_id::text AS request_payload_id,
+         run.requesting_user_id::text AS requesting_user_id,
+         run.requesting_authority_revision::text AS authority_revision,
+         run.terminal_operation_kind,
+         run.tenant_cancel_operation_id::text AS cancel_operation_id,
+         pg_catalog.encode(run.tenant_cancel_operation_sha256,'hex')
+           AS cancel_operation_sha256,
+         pg_catalog.encode(run.tenant_cancel_result_sha256,'hex')
+           AS cancel_result_sha256,
+         run.tenant_cancel_result_run_revision::text AS cancel_result_revision,
+         run.tenant_cancel_result_event_sequence::text AS cancel_result_sequence,
+         pg_catalog.encode(run.tenant_cancel_result_event_sha256,'hex')
+           AS cancel_result_event_sha256
+       FROM dasher.agent_runs AS run WHERE run.run_id = $1::uuid`,
+      [runId],
+    );
+    return result.rows[0]!;
+  }
+
+  /** The stored request payload row a replay must reconstruct from. */
+  async function requestPayloadProjection(
+    runRequestId: string,
+  ): Promise<Projection> {
+    const result = await ownerPool.query<Projection>(
+      `SELECT payload.request_payload_id::text AS request_payload_id,
+         payload.dashboard_id::text AS dashboard_id,
+         pg_catalog.encode(payload.request_idempotency_sha256,'hex')
+           AS idempotency_sha256,
+         pg_catalog.encode(payload.content_nonce,'hex') AS content_nonce,
+         pg_catalog.encode(payload.request_sha256,'hex') AS request_sha256,
+         pg_catalog.encode(pg_catalog.sha256(payload.canonical_bytes),'hex')
+           AS canonical_bytes_sha256,
+         payload.created_at::text AS created_at
+       FROM dasher.agent_run_request_payloads AS payload
+       WHERE payload.organization_id = $1::uuid
+         AND payload.run_request_id = $2::uuid`,
+      [organizationId(), runRequestId],
+    );
+    return result.rows[0]!;
+  }
+
+  /** The immutable audit header a retained operation UUID reserves. */
+  async function auditProjection(auditEventId: string): Promise<Projection> {
+    const result = await ownerPool.query<Projection>(
+      `SELECT audit.audit_event_id::text AS audit_event_id,
+         audit.organization_id::text AS organization_id,
+         audit.action, audit.target_type,
+         audit.target_id::text AS target_id, audit.outcome,
+         pg_catalog.encode(audit.content_sha256,'hex') AS content_sha256,
+         audit.deployment_revision,
+         audit.actor_user_id::text AS actor_user_id,
+         audit.authority_revision::text AS authority_revision
+       FROM dasher.audit_events AS audit
+       WHERE audit.audit_event_id = $1::uuid`,
+      [auditEventId],
+    );
+    return result.rows[0] ?? { present: null };
+  }
+
+  interface DenialProbe {
+    readonly action: () => Promise<unknown>;
+    readonly auditEventId?: string;
+    readonly error: typeof OperationConflictError | typeof OperationDeniedError;
+    readonly runId?: string;
+    readonly runRequestId?: string;
+  }
+
+  /**
+   * Asserts the exact public error class and that the call wrote nothing:
+   * identical row counts, identical run head, identical stored request payload
+   * and identical audit header before and after.
+   */
+  async function expectDenialWithoutDml(probe: DenialProbe): Promise<void> {
+    const beforeCounts = await ledgerCounts();
+    const beforeRun =
+      probe.runId === undefined ? null : await runProjection(probe.runId);
+    const beforePayload =
+      probe.runRequestId === undefined
+        ? null
+        : await requestPayloadProjection(probe.runRequestId);
+    const beforeAudit =
+      probe.auditEventId === undefined
+        ? null
+        : await auditProjection(probe.auditEventId);
+    await expect(probe.action()).rejects.toBeInstanceOf(probe.error);
+    expect(await ledgerCounts()).toEqual(beforeCounts);
+    if (probe.runId !== undefined) {
+      expect(await runProjection(probe.runId)).toEqual(beforeRun);
+    }
+    if (probe.runRequestId !== undefined) {
+      expect(await requestPayloadProjection(probe.runRequestId)).toEqual(
+        beforePayload,
+      );
+    }
+    if (probe.auditEventId !== undefined) {
+      expect(await auditProjection(probe.auditEventId)).toEqual(beforeAudit);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Fixture seeding                                                   */
+  /* ---------------------------------------------------------------- */
+
+  interface RequestableDashboard {
+    readonly catalogSnapshotId: string;
+    readonly contractId: string;
+    readonly contractSetId: string;
+    readonly dashboardId: string;
+    readonly evidenceId: string;
+    readonly fieldId: string;
+    readonly inputSha256: Buffer;
+    readonly inputSnapshotId: string;
+  }
+
+  /**
+   * Seeds one dashboard whose source snapshot, field catalog and metric
+   * contract set satisfy every structural, ordering and digest check
+   * `dasher_api.request_agent_run` performs. The canonical bytes and all four
+   * digests are produced by the server from the same expressions the frozen
+   * function recomputes, so nothing here is a hand-written hash.
+   */
+  async function seedRequestableDashboard(
+    client: PoolClient,
+  ): Promise<RequestableDashboard> {
+    const dashboardId = randomUUID();
+    const inputSnapshotId = randomUUID();
+    const catalogSnapshotId = randomUUID();
+    const contractSetId = randomUUID();
+    const contractId = randomUUID();
+    const evidenceId = randomUUID();
+    const [fieldId, eventTimeFieldId] = [randomUUID(), randomUUID()].sort() as [
+      string,
+      string,
+    ];
+
+    await client.query(
+      `INSERT INTO dasher.dashboards (
+         organization_id, dashboard_id, title, created_by_user_id, created_at,
+         created_kind, current_kind, lifecycle_state, lifecycle_revision,
+         capability_epoch, cache_epoch, retention_policy_revision,
+         tombstone_lineage_id
+       ) VALUES (
+         $1::uuid, $2::uuid, 'Task 9D semantics dashboard', $3::uuid,
+         transaction_timestamp(), 'durable', 'durable', 'draft', 1, 0, 0, 1,
+         $4::uuid
+       )`,
+      [organizationId(), dashboardId, requester.userId, randomUUID()],
+    );
+
+    // The canonical input table, its row id and its content digest are all
+    // derived server-side with the frozen sort-key and row-id grammars.
+    const snapshot = await client.query<{ readonly input_sha256: Buffer }>(
+      `WITH sort AS (
+         SELECT pg_catalog.int8send(1::bigint)
+           || pg_catalog.uuid_send($3::uuid)
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int8send(1::bigint) AS sort_key
+       ),
+       identified AS (
+         SELECT sort.sort_key, dasher_private.uuid_v8_from_sha256_v1(
+           pg_catalog.convert_to('dasher.input-row-id.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.uuid_send($2::uuid)
+           || sort.sort_key
+         ) AS row_id
+         FROM sort
+       ),
+       body AS (
+         SELECT dasher_private.canonical_jsonb_bytes_v1(
+           pg_catalog.jsonb_build_object(
+             'schema','canonical-input-table-v1',
+             'input_snapshot_id', $2::uuid::text,
+             'row_count','i64:1',
+             'fields', pg_catalog.jsonb_build_array(
+               pg_catalog.jsonb_build_object(
+                 'field_id', $3::uuid::text,
+                 'scalar_type','integer',
+                 'nullable', false,
+                 'stable_key_ordinal','i64:0'
+               ),
+               pg_catalog.jsonb_build_object(
+                 'field_id', $4::uuid::text,
+                 'scalar_type','timestamp',
+                 'nullable', false,
+                 'stable_key_ordinal', NULL::text
+               )
+             ),
+             'rows', pg_catalog.jsonb_build_array(
+               pg_catalog.jsonb_build_object(
+                 'row_id', identified.row_id::text,
+                 'values', pg_catalog.jsonb_build_array(
+                   pg_catalog.jsonb_build_object(
+                     'field_id', $3::uuid::text,
+                     'state','present',
+                   'type','integer',
+                   'value','i64:1'
+                 ),
+                 pg_catalog.jsonb_build_object(
+                   'field_id', $4::uuid::text,
+                   'state','present',
+                   'type','timestamp',
+                   'value','2026-08-01T00:00:00.000000Z'
+                 )
+               )
+               )
+             )
+           )
+         ) AS canonical_bytes
+         FROM identified
+       )
+       INSERT INTO dasher.source_snapshots (
+         organization_id, snapshot_id, source_kind, canonical_bytes,
+         content_sha256, observed_at, retrieved_at, created_at
+       )
+       SELECT $1::uuid, $2::uuid, 'synthetic_fixture', body.canonical_bytes,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.canonical-input-table.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(body.canonical_bytes))
+           || body.canonical_bytes
+         ),
+         '2026-08-01T00:00:00.000000Z', '2026-08-01T00:00:10.000000Z',
+         transaction_timestamp()
+       FROM body
+       RETURNING content_sha256 AS input_sha256`,
+      [organizationId(), inputSnapshotId, fieldId, eventTimeFieldId],
+    );
+    const inputSha256 = snapshot.rows[0]!.input_sha256;
+
+    await client.query(
+      `INSERT INTO dasher.evidence_records (
+         organization_id, evidence_id, snapshot_id, evidence_kind,
+         coordinates, transformation, content_sha256, observed_at,
+         retrieved_at, created_at
+       ) VALUES (
+         $1::uuid, $2::uuid, $3::uuid, 'source_record', 'row:1', 'identity',
+         pg_catalog.sha256(pg_catalog.uuid_send($2::uuid)),
+         '2026-08-01T00:00:00.000000Z', '2026-08-01T00:00:10.000000Z',
+         transaction_timestamp()
+       )`,
+      [organizationId(), evidenceId, inputSnapshotId],
+    );
+
+    // The catalog snapshot's canonical bytes are the exact projection
+    // request_agent_run rebuilds from dasher.field_catalog_entries, so the
+    // entry rows below and this document cannot drift apart.
+    await client.query(
+      `WITH field_value AS (
+         SELECT pg_catalog.jsonb_build_object(
+           'field_id', $4::uuid::text,
+           'source_path', '$.value',
+           'logical_name', 'value',
+           'scalar_type', 'integer',
+           'nullable', false,
+           'semantic_type', 'measure',
+           'unit', NULL::text,
+           'currency', NULL::text,
+           'grain', 'row',
+           'event_time_field_id', $9::uuid,
+           'stable_key_ordinal', 'i64:0',
+           'max_value_bytes', 'i64:8',
+           'allowed_aggregations', ARRAY['sum']::text[],
+           'allowed_dimensions', ARRAY[]::uuid[],
+           'lineage_evidence_ids', ARRAY[$5::uuid]
+         ) AS value
+       ),
+       event_time_value AS (
+         SELECT pg_catalog.jsonb_build_object(
+           'field_id', $9::uuid::text,
+           'source_path', '$.observed_at',
+           'logical_name', 'observed_at',
+           'scalar_type', 'timestamp',
+           'nullable', false,
+           'semantic_type', 'event_time',
+           'unit', NULL::text,
+           'currency', NULL::text,
+           'grain', 'row',
+           'event_time_field_id', NULL::uuid,
+           'stable_key_ordinal', NULL::text,
+           'max_value_bytes', 'i64:29',
+           'allowed_aggregations', ARRAY['max']::text[],
+           'allowed_dimensions', ARRAY[]::uuid[],
+           'lineage_evidence_ids', ARRAY[$5::uuid]
+         ) AS value
+       ),
+       document AS (
+         SELECT dasher_private.canonical_jsonb_bytes_v1(
+           pg_catalog.jsonb_build_object(
+             'schema','field-catalog-snapshot-v1',
+             'catalog_snapshot_id', $3::uuid::text,
+             'input_snapshot_id', $2::uuid::text,
+             'input_sha256', pg_catalog.encode($6::bytea,'hex'),
+             'input_row_count','i64:1',
+             'evaluated_at', pg_catalog.to_char(
+               $7::timestamptz AT TIME ZONE 'UTC',
+               'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+             'fields', pg_catalog.jsonb_build_array(
+               field_value.value, event_time_value.value)
+           )
+         ) AS canonical_bytes
+         FROM field_value CROSS JOIN event_time_value
+       )
+       INSERT INTO dasher.field_catalog_snapshots (
+         organization_id, dashboard_id, catalog_snapshot_id,
+         input_snapshot_id, input_sha256, input_row_count, catalog_sha256,
+         evaluated_at, canonical_bytes, created_at
+       )
+       SELECT $1::uuid, $8::uuid, $3::uuid, $2::uuid, $6::bytea, 1,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.field-catalog-snapshot.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(document.canonical_bytes))
+           || document.canonical_bytes
+         ),
+         $7::timestamptz, document.canonical_bytes, transaction_timestamp()
+       FROM document`,
+      [
+        organizationId(),
+        inputSnapshotId,
+        catalogSnapshotId,
+        fieldId,
+        evidenceId,
+        inputSha256,
+        evaluatedAt,
+        dashboardId,
+        eventTimeFieldId,
+      ],
+    );
+
+    await client.query(
+      `WITH field_values AS (
+         SELECT $6::uuid AS field_id, '$.observed_at'::text AS source_path,
+           'observed_at'::text AS logical_name, 'timestamp'::text AS scalar_type,
+           'event_time'::text AS semantic_type, NULL::uuid AS event_time_field_id,
+           NULL::smallint AS stable_key_ordinal, 29::bigint AS max_value_bytes,
+           ARRAY['max']::text[] AS allowed_aggregations,
+           pg_catalog.jsonb_build_object(
+             'field_id', $6::uuid::text, 'source_path', '$.observed_at',
+             'logical_name', 'observed_at', 'scalar_type', 'timestamp',
+             'nullable', false, 'semantic_type', 'event_time',
+             'unit', NULL::text, 'currency', NULL::text, 'grain', 'row',
+             'event_time_field_id', NULL::uuid,
+             'stable_key_ordinal', NULL::text,
+             'max_value_bytes', 'i64:29',
+             'allowed_aggregations', ARRAY['max']::text[],
+             'allowed_dimensions', ARRAY[]::uuid[],
+             'lineage_evidence_ids', ARRAY[$5::uuid]
+           ) AS value
+         UNION ALL
+         SELECT $4::uuid, '$.value', 'value', 'integer', 'measure', $6::uuid,
+           0::smallint, 8::bigint, ARRAY['sum']::text[],
+           pg_catalog.jsonb_build_object(
+             'field_id', $4::uuid::text, 'source_path', '$.value',
+             'logical_name', 'value', 'scalar_type', 'integer',
+             'nullable', false, 'semantic_type', 'measure',
+             'unit', NULL::text, 'currency', NULL::text, 'grain', 'row',
+             'event_time_field_id', $6::uuid,
+             'stable_key_ordinal', 'i64:0', 'max_value_bytes', 'i64:8',
+             'allowed_aggregations', ARRAY['sum']::text[],
+             'allowed_dimensions', ARRAY[]::uuid[],
+             'lineage_evidence_ids', ARRAY[$5::uuid]
+           )
+       )
+       INSERT INTO dasher.field_catalog_entries (
+         organization_id, dashboard_id, catalog_snapshot_id, field_id,
+         source_path, logical_name, scalar_type, nullable, semantic_type,
+         grain, event_time_field_id, stable_key_ordinal, max_value_bytes,
+         allowed_aggregations,
+         allowed_dimensions, lineage_evidence_ids, entry_sha256
+       )
+       SELECT $1::uuid, $2::uuid, $3::uuid, field_values.field_id,
+         field_values.source_path, field_values.logical_name,
+         field_values.scalar_type, false, field_values.semantic_type, 'row',
+         field_values.event_time_field_id, field_values.stable_key_ordinal,
+         field_values.max_value_bytes, field_values.allowed_aggregations,
+         ARRAY[]::uuid[],
+         ARRAY[$5::uuid],
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.field-catalog-entry.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(pg_catalog.octet_length(
+                dasher_private.canonical_jsonb_bytes_v1(field_values.value)))
+           || dasher_private.canonical_jsonb_bytes_v1(field_values.value)
+         )
+       FROM field_values`,
+      [
+        organizationId(),
+        dashboardId,
+        catalogSnapshotId,
+        fieldId,
+        evidenceId,
+        eventTimeFieldId,
+      ],
+    );
+
+    await client.query(
+      `WITH contract_value AS (
+         SELECT pg_catalog.jsonb_build_object(
+           'contract_id', $5::uuid::text,
+           'version', 'i64:1',
+           'business_owner_membership_id', $6::uuid::text,
+           'data_owner_membership_id', $7::uuid::text,
+           'name', 'Task 9D metric',
+           'definition', 'sum of value',
+           'measure_field_id', $8::uuid::text,
+           'aggregation', 'sum',
+           'denominator_contract_id', NULL::uuid,
+           'denominator_contract_version', NULL::text,
+           'value_type', 'decimal',
+           'unit', NULL::text,
+           'currency', NULL::text,
+           'direction', 'neutral',
+           'threshold', NULL::text,
+           'target', NULL::text,
+           'grain', '${zeroKeyGroupGrain}',
+           'lag_millis', 'i64:0',
+           'freshness_slo_millis', 'i64:2592000000',
+           'allowed_dimension_field_ids', ARRAY[]::uuid[],
+           'calendar', 'gregorian',
+           'timezone', 'UTC',
+           'lineage_evidence_ids', ARRAY[$9::uuid],
+           'review_state', 'reviewed'
+         ) AS value
+       ),
+       set_value AS (
+         SELECT pg_catalog.jsonb_build_object(
+           'schema','metric-contract-set-v1',
+           'contract_set_id', $3::uuid::text,
+           'catalog_snapshot_id', $4::uuid::text,
+           'contracts', (SELECT pg_catalog.jsonb_agg(contract_value.value)
+                         FROM contract_value)
+         ) AS value
+       )
+       INSERT INTO dasher.metric_contract_versions (
+         organization_id, dashboard_id, contract_set_id, contract_set_sha256,
+         contract_id, contract_version, catalog_snapshot_id,
+         business_owner_membership_id, data_owner_membership_id, name,
+         definition, measure_field_id, aggregation, value_type, direction,
+         grain, lag_millis, freshness_slo_millis,
+         allowed_dimension_field_ids, calendar, timezone,
+         lineage_evidence_ids, review_state, contract_sha256, created_at
+       )
+       SELECT $1::uuid, $2::uuid, $3::uuid,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.metric-contract-set.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(pg_catalog.octet_length(
+                dasher_private.canonical_jsonb_bytes_v1(set_value.value)))
+           || dasher_private.canonical_jsonb_bytes_v1(set_value.value)
+         ),
+         $5::uuid, 1, $4::uuid, $6::uuid, $7::uuid, 'Task 9D metric',
+         'sum of value', $8::uuid, 'sum', 'decimal', 'neutral',
+         '${zeroKeyGroupGrain}', 0,
+         2592000000, ARRAY[]::uuid[], 'gregorian', 'UTC', ARRAY[$9::uuid],
+         'reviewed',
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.metric-contract-version.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(pg_catalog.octet_length(
+                dasher_private.canonical_jsonb_bytes_v1(contract_value.value)))
+           || dasher_private.canonical_jsonb_bytes_v1(contract_value.value)
+         ),
+         transaction_timestamp()
+       FROM contract_value CROSS JOIN set_value`,
+      [
+        organizationId(),
+        dashboardId,
+        contractSetId,
+        catalogSnapshotId,
+        contractId,
+        requester.membershipId,
+        bystander.membershipId,
+        fieldId,
+        evidenceId,
+      ],
+    );
+
+    return {
+      catalogSnapshotId,
+      contractId,
+      contractSetId,
+      dashboardId,
+      evidenceId,
+      fieldId,
+      inputSha256,
+      inputSnapshotId,
+    };
+  }
+
+  const policyVectorStructOrder = [
+    "calls",
+    "candidates",
+    "specialist_attempts",
+    "reviewer_attempts",
+    "repair_attempts",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "total_tokens",
+    "wall_millis",
+    "work_millis",
+    "cost_micros",
+  ] as const;
+
+  function policyVectorDigestSql(column: string): string {
+    return policyVectorStructOrder
+      .map((field) => `pg_catalog.int8send((source.${column}).${field})`)
+      .join("\n         || ");
+  }
+
+  /**
+   * Appends a genuine second agent-run policy revision, chained to the first
+   * exactly as dasher_private.validate_agent_run_policy_chain_v1 recomputes
+   * it, and otherwise identical to it. Nothing about the run changes: what
+   * changes is that the run's binding to revision one is no longer the latest
+   * revision, which is the condition the operator fence refuses.
+   */
+  async function installLaterPolicyRevision(): Promise<void> {
+    await ownerPool.query(
+      `WITH source AS (
+         SELECT policy.* FROM dasher.agent_run_policy_revisions AS policy
+         WHERE policy.policy_revision = 1
+       )
+       INSERT INTO dasher.agent_run_policy_revisions (
+         policy_revision, previous_policy_revision, previous_policy_sha256,
+         policy_sha256, enabled, adapter_id, model_id, price_book_revision,
+         input_token_micros, output_token_micros, generation_limit_vector,
+         review_limit_vector, active_organization_run_limit,
+         active_dashboard_run_limit, approval_required_dashboard_limit,
+         provider_concurrency_limit, tool_attempt_limit, retry_limit,
+         planner_instructions_sha256, generator_instructions_sha256,
+         specialist_instructions_sha256, repair_instructions_sha256,
+         reviewer_instructions_sha256, created_at
+       )
+       SELECT 2, 1, source.policy_sha256,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.agent-run-policy.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int8send(2::bigint)
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.int8send(1::bigint)
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(source.policy_sha256))
+           || source.policy_sha256
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.int4send(pg_catalog.octet_length(source.adapter_id))
+           || pg_catalog.convert_to(source.adapter_id,'UTF8')
+           || pg_catalog.int4send(pg_catalog.octet_length(source.model_id))
+           || pg_catalog.convert_to(source.model_id,'UTF8')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(source.price_book_revision))
+           || pg_catalog.convert_to(source.price_book_revision,'UTF8')
+           || pg_catalog.int8send(source.input_token_micros)
+           || pg_catalog.int8send(source.output_token_micros)
+           || ${policyVectorDigestSql("generation_limit_vector")}
+           || ${policyVectorDigestSql("review_limit_vector")}
+           || pg_catalog.int8send(source.active_organization_run_limit)
+           || pg_catalog.int8send(source.active_dashboard_run_limit)
+           || pg_catalog.int8send(source.approval_required_dashboard_limit)
+           || pg_catalog.int8send(source.provider_concurrency_limit)
+           || pg_catalog.int8send(source.tool_attempt_limit)
+           || pg_catalog.int8send(source.retry_limit)
+           || pg_catalog.int4send(32) || source.planner_instructions_sha256
+           || pg_catalog.int4send(32) || source.generator_instructions_sha256
+           || pg_catalog.int4send(32) || source.specialist_instructions_sha256
+           || pg_catalog.int4send(32) || source.repair_instructions_sha256
+           || pg_catalog.int4send(32) || source.reviewer_instructions_sha256
+         ),
+         source.enabled, source.adapter_id, source.model_id,
+         source.price_book_revision, source.input_token_micros,
+         source.output_token_micros, source.generation_limit_vector,
+         source.review_limit_vector, source.active_organization_run_limit,
+         source.active_dashboard_run_limit,
+         source.approval_required_dashboard_limit,
+         source.provider_concurrency_limit, source.tool_attempt_limit,
+         source.retry_limit, source.planner_instructions_sha256,
+         source.generator_instructions_sha256,
+         source.specialist_instructions_sha256,
+         source.repair_instructions_sha256,
+         source.reviewer_instructions_sha256, transaction_timestamp()
+       FROM source`,
+    );
+  }
+
+  async function seedRequestableDashboardAsOwner(): Promise<RequestableDashboard> {
+    const client = await ownerPool.connect();
+    try {
+      return await seedRequestableDashboard(client);
+    } finally {
+      client.release();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Real request/cancel drivers                                       */
+  /* ---------------------------------------------------------------- */
+
+  interface RequestCall {
+    readonly auditEventId: string;
+    readonly binding: RequestBinding;
+    readonly csrfValue: string;
+    readonly idempotencySha256: Buffer;
+    readonly requestId: string;
+    readonly sessionToken: string;
+  }
+
+  function requestCall(
+    fixture: RequestableDashboard,
+    overrides: Partial<{
+      readonly auditEventId: string;
+      readonly binding: Partial<RequestBinding>;
+      readonly csrfValue: string;
+      readonly deploymentRevision: string;
+      readonly idempotencySha256: Buffer;
+      readonly requestId: string;
+      readonly runRequestId: string;
+      readonly sessionToken: string;
+    }> = {},
+  ): RequestCall {
+    const binding: RequestBinding = {
+      dashboardId: fixture.dashboardId,
+      expectedInputSha256: fixture.inputSha256,
+      expectedLifecycleRevision: 1,
+      inputSnapshotId: fixture.inputSnapshotId,
+      purpose: "suggest",
+      replaySourceRunId: null,
+      runRequestId: overrides.runRequestId ?? randomUUID(),
+      ...overrides.binding,
+      ...(overrides.deploymentRevision === undefined
+        ? {}
+        : { deploymentRevision: overrides.deploymentRevision }),
+    };
+    return {
+      auditEventId: overrides.auditEventId ?? randomUUID(),
+      binding,
+      csrfValue: overrides.csrfValue ?? requesterCsrfValue,
+      idempotencySha256:
+        overrides.idempotencySha256 ?? requestIdempotencyDigest(binding),
+      requestId: overrides.requestId ?? randomUUID(),
+      sessionToken: overrides.sessionToken ?? requesterSessionToken,
+    };
+  }
+
+  async function callRequest(
+    call: RequestCall,
+    revision: string = deploymentRevision,
+  ): Promise<RequestAgentRunResult> {
+    return asTenant(
+      async (repository) =>
+        repository.requestAgentRun({
+          currentCsrfValue: call.csrfValue,
+          dashboardId: call.binding.dashboardId,
+          expectedInputSha256: new Uint8Array(call.binding.expectedInputSha256),
+          expectedLifecycleRevision: call.binding.expectedLifecycleRevision,
+          idempotencySha256: new Uint8Array(call.idempotencySha256),
+          inputSnapshotId: call.binding.inputSnapshotId,
+          purpose: call.binding.purpose,
+          replaySourceRunId: call.binding.replaySourceRunId,
+          runRequestId: call.binding.runRequestId,
+          sessionToken: call.sessionToken,
+        }),
+      [call.requestId, call.auditEventId],
+      revision,
+    );
+  }
+
+  async function closeSemanticsFixture(): Promise<void> {
+    if (runPool !== undefined) {
+      const closing = runPool;
+      runPool = undefined;
+      await closing.end();
+    }
+    await dropTemporaryRunLogin(ownerPool, config.ownerDatabase, runUsername);
+    await closeAppPoolBeforeLoginTeardown();
+    if (appLoginCreated) {
+      await dropTemporaryAppLogin(
+        ownerPool,
+        config.appDatabase,
+        config.appUsername,
+      );
+      appLoginCreated = false;
+    }
+    await resetManagedSchemas();
+  }
+
+  async function installSemanticsFixture(
+    mode:
+      | "canonical"
+      | "old_result_kind"
+      | "without_guard_alter"
+      | "without_checkpoint_reducer_arm"
+      | "without_replay_candidate_provenance"
+      | "restored_shared_generated_at"
+      | "unbound_candidate_receipt"
+      | "without_transition_arm",
+  ): Promise<void> {
+    // resetManagedSchemas leaves dasher_app alone when an earlier suite has
+    // already bootstrapped it; this suite must also stand on its own.
+    const bootstrap = await ownerPool.connect();
+    try {
+      await bootstrapManagedRoles(bootstrap, []);
+    } finally {
+      bootstrap.release();
+    }
+    await createTemporaryAppLogin(ownerPool, config.appDsn, config.appUsername);
+    appLoginCreated = true;
+    if (mode === "canonical") {
+      await runMigrations(ownerPool, canonicalMigrationDirectory, [
+        config.appUsername,
+      ]);
+    } else {
+      const phase11Directory = await mkdtemp(
+        join(tmpdir(), "dasher-r17-red-phase11-"),
+      );
+      try {
+        await cp(canonicalMigrationDirectory, phase11Directory, {
+          recursive: true,
+        });
+        await rm(join(phase11Directory, phase12MigrationFilename));
+        await runMigrations(ownerPool, phase11Directory, [config.appUsername]);
+        const exactPhase12 = await readFile(
+          join(canonicalMigrationDirectory, phase12MigrationFilename),
+          "utf8",
+        );
+        let diagnosticPhase12: string;
+        if (mode === "without_guard_alter") {
+          const guardAlter =
+            "ALTER FUNCTION dasher_private.calculation_graph_constraint_guard_v1()\n" +
+            "  SECURITY DEFINER;";
+          if (!exactPhase12.endsWith(`${guardAlter}\n`)) {
+            throw new Error("phase-12 guard ALTER is not the final statement");
+          }
+          diagnosticPhase12 = exactPhase12.slice(0, -(guardAlter.length + 1));
+          if (
+            diagnosticPhase12.includes(
+              "ALTER FUNCTION dasher_private.calculation_graph_constraint_guard_v1()",
+            )
+          ) {
+            throw new Error(
+              "diagnostic phase 12 omitted more than one variable",
+            );
+          }
+        } else if (mode === "old_result_kind") {
+          const fixed = "  IF v_next_sequence = v_declared_result_count THEN";
+          const old =
+            "  IF v_source_result.result_kind IN ('candidate_output', 'candidate_invalid') THEN";
+          diagnosticPhase12 = exactPhase12.replace(fixed, old);
+          if (
+            diagnosticPhase12 === exactPhase12 ||
+            diagnosticPhase12.includes(fixed) ||
+            diagnosticPhase12.split(old).length !== 2
+          ) {
+            throw new Error("old-result-kind RED changed an inexact body");
+          }
+        } else if (mode === "without_checkpoint_reducer_arm") {
+          const armStart = "      WHEN 'replay_result_consumed' THEN\n";
+          const armEnd = "      WHEN 'attempt_reserved' THEN\n";
+          const startAt = exactPhase12.indexOf(armStart);
+          const endAt = exactPhase12.indexOf(armEnd, startAt);
+          if (
+            startAt < 0 ||
+            endAt < 0 ||
+            exactPhase12.split(armStart).length !== 2 ||
+            exactPhase12.split(armEnd).length !== 2
+          ) {
+            throw new Error(
+              "checkpoint RED did not find one exact reducer arm",
+            );
+          }
+          const checkpointArm = exactPhase12.slice(startAt, endAt);
+          if (
+            createHash("sha256").update(checkpointArm).digest("hex") !==
+            "193a568fddb8dae6c1b89931efb0a7b727458beea6c9464ed2fb91aa1d3f6daa"
+          ) {
+            throw new Error("checkpoint RED found an unpinned reducer arm");
+          }
+          diagnosticPhase12 =
+            exactPhase12.slice(0, startAt) + exactPhase12.slice(endAt);
+          if (
+            diagnosticPhase12.includes(armStart) ||
+            !diagnosticPhase12.includes("  v_reduced_purpose text;\n") ||
+            diagnosticPhase12.length !==
+              exactPhase12.length - checkpointArm.length
+          ) {
+            throw new Error("checkpoint RED changed more than its exact arm");
+          }
+        } else if (mode === "without_replay_candidate_provenance") {
+          // Item 27's fourth attributable RED: remove only the selected
+          // candidate receipt production and the Replay null-origin
+          // provenance branch. The R21 source-time correction stays, so the
+          // call cannot fail at the obsolete shared local-time predicate.
+          const fenceReceipt =
+            "      v_candidate_receipt_sha := pg_catalog.sha256(";
+          const fenceReceiptEnd = "    END IF;\n  END IF;\n  RETURN v_source;";
+          const receiptAt = exactPhase12.indexOf(fenceReceipt);
+          const receiptEndAt = exactPhase12.indexOf(fenceReceiptEnd, receiptAt);
+          const provenanceCase =
+            "    AND (CASE WHEN v_replay\n" +
+            "      THEN result.attempt_id IS NULL\n" +
+            "        AND result.result_payload_id IS NULL\n" +
+            "        AND result.replay_source_run_id IS NOT NULL\n" +
+            "        AND result.replay_source_result_sequence IS NOT NULL\n" +
+            "        AND result.replay_source_result_sha256 IS NOT NULL\n" +
+            "      ELSE result.attempt_id IS NOT NULL\n" +
+            "        AND result.result_payload_id IS NOT NULL\n" +
+            "      END);\n";
+          const localOriginOnly =
+            "    AND result.attempt_id IS NOT NULL\n" +
+            "    AND result.result_payload_id IS NOT NULL;\n";
+          const commitReceipt = "  IF v_replay THEN\n    -- A candidate ID is";
+          const commitReceiptEnd =
+            "  END IF;\n  SELECT candidate.* INTO v_existing";
+          const commitAt = exactPhase12.indexOf(commitReceipt);
+          const commitEndAt = exactPhase12.indexOf(commitReceiptEnd, commitAt);
+          if (
+            receiptAt < 0 ||
+            receiptEndAt < 0 ||
+            commitAt < 0 ||
+            commitEndAt < 0 ||
+            exactPhase12.split(fenceReceipt).length !== 2 ||
+            exactPhase12.split(provenanceCase).length !== 2 ||
+            exactPhase12.split(commitReceipt).length !== 2
+          ) {
+            throw new Error("provenance RED did not find its exact fragments");
+          }
+          diagnosticPhase12 =
+            exactPhase12.slice(0, receiptAt) +
+            exactPhase12.slice(receiptEndAt) +
+            "";
+          diagnosticPhase12 = diagnosticPhase12.replace(
+            provenanceCase,
+            localOriginOnly,
+          );
+          const reCommitAt = diagnosticPhase12.indexOf(commitReceipt);
+          const reCommitEndAt = diagnosticPhase12.indexOf(
+            commitReceiptEnd,
+            reCommitAt,
+          );
+          // The removed consumer block owns its own `END IF;`, so consume it
+          // and leave only the following idempotency SELECT.
+          diagnosticPhase12 =
+            diagnosticPhase12.slice(0, reCommitAt) +
+            diagnosticPhase12.slice(reCommitEndAt + "  END IF;\n".length);
+          if (
+            diagnosticPhase12.includes(provenanceCase) ||
+            diagnosticPhase12.includes(commitReceipt) ||
+            diagnosticPhase12.includes(
+              "v_candidate_receipt_sha := pg_catalog.sha256(",
+            ) ||
+            // The R21 source-time correction must survive intact.
+            !diagnosticPhase12.includes(
+              "    OR (NOT v_replay AND v_body->>'generatedAt' <> v_request_body->>'evaluation_time')\n",
+            ) ||
+            !diagnosticPhase12.includes(
+              "      IF v_request_body->>'evaluation_time' IS NULL\n",
+            ) ||
+            diagnosticPhase12.includes(
+              "    OR v_body->>'generatedAt' <> v_request_body->>'evaluation_time'\n",
+            )
+          ) {
+            throw new Error("provenance RED changed an inexact body");
+          }
+        } else if (mode === "unbound_candidate_receipt") {
+          // Item 28's vulnerable diagnostic: keep every other predicate, and
+          // remove from BOTH receipt preimages exactly the seven values that
+          // bind the request-pinned selected candidate to the one source row
+          // that produced it. Each side then digests the selected candidate
+          // independently of the named result, so the substitution is admitted.
+          const fenceFrom =
+            "        || pg_catalog.uuid_send((\n" +
+            "          v_selected_candidate_proof #>> '{materialized,result_id}'\n";
+          const fenceTo =
+            "        || pg_catalog.uuid_send(v_source_bundle.bundle_id)\n";
+          const commitFrom =
+            "      || pg_catalog.uuid_send(p_source_result_id)\n";
+          const commitTo =
+            "      || pg_catalog.uuid_send(v_bundle.bundle_id)\n";
+          const fenceAt = exactPhase12.indexOf(fenceFrom);
+          const fenceEnd = exactPhase12.indexOf(fenceTo, fenceAt);
+          const commitAt = exactPhase12.indexOf(commitFrom);
+          const commitEnd = exactPhase12.indexOf(commitTo, commitAt);
+          if (
+            fenceAt < 0 ||
+            fenceEnd < 0 ||
+            commitAt < 0 ||
+            commitEnd < 0 ||
+            exactPhase12.split(fenceFrom).length !== 2 ||
+            exactPhase12.split(fenceTo).length !== 2 ||
+            exactPhase12.split(commitFrom).length !== 2 ||
+            exactPhase12.split(commitTo).length !== 2
+          ) {
+            throw new Error("unbound-receipt RED did not find its fragments");
+          }
+          const withoutCommit =
+            exactPhase12.slice(0, commitAt) + exactPhase12.slice(commitEnd);
+          const reFenceAt = withoutCommit.indexOf(fenceFrom);
+          const reFenceEnd = withoutCommit.indexOf(fenceTo, reFenceAt);
+          diagnosticPhase12 =
+            withoutCommit.slice(0, reFenceAt) + withoutCommit.slice(reFenceEnd);
+          if (
+            diagnosticPhase12.includes(fenceFrom) ||
+            diagnosticPhase12.includes(commitFrom) ||
+            diagnosticPhase12.includes(
+              "p_precommit_validation_sha256\n    );",
+            ) ||
+            // Everything else about the receipt, fence, and R21 correction
+            // stays exactly as the canonical bytes have it.
+            !diagnosticPhase12.includes(
+              "      v_candidate_receipt_sha := pg_catalog.sha256(",
+            ) ||
+            !diagnosticPhase12.includes("    AND (CASE WHEN v_replay\n") ||
+            !diagnosticPhase12.includes(
+              "      IF v_request_body->>'evaluation_time' IS NULL\n",
+            ) ||
+            !diagnosticPhase12.includes(
+              "    OR (NOT v_replay AND v_body->>'generatedAt' <> v_request_body->>'evaluation_time')\n",
+            ) ||
+            !diagnosticPhase12.includes(
+              "        || pg_catalog.convert_to(v_request_body->>'evaluation_time', 'UTF8')\n",
+            ) ||
+            !diagnosticPhase12.includes(
+              "      || pg_catalog.convert_to(v_body->>'generatedAt', 'UTF8')\n",
+            )
+          ) {
+            throw new Error("unbound-receipt RED changed an inexact body");
+          }
+        } else if (mode === "restored_shared_generated_at") {
+          // Item 27's fifth attributable RED: keep the receipt and the Replay
+          // provenance branch, and restore only the obsolete shared comparison
+          // of candidate `generatedAt` to the local Replay request time.
+          const suggestOnly =
+            "    OR (NOT v_replay AND v_body->>'generatedAt' <> v_request_body->>'evaluation_time')\n";
+          const shared =
+            "    OR v_body->>'generatedAt' <> v_request_body->>'evaluation_time'\n";
+          diagnosticPhase12 = exactPhase12.replace(suggestOnly, shared);
+          if (
+            diagnosticPhase12 === exactPhase12 ||
+            diagnosticPhase12.includes(suggestOnly) ||
+            diagnosticPhase12.split(shared).length !== 2 ||
+            // Receipt, provenance branch, and fence proof are untouched.
+            !diagnosticPhase12.includes(
+              "      v_candidate_receipt_sha := pg_catalog.sha256(",
+            ) ||
+            !diagnosticPhase12.includes("    AND (CASE WHEN v_replay\n") ||
+            !diagnosticPhase12.includes(
+              "      IF v_request_body->>'evaluation_time' IS NULL\n",
+            ) ||
+            diagnosticPhase12.length !==
+              exactPhase12.length - (suggestOnly.length - shared.length)
+          ) {
+            throw new Error("time-binding RED changed an inexact body");
+          }
+        } else {
+          const transitionArm =
+            "    OR (v_event_kind = 'replay_result_consumed' AND NOT (\n" +
+            "      OLD.state = 'planning' AND NEW.state IN ('planning','generating')\n" +
+            "    ))\n";
+          const expandedAllowlist =
+            "      'attempt_reserved','replay_prerequisites_cloned','replay_result_consumed',\n" +
+            "      'candidate_set_closed'";
+          const oldAllowlist =
+            "      'attempt_reserved','replay_prerequisites_cloned','candidate_set_closed'";
+          diagnosticPhase12 = exactPhase12
+            .replace(transitionArm, "")
+            .replace(expandedAllowlist, oldAllowlist);
+          if (
+            diagnosticPhase12 === exactPhase12 ||
+            diagnosticPhase12.includes(transitionArm) ||
+            diagnosticPhase12.includes(expandedAllowlist) ||
+            diagnosticPhase12.split(oldAllowlist).length !== 2
+          ) {
+            throw new Error("transition-arm RED changed an inexact body");
+          }
+        }
+        await ownerPool.query(diagnosticPhase12);
+        if (mode === "without_guard_alter") {
+          const guard = await ownerPool.connect();
+          try {
+            expect(
+              (await calculationGraphGuardCatalog(guard)).securityDefiner,
+            ).toBe(false);
+          } finally {
+            guard.release();
+          }
+        }
+      } finally {
+        await rm(phase11Directory, { force: true, recursive: true });
+      }
+    }
+    appPool = new Pool({ connectionString: config.appDsn, max: 4 });
+
+    const client = await appPool.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      keyRing = createTask6KeyRing();
+      const requesterSession = keyRing.issue("session");
+      const requesterCsrf = keyRing.issue("csrf");
+      requesterSessionToken = requesterSession.wireValue;
+      requesterCsrfValue = requesterCsrf.wireValue;
+      requester = await createTask4Actor(client, "editor", undefined, {
+        csrfDigest: Buffer.from(requesterCsrf.persistence.digest),
+        sessionDigest: Buffer.from(requesterSession.persistence.digest),
+      });
+      const bystanderSession = keyRing.issue("session");
+      const bystanderCsrf = keyRing.issue("csrf");
+      bystanderSessionToken = bystanderSession.wireValue;
+      bystanderCsrfValue = bystanderCsrf.wireValue;
+      bystander = await createTask4Actor(
+        client,
+        "admin",
+        requester.organizationId,
+        {
+          csrfDigest: Buffer.from(bystanderCsrf.persistence.digest),
+          sessionDigest: Buffer.from(bystanderSession.persistence.digest),
+        },
+      );
+      await client.query("RESET ROLE");
+    } finally {
+      client.release();
+    }
+
+    const owner = await ownerPool.connect();
+    try {
+      await owner.query(
+        `INSERT INTO dasher.dashboard_lifecycle_policies (
+           organization_id, policy_revision, default_disposable_ttl_seconds,
+           retention_policy_revision, created_at, created_by_user_id,
+           provenance
+         ) VALUES (
+           $1::uuid, 1, 3600, 1, transaction_timestamp(), $2::uuid,
+           'task9d-r6-fixture'
+         )`,
+        [requester.organizationId, requester.userId],
+      );
+      await seedRunServicePrincipal(owner);
+    } finally {
+      owner.release();
+    }
+
+    await createTemporaryRunLogin(
+      ownerPool,
+      config.ownerDatabase,
+      runUsername,
+      runPassword,
+    );
+    const runDsn = new URL(config.ownerDsn);
+    runDsn.username = runUsername;
+    runDsn.password = runPassword;
+    runPool = new Pool({ connectionString: runDsn.toString(), max: 3 });
+  }
+
+  beforeAll(async () => {
+    await closeSemanticsFixture();
+    await installSemanticsFixture("without_guard_alter");
+    try {
+      const staged = await stagePlannedRun();
+      const fence = {
+        attemptToken: staged.lease.attemptToken,
+        leaseEpoch: staged.lease.leaseEpoch,
+        runId: staged.runId,
+      } as const;
+      const repository = operatorRepository();
+      const claimed = await repository.getClaimedRunInput(fence);
+      const requestBody = JSON.parse(
+        Buffer.from(claimed.canonicalRequestBytes).toString("utf8"),
+      ) as { readonly evaluation_time: string };
+      const attemptId = uuidV8();
+      const requestBytes = await generatorRequestBytes(
+        staged,
+        attemptId,
+        staged.bundleSha256,
+        staged.briefSha256,
+      );
+      await repository.reserveAttempt({
+        ...fence,
+        attemptId,
+        attemptKind: "generator",
+        canonicalRequestBytes: new Uint8Array(requestBytes),
+        partition: "generation",
+        reservedVector: generatorReservedVector,
+      });
+      const dispatch = plannerDispatchDigest(staged, attemptId, requestBytes);
+      await repository.startAttempt({
+        ...fence,
+        attemptId,
+        dispatchRequestSha256: new Uint8Array(dispatch),
+      });
+      await repository.authorizeAttemptInvocation({
+        ...fence,
+        attemptId,
+        dispatchRequestSha256: new Uint8Array(dispatch),
+      });
+      const generated = await generatorResult(
+        staged,
+        attemptId,
+        requestBytes,
+        validCandidateSpec(staged, requestBody.evaluation_time),
+      );
+      await repository.reconcileAttempt({
+        ...fence,
+        actualAccountingBytes: new Uint8Array(
+          accountingBytes(generatorReservedVector),
+        ),
+        attemptId,
+        canonicalRecordedResultBytes: new Uint8Array(generated.resultBytes),
+        outcome: "succeeded",
+        resultSha256: new Uint8Array(generated.resultSha256),
+      });
+      await repository.commitCandidate({
+        ...fence,
+        candidateId: uuidV8(),
+        canonicalDashboardSpecBytes: new Uint8Array(generated.candidateBytes),
+        commonBundleSha256: new Uint8Array(staged.bundleSha256),
+        precommitValidationSha256: new Uint8Array(generated.precommitSha256),
+        sourceResultId: generated.resultId,
+        sourceResultSha256: new Uint8Array(generated.resultSha256),
+      });
+      const calculation = await calculationFixture(staged, claimed);
+      let serverFailure: unknown;
+      const observingPool: PgCompatiblePool = {
+        async connect() {
+          const client = await requireRunPool().connect();
+          return {
+            async query(text: string, values?: unknown[]) {
+              try {
+                return await client.query(text, values);
+              } catch (error) {
+                if (text === "COMMIT") serverFailure = error;
+                throw error;
+              }
+            },
+            release(destroy?: boolean) {
+              client.release(destroy);
+            },
+          };
+        },
+      };
+      const diagnosticRepository = new AgentRunOperatorRepository({
+        pool: observingPool,
+        runLoginRole: runUsername,
+      });
+      const residue = async (): Promise<Projection> => {
+        const result = await ownerPool.query<Projection>(
+          `SELECT
+             (SELECT pg_catalog.count(*)::text
+              FROM dasher.calculation_graphs WHERE run_id = $1::uuid)
+               AS graphs,
+             (SELECT pg_catalog.count(*)::text
+              FROM dasher.calculation_results WHERE run_id = $1::uuid)
+               AS results,
+             (SELECT pg_catalog.count(*)::text
+              FROM dasher.agent_run_calculation_meters
+              WHERE run_id = $1::uuid) AS meters`,
+          [staged.runId],
+        );
+        return result.rows[0]!;
+      };
+      const residueBefore = await residue();
+      let clientFailure: unknown;
+      await diagnosticRepository
+        .commitCalculationGraph({
+          ...fence,
+          canonicalGraphBytes: new Uint8Array(calculation.graphBytes),
+          canonicalResultBytes: new Uint8Array(calculation.resultBytes),
+          expectedInputSha256: new Uint8Array(staged.fixture.inputSha256),
+          graphId: calculation.graphId,
+          meterVector: calculation.meterVector,
+        })
+        .catch((error: unknown) => {
+          clientFailure = error;
+        });
+      if (!(clientFailure instanceof OperationInternalError)) {
+        throw new Error(
+          "diagnostic graph commit did not use the internal channel",
+        );
+      }
+      const server = serverFailure as
+        | {
+            readonly code?: string;
+            readonly message?: string;
+            readonly schema?: string;
+          }
+        | undefined;
+      deferredGuardRedEvidence = {
+        client: {
+          code: clientFailure.code,
+          message: clientFailure.message,
+          outcome: clientFailure.outcome,
+          ownProperties: Object.getOwnPropertyNames(clientFailure).sort(),
+          retrySafe: clientFailure.retrySafe,
+        },
+        residueAfter: await residue(),
+        residueBefore,
+        server: {
+          code: server?.code,
+          message: server?.message,
+          schema: server?.schema,
+        },
+      };
+    } finally {
+      await closeSemanticsFixture();
+    }
+
+    const captureReplayRed = async (
+      mode: "old_result_kind" | "without_transition_arm",
+    ) => {
+      await installSemanticsFixture(mode);
+      try {
+        const source = await stageApprovalRequiredSource();
+        const replay = await stageReplayRun(source, false);
+        const fence = {
+          attemptToken: replay.lease.attemptToken,
+          leaseEpoch: replay.lease.leaseEpoch,
+          runId: replay.runId,
+        } as const;
+        const repository = operatorRepository();
+        for (const result of replay.results.slice(0, -1)) {
+          await repository.consumeReplayResult({
+            ...fence,
+            sourceResultSequence: result.sourceResultSequence,
+            sourceResultSha256: result.sourceResultSha256,
+          });
+        }
+        expect((await runProjection(replay.runId))["state"]).toBe(
+          mode === "old_result_kind" ? "generating" : "planning",
+        );
+        const runBefore = await runProjection(replay.runId);
+        const ledgerBefore = await operatorLedger(replay.runId);
+        let error: unknown;
+        const finalResult = replay.results.at(-1)!;
+        await repository
+          .consumeReplayResult({
+            ...fence,
+            sourceResultSequence: finalResult.sourceResultSequence,
+            sourceResultSha256: finalResult.sourceResultSha256,
+          })
+          .catch((failure: unknown) => {
+            error = failure;
+          });
+        return {
+          error,
+          ledgerAfter: await operatorLedger(replay.runId),
+          ledgerBefore,
+          runAfter: await runProjection(replay.runId),
+          runBefore,
+        };
+      } finally {
+        await closeSemanticsFixture();
+      }
+    };
+    replayRedEvidence = {
+      old_result_kind: await captureReplayRed("old_result_kind"),
+      without_transition_arm: await captureReplayRed("without_transition_arm"),
+    };
+    await installSemanticsFixture("without_checkpoint_reducer_arm");
+    try {
+      checkpointReducerRedEvidence = await checkpointReducerJourney();
+    } finally {
+      await closeSemanticsFixture();
+    }
+    await installSemanticsFixture("without_replay_candidate_provenance");
+    try {
+      nullOriginRedEvidence = await replayCandidateJourney();
+    } finally {
+      await closeSemanticsFixture();
+    }
+    await installSemanticsFixture("restored_shared_generated_at");
+    try {
+      timeBindingRedEvidence = await replayCandidateJourney();
+    } finally {
+      await closeSemanticsFixture();
+    }
+    await installSemanticsFixture("unbound_candidate_receipt");
+    try {
+      unboundReceiptEvidence = await replayCandidateJourney({
+        substituteUnselectedResult: true,
+      });
+    } finally {
+      // Dropping the diagnostic schema rolls back the incorrectly admitted
+      // candidate, payload, event, and run revision this migration persisted.
+      await closeSemanticsFixture();
+    }
+    await installSemanticsFixture("canonical");
+  }, 1_800_000);
+
+  /**
+   * `dasher_private.initialize_run_operator_context_v1` rebuilds both principal
+   * digests from the row and refuses the session unless they match, so the
+   * allowlist row is written with the server's own construction.
+   */
+  async function seedRunServicePrincipal(client: PoolClient): Promise<void> {
+    await client.query(
+      `INSERT INTO dasher.run_service_principal_allowlist (
+         run_service_principal_id, principal_revision, session_login, enabled,
+         capabilities, capabilities_sha256, previous_principal_revision,
+         previous_principal_sha256, principal_sha256, database_oid,
+         database_name, created_at
+       )
+       SELECT
+         identity.principal_id, 1, identity.session_login, true,
+         identity.capabilities, identity.capabilities_sha256, NULL, NULL,
+         pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.run-principal.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.uuid_send(identity.principal_id)
+           || pg_catalog.int8send(1)
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(identity.session_login::text))
+           || pg_catalog.convert_to(identity.session_login::text,'UTF8')
+           || pg_catalog.decode('01','hex')
+           || pg_catalog.int8send(
+                pg_catalog.cardinality(identity.capabilities))
+           || identity.capability_bytes
+           || pg_catalog.int4send(32)
+           || identity.capabilities_sha256
+           || pg_catalog.int8send(identity.database_oid::bigint)
+           || pg_catalog.int4send(
+                pg_catalog.octet_length(identity.database_name::text))
+           || pg_catalog.convert_to(identity.database_name::text,'UTF8')
+         ),
+         identity.database_oid, identity.database_name,
+         transaction_timestamp()
+       FROM (
+         SELECT $1::uuid AS principal_id, $2::text AS session_login,
+           base.capabilities,
+           (SELECT oid FROM pg_catalog.pg_database
+            WHERE datname = pg_catalog.current_database()) AS database_oid,
+           pg_catalog.current_database() AS database_name,
+           bytes.capability_bytes,
+           pg_catalog.sha256(
+             pg_catalog.convert_to(
+               'dasher.run-principal-capabilities.v1','UTF8')
+             || pg_catalog.decode('00','hex')
+             || pg_catalog.int8send(pg_catalog.cardinality(base.capabilities))
+             || bytes.capability_bytes
+           ) AS capabilities_sha256
+         FROM (
+           SELECT ARRAY[
+             'checkpoint','claim','clone_replay','close_candidate_set',
+             'commit_abstention','commit_brief','commit_bundle',
+             'commit_candidate','commit_claims','commit_graph',
+             'commit_manifest','commit_validation','consume_replay',
+             'dispatch','finalize_ranking','finish','read_input','read_replay',
+             'reconcile','release','reserve'
+           ]::text[] AS capabilities
+         ) AS base
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(pg_catalog.string_agg(
+             pg_catalog.int4send(pg_catalog.octet_length(capability.value))
+             || pg_catalog.convert_to(capability.value,'UTF8'),
+             ''::bytea ORDER BY capability.ordinal
+           ), ''::bytea) AS capability_bytes
+           FROM pg_catalog.unnest(base.capabilities)
+             WITH ORDINALITY AS capability(value, ordinal)
+         ) AS bytes
+       ) AS identity`,
+      [principalId, runUsername],
+    );
+  }
+
+  afterAll(async () => {
+    if (runPool !== undefined) {
+      const closing = runPool;
+      runPool = undefined;
+      await closing.end();
+    }
+    await dropTemporaryRunLogin(ownerPool, config.ownerDatabase, runUsername);
+  }, 300_000);
+
+  it("attributes the one-variable restricted repository RED at COMMIT and leaves no calculation residue", () => {
+    expect(deferredGuardRedEvidence).toEqual({
+      client: {
+        code: "internal_error",
+        message: "Internal operation failure",
+        outcome: "commit_indeterminate",
+        ownProperties: [
+          "code",
+          "message",
+          "name",
+          "outcome",
+          "retrySafe",
+          "stack",
+        ],
+        retrySafe: false,
+      },
+      residueAfter: { graphs: "0", meters: "0", results: "0" },
+      residueBefore: { graphs: "0", meters: "0", results: "0" },
+      server: {
+        code: "42501",
+        message: "permission denied for schema dasher",
+        schema: undefined,
+      },
+    });
+    const executableSurface = JSON.stringify(deferredGuardRedEvidence?.client);
+    expect(executableSurface).not.toMatch(
+      /42501|permission denied|dasher_private|calculation_graph_constraint_guard/u,
+    );
+  });
+
+  it.each(["old_result_kind", "without_transition_arm"] as const)(
+    "attributes the isolated %s Replay RED to the final consume with zero transaction residue",
+    (mode) => {
+      const evidence = replayRedEvidence?.[mode];
+      expect(evidence?.error).toBeInstanceOf(OperationConflictError);
+      expect(evidence?.runAfter).toEqual(evidence?.runBefore);
+      expect(evidence?.ledgerAfter).toEqual(evidence?.ledgerBefore);
+    },
+  );
+
+  it("attributes the omitted checkpoint-reducer arm RED and runs the identical canonical journey GREEN", async () => {
+    const red = checkpointReducerRedEvidence;
+    expect(red?.error).toBeInstanceOf(OperationConflictError);
+    expectOpaqueFailure(red?.error, red?.runId ?? "");
+    expect(red?.result).toBeUndefined();
+    expect(red?.checkpointAfter).toEqual(red?.checkpointBefore);
+    expect(red?.runAfter).toEqual(red?.runBefore);
+    expect(red?.reuseProbeStatus).toBe("no_eligible_run");
+
+    const green = await checkpointReducerJourney();
+    expect(green.error).toBeUndefined();
+    expect(green.result?.checkpointRevision).toBe(1);
+    expect(green.checkpointBefore).toMatchObject({
+      checkpoint_payloads: "0",
+      checkpoints: "0",
+    });
+    expect(green.checkpointAfter).toMatchObject({
+      checkpoint_payloads: "1",
+      checkpoints: "1",
+      event_payloads: String(
+        Number(green.checkpointBefore["event_payloads"]) + 1,
+      ),
+      events: String(Number(green.checkpointBefore["events"]) + 1),
+    });
+    expect(green.runAfter).toMatchObject({
+      current_event_sequence: String(
+        Number(green.runBefore["current_event_sequence"]) + 1,
+      ),
+      run_revision: String(Number(green.runBefore["run_revision"]) + 1),
+      state: "generating",
+    });
+    expect(green.reuseProbeStatus).toBe("no_eligible_run");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 600_000);
+
+  it("keeps the deferred guard owner-only and impossible for every runtime role to invoke, feed, read, or attach", async () => {
+    const runtimeRoles = [
+      "dasher_app",
+      "dasher_run_operator",
+      "dasher_retention_operator",
+      runUsername,
+    ];
+    const authority = await ownerPool.query<{
+      readonly can_attach: boolean;
+      readonly can_execute: boolean;
+      readonly can_insert: boolean;
+      readonly can_read: boolean;
+      readonly dasher_usage: boolean;
+      readonly private_usage: boolean;
+      readonly role_name: string;
+    }>(
+      `
+      SELECT role_name,
+        pg_catalog.has_function_privilege(
+          role_name, '${calculationGraphGuardIdentity}', 'EXECUTE'
+        ) AS can_execute,
+        pg_catalog.has_schema_privilege(
+          role_name, 'dasher', 'USAGE'
+        ) AS dasher_usage,
+        pg_catalog.has_schema_privilege(
+          role_name, 'dasher_private', 'USAGE'
+        ) AS private_usage,
+        (
+          pg_catalog.has_table_privilege(
+            role_name, 'dasher.calculation_graphs', 'INSERT'
+          ) OR pg_catalog.has_table_privilege(
+            role_name, 'dasher.calculation_results', 'INSERT'
+          ) OR pg_catalog.has_table_privilege(
+            role_name, 'dasher.agent_run_calculation_meters', 'INSERT'
+          )
+        ) AS can_insert,
+        (
+          pg_catalog.has_table_privilege(
+            role_name, 'dasher.calculation_graphs', 'SELECT'
+          ) OR pg_catalog.has_table_privilege(
+            role_name, 'dasher.calculation_results', 'SELECT'
+          ) OR pg_catalog.has_table_privilege(
+            role_name, 'dasher.agent_run_calculation_meters', 'SELECT'
+          )
+        ) AS can_read,
+        (
+          pg_catalog.has_function_privilege(
+            role_name, '${calculationGraphGuardIdentity}', 'EXECUTE'
+          ) AND pg_catalog.has_schema_privilege(
+            role_name, 'dasher_private', 'USAGE'
+          ) AND EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_namespace AS namespace
+            WHERE (namespace.nspname = 'public'
+                OR namespace.nspname ~ '^dasher(?:_.*)?$')
+              AND pg_catalog.has_schema_privilege(
+                role_name, namespace.oid, 'CREATE'
+              )
+          )
+        ) AS can_attach
+      FROM pg_catalog.unnest($1::text[]) AS runtime(role_name)
+      ORDER BY role_name
+    `,
+      [runtimeRoles],
+    );
+    expect(authority.rows).toEqual(
+      [...runtimeRoles].sort().map((roleName) => ({
+        can_attach: false,
+        can_execute: false,
+        can_insert: false,
+        can_read: false,
+        dasher_usage: roleName === "dasher_app",
+        private_usage: false,
+        role_name: roleName,
+      })),
+    );
+    const guard = await ownerPool.connect();
+    try {
+      expect(await calculationGraphGuardCatalog(guard)).toMatchObject({
+        effectiveExecuteRoles: ["dasher_run_definer"],
+        owner: "dasher_run_definer",
+        searchPath: "search_path=pg_catalog",
+        securityDefiner: true,
+      });
+    } finally {
+      guard.release();
+    }
+  }, 60_000);
+
+  interface CancelCall {
+    readonly csrfValue: string;
+    readonly expectedRunRevision: number;
+    readonly operationAndAuditId: string;
+    readonly requestId: string;
+    readonly runId: string;
+    readonly sessionToken: string;
+  }
+
+  function cancelCall(
+    runId: string,
+    expectedRunRevision: number,
+    overrides: Partial<Omit<CancelCall, "runId">> = {},
+  ): CancelCall {
+    return {
+      csrfValue: overrides.csrfValue ?? requesterCsrfValue,
+      expectedRunRevision: overrides.expectedRunRevision ?? expectedRunRevision,
+      operationAndAuditId: overrides.operationAndAuditId ?? randomUUID(),
+      requestId: overrides.requestId ?? randomUUID(),
+      runId,
+      sessionToken: overrides.sessionToken ?? requesterSessionToken,
+    };
+  }
+
+  async function callCancel(
+    call: CancelCall,
+    revision: string = deploymentRevision,
+  ): Promise<CancelAgentRunResult> {
+    return asTenant(
+      async (repository) =>
+        repository.cancelAgentRun({
+          cancelOperationAndAuditId: call.operationAndAuditId,
+          currentCsrfValue: call.csrfValue,
+          expectedRunRevision: call.expectedRunRevision,
+          runId: call.runId,
+          sessionToken: call.sessionToken,
+        }),
+      [call.requestId],
+      revision,
+    );
+  }
+
+  /**
+   * Returns every run in this organization to a terminal state through the real
+   * tenant cancel path, so the frozen active-run limits (two per organization,
+   * one per dashboard) cannot make a later test fail for the wrong reason.
+   */
+  async function quiesceRuns(): Promise<void> {
+    const active = await ownerPool.query<{
+      readonly run_id: string;
+      readonly run_revision: string;
+    }>(
+      `SELECT run.run_id::text, run.run_revision::text
+       FROM dasher.agent_runs AS run
+       WHERE run.organization_id = $1::uuid
+         AND run.state IN (
+           'requested','authorized','planning','generating','revising',
+           'validating','approval_required'
+         )`,
+      [organizationId()],
+    );
+    for (const row of active.rows) {
+      await callCancel(cancelCall(row.run_id, Number(row.run_revision)));
+    }
+  }
+
+  /** Claims exactly the expected run through the production operator wrapper. */
+  async function claimExpectedRun(
+    runId: string,
+    leaseSeconds = 900,
+  ): Promise<AgentRunLeaseHandle> {
+    const claimed: ClaimAgentRunResult =
+      await operatorRepository().claimAgentRun({
+        claimRequestId: randomUUID(),
+        leaseSeconds,
+      });
+    if (claimed.status !== "claimed") {
+      throw new Error(`expected an ordinary claim, saw ${claimed.status}`);
+    }
+    expect(claimed.lease.runId).toBe(runId);
+    return claimed.lease;
+  }
+
+  it("replays the revision-one request after real advancement and denies every bound drift", async () => {
+    const fixture = await seedRequestableDashboardAsOwner();
+    const other = await seedRequestableDashboardAsOwner();
+    // `policy_revisions` is the only globally scoped family in `ledgerCounts`;
+    // every other counted family is organization-scoped. Whether the single
+    // agent-run policy revision already exists therefore depends on suite
+    // order, not on this test. Converge it first through one ordinary
+    // production request, then quiesce that run, so the baseline below is
+    // sampled with the singleton already in place. This creates no revision 2,
+    // resets no production state, and changes no policy semantics.
+    const policySeed = await seedRequestableDashboardAsOwner();
+    await callRequest(requestCall(policySeed));
+    await quiesceRuns();
+    const emptyLedger = await ledgerCounts();
+    expect(emptyLedger.policy_revisions).toBe("1");
+    const call = requestCall(fixture);
+
+    const first = await callRequest(call);
+    expect(first).toMatchObject({
+      policyRevision: 1,
+      runRevision: 1,
+      state: "requested",
+    });
+    const runId = first.runId;
+
+    // One run, one request payload, one event with one payload, one audit row,
+    // and the twenty-eight budget counters the frozen function seeds.
+    expect(await ledgerCounts()).toEqual({
+      ...emptyLedger,
+      audit_events: String(Number(emptyLedger.audit_events) + 1),
+      budget_counters: String(Number(emptyLedger.budget_counters) + 28),
+      event_payloads: String(Number(emptyLedger.event_payloads) + 1),
+      events: String(Number(emptyLedger.events) + 1),
+      // `policy_revisions` is the one globally scoped family in this ledger;
+      // every other counted family is organization-scoped. This suite's own
+      // diagnostic `beforeAll` already drove a request that converged the
+      // single agent-run policy revision into place, so this request must find
+      // it already there and add nothing. Asserting a `+1` here only passed by
+      // accident of suite order and failed the moment this test ran alone.
+      policy_revisions: emptyLedger.policy_revisions,
+      request_payloads: String(Number(emptyLedger.request_payloads) + 1),
+      runs: String(Number(emptyLedger.runs) + 1),
+    });
+
+    // Independent of any delta: the global table holds exactly the one
+    // convergent revision-1 row, with a valid (null-predecessor) chain head
+    // and the frozen revision-1 limit vector. No test may create revision 2.
+    const policyChain = await ownerPool.query<{
+      readonly active_dashboard_run_limit: string;
+      readonly active_organization_run_limit: string;
+      readonly approval_required_dashboard_limit: string;
+      readonly enabled: boolean;
+      readonly policy_revision: string;
+      readonly previous_policy_revision: string | null;
+      readonly previous_policy_sha256: Buffer | null;
+      readonly provider_concurrency_limit: string;
+      readonly retry_limit: string;
+      readonly tool_attempt_limit: string;
+    }>(
+      `SELECT policy_revision::text AS policy_revision,
+         previous_policy_revision::text AS previous_policy_revision,
+         previous_policy_sha256, enabled,
+         active_organization_run_limit::text AS active_organization_run_limit,
+         active_dashboard_run_limit::text AS active_dashboard_run_limit,
+         approval_required_dashboard_limit::text
+           AS approval_required_dashboard_limit,
+         provider_concurrency_limit::text AS provider_concurrency_limit,
+         tool_attempt_limit::text AS tool_attempt_limit,
+         retry_limit::text AS retry_limit
+       FROM dasher.agent_run_policy_revisions
+       ORDER BY policy_revision`,
+    );
+    expect(policyChain.rows).toEqual([
+      {
+        active_dashboard_run_limit: "1",
+        active_organization_run_limit: "2",
+        approval_required_dashboard_limit: "2",
+        enabled: true,
+        policy_revision: "1",
+        previous_policy_revision: null,
+        previous_policy_sha256: null,
+        provider_concurrency_limit: "1",
+        retry_limit: "1",
+        tool_attempt_limit: "0",
+      },
+    ]);
+    // The run this request created is bound to that exact global revision.
+    expect(first.policyRevision).toBe(1);
+    expect((await runProjection(runId)).policy_revision).toBe("1");
+
+    const storedPayload = await requestPayloadProjection(
+      call.binding.runRequestId,
+    );
+    expect(storedPayload.request_sha256).toBe(
+      Buffer.from(first.requestSha256).toString("hex"),
+    );
+    expect(storedPayload.idempotency_sha256).toBe(
+      call.idempotencySha256.toString("hex"),
+    );
+    const storedAudit = await auditProjection(call.auditEventId);
+    expect(storedAudit).toEqual({
+      action: "dashboard.agent_run_requested",
+      actor_user_id: requester.userId,
+      audit_event_id: call.auditEventId,
+      authority_revision: "1",
+      content_sha256: Buffer.from(first.requestSha256).toString("hex"),
+      deployment_revision: deploymentRevision,
+      organization_id: organizationId(),
+      outcome: "succeeded",
+      target_id: runId,
+      target_type: "agent_run",
+    });
+
+    // Real advancement: an ordinary claim through the production operator
+    // wrapper moves the run off revision one and off 'requested'.
+    await claimExpectedRun(runId);
+    const advanced = await runProjection(runId);
+    expect(advanced.run_revision).toBe("2");
+    expect(advanced.state).toBe("authorized");
+    expect(advanced.current_event_sequence).toBe("2");
+    expect(advanced.head_sha256).not.toBe(
+      (await requestPayloadProjection(call.binding.runRequestId))
+        .request_sha256,
+    );
+    const advancedCounts = await ledgerCounts();
+
+    // The exact retry, with the retained request and audit UUIDs and
+    // byte-identical bindings, reconstructs the stored revision-one result and
+    // writes nothing.
+    const replay = await callRequest(call);
+    expect(replay).toEqual(first);
+    expect(replay.runRevision).toBe(1);
+    expect(replay.state).toBe("requested");
+    expect(await ledgerCounts()).toEqual(advancedCounts);
+    expect(await runProjection(runId)).toEqual(advanced);
+    expect(await requestPayloadProjection(call.binding.runRequestId)).toEqual(
+      storedPayload,
+    );
+    expect(await auditProjection(call.auditEventId)).toEqual(storedAudit);
+
+    // Every contractually bound precondition, mutated one at a time. Each
+    // case recomputes the idempotency digest over its own drifted binding, so
+    // the denial comes from the precondition itself rather than from the
+    // digest check - except the two cases that drift the digest binding on
+    // purpose.
+    const drifts: ReadonlyArray<
+      readonly [
+        string,
+        RequestCall,
+        typeof OperationConflictError | typeof OperationDeniedError,
+      ]
+    > = [
+      [
+        "purpose and replay source",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          binding: { purpose: "replay", replaySourceRunId: runId },
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationDeniedError,
+      ],
+      [
+        "expected lifecycle revision",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          binding: { expectedLifecycleRevision: 2 },
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationDeniedError,
+      ],
+      [
+        "expected input digest",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          binding: {
+            expectedInputSha256: createHash("sha256")
+              .update("task9d-r6-drifted-input")
+              .digest(),
+          },
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationDeniedError,
+      ],
+      [
+        "input snapshot identity",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          binding: { inputSnapshotId: other.inputSnapshotId },
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationDeniedError,
+      ],
+      [
+        "dashboard identity",
+        requestCall(other, {
+          auditEventId: call.auditEventId,
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationConflictError,
+      ],
+      [
+        "deployment revision",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          deploymentRevision: `${deploymentRevision}-drift`,
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationConflictError,
+      ],
+      [
+        "requesting actor",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          csrfValue: bystanderCsrfValue,
+          runRequestId: call.binding.runRequestId,
+          sessionToken: bystanderSessionToken,
+        }),
+        OperationConflictError,
+      ],
+      [
+        "CSRF value",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          csrfValue: bystanderCsrfValue,
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationDeniedError,
+      ],
+      [
+        "retained request identity in the idempotency binding",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          binding: { runRequestId: randomUUID() },
+          idempotencySha256: call.idempotencySha256,
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationConflictError,
+      ],
+      [
+        "idempotency digest",
+        requestCall(fixture, {
+          auditEventId: call.auditEventId,
+          idempotencySha256: createHash("sha256")
+            .update("task9d-r6-drifted-idempotency")
+            .digest(),
+          runRequestId: call.binding.runRequestId,
+        }),
+        OperationConflictError,
+      ],
+    ];
+
+    for (const [label, drifted, error] of drifts) {
+      await expectDenialWithoutDml({
+        action: () =>
+          callRequest(
+            drifted,
+            drifted.binding.deploymentRevision ?? deploymentRevision,
+          ),
+        auditEventId: call.auditEventId,
+        error,
+        runId,
+        runRequestId: call.binding.runRequestId,
+      }).catch((failure: unknown) => {
+        throw new Error(`drift case failed: ${label}\n${String(failure)}`);
+      });
+    }
+
+    await quiesceRuns();
+  }, 300_000);
+
+  it("denies the replayed request once the dashboard becomes lifecycle-inaccessible", async () => {
+    const fixture = await seedRequestableDashboardAsOwner();
+    const call = requestCall(fixture);
+    const first = await callRequest(call);
+    // The replay is admitted while the dashboard is still accessible.
+    expect(await callRequest(call)).toEqual(first);
+
+    // Cancelling the run does not close the request: the replay still
+    // reconstructs the stored revision-one result.
+    await quiesceRuns();
+    expect(await callRequest(call)).toEqual(first);
+
+    // A real tenant lifecycle transition through the fixed
+    // dasher_api.delete_dashboard entry point, driven by the production
+    // dashboard lifecycle repository under the organization's admin.
+    const client = await appPool!.connect();
+    try {
+      await client.query("SET ROLE dasher_app");
+      await createTask8cRepository(client, keyRing, [
+        randomUUID(),
+        randomUUID(),
+      ]).deleteDashboard({
+        currentCsrfValue: bystanderCsrfValue,
+        dashboardId: fixture.dashboardId,
+        expectedLifecycleRevision: 1,
+        sessionToken: bystanderSessionToken,
+      });
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+    const revoked = await ownerPool.query<{
+      readonly lifecycle_revision: string;
+      readonly revoked: boolean;
+      readonly revocation_reason: string | null;
+    }>(
+      `SELECT dashboard.lifecycle_revision::text AS lifecycle_revision,
+         dashboard.access_revoked_at IS NOT NULL AS revoked,
+         dashboard.revocation_reason
+       FROM dasher.dashboards AS dashboard
+       WHERE dashboard.dashboard_id = $1::uuid`,
+      [fixture.dashboardId],
+    );
+    expect(revoked.rows[0]).toMatchObject({
+      revocation_reason: "explicit_delete",
+      revoked: true,
+    });
+
+    // The retained request, byte-identical, is now refused - and writes
+    // nothing, at either the original or the new lifecycle revision.
+    await expectDenialWithoutDml({
+      action: () => callRequest(call),
+      auditEventId: call.auditEventId,
+      error: OperationDeniedError,
+      runId: first.runId,
+      runRequestId: call.binding.runRequestId,
+    });
+    const atNewRevision = requestCall(fixture, {
+      auditEventId: call.auditEventId,
+      binding: {
+        expectedLifecycleRevision: Number(revoked.rows[0]!.lifecycle_revision),
+      },
+      runRequestId: call.binding.runRequestId,
+    });
+    await expectDenialWithoutDml({
+      action: () => callRequest(atNewRevision),
+      auditEventId: call.auditEventId,
+      error: OperationDeniedError,
+      runId: first.runId,
+      runRequestId: call.binding.runRequestId,
+    });
+  }, 300_000);
+
+  async function runEvents(runId: string): Promise<readonly Projection[]> {
+    const result = await ownerPool.query<Projection>(
+      `SELECT event.event_id::text AS event_id, event.event_kind,
+         event.event_sequence::text AS event_sequence,
+         pg_catalog.encode(event.event_sha256,'hex') AS event_sha256
+       FROM dasher.agent_run_events AS event
+       WHERE event.run_id = $1::uuid ORDER BY event.event_sequence`,
+      [runId],
+    );
+    return result.rows;
+  }
+
+  /**
+   * The public failure must name nothing about the database. A raw 23505, a
+   * constraint or relation name, or any echo of the supplied operation id
+   * would all show up here.
+   */
+  /**
+   * A diagnostic RED that removes a fixed body's provenance branch fails the
+   * function's own strict projection. The public surface must still name
+   * nothing about PostgreSQL, the relation, or the replayed source.
+   */
+  function expectOpaqueInternalFailure(error: unknown, secret: string): void {
+    expect(error).toBeInstanceOf(OperationInternalError);
+    const surface = `${String(error)} ${JSON.stringify(
+      Object.getOwnPropertyNames(error as object),
+    )} ${(error as Error).message} ${JSON.stringify(
+      (error as { readonly outcome?: unknown }).outcome ?? null,
+    )}`;
+    for (const leak of [
+      secret,
+      "P1001",
+      "P1002",
+      "P0002",
+      "no_data_found",
+      "query",
+      "agent_run",
+      "agent_recorded_results",
+      "agent_candidates",
+      "attempt_id",
+      "result_payload_id",
+      "generatedAt",
+      "evaluation_time",
+    ]) {
+      expect(surface).not.toContain(leak);
+    }
+    expect((error as { readonly code?: unknown }).code).toBe("internal_error");
+  }
+
+  function expectOpaqueFailure(error: unknown, secret: string): void {
+    expect(
+      error instanceof OperationConflictError ||
+        error instanceof OperationDeniedError,
+    ).toBe(true);
+    const surface = `${String(error)} ${JSON.stringify(
+      Object.getOwnPropertyNames(error as object),
+    )} ${(error as Error).message}`;
+    expect(surface).not.toContain(secret);
+    expect(surface).not.toContain("23505");
+    expect(surface).not.toContain("P1001");
+    expect(surface).not.toContain("P1002");
+    expect(surface).not.toContain("duplicate key");
+    expect(surface).not.toContain("agent_run");
+    expect(surface).not.toContain("audit_events");
+    // The only code that escapes is the normalized public one.
+    expect((error as { readonly code?: unknown }).code).toBe(
+      error instanceof OperationDeniedError
+        ? "operation_denied"
+        : "operation_conflict",
+    );
+    expect(Object.getOwnPropertyNames(error as object).sort()).toEqual([
+      "code",
+      "message",
+      "name",
+      "stack",
+    ]);
+  }
+
+  it("replays a stored cancellation before terminal rejection and reserves its operation id", async () => {
+    const fixture = await seedRequestableDashboardAsOwner();
+    const decoy = await seedRequestableDashboardAsOwner();
+    const requested = await callRequest(requestCall(fixture));
+    const runId = requested.runId;
+    const decoyCall = requestCall(decoy);
+    const decoyRun = await callRequest(decoyCall);
+
+    await claimExpectedRun(runId);
+    const claimed = await runProjection(runId);
+    expect(claimed).toMatchObject({ run_revision: "2", state: "authorized" });
+
+    const operationId = randomUUID();
+    const cancel = cancelCall(runId, 2, { operationAndAuditId: operationId });
+    const beforeCancel = await ledgerCounts();
+    const first = await callCancel(cancel);
+
+    expect(first).toMatchObject({
+      eventSequence: 3,
+      runId,
+      runRevision: 3,
+      state: "cancelled",
+    });
+    const cancelled = await runProjection(runId);
+    expect(cancelled).toMatchObject({
+      cancel_operation_id: operationId,
+      cancel_result_event_sha256: Buffer.from(first.eventSha256).toString(
+        "hex",
+      ),
+      cancel_result_revision: "3",
+      cancel_result_sequence: "3",
+      current_event_sequence: "3",
+      head_sha256: Buffer.from(first.eventSha256).toString("hex"),
+      run_revision: "3",
+      state: "cancelled",
+    });
+    // The operation UUID is the event id and the audit id, exactly once each.
+    const events = await runEvents(runId);
+    expect(events.at(-1)).toEqual({
+      event_id: operationId,
+      event_kind: "run_cancelled",
+      event_sequence: "3",
+      event_sha256: Buffer.from(first.eventSha256).toString("hex"),
+    });
+    const cancelAudit = await auditProjection(operationId);
+    expect(cancelAudit).toMatchObject({
+      action: "dashboard.agent_run_cancelled",
+      actor_user_id: requester.userId,
+      audit_event_id: operationId,
+      content_sha256: cancelled.cancel_operation_sha256,
+      deployment_revision: deploymentRevision,
+      outcome: "succeeded",
+      target_id: runId,
+      target_type: "agent_run",
+    });
+    expect(await ledgerCounts()).toEqual({
+      ...beforeCancel,
+      audit_events: String(Number(beforeCancel.audit_events) + 1),
+      event_payloads: String(Number(beforeCancel.event_payloads) + 1),
+      events: String(Number(beforeCancel.events) + 1),
+    });
+    const settled = await ledgerCounts();
+
+    // The run is now terminal, and the retained expected revision (2) no
+    // longer matches the run (3): the generic terminal path would raise a
+    // conflict. The byte-identical retry returns the stored result instead,
+    // and writes nothing.
+    const replay = await callCancel(cancel);
+    expect(replay).toEqual(first);
+    expect(await ledgerCounts()).toEqual(settled);
+    expect(await runProjection(runId)).toEqual(cancelled);
+    expect(await runEvents(runId)).toEqual(events);
+    expect(await auditProjection(operationId)).toEqual(cancelAudit);
+
+    // The generic rejection the replay skipped is real and reachable: a run
+    // that never carried a cancel operation, asked at the wrong revision, is a
+    // conflict. A fresh operation id aimed at the already-cancelled run never
+    // reaches that check - the stored-operation fence denies it first.
+    await expectDenialWithoutDml({
+      action: () => callCancel(cancelCall(decoyRun.runId, 99)),
+      error: OperationConflictError,
+      runId: decoyRun.runId,
+    });
+    await expectDenialWithoutDml({
+      action: () => callCancel(cancelCall(runId, 3)),
+      auditEventId: operationId,
+      error: OperationDeniedError,
+      runId,
+    });
+
+    // Operation-id reuse and drift. Each case changes exactly one component of
+    // the frozen dasher.run-tenant-cancel-operation.v1 binding, or aims the
+    // retained id at another run.
+    const drifts: ReadonlyArray<
+      readonly [
+        string,
+        CancelCall,
+        typeof OperationConflictError | typeof OperationDeniedError,
+        string,
+      ]
+    > = [
+      [
+        "expected run revision",
+        cancelCall(runId, 3, { operationAndAuditId: operationId }),
+        OperationDeniedError,
+        deploymentRevision,
+      ],
+      [
+        "CSRF binding",
+        cancelCall(runId, 2, {
+          csrfValue: keyRing.issue("csrf").wireValue,
+          operationAndAuditId: operationId,
+        }),
+        OperationDeniedError,
+        deploymentRevision,
+      ],
+      [
+        "deployment revision",
+        cancelCall(runId, 2, { operationAndAuditId: operationId }),
+        OperationDeniedError,
+        `${deploymentRevision}-drift`,
+      ],
+      [
+        "acting user",
+        cancelCall(runId, 2, {
+          csrfValue: bystanderCsrfValue,
+          operationAndAuditId: operationId,
+          sessionToken: bystanderSessionToken,
+        }),
+        OperationDeniedError,
+        deploymentRevision,
+      ],
+      [
+        "target run",
+        cancelCall(decoyRun.runId, 1, {
+          operationAndAuditId: operationId,
+        }),
+        OperationDeniedError,
+        deploymentRevision,
+      ],
+      [
+        "audit header spent by another action",
+        cancelCall(decoyRun.runId, 1, {
+          operationAndAuditId: decoyCall.auditEventId,
+        }),
+        OperationDeniedError,
+        deploymentRevision,
+      ],
+    ];
+
+    for (const [label, drifted, error, revision] of drifts) {
+      let raised: unknown;
+      await expectDenialWithoutDml({
+        action: () =>
+          callCancel(drifted, revision).catch((failure: unknown) => {
+            raised = failure;
+            throw failure;
+          }),
+        auditEventId: operationId,
+        error,
+        runId,
+      }).catch((failure: unknown) => {
+        throw new Error(
+          `cancel drift case failed: ${label}\n${String(failure)}`,
+        );
+      });
+      expectOpaqueFailure(raised, drifted.operationAndAuditId);
+      // The decoy run must never have been touched by a reused operation id.
+      expect(await runProjection(decoyRun.runId)).toMatchObject({
+        cancel_operation_id: null,
+        run_revision: "1",
+        state: "requested",
+      });
+    }
+
+    await quiesceRuns();
+  }, 300_000);
+
+  it("resolves a concurrent duplicate cancellation to one write and one shared result", async () => {
+    const fixture = await seedRequestableDashboardAsOwner();
+    const requested = await callRequest(requestCall(fixture));
+    const runId = requested.runId;
+    const operationId = randomUUID();
+
+    // The frozen function takes an advisory lock on the operation id before it
+    // probes the run and the audit header. Holding that exact lock parks both
+    // callers at the same barrier, so the winner is decided inside the
+    // function rather than by scheduling luck.
+    const witness = await ownerPool.connect();
+    const observer = await ownerPool.connect();
+    let started = false;
+    try {
+      await witness.query("BEGIN");
+      await witness.query(
+        `SELECT pg_catalog.pg_advisory_xact_lock(
+           pg_catalog.hashtextextended(
+             'dasher:agent-run-cancel-operation:v1|' || $1::text, 0))`,
+        [operationId],
+      );
+
+      const contenders = [
+        callCancel(cancelCall(runId, 1, { operationAndAuditId: operationId })),
+        callCancel(cancelCall(runId, 1, { operationAndAuditId: operationId })),
+      ];
+      started = true;
+      const settled = Promise.allSettled(contenders).then((results) => ({
+        status: results.map((entry) => entry.status).join(","),
+      }));
+      const blocked = await observer.query<{ readonly waiting: string }>(
+        `SELECT pg_catalog.count(*)::text AS waiting
+         FROM pg_catalog.pg_stat_activity AS activity
+         WHERE activity.wait_event_type = 'Lock'
+           AND activity.wait_event = 'advisory'`,
+      );
+      // Poll until both callers are parked on the advisory lock.
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const observed = await observer.query<{ readonly waiting: string }>(
+          `SELECT pg_catalog.count(*)::text AS waiting
+           FROM pg_catalog.pg_stat_activity AS activity
+           WHERE activity.wait_event_type = 'Lock'
+             AND activity.wait_event = 'advisory'
+             AND activity.usename = $1`,
+          [config.appUsername],
+        );
+        if (observed.rows[0]?.waiting === "2") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (attempt === 399) {
+          throw new Error(
+            `both cancellations never reached the advisory barrier (${
+              blocked.rows[0]?.waiting ?? "?"
+            })`,
+          );
+        }
+      }
+      await witness.query("COMMIT");
+      const outcome = await settled;
+      expect(outcome.status).toBe("fulfilled,fulfilled");
+      const [left, right] = await Promise.all(contenders);
+      expect(left).toEqual(right);
+      expect(left).toMatchObject({
+        eventSequence: 2,
+        runId,
+        runRevision: 2,
+        state: "cancelled",
+      });
+    } finally {
+      if (!started) await witness.query("ROLLBACK").catch(() => undefined);
+      witness.release();
+      observer.release();
+    }
+
+    // Exactly one cancellation event and one audit row exist for the operation.
+    const written = await ownerPool.query<{
+      readonly audit_rows: string;
+      readonly cancel_events: string;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_events
+          WHERE run_id = $1::uuid AND event_kind = 'run_cancelled')
+           AS cancel_events,
+         (SELECT pg_catalog.count(*)::text FROM dasher.audit_events
+          WHERE audit_event_id = $2::uuid) AS audit_rows`,
+      [runId, operationId],
+    );
+    expect(written.rows[0]).toEqual({ audit_rows: "1", cancel_events: "1" });
+
+    await quiesceRuns();
+  }, 300_000);
+
+  /* ---------------------------------------------------------------- */
+  /* Operator fence matrix                                             */
+  /* ---------------------------------------------------------------- */
+
+  const plannerReservedVector: AttemptResourceVector = Object.freeze({
+    cache_read_tokens: 4000n,
+    cache_write_tokens: 2000n,
+    calls: 1n,
+    candidates: 0n,
+    cost_micros: 16000n,
+    input_tokens: 4000n,
+    output_tokens: 2000n,
+    reasoning_tokens: 2000n,
+    repair_attempts: 0n,
+    reviewer_attempts: 0n,
+    specialist_attempts: 0n,
+    total_tokens: 6000n,
+    wall_millis: 9000n,
+    work_millis: 8000n,
+  });
+
+  const generatorReservedVector: AttemptResourceVector = Object.freeze({
+    cache_read_tokens: 6000n,
+    cache_write_tokens: 3000n,
+    calls: 1n,
+    candidates: 1n,
+    cost_micros: 24000n,
+    input_tokens: 6000n,
+    output_tokens: 3000n,
+    reasoning_tokens: 3000n,
+    repair_attempts: 0n,
+    reviewer_attempts: 0n,
+    specialist_attempts: 0n,
+    total_tokens: 9000n,
+    wall_millis: 9000n,
+    work_millis: 8000n,
+  });
+
+  const reviewerReservedVector: AttemptResourceVector = Object.freeze({
+    cache_read_tokens: 4000n,
+    cache_write_tokens: 2000n,
+    calls: 1n,
+    candidates: 0n,
+    cost_micros: 16000n,
+    input_tokens: 4000n,
+    output_tokens: 2000n,
+    reasoning_tokens: 2000n,
+    repair_attempts: 0n,
+    reviewer_attempts: 1n,
+    specialist_attempts: 0n,
+    total_tokens: 6000n,
+    wall_millis: 9000n,
+    work_millis: 8000n,
+  });
+
+  interface ClaimedRun {
+    readonly bundleBytes: Buffer;
+    readonly bundleId: string;
+    readonly fixture: RequestableDashboard;
+    readonly lease: AgentRunLeaseHandle;
+    readonly requestCall: RequestCall;
+    readonly runId: string;
+  }
+
+  async function canonicalBytesOf(value: unknown): Promise<Buffer> {
+    const result = await ownerPool.query<{ readonly bytes: Buffer }>(
+      "SELECT dasher_private.canonical_jsonb_bytes_v1($1::jsonb) AS bytes",
+      [JSON.stringify(value)],
+    );
+    return result.rows[0]!.bytes;
+  }
+
+  /**
+   * A run that reached a real operator lease: requested through the tenant
+   * repository, claimed through the operator repository, with the canonical
+   * common-evidence bundle a post-claim probe can commit.
+   */
+  async function stageClaimedRun(leaseSeconds = 900): Promise<ClaimedRun> {
+    const fixture = await seedRequestableDashboardAsOwner();
+    const call = requestCall(fixture);
+    const requested = await callRequest(call);
+    const lease = await claimExpectedRun(requested.runId, leaseSeconds);
+    const bundleId = randomUUID();
+    const bundleBytes = await canonicalBytesOf({
+      bundle_id: bundleId,
+      entries: [
+        {
+          evidence_id: fixture.evidenceId,
+          evidence_sha256: createHash("sha256")
+            .update(Buffer.from(uuidBytes(fixture.evidenceId)))
+            .digest("hex"),
+          freshness: "current",
+          observed_at: "2026-08-01T00:00:00.000000Z",
+          source_sha256: fixture.inputSha256.toString("hex"),
+          source_snapshot_id: fixture.inputSnapshotId,
+        },
+      ],
+      schema: "common-evidence-bundle-v1",
+      source_snapshot_id: fixture.inputSnapshotId,
+    });
+    return {
+      bundleBytes,
+      bundleId,
+      fixture,
+      lease,
+      requestCall: call,
+      runId: requested.runId,
+    };
+  }
+
+  async function plannerRequestBytes(
+    staged: ClaimedRun,
+    attemptId: string,
+    bundleSha256: Buffer,
+    inputSha256: Buffer = staged.fixture.inputSha256,
+  ): Promise<Buffer> {
+    const instructions = await ownerPool.query<{ readonly digest: string }>(
+      `SELECT pg_catalog.encode(planner_instructions_sha256,'hex') AS digest
+       FROM dasher.agent_run_policy_revisions WHERE policy_revision = 1`,
+    );
+    return canonicalBytesOf({
+      adapter_id: "fake-provider-v1",
+      attempt_id: attemptId,
+      attempt_kind: "planner",
+      brief_sha256: null,
+      candidate_claim_sets_sha256: null,
+      candidate_set_sha256: null,
+      candidate_slot: null,
+      candidate_validation_set_sha256: null,
+      common_bundle_sha256: bundleSha256.toString("hex"),
+      input_sha256: inputSha256.toString("hex"),
+      instructions_sha256: instructions.rows[0]!.digest,
+      invalid_result_id: null,
+      invalid_result_sha256: null,
+      invalid_validation_sha256: null,
+      model_id: "fake-model-v1",
+      policy_revision: "i64:1",
+      price_book_revision: "fake-price-book-v1",
+      retry_of_attempt_id: null,
+      schema: "attempt-request-v1",
+      specialist_result_id: null,
+      specialist_result_sha256: null,
+    });
+  }
+
+  function uuidV8(): string {
+    const value = [...randomUUID()];
+    value[14] = "8";
+    return value.join("");
+  }
+
+  function plannerDispatchDigest(
+    staged: ClaimedRun,
+    attemptId: string,
+    canonicalRequestBytes: Buffer,
+  ): Buffer {
+    const requestSha = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.attempt-request.v1"),
+          Buffer.from([0]),
+          int4(canonicalRequestBytes.length),
+          canonicalRequestBytes,
+        ]),
+      )
+      .digest();
+    return createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.attempt-dispatch-request.v1"),
+          Buffer.from([0]),
+          uuidBytes(staged.runId),
+          int8(staged.lease.leaseEpoch),
+          uuidBytes(attemptId),
+          requestSha,
+          lengthPrefixed("fake-provider-v1"),
+          lengthPrefixed("fake-model-v1"),
+          int8(1),
+          lengthPrefixed("fake-price-book-v1"),
+        ]),
+      )
+      .digest();
+  }
+
+  function accountingBytes(vector: AttemptResourceVector): Buffer {
+    return Buffer.from(
+      JSON.stringify({
+        cache_read_tokens: `i64:${String(vector.cache_read_tokens)}`,
+        cache_write_tokens: `i64:${String(vector.cache_write_tokens)}`,
+        calls: `i64:${String(vector.calls)}`,
+        candidates: `i64:${String(vector.candidates)}`,
+        cost_micros: `i64:${String(vector.cost_micros)}`,
+        input_tokens: `i64:${String(vector.input_tokens)}`,
+        output_tokens: `i64:${String(vector.output_tokens)}`,
+        reasoning_tokens: `i64:${String(vector.reasoning_tokens)}`,
+        repair_attempts: `i64:${String(vector.repair_attempts)}`,
+        reviewer_attempts: `i64:${String(vector.reviewer_attempts)}`,
+        schema: "attempt-actual-accounting-v1",
+        specialist_attempts: `i64:${String(vector.specialist_attempts)}`,
+        total_tokens: `i64:${String(vector.total_tokens)}`,
+        wall_millis: `i64:${String(vector.wall_millis)}`,
+        work_millis: `i64:${String(vector.work_millis)}`,
+      }),
+      "utf8",
+    );
+  }
+
+  function semanticDigest(domain: string, bytes: Buffer): Buffer {
+    return createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8(domain),
+          Buffer.from([0]),
+          int4(bytes.length),
+          bytes,
+        ]),
+      )
+      .digest();
+  }
+
+  async function generatorRequestBytes(
+    staged: ClaimedRun,
+    attemptId: string,
+    bundleSha256: Buffer,
+    briefSha256: Buffer,
+  ): Promise<Buffer> {
+    const instructions = await ownerPool.query<{ readonly digest: string }>(
+      `SELECT pg_catalog.encode(generator_instructions_sha256,'hex') AS digest
+       FROM dasher.agent_run_policy_revisions WHERE policy_revision = 1`,
+    );
+    return canonicalBytesOf({
+      adapter_id: "fake-provider-v1",
+      attempt_id: attemptId,
+      attempt_kind: "generator",
+      brief_sha256: briefSha256.toString("hex"),
+      candidate_claim_sets_sha256: null,
+      candidate_set_sha256: null,
+      candidate_slot: "i64:1",
+      candidate_validation_set_sha256: null,
+      common_bundle_sha256: bundleSha256.toString("hex"),
+      input_sha256: staged.fixture.inputSha256.toString("hex"),
+      instructions_sha256: instructions.rows[0]!.digest,
+      invalid_result_id: null,
+      invalid_result_sha256: null,
+      invalid_validation_sha256: null,
+      model_id: "fake-model-v1",
+      policy_revision: "i64:1",
+      price_book_revision: "fake-price-book-v1",
+      retry_of_attempt_id: null,
+      schema: "attempt-request-v1",
+      specialist_result_id: null,
+      specialist_result_sha256: null,
+    });
+  }
+
+  async function reviewerRequestBytes(
+    staged: PlannedRun,
+    attemptId: string,
+    candidateSetSha256: Buffer,
+    validationSetSha256: Buffer,
+    claimSetsSha256: Buffer,
+  ): Promise<Buffer> {
+    const instructions = await ownerPool.query<{ readonly digest: string }>(
+      `SELECT pg_catalog.encode(reviewer_instructions_sha256,'hex') AS digest
+       FROM dasher.agent_run_policy_revisions WHERE policy_revision = 1`,
+    );
+    return canonicalBytesOf({
+      adapter_id: "fake-provider-v1",
+      attempt_id: attemptId,
+      attempt_kind: "reviewer",
+      brief_sha256: staged.briefSha256.toString("hex"),
+      candidate_claim_sets_sha256: claimSetsSha256.toString("hex"),
+      candidate_set_sha256: candidateSetSha256.toString("hex"),
+      candidate_slot: null,
+      candidate_validation_set_sha256: validationSetSha256.toString("hex"),
+      common_bundle_sha256: staged.bundleSha256.toString("hex"),
+      input_sha256: staged.fixture.inputSha256.toString("hex"),
+      instructions_sha256: instructions.rows[0]!.digest,
+      invalid_result_id: null,
+      invalid_result_sha256: null,
+      invalid_validation_sha256: null,
+      model_id: "fake-model-v1",
+      policy_revision: "i64:1",
+      price_book_revision: "fake-price-book-v1",
+      retry_of_attempt_id: null,
+      schema: "attempt-request-v1",
+      specialist_result_id: null,
+      specialist_result_sha256: null,
+    });
+  }
+
+  function validCandidateSpec(
+    staged: ClaimedRun,
+    evaluationTime: string,
+    // One legal free-text field, so a second source candidate result can be
+    // grammatically valid and byte-distinct from the selected one.
+    audience = "Reviewers",
+  ): Record<string, unknown> {
+    const evidenceId = staged.fixture.evidenceId;
+    return {
+      architecture: {
+        edges: [{ from: "source", label: "feeds", to: "page" }],
+        nodes: [
+          {
+            detail: "Governed source row",
+            id: "source",
+            kind: "input",
+            label: "Source",
+          },
+          {
+            detail: "Generated summary",
+            id: "page",
+            kind: "page",
+            label: "Dashboard",
+          },
+        ],
+        summary: "Read the governed observation and explain it.",
+        title: "Architecture",
+      },
+      audience,
+      dataMode: "demo",
+      evidence: [
+        {
+          confidence: "high",
+          detail: "The exact governed source record.",
+          id: evidenceId,
+          kind: "observed",
+          label: "Governed observation",
+          observedAt: "2026-08-01T00:00:00.000Z",
+          retrievedAt: "2026-08-01T00:00:10.000Z",
+          sourceName: "Task 9D fixture",
+          sourceUrl: "https://example.invalid/task-9d",
+        },
+      ],
+      freshness: {
+        label: "Current governed snapshot",
+        latestObservationAt: "2026-08-01T00:00:00.000Z",
+        status: "fresh",
+      },
+      generatedAt: evaluationTime,
+      id: "task-9d-candidate",
+      nextAction: {
+        detail: "Review the evidence-linked candidate.",
+        evidenceIds: [evidenceId],
+        title: "Review candidate",
+      },
+      notice: "Generated from governed evidence for Task 9D.",
+      pages: [
+        {
+          components: [
+            {
+              claims: [
+                {
+                  evidenceIds: [evidenceId],
+                  text: "The governed value is available.",
+                },
+              ],
+              evidenceIds: [evidenceId],
+              id: "summary",
+              kind: "summary",
+              title: "Summary",
+              tone: "normal",
+            },
+          ],
+          description: "Evidence-linked result",
+          id: "overview",
+          title: "Overview",
+        },
+      ],
+      schemaVersion: "1.0",
+      title: "Task 9D candidate",
+    };
+  }
+
+  async function calculationFixture(
+    staged: PlannedRun,
+    claimed: Awaited<
+      ReturnType<AgentRunOperatorRepository["getClaimedRunInput"]>
+    >,
+  ): Promise<{
+    readonly graphBytes: Buffer;
+    readonly graphId: string;
+    readonly meterVector: CalculationMeterVector;
+    readonly resultBytes: Buffer;
+  }> {
+    const request = JSON.parse(
+      Buffer.from(claimed.canonicalRequestBytes).toString("utf8"),
+    ) as {
+      readonly evaluation_time: string;
+      readonly field_catalog: Record<string, unknown>;
+      readonly input_table: Record<string, unknown>;
+      readonly metric_contract_set: Record<string, unknown>;
+    };
+    const catalogBytes = await canonicalBytesOf(request.field_catalog);
+    const contractSetBytes = await canonicalBytesOf(
+      request.metric_contract_set,
+    );
+    let graphId = "00000000-0000-8000-8000-000000000001";
+    const sourceNodeId = "00000000-0000-8000-8000-000000000401";
+    const fieldNodeId = "00000000-0000-8000-8000-000000000402";
+    const groupNodeId = "00000000-0000-8000-8000-000000000403";
+    const outputNodeId = "00000000-0000-8000-8000-000000000404";
+    const literalNodeId = "00000000-0000-8000-8000-000000000405";
+    const graph = {
+      common_bundle_id: staged.bundleId,
+      common_bundle_sha256: staged.bundleSha256.toString("hex"),
+      contract_id: staged.fixture.contractId,
+      contract_output_node_id: outputNodeId,
+      contract_set_id: staged.fixture.contractSetId,
+      contract_version: "i64:1",
+      evaluation_time: request.evaluation_time,
+      field_catalog_sha256: semanticDigest(
+        "dasher.field-catalog-snapshot.v1",
+        catalogBytes,
+      ).toString("hex"),
+      field_catalog_snapshot_id: staged.fixture.catalogSnapshotId,
+      fx_evidence_id: null,
+      fx_evidence_sha256: null,
+      graph_id: graphId,
+      input_sha256: staged.fixture.inputSha256.toString("hex"),
+      input_snapshot_id: staged.fixture.inputSnapshotId,
+      limits: "calculation-limits-v1",
+      nodes: [
+        {
+          evaluation_rows_from: null,
+          field_ids: [staged.fixture.fieldId],
+          node_id: sourceNodeId,
+          op: "source",
+          output_type: {
+            currency: null,
+            fields: [
+              {
+                currency: null,
+                field_id: staged.fixture.fieldId,
+                grain: "row",
+                max_value_bytes: "i64:8",
+                name: "value",
+                nullable: false,
+                scalar: "integer",
+                unit: null,
+              },
+            ],
+            grain: null,
+            max_value_bytes: null,
+            nullable: null,
+            scalar: null,
+            shape: "rowset",
+            unit: null,
+          },
+        },
+        {
+          evaluation_rows_from: sourceNodeId,
+          field_id: staged.fixture.fieldId,
+          input: sourceNodeId,
+          node_id: fieldNodeId,
+          op: "field",
+          output_type: {
+            currency: null,
+            fields: null,
+            grain: "row",
+            max_value_bytes: "i64:8",
+            nullable: false,
+            scalar: "integer",
+            shape: "scalar",
+            unit: null,
+          },
+        },
+        {
+          evaluation_rows_from: null,
+          input: sourceNodeId,
+          key_node_ids: [],
+          node_id: groupNodeId,
+          op: "group",
+          output_type: {
+            currency: null,
+            fields: [],
+            grain: null,
+            max_value_bytes: null,
+            nullable: null,
+            scalar: null,
+            shape: "rowset",
+            unit: null,
+          },
+        },
+        {
+          evaluation_rows_from: groupNodeId,
+          group_node_id: groupNodeId,
+          input: fieldNodeId,
+          node_id: outputNodeId,
+          op: "sum",
+          output_type: {
+            currency: null,
+            fields: null,
+            grain: zeroKeyGroupGrain,
+            max_value_bytes: "i64:74",
+            nullable: false,
+            scalar: "decimal",
+            shape: "scalar",
+            unit: null,
+          },
+        },
+        {
+          evaluation_rows_from: sourceNodeId,
+          node_id: literalNodeId,
+          op: "literal",
+          output_type: {
+            currency: null,
+            fields: null,
+            grain: null,
+            max_value_bytes: "i64:74",
+            nullable: false,
+            scalar: "decimal",
+            shape: "scalar",
+            unit: null,
+          },
+          value: {
+            state: "present",
+            type: "decimal",
+            value: { coefficient: "1", scale: "i64:0" },
+          },
+        },
+      ],
+      output_node_ids: [outputNodeId],
+      registry: "calculation-registry-v1",
+      schema: "calculation-graph-v1",
+      target_node_id: null,
+      threshold_node_id: null,
+      timezone: "UTC",
+      tzdb_version: "2025b",
+      unit_registry_version: "ucum-subset-v1",
+    };
+    let graphBytes: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let outcome: ReturnType<typeof runCalculation> | undefined;
+    for (let candidate = 1; candidate <= 64; candidate += 1) {
+      graphId = `00000000-0000-8000-8000-${candidate
+        .toString(16)
+        .padStart(12, "0")}`;
+      graph.graph_id = graphId;
+      graphBytes = await canonicalBytesOf(graph);
+      outcome = runCalculation({
+        bundleBytes: staged.bundleBytes.toString("utf8"),
+        catalogBytes: catalogBytes.toString("utf8"),
+        contractSetBytes: contractSetBytes.toString("utf8"),
+        inputBytes: Buffer.from(claimed.canonicalInputBytes).toString("utf8"),
+        rawGraphBytes: graphBytes.toString("utf8"),
+      });
+      if (outcome.error_code !== null || outcome.outcome === null) break;
+      const resultId = (
+        JSON.parse(outcome.outcome.resultBytes) as {
+          readonly result_id: string;
+        }
+      ).result_id;
+      if (
+        Number.parseInt(resultId[19]!, 16) - 8 ===
+        (Number.parseInt(resultId[20]!, 16) & 3)
+      ) {
+        break;
+      }
+      outcome = undefined;
+    }
+    expect(outcome).toBeDefined();
+    const calculationOutcome = outcome!;
+    if (calculationOutcome.error_code !== null) {
+      validateCalculation({
+        bundleBytes: staged.bundleBytes.toString("utf8"),
+        catalogBytes: catalogBytes.toString("utf8"),
+        contractSetBytes: contractSetBytes.toString("utf8"),
+        inputBytes: Buffer.from(claimed.canonicalInputBytes).toString("utf8"),
+        rawGraphBytes: graphBytes.toString("utf8"),
+      });
+    }
+    expect(calculationOutcome.error_code).toBeNull();
+    expect(calculationOutcome.outcome?.state).toBe("succeeded");
+    const meter = calculationOutcome.outcome!.meter;
+    const serverMeter = JSON.stringify({
+      ast_bytes: meter.ast_bytes!.toString(),
+      cumulative_intermediate_bytes:
+        meter.cumulative_intermediate_bytes!.toString(),
+      cumulative_intermediate_rows:
+        meter.cumulative_intermediate_rows!.toString(),
+      final_output_rows: meter.final_output_rows!.toString(),
+      group_count: meter.group_count!.toString(),
+      input_bytes: meter.input_bytes!.toString(),
+      logical_allocation_bytes: meter.logical_allocation_bytes!.toString(),
+      max_coefficient_digits: meter.max_coefficient_digits!.toString(),
+      max_depth: meter.max_depth!.toString(),
+      max_group_rows: meter.max_group_rows!.toString(),
+      max_literal_bytes: meter.max_literal_bytes!.toString(),
+      max_literal_list_length: meter.max_literal_list_length!.toString(),
+      max_scale: meter.max_scale!.toString(),
+      max_top_k: meter.max_top_k!.toString(),
+      max_window_frame: meter.max_window_frame!.toString(),
+      node_count: meter.node_count!.toString(),
+      output_bytes: meter.output_bytes!.toString(),
+      primitive_steps: meter.primitive_steps!.toString(),
+      scanned_rows: meter.scanned_rows!.toString(),
+      total_literal_bytes: meter.total_literal_bytes!.toString(),
+    });
+    const serverValidation = await ownerPool.query<{
+      readonly evaluation_valid: boolean;
+      readonly graph_valid: boolean;
+    }>(
+      `SELECT
+         dasher_private.validate_metric_contract_graph_v1($1::bytea, $2::bytea)
+           AS graph_valid,
+         dasher_private.evaluate_calculation_graph_v1(
+           $1::bytea, $2::bytea, $3::bytea,
+           pg_catalog.jsonb_populate_record(
+             NULL::dasher_run_api.calculation_meter_vector_v1,
+             $4::jsonb
+           )
+         ) AS evaluation_valid`,
+      [
+        graphBytes,
+        Buffer.from(calculationOutcome.outcome!.resultBytes, "utf8"),
+        Buffer.from(claimed.canonicalInputBytes),
+        serverMeter,
+      ],
+    );
+    expect(serverValidation.rows[0]).toEqual({
+      evaluation_valid: true,
+      graph_valid: true,
+    });
+    return {
+      graphBytes,
+      graphId,
+      meterVector: {
+        astBytes: meter.ast_bytes!,
+        cumulativeIntermediateBytes: meter.cumulative_intermediate_bytes!,
+        cumulativeIntermediateRows: meter.cumulative_intermediate_rows!,
+        finalOutputRows: meter.final_output_rows!,
+        groupCount: meter.group_count!,
+        inputBytes: meter.input_bytes!,
+        logicalAllocationBytes: meter.logical_allocation_bytes!,
+        maxCoefficientDigits: meter.max_coefficient_digits!,
+        maxDepth: meter.max_depth!,
+        maxGroupRows: meter.max_group_rows!,
+        maxLiteralBytes: meter.max_literal_bytes!,
+        maxLiteralListLength: meter.max_literal_list_length!,
+        maxScale: meter.max_scale!,
+        maxTopK: meter.max_top_k!,
+        maxWindowFrame: meter.max_window_frame!,
+        nodeCount: meter.node_count!,
+        outputBytes: meter.output_bytes!,
+        primitiveSteps: meter.primitive_steps!,
+        scannedRows: meter.scanned_rows!,
+        totalLiteralBytes: meter.total_literal_bytes!,
+      },
+      resultBytes: Buffer.from(calculationOutcome.outcome!.resultBytes, "utf8"),
+    };
+  }
+
+  async function plannerResult(
+    staged: ClaimedRun,
+    attemptId: string,
+    canonicalRequestBytes: Buffer,
+  ): Promise<{
+    readonly briefBytes: Buffer;
+    readonly briefId: string;
+    readonly resultBytes: Buffer;
+    readonly resultSha256: Buffer;
+  }> {
+    const briefId = uuidV8();
+    const brief = {
+      brief_id: briefId,
+      bundle_id: staged.bundleId,
+      candidate_target_count: "i64:1",
+      constraints: [],
+      dimension_field_ids: [],
+      goal: "Task 9D exact planner journey",
+      metric_contract_ids: [staged.fixture.contractId],
+      requested_views: ["metric"],
+      schema: "agent-brief-v1",
+      specialist_required: false,
+    };
+    const briefBytes = await canonicalBytesOf(brief);
+    const requestSha = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.attempt-request.v1"),
+          Buffer.from([0]),
+          int4(canonicalRequestBytes.length),
+          canonicalRequestBytes,
+        ]),
+      )
+      .digest();
+    const resultBytes = await canonicalBytesOf({
+      adapter_id: "fake-provider-v1",
+      attempt_id: attemptId,
+      attempt_kind: "planner",
+      model_id: "fake-model-v1",
+      request_sha256: requestSha.toString("hex"),
+      result: brief,
+      result_id: uuidV8(),
+      result_kind: "planner_output",
+      schema: "recorded-result-v1",
+    });
+    return {
+      briefBytes,
+      briefId,
+      resultBytes,
+      resultSha256: createHash("sha256")
+        .update(
+          Buffer.concat([
+            utf8("dasher.recorded-result.v1"),
+            Buffer.from([0]),
+            int4(resultBytes.length),
+            resultBytes,
+          ]),
+        )
+        .digest(),
+    };
+  }
+
+  interface PlannedRun extends ClaimedRun {
+    readonly briefBytes: Buffer;
+    readonly briefId: string;
+    readonly briefSha256: Buffer;
+    readonly bundleSha256: Buffer;
+  }
+
+  async function stagePlannedRun(): Promise<PlannedRun> {
+    const staged = await stageClaimedRun();
+    const repository = operatorRepository();
+    const fence = {
+      attemptToken: staged.lease.attemptToken,
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    } as const;
+    await repository.getClaimedRunInput(fence);
+    const bundle = await repository.commitCommonEvidenceBundle({
+      ...fence,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+    });
+    const attemptId = uuidV8();
+    const requestBytes = await plannerRequestBytes(
+      staged,
+      attemptId,
+      Buffer.from(bundle.contentSha256),
+    );
+    await repository.reserveAttempt({
+      ...fence,
+      attemptId,
+      attemptKind: "planner",
+      canonicalRequestBytes: new Uint8Array(requestBytes),
+      partition: "generation",
+      reservedVector: plannerReservedVector,
+    });
+    const dispatch = plannerDispatchDigest(staged, attemptId, requestBytes);
+    await repository.startAttempt({
+      ...fence,
+      attemptId,
+      dispatchRequestSha256: new Uint8Array(dispatch),
+    });
+    await repository.authorizeAttemptInvocation({
+      ...fence,
+      attemptId,
+      dispatchRequestSha256: new Uint8Array(dispatch),
+    });
+    const planner = await plannerResult(staged, attemptId, requestBytes);
+    await repository.reconcileAttempt({
+      ...fence,
+      actualAccountingBytes: new Uint8Array(
+        accountingBytes(plannerReservedVector),
+      ),
+      attemptId,
+      canonicalRecordedResultBytes: new Uint8Array(planner.resultBytes),
+      outcome: "succeeded",
+      resultSha256: new Uint8Array(planner.resultSha256),
+    });
+    const brief = await repository.commitBrief({
+      ...fence,
+      briefId: planner.briefId,
+      canonicalBriefBytes: new Uint8Array(planner.briefBytes),
+    });
+    return {
+      ...staged,
+      briefBytes: planner.briefBytes,
+      briefId: planner.briefId,
+      briefSha256: Buffer.from(brief.contentSha256),
+      bundleSha256: Buffer.from(bundle.contentSha256),
+    };
+  }
+
+  async function generatorResult(
+    staged: PlannedRun,
+    attemptId: string,
+    requestBytes: Buffer,
+    candidateSpec: Record<string, unknown>,
+  ): Promise<{
+    readonly candidateBytes: Buffer;
+    readonly precommitSha256: Buffer;
+    readonly resultBytes: Buffer;
+    readonly resultId: string;
+    readonly resultSha256: Buffer;
+  }> {
+    const candidateBytes = await canonicalBytesOf(candidateSpec);
+    const candidateSha256 = semanticDigest(
+      "dasher.dashboard-spec.v1",
+      candidateBytes,
+    );
+    const validatorSourceSha256 = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.precommit-validator-source.v1"),
+          Buffer.from([0]),
+          Buffer.from(
+            "dfdbbba8f6202cff2eeddaf82cbc4e2989f30982334351b174926dcd568fd8b2",
+            "hex",
+          ),
+          lengthPrefixed("material-assertions-v1"),
+          lengthPrefixed("bundle-evidence-uuid-v1"),
+          lengthPrefixed("demo-data-mode-v1"),
+        ]),
+      )
+      .digest();
+    const precommit = {
+      candidate_spec_sha256: candidateSha256.toString("hex"),
+      error_codes: [],
+      schema: "precommit-dashboard-validation-v1",
+      state: "valid",
+      validator_id: "@dasher/dashboard-schema@0.1.0+task9-candidate-v1",
+      validator_source_sha256: validatorSourceSha256.toString("hex"),
+    };
+    const precommitBytes = await canonicalBytesOf(precommit);
+    const precommitSha256 = semanticDigest(
+      "dasher.precommit-dashboard-validation.v1",
+      precommitBytes,
+    );
+    const resultId = uuidV8();
+    const resultBytes = await canonicalBytesOf({
+      adapter_id: "fake-provider-v1",
+      attempt_id: attemptId,
+      attempt_kind: "generator",
+      model_id: "fake-model-v1",
+      request_sha256: semanticDigest(
+        "dasher.attempt-request.v1",
+        requestBytes,
+      ).toString("hex"),
+      result: {
+        dashboard_spec: candidateSpec,
+        precommit_validation: precommit,
+      },
+      result_id: resultId,
+      result_kind: "candidate_output",
+      schema: "recorded-result-v1",
+    });
+    return {
+      candidateBytes,
+      precommitSha256,
+      resultBytes,
+      resultId,
+      resultSha256: semanticDigest("dasher.recorded-result.v1", resultBytes),
+    };
+  }
+
+  /**
+   * The frozen `dasher.attempt-release.v1` proof, written independently in
+   * TypeScript. Releasing the planner reservation is how a staged run is
+   * returned to a cancellable shape: `dasher_api.cancel_agent_run` cannot
+   * settle a live attempt on this series (see the report), so the operator
+   * releases it through its own fixed function first.
+   */
+  function attemptReleaseProof(argv: {
+    readonly attemptId: string;
+    readonly canonicalRequestBytes: Buffer;
+    readonly leaseEpoch: number;
+    readonly reason: string;
+    readonly runId: string;
+  }): Buffer {
+    const requestSha = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.attempt-request.v1"),
+          Buffer.from([0]),
+          int4(argv.canonicalRequestBytes.length),
+          argv.canonicalRequestBytes,
+        ]),
+      )
+      .digest();
+    return createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.attempt-release.v1"),
+          Buffer.from([0]),
+          uuidBytes(argv.runId),
+          int8(argv.leaseEpoch),
+          uuidBytes(argv.attemptId),
+          lengthPrefixed(argv.reason),
+          requestSha,
+          ...policyVectorStructOrder.map((field) =>
+            int8(Number(plannerReservedVector[field])),
+          ),
+        ]),
+      )
+      .digest();
+  }
+
+  async function releaseReservedAttempt(
+    staged: ClaimedRun,
+    attemptId: string,
+    canonicalRequestBytes: Buffer,
+  ): Promise<void> {
+    const released = await operatorRepository().releaseAttempt({
+      attemptId,
+      attemptToken: staged.lease.attemptToken,
+      leaseEpoch: staged.lease.leaseEpoch,
+      reason: "cancelled_before_dispatch",
+      releaseProofSha256: new Uint8Array(
+        attemptReleaseProof({
+          attemptId,
+          canonicalRequestBytes,
+          leaseEpoch: staged.lease.leaseEpoch,
+          reason: "cancelled_before_dispatch",
+          runId: staged.runId,
+        }),
+      ),
+      runId: staged.runId,
+    });
+    expect(released.attemptId).toBe(attemptId);
+  }
+
+  it("returns the complete claimed Suggest input through the restricted operator login", async () => {
+    const staged = await stageClaimedRun();
+    const input = await operatorRepository().getClaimedRunInput({
+      attemptToken: staged.lease.attemptToken,
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+
+    expect(input.runId).toBe(staged.runId);
+    expect(input.purpose).toBe("suggest");
+    expect(input.inputSnapshotId).toBe(staged.fixture.inputSnapshotId);
+    expect(Buffer.from(input.inputSha256)).toEqual(staged.fixture.inputSha256);
+    expect(input.inputRowCount).toBe(1);
+    expect(input.policyRevision).toBe(1);
+    expect(input.replaySourceRunId).toBeNull();
+    expect(input.replaySourceResultCount).toBeNull();
+    expect(input.replaySourceHeadSequence).toBeNull();
+    expect(input.replaySourceHeadSha256).toBeNull();
+    expect(input.replaySourceCandidateSetSha256).toBeNull();
+    expect(input.replaySourceBundleId).toBeNull();
+    expect(input.replaySourceBundleSha256).toBeNull();
+    expect(input.replaySourceBriefId).toBeNull();
+    expect(input.replaySourceBriefSha256).toBeNull();
+    expect(input.replaySourceSelectedCandidateId).toBeNull();
+    expect(input.canonicalInputBytes.byteLength).toBeGreaterThan(0);
+    expect(input.canonicalRequestBytes.byteLength).toBeGreaterThan(0);
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("runs claimed input, bundle, planner dispatch, opaque accounting, and exact Brief through the restricted operator repository", async () => {
+    const staged = await stageClaimedRun();
+    const repository = operatorRepository();
+    const fence = {
+      attemptToken: staged.lease.attemptToken,
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    } as const;
+
+    const claimedInput = await repository.getClaimedRunInput(fence);
+    expect(claimedInput.purpose).toBe("suggest");
+    expect(claimedInput.inputSnapshotId).toBe(staged.fixture.inputSnapshotId);
+    expect(claimedInput.fieldCatalogSnapshotId).toBe(
+      staged.fixture.catalogSnapshotId,
+    );
+    expect(claimedInput.metricContractSetId).toBe(staged.fixture.contractSetId);
+
+    const bundle = await repository.commitCommonEvidenceBundle({
+      ...fence,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+    });
+    const attemptId = uuidV8();
+    const requestBytes = await plannerRequestBytes(
+      staged,
+      attemptId,
+      Buffer.from(bundle.contentSha256),
+    );
+    const reserved = await repository.reserveAttempt({
+      ...fence,
+      attemptId,
+      attemptKind: "planner",
+      canonicalRequestBytes: new Uint8Array(requestBytes),
+      partition: "generation",
+      reservedVector: plannerReservedVector,
+    });
+    expect(reserved.attemptId).toBe(attemptId);
+
+    const dispatchRequestSha256 = plannerDispatchDigest(
+      staged,
+      attemptId,
+      requestBytes,
+    );
+    await repository.startAttempt({
+      ...fence,
+      attemptId,
+      dispatchRequestSha256: new Uint8Array(dispatchRequestSha256),
+    });
+    const invocation = await repository.authorizeAttemptInvocation({
+      ...fence,
+      attemptId,
+      dispatchRequestSha256: new Uint8Array(dispatchRequestSha256),
+    });
+    expect(invocation.status).toBe("authorized_now");
+
+    const planner = await plannerResult(staged, attemptId, requestBytes);
+    const reconciled = await repository.reconcileAttempt({
+      ...fence,
+      actualAccountingBytes: new Uint8Array(
+        accountingBytes(plannerReservedVector),
+      ),
+      attemptId,
+      canonicalRecordedResultBytes: new Uint8Array(planner.resultBytes),
+      outcome: "succeeded",
+      resultSha256: new Uint8Array(planner.resultSha256),
+    });
+    expect(reconciled.attemptState).toBe("succeeded");
+    expect(reconciled.usedVector).toEqual(plannerReservedVector);
+
+    const committed = await repository.commitBrief({
+      ...fence,
+      briefId: planner.briefId,
+      canonicalBriefBytes: new Uint8Array(planner.briefBytes),
+    });
+    expect(committed.objectId).toBe(planner.briefId);
+    expect(Buffer.from(committed.contentSha256)).toEqual(
+      createHash("sha256")
+        .update(
+          Buffer.concat([
+            utf8("dasher.agent-brief.v1"),
+            Buffer.from([0]),
+            int4(planner.briefBytes.length),
+            planner.briefBytes,
+          ]),
+        )
+        .digest(),
+    );
+
+    const persisted = await ownerPool.query<{
+      readonly attempts: string;
+      readonly briefs: string;
+      readonly results: string;
+    }>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_attempts
+          WHERE run_id = $1::uuid) AS attempts,
+         (SELECT pg_catalog.count(*)::text FROM dasher.briefs
+          WHERE run_id = $1::uuid) AS briefs,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_recorded_results
+          WHERE run_id = $1::uuid) AS results`,
+      [staged.runId],
+    );
+    expect(persisted.rows[0]).toEqual({
+      attempts: "1",
+      briefs: "1",
+      results: "1",
+    });
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  interface ApprovalRequiredSource extends PlannedRun {
+    readonly calculation: Awaited<ReturnType<typeof calculationFixture>>;
+    readonly candidateBytes: Buffer;
+    readonly candidateId: string;
+    readonly candidateSetSha256: Buffer;
+    readonly candidateSha256: Buffer;
+    readonly claimBytes: Buffer;
+    readonly findingsBytes: Buffer;
+    readonly manifestBytes: Buffer;
+    readonly precommitSha256: Buffer;
+    readonly rankingProofSha256: Buffer;
+    readonly reviewerResultSha256: Buffer;
+    readonly sourceResultId: string;
+    readonly sourceResultSha256: Buffer;
+    readonly unselectedCandidate?: {
+      readonly precommitSha256: Buffer;
+      readonly resultId: string;
+      readonly resultSha256: Buffer;
+      readonly specBytes: Buffer;
+    };
+  }
+
+  async function stageApprovalRequiredSource(
+    options: { readonly withUnselectedCandidateResult?: boolean } = {},
+  ): Promise<ApprovalRequiredSource> {
+    const staged = await stagePlannedRun();
+    const repository = operatorRepository();
+    const fence = {
+      attemptToken: staged.lease.attemptToken,
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    } as const;
+    const claimed = await repository.getClaimedRunInput(fence);
+    const requestBody = JSON.parse(
+      Buffer.from(claimed.canonicalRequestBytes).toString("utf8"),
+    ) as { readonly evaluation_time: string };
+    const attemptId = uuidV8();
+    const requestBytes = await generatorRequestBytes(
+      staged,
+      attemptId,
+      staged.bundleSha256,
+      staged.briefSha256,
+    );
+    await repository.reserveAttempt({
+      ...fence,
+      attemptId,
+      attemptKind: "generator",
+      canonicalRequestBytes: new Uint8Array(requestBytes),
+      partition: "generation",
+      reservedVector: generatorReservedVector,
+    });
+    const dispatch = plannerDispatchDigest(staged, attemptId, requestBytes);
+    await repository.startAttempt({
+      ...fence,
+      attemptId,
+      dispatchRequestSha256: new Uint8Array(dispatch),
+    });
+    await repository.authorizeAttemptInvocation({
+      ...fence,
+      attemptId,
+      dispatchRequestSha256: new Uint8Array(dispatch),
+    });
+    const candidateId = uuidV8();
+    const generated = await generatorResult(
+      staged,
+      attemptId,
+      requestBytes,
+      validCandidateSpec(staged, requestBody.evaluation_time),
+    );
+    await repository.reconcileAttempt({
+      ...fence,
+      actualAccountingBytes: new Uint8Array(
+        accountingBytes(generatorReservedVector),
+      ),
+      attemptId,
+      canonicalRecordedResultBytes: new Uint8Array(generated.resultBytes),
+      outcome: "succeeded",
+      resultSha256: new Uint8Array(generated.resultSha256),
+    });
+    const candidate = await repository.commitCandidate({
+      ...fence,
+      candidateId,
+      canonicalDashboardSpecBytes: new Uint8Array(generated.candidateBytes),
+      commonBundleSha256: new Uint8Array(staged.bundleSha256),
+      precommitValidationSha256: new Uint8Array(generated.precommitSha256),
+      sourceResultId: generated.resultId,
+      sourceResultSha256: new Uint8Array(generated.resultSha256),
+    });
+    const candidateSha256 = Buffer.from(candidate.contentSha256);
+
+    // Item 28's legal two-candidate source: a second `candidate_output`
+    // result that satisfies source grammar in full but never becomes the
+    // request-pinned selected candidate. It exists only so a Replay caller can
+    // try to name the selected candidate with the wrong producing result.
+    let unselectedCandidate: ApprovalRequiredSource["unselectedCandidate"];
+    if (options.withUnselectedCandidateResult === true) {
+      const unselectedAttemptId = uuidV8();
+      const unselectedRequestBytes = await generatorRequestBytes(
+        staged,
+        unselectedAttemptId,
+        staged.bundleSha256,
+        staged.briefSha256,
+      );
+      await repository.reserveAttempt({
+        ...fence,
+        attemptId: unselectedAttemptId,
+        attemptKind: "generator",
+        canonicalRequestBytes: new Uint8Array(unselectedRequestBytes),
+        partition: "generation",
+        reservedVector: generatorReservedVector,
+      });
+      const unselectedDispatch = plannerDispatchDigest(
+        staged,
+        unselectedAttemptId,
+        unselectedRequestBytes,
+      );
+      await repository.startAttempt({
+        ...fence,
+        attemptId: unselectedAttemptId,
+        dispatchRequestSha256: new Uint8Array(unselectedDispatch),
+      });
+      await repository.authorizeAttemptInvocation({
+        ...fence,
+        attemptId: unselectedAttemptId,
+        dispatchRequestSha256: new Uint8Array(unselectedDispatch),
+      });
+      const unselectedGenerated = await generatorResult(
+        staged,
+        unselectedAttemptId,
+        unselectedRequestBytes,
+        validCandidateSpec(
+          staged,
+          requestBody.evaluation_time,
+          "Unselected reviewers",
+        ),
+      );
+      await repository.reconcileAttempt({
+        ...fence,
+        actualAccountingBytes: new Uint8Array(
+          accountingBytes(generatorReservedVector),
+        ),
+        attemptId: unselectedAttemptId,
+        canonicalRecordedResultBytes: new Uint8Array(
+          unselectedGenerated.resultBytes,
+        ),
+        outcome: "succeeded",
+        resultSha256: new Uint8Array(unselectedGenerated.resultSha256),
+      });
+      unselectedCandidate = {
+        precommitSha256: unselectedGenerated.precommitSha256,
+        resultId: unselectedGenerated.resultId,
+        resultSha256: unselectedGenerated.resultSha256,
+        specBytes: unselectedGenerated.candidateBytes,
+      };
+    }
+    const calculation = await calculationFixture(staged, claimed);
+    const calculated = await repository.commitCalculationGraph({
+      ...fence,
+      canonicalGraphBytes: new Uint8Array(calculation.graphBytes),
+      canonicalResultBytes: new Uint8Array(calculation.resultBytes),
+      expectedInputSha256: new Uint8Array(staged.fixture.inputSha256),
+      graphId: calculation.graphId,
+      meterVector: calculation.meterVector,
+    });
+    expect(calculated.graphId).toBe(calculation.graphId);
+    const candidateSetSha256 = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.candidate-set.v1"),
+          Buffer.from([0]),
+          staged.bundleSha256,
+          staged.briefSha256,
+          int8(1),
+          uuidBytes(candidateId),
+          candidateSha256,
+        ]),
+      )
+      .digest();
+    const closed = await repository.closeCandidateSet({
+      ...fence,
+      orderedCandidateSetSha256: new Uint8Array(candidateSetSha256),
+    });
+    expect(closed.candidateIds).toEqual([candidateId]);
+    const findingsBytes = await canonicalBytesOf({
+      candidate_id: candidateId,
+      candidate_spec_sha256: candidateSha256.toString("hex"),
+      findings: [],
+      schema: "agent-validation-findings-v1",
+    });
+    const findings = await repository.commitValidationFindings({
+      ...fence,
+      candidateId,
+      canonicalFindingsBytes: new Uint8Array(findingsBytes),
+    });
+    expect(findings.validationState).toBe("valid");
+    expect(findings.findingCount).toBe(0);
+
+    const extracted = await ownerPool.query<{
+      readonly assertions: Array<{
+        readonly allowed_labels: readonly string[];
+        readonly assertion_sha256: string;
+        readonly claim_id: string;
+        readonly json_pointer: string;
+      }>;
+      readonly material_claim_set_sha256: string;
+    }>(
+      `SELECT dasher_private.extract_material_assertions_v1(
+           payload.canonical_bytes, candidate.candidate_spec_sha256)
+           AS assertions,
+         pg_catalog.encode(candidate.material_claim_set_sha256,'hex')
+           AS material_claim_set_sha256
+       FROM dasher.agent_candidates AS candidate
+       JOIN dasher.agent_candidate_payloads AS payload
+         USING (organization_id, dashboard_id, run_id, candidate_id)
+       WHERE candidate.run_id = $1::uuid
+         AND candidate.candidate_id = $2::uuid`,
+      [staged.runId, candidateId],
+    );
+    const assertionProjection = extracted.rows[0]!;
+    let weakCount = 0;
+    let completeSupportedCount = 0;
+    const claims = assertionProjection.assertions
+      .map((assertion) => {
+        const complete = assertion.allowed_labels.includes("observed");
+        if (complete) completeSupportedCount += 1;
+        else weakCount += 1;
+        const label = complete
+          ? "observed"
+          : (assertion.allowed_labels[0] ?? "recommendation");
+        return {
+          assertion_sha256: assertion.assertion_sha256,
+          calculation_output_field_id: null,
+          calculation_output_identity_kind: null,
+          calculation_output_node_id: null,
+          calculation_output_row_id: null,
+          calculation_output_sha256: null,
+          calculation_output_value_sha256: null,
+          calculation_result_id: null,
+          claim_id: assertion.claim_id,
+          evidence_state: complete ? "complete" : "partial",
+          json_pointer: assertion.json_pointer,
+          label,
+          salience: "normal",
+          statement: `${assertion.json_pointer} sha256:${assertion.assertion_sha256}`,
+        };
+      })
+      .sort((left, right) => left.claim_id.localeCompare(right.claim_id));
+    const edges = claims
+      .filter((claim) => claim.evidence_state === "complete")
+      .map((claim) => ({
+        claim_id: claim.claim_id,
+        evidence_id: staged.fixture.evidenceId,
+        relation: "supports",
+      }));
+    const claimBytes = await canonicalBytesOf({
+      candidate_id: candidateId,
+      candidate_spec_sha256: candidateSha256.toString("hex"),
+      claims,
+      edges,
+      material_claim_set_sha256: assertionProjection.material_claim_set_sha256,
+      schema: "candidate-claims-v1",
+    });
+    const claimSet = await repository.commitCandidateClaims({
+      ...fence,
+      candidateId,
+      canonicalClaimEdgeSetBytes: new Uint8Array(claimBytes),
+    });
+    expect(claimSet.claimCount).toBe(claims.length);
+    expect(claimSet.edgeCount).toBe(edges.length);
+
+    const findingsSha256 = Buffer.from(findings.findingsSha256);
+    const validationSetSha256 = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.candidate-validation-set.v1"),
+          Buffer.from([0]),
+          candidateSetSha256,
+          int8(1),
+          uuidBytes(candidateId),
+          findingsSha256,
+        ]),
+      )
+      .digest();
+    const materialClaimSetSha256 = Buffer.from(
+      assertionProjection.material_claim_set_sha256,
+      "hex",
+    );
+    const claimSetsSha256 = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.candidate-claim-sets.v1"),
+          Buffer.from([0]),
+          candidateSetSha256,
+          int8(1),
+          uuidBytes(candidateId),
+          materialClaimSetSha256,
+        ]),
+      )
+      .digest();
+    const reviewerAttemptId = uuidV8();
+    const reviewerRequest = await reviewerRequestBytes(
+      staged,
+      reviewerAttemptId,
+      candidateSetSha256,
+      validationSetSha256,
+      claimSetsSha256,
+    );
+    await repository.reserveAttempt({
+      ...fence,
+      attemptId: reviewerAttemptId,
+      attemptKind: "reviewer",
+      canonicalRequestBytes: new Uint8Array(reviewerRequest),
+      partition: "review",
+      reservedVector: reviewerReservedVector,
+    });
+    const reviewerDispatch = plannerDispatchDigest(
+      staged,
+      reviewerAttemptId,
+      reviewerRequest,
+    );
+    await repository.startAttempt({
+      ...fence,
+      attemptId: reviewerAttemptId,
+      dispatchRequestSha256: new Uint8Array(reviewerDispatch),
+    });
+    await repository.authorizeAttemptInvocation({
+      ...fence,
+      attemptId: reviewerAttemptId,
+      dispatchRequestSha256: new Uint8Array(reviewerDispatch),
+    });
+    const verdictSet = {
+      candidate_claim_sets_sha256: claimSetsSha256.toString("hex"),
+      candidate_set_sha256: candidateSetSha256.toString("hex"),
+      candidate_validation_set_sha256: validationSetSha256.toString("hex"),
+      schema: "reviewer-verdict-set-v1",
+      verdicts: [
+        {
+          candidate_id: candidateId,
+          candidate_spec_sha256: candidateSha256.toString("hex"),
+          reason_codes: [],
+          verdict: "preferred",
+        },
+      ],
+    };
+    const reviewerResultId = uuidV8();
+    const reviewerResultBytes = await canonicalBytesOf({
+      adapter_id: "fake-provider-v1",
+      attempt_id: reviewerAttemptId,
+      attempt_kind: "reviewer",
+      model_id: "fake-model-v1",
+      request_sha256: semanticDigest(
+        "dasher.attempt-request.v1",
+        reviewerRequest,
+      ).toString("hex"),
+      result: verdictSet,
+      result_id: reviewerResultId,
+      result_kind: "reviewer_verdict_set",
+      schema: "recorded-result-v1",
+    });
+    const reviewerResultSha256 = semanticDigest(
+      "dasher.recorded-result.v1",
+      reviewerResultBytes,
+    );
+    await repository.reconcileAttempt({
+      ...fence,
+      actualAccountingBytes: new Uint8Array(
+        accountingBytes(reviewerReservedVector),
+      ),
+      attemptId: reviewerAttemptId,
+      canonicalRecordedResultBytes: new Uint8Array(reviewerResultBytes),
+      outcome: "succeeded",
+      resultSha256: new Uint8Array(reviewerResultSha256),
+    });
+    const manifestBytes = await canonicalBytesOf({
+      bundle_sha256: staged.bundleSha256.toString("hex"),
+      candidate_id: candidateId,
+      candidate_spec_sha256: candidateSha256.toString("hex"),
+      claims_sha256: Buffer.from(claimSet.claimSetSha256).toString("hex"),
+      entries: claims.map((claim) => ({
+        claim_id: claim.claim_id,
+        supporting_evidence_ids:
+          claim.evidence_state === "complete"
+            ? [staged.fixture.evidenceId]
+            : [],
+      })),
+      material_claim_set_sha256: assertionProjection.material_claim_set_sha256,
+      reviewer_verdict_sha256: reviewerResultSha256.toString("hex"),
+      schema: "candidate-evidence-manifest-v1",
+      validation_findings_sha256: findingsSha256.toString("hex"),
+    });
+    await repository.commitCandidateManifest({
+      ...fence,
+      candidateId,
+      canonicalManifestBytes: new Uint8Array(manifestBytes),
+      reviewerResultSha256: new Uint8Array(reviewerResultSha256),
+    });
+    const rankingProofSha256 = createHash("sha256")
+      .update(
+        Buffer.concat([
+          utf8("dasher.candidate-ranking.v1"),
+          Buffer.from([0]),
+          candidateSetSha256,
+          int8(1),
+          uuidBytes(candidateId),
+          candidateSha256,
+          int8(0),
+          int8(0),
+          int8(weakCount),
+          int8(completeSupportedCount),
+          int8(1),
+          uuidBytes(candidateId),
+        ]),
+      )
+      .digest();
+    const ranked = await repository.finalizeRanking({
+      ...fence,
+      rankingProofSha256: new Uint8Array(rankingProofSha256),
+      selectedCandidateId: candidateId,
+      terminalOperationId: uuidV8(),
+    });
+    expect(ranked.selectedCandidateId).toBe(candidateId);
+    expect(ranked.orderedCandidateIds).toEqual([candidateId]);
+
+    return {
+      ...staged,
+      calculation,
+      candidateBytes: generated.candidateBytes,
+      candidateId,
+      candidateSetSha256,
+      candidateSha256,
+      claimBytes,
+      findingsBytes,
+      manifestBytes,
+      precommitSha256: generated.precommitSha256,
+      rankingProofSha256,
+      reviewerResultSha256,
+      sourceResultId: generated.resultId,
+      sourceResultSha256: generated.resultSha256,
+      unselectedCandidate,
+    };
+  }
+
+  it("runs generator output, candidate close, and validation through the restricted operator repository", async () => {
+    const source = await stageApprovalRequiredSource();
+    expect((await runProjection(source.runId))["state"]).toBe(
+      "approval_required",
+    );
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  interface ReplayRun extends PlannedRun {
+    readonly claimed: Awaited<
+      ReturnType<AgentRunOperatorRepository["getClaimedRunInput"]>
+    >;
+    readonly results: Awaited<
+      ReturnType<AgentRunOperatorRepository["listClaimedReplayResults"]>
+    >;
+  }
+
+  async function stageReplayRun(
+    source: ApprovalRequiredSource,
+    consumeResults = true,
+    clonePrerequisites = true,
+  ): Promise<ReplayRun> {
+    const call = requestCall(source.fixture, {
+      binding: { purpose: "replay", replaySourceRunId: source.runId },
+    });
+    const requested = await callRequest(call);
+    const lease = await claimExpectedRun(requested.runId);
+    const fence = {
+      attemptToken: lease.attemptToken,
+      leaseEpoch: lease.leaseEpoch,
+      runId: requested.runId,
+    } as const;
+    const repository = operatorRepository();
+    const claimed = await repository.getClaimedRunInput(fence);
+    // A two-candidate source declares one extra legal source result.
+    const declaredResultCount =
+      source.unselectedCandidate === undefined ? 3 : 4;
+    expect(claimed.purpose).toBe("replay");
+    expect(claimed.replaySourceRunId).toBe(source.runId);
+    expect(claimed.replaySourceResultCount).toBe(declaredResultCount);
+    if (clonePrerequisites) {
+      const cloned = await repository.cloneClaimedReplayPrerequisites(fence);
+      expect(cloned.sourceRunId).toBe(source.runId);
+    }
+    const results = clonePrerequisites
+      ? await repository.listClaimedReplayResults({
+          ...fence,
+          afterSourceSequence: 0,
+          limit: 5,
+        })
+      : [];
+    if (clonePrerequisites) {
+      expect(results.map((result) => result.sourceResultSequence)).toEqual(
+        Array.from({ length: declaredResultCount }, (_, index) => index + 1),
+      );
+    }
+    if (consumeResults) {
+      for (const [index, result] of results.entries()) {
+        const consume = {
+          ...fence,
+          sourceResultSequence: result.sourceResultSequence,
+          sourceResultSha256: result.sourceResultSha256,
+        } as const;
+        const consumed = await repository.consumeReplayResult(consume);
+        expect((await runProjection(requested.runId))["state"]).toBe(
+          index === results.length - 1 ? "generating" : "planning",
+        );
+        const afterFirst = await operatorLedger(requested.runId);
+        expect(await repository.consumeReplayResult(consume)).toEqual(consumed);
+        expect(await operatorLedger(requested.runId)).toEqual(afterFirst);
+      }
+    }
+    return {
+      bundleBytes: source.bundleBytes,
+      bundleId: source.bundleId,
+      bundleSha256: source.bundleSha256,
+      briefBytes: source.briefBytes,
+      briefId: source.briefId,
+      briefSha256: source.briefSha256,
+      claimed,
+      fixture: source.fixture,
+      lease,
+      requestCall: call,
+      results,
+      runId: requested.runId,
+    };
+  }
+
+  async function withMissingReplaySourceArtifact(
+    source: ApprovalRequiredSource,
+    artifact: "bundle" | "Brief",
+    action: () => Promise<void>,
+  ): Promise<void> {
+    const client = await ownerPool.connect();
+    let table: string;
+    let artifactIdColumn: string;
+    let artifactId: string;
+    switch (artifact) {
+      case "bundle":
+        table = "dasher.candidate_comparison_bundles";
+        artifactIdColumn = "bundle_id";
+        artifactId = source.bundleId;
+        break;
+      case "Brief":
+        table = "dasher.briefs";
+        artifactIdColumn = "brief_id";
+        artifactId = source.briefId;
+        break;
+      default: {
+        artifact satisfies never;
+        throw new Error("closed replay source artifact table lookup failed");
+      }
+    }
+    let deleted = false;
+    try {
+      await client.query(
+        `CREATE TEMP TABLE task9d_missing_source_artifact_backup
+         ON COMMIT PRESERVE ROWS AS
+         SELECT * FROM ${table}
+         WHERE organization_id = $1::uuid
+           AND dashboard_id = $2::uuid
+           AND run_id = $3::uuid
+           AND ${artifactIdColumn} = $4::uuid`,
+        [
+          organizationId(),
+          source.fixture.dashboardId,
+          source.runId,
+          artifactId,
+        ],
+      );
+      const backedUp = await client.query<{ readonly count: string }>(
+        `SELECT pg_catalog.count(*)::text AS count
+         FROM task9d_missing_source_artifact_backup`,
+      );
+      expect(backedUp.rows[0]?.count).toBe("1");
+
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      const deletion = await client.query(
+        `DELETE FROM ${table}
+         WHERE organization_id = $1::uuid
+           AND dashboard_id = $2::uuid
+           AND run_id = $3::uuid
+           AND ${artifactIdColumn} = $4::uuid`,
+        [
+          organizationId(),
+          source.fixture.dashboardId,
+          source.runId,
+          artifactId,
+        ],
+      );
+      expect(deletion.rowCount).toBe(1);
+      await client.query("COMMIT");
+      deleted = true;
+
+      const absent = await ownerPool.query<{ readonly count: string }>(
+        `SELECT pg_catalog.count(*)::text AS count FROM ${table}
+         WHERE organization_id = $1::uuid
+           AND dashboard_id = $2::uuid
+           AND run_id = $3::uuid
+           AND ${artifactIdColumn} = $4::uuid`,
+        [
+          organizationId(),
+          source.fixture.dashboardId,
+          source.runId,
+          artifactId,
+        ],
+      );
+      expect(absent.rows[0]?.count).toBe("0");
+      await action();
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      try {
+        const backup = await client.query<{ readonly count: string }>(
+          `SELECT pg_catalog.count(*)::text AS count
+           FROM task9d_missing_source_artifact_backup`,
+        );
+        if (deleted && backup.rows[0]?.count === "1") {
+          await client.query("BEGIN");
+          await client.query("SET LOCAL session_replication_role = replica");
+          await client.query(
+            `INSERT INTO ${table}
+             SELECT * FROM task9d_missing_source_artifact_backup`,
+          );
+          await client.query("COMMIT");
+          const restored = await client.query<{ readonly matches: boolean }>(
+            `SELECT NOT EXISTS (
+               (SELECT * FROM task9d_missing_source_artifact_backup
+                EXCEPT ALL
+                SELECT * FROM ${table}
+                WHERE organization_id = $1::uuid
+                  AND dashboard_id = $2::uuid
+                  AND run_id = $3::uuid
+                  AND ${artifactIdColumn} = $4::uuid)
+               UNION ALL
+               (SELECT * FROM ${table}
+                WHERE organization_id = $1::uuid
+                  AND dashboard_id = $2::uuid
+                  AND run_id = $3::uuid
+                  AND ${artifactIdColumn} = $4::uuid
+                EXCEPT ALL
+                SELECT * FROM task9d_missing_source_artifact_backup)
+             ) AS matches`,
+            [
+              organizationId(),
+              source.fixture.dashboardId,
+              source.runId,
+              artifactId,
+            ],
+          );
+          expect(restored.rows[0]?.matches).toBe(true);
+        }
+      } finally {
+        await client
+          .query("DROP TABLE IF EXISTS task9d_missing_source_artifact_backup")
+          .catch(() => undefined);
+        client.release();
+      }
+    }
+  }
+
+  it.each(["bundle", "Brief"] as const)(
+    "normalizes a missing replay source %s through the restricted clone path",
+    async (artifact) => {
+      const source = await stageApprovalRequiredSource();
+      const replay = await stageReplayRun(source, false, false);
+      const fence = {
+        attemptToken: replay.lease.attemptToken,
+        leaseEpoch: replay.lease.leaseEpoch,
+        runId: replay.runId,
+      } as const;
+      let evidence: Readonly<Record<string, unknown>> | undefined;
+
+      try {
+        await withMissingReplaySourceArtifact(source, artifact, async () => {
+          const pool = requireRunPool();
+          const beforeRun = await runProjection(replay.runId);
+          const beforeLedger = await operatorLedger(replay.runId);
+          const beforeTotal = pool.totalCount;
+          const databaseCodes: unknown[] = [];
+          let raised: unknown;
+          try {
+            await observedOperatorRepository((error) => {
+              databaseCodes.push((error as { readonly code?: unknown }).code);
+            }).cloneClaimedReplayPrerequisites(fence);
+          } catch (error) {
+            raised = error;
+          }
+          const afterRun = await runProjection(replay.runId);
+          const afterLedger = await operatorLedger(replay.runId);
+          expect(afterRun).toEqual(beforeRun);
+          expect(afterLedger).toEqual(beforeLedger);
+          expect(pool.totalCount).toBe(beforeTotal);
+          expect(pool.idleCount).toBe(pool.totalCount);
+          expect(pool.waitingCount).toBe(0);
+          evidence = {
+            databaseCodes,
+            errorCode: (raised as { readonly code?: unknown } | undefined)
+              ?.code,
+            errorName: (raised as Error | undefined)?.name,
+            outcome: (raised as { readonly outcome?: unknown } | undefined)
+              ?.outcome,
+          };
+        });
+
+        expect(evidence).toEqual({
+          databaseCodes: ["P1001"],
+          errorCode: "operation_denied",
+          errorName: "OperationDeniedError",
+          outcome: undefined,
+        });
+      } finally {
+        await quiesceRuns();
+        await expectReusablePool();
+      }
+    },
+    300_000,
+  );
+
+  async function checkpointInput(run: ReplayRun): Promise<{
+    readonly canonicalCheckpointBytes: Uint8Array;
+    readonly sourceEventSequence: number;
+    readonly sourceEventSha256: Uint8Array;
+  }> {
+    const projection = await ownerPool.query<{
+      readonly consumed_replay_sequence: string | null;
+      readonly consumed_replay_sha256: Buffer | null;
+      readonly current_event_sequence: string;
+      readonly current_event_sha256: Buffer;
+      readonly lease_epoch: string;
+      readonly policy_revision: string;
+      readonly request_idempotency_sha256: Buffer;
+      readonly request_sha256: Buffer;
+      readonly run_request_id: string;
+      readonly run_revision: string;
+      readonly state: string;
+    }>(
+      `SELECT run.run_request_id::text, run.run_revision::text,
+         run.state, run.lease_epoch::text, run.policy_revision::text,
+         run.current_event_sequence::text, run.current_event_sha256,
+         run.consumed_replay_sequence::text, run.consumed_replay_sha256,
+         payload.request_idempotency_sha256, payload.request_sha256
+       FROM dasher.agent_runs AS run
+       JOIN dasher.agent_run_request_payloads AS payload
+         USING (organization_id, dashboard_id, run_request_id)
+       WHERE run.run_id = $1::uuid`,
+      [run.runId],
+    );
+    const budget = await ownerPool.query<{
+      readonly limit_units: string;
+      readonly partition: string;
+      readonly released_units: string;
+      readonly reserved_units: string;
+      readonly used_units: string;
+      readonly vector_field: string;
+    }>(
+      `SELECT counter.partition, counter.vector_field,
+         counter.limit_units::text, counter.reserved_units::text,
+         counter.used_units::text, counter.released_units::text
+       FROM dasher.agent_run_budget_counters AS counter
+       WHERE counter.run_id = $1::uuid
+       ORDER BY CASE counter.partition WHEN 'generation' THEN 1 ELSE 2 END,
+         pg_catalog.array_position($2::text[], counter.vector_field)`,
+      [run.runId, policyVectorStructOrder],
+    );
+    const state = projection.rows[0]!;
+    const canonicalCheckpointBytes = await canonicalBytesOf({
+      attempts: [],
+      budget_counters: budget.rows.map((counter) => ({
+        limit_units: `i64:${counter.limit_units}`,
+        outstanding_units: `i64:${String(
+          BigInt(counter.reserved_units) -
+            BigInt(counter.used_units) -
+            BigInt(counter.released_units),
+        )}`,
+        partition: counter.partition,
+        released_units: `i64:${counter.released_units}`,
+        reserved_units: `i64:${counter.reserved_units}`,
+        used_units: `i64:${counter.used_units}`,
+        vector_field: counter.vector_field,
+      })),
+      calculation_result_ids: [],
+      candidate_ids: [],
+      candidate_set_sha256: null,
+      consumed_replay_sequence:
+        state.consumed_replay_sequence === null
+          ? null
+          : `i64:${state.consumed_replay_sequence}`,
+      consumed_replay_sha256:
+        state.consumed_replay_sha256?.toString("hex") ?? null,
+      latest_brief_sha256: run.briefSha256.toString("hex"),
+      latest_bundle_sha256: run.bundleSha256.toString("hex"),
+      lease_epoch: `i64:${state.lease_epoch}`,
+      policy_revision: `i64:${state.policy_revision}`,
+      request_idempotency_sha256:
+        state.request_idempotency_sha256.toString("hex"),
+      request_sha256: state.request_sha256.toString("hex"),
+      run_id: run.runId,
+      run_request_id: state.run_request_id,
+      run_revision: `i64:${state.run_revision}`,
+      schema: "agent-run-checkpoint-v1",
+      selected_candidate_id: null,
+      source_event_sequence: `i64:${state.current_event_sequence}`,
+      source_event_sha256: state.current_event_sha256.toString("hex"),
+      state: state.state,
+      tenant_cancel_operation_id: null,
+      tenant_cancel_operation_sha256: null,
+      tenant_cancel_result_event_sequence: null,
+      tenant_cancel_result_event_sha256: null,
+      tenant_cancel_result_run_revision: null,
+      tenant_cancel_result_sha256: null,
+      terminal_claim_input_sha256: null,
+      terminal_operation_id: null,
+      terminal_operation_kind: null,
+      terminal_operation_sha256: null,
+      validation_states: [],
+    });
+    return {
+      canonicalCheckpointBytes: new Uint8Array(canonicalCheckpointBytes),
+      sourceEventSequence: Number(state.current_event_sequence),
+      sourceEventSha256: new Uint8Array(state.current_event_sha256),
+    };
+  }
+
+  async function checkpointReducerJourney(): Promise<{
+    readonly checkpointAfter: Projection;
+    readonly checkpointBefore: Projection;
+    readonly error: unknown;
+    readonly result:
+      | Awaited<ReturnType<AgentRunOperatorRepository["writeCheckpoint"]>>
+      | undefined;
+    readonly reuseProbeStatus: string;
+    readonly runId: string;
+    readonly runAfter: Projection;
+    readonly runBefore: Projection;
+  }> {
+    const source = await stageApprovalRequiredSource();
+    const replay = await stageReplayRun(source, false);
+    const fence = {
+      attemptToken: replay.lease.attemptToken,
+      leaseEpoch: replay.lease.leaseEpoch,
+      runId: replay.runId,
+    } as const;
+    const repository = operatorRepository();
+    for (const [index, result] of replay.results.entries()) {
+      await repository.consumeReplayResult({
+        ...fence,
+        sourceResultSequence: result.sourceResultSequence,
+        sourceResultSha256: result.sourceResultSha256,
+      });
+      expect((await runProjection(replay.runId))["state"]).toBe(
+        index === replay.results.length - 1 ? "generating" : "planning",
+      );
+    }
+    const checkpointProjection = async (): Promise<Projection> => {
+      const projection = await ownerPool.query<Projection>(
+        `SELECT
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_run_checkpoints
+            WHERE run_id = $1::uuid) AS checkpoints,
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_run_checkpoint_payloads
+            WHERE run_id = $1::uuid) AS checkpoint_payloads,
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_run_events
+            WHERE run_id = $1::uuid) AS events,
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_run_event_payloads
+            WHERE run_id = $1::uuid) AS event_payloads`,
+        [replay.runId],
+      );
+      return projection.rows[0]!;
+    };
+    const checkpointBefore = await checkpointProjection();
+    const runBefore = await runProjection(replay.runId);
+    let error: unknown;
+    let result:
+      | Awaited<ReturnType<AgentRunOperatorRepository["writeCheckpoint"]>>
+      | undefined;
+    try {
+      result = await repository.writeCheckpoint({
+        ...fence,
+        ...(await checkpointInput(replay)),
+      });
+    } catch (failure: unknown) {
+      error = failure;
+    }
+    const checkpointAfter = await checkpointProjection();
+    const runAfter = await runProjection(replay.runId);
+    const pool = requireRunPool();
+    expect(pool.idleCount).toBe(pool.totalCount);
+    expect(pool.waitingCount).toBe(0);
+    const reuseProbe = await operatorRepository().claimAgentRun({
+      claimRequestId: randomUUID(),
+      leaseSeconds: 60,
+    });
+    return {
+      checkpointAfter,
+      checkpointBefore,
+      error,
+      result,
+      reuseProbeStatus: reuseProbe.status,
+      runId: replay.runId,
+      runAfter,
+      runBefore,
+    };
+  }
+
+  /**
+   * The second legal `candidate_output` result on a two-candidate source: same
+   * grammar, same kind, same sequence range, but not the result that produced
+   * the request-pinned selected candidate.
+   */
+  async function unselectedSourceCandidateResult(
+    source: ApprovalRequiredSource,
+  ): Promise<{
+    readonly precommitSha256: Buffer;
+    readonly resultId: string;
+    readonly resultSha256: Buffer;
+    readonly specBytes: Buffer;
+  }> {
+    const unselected = source.unselectedCandidate;
+    if (unselected === undefined) {
+      throw new Error("source fixture has no unselected candidate result");
+    }
+    return unselected;
+  }
+
+  /**
+   * Item 17c's complete restricted Replay journey: consume every declared
+   * source result contiguously, checkpoint, commit the calculation graph, then
+   * commit the request-pinned selected candidate and every downstream candidate
+   * operation through to `approval_required`. `substituteUnselectedResult`
+   * names the request-pinned selected candidate with the other legal source
+   * candidate result, which canonical bytes must deny with zero mutation.
+   */
+  async function replayCandidateJourney(
+    options: {
+      readonly substituteUnselectedResult?: boolean;
+      readonly twoCandidateSource?: boolean;
+    } = {},
+  ): Promise<{
+    readonly candidateAfter: Projection;
+    readonly candidateBefore: Projection;
+    readonly downstreamError: unknown;
+    readonly error: unknown;
+    readonly finalState: string;
+    readonly result:
+      | Awaited<ReturnType<AgentRunOperatorRepository["commitCandidate"]>>
+      | undefined;
+    readonly reuseProbeStatus: string;
+    readonly runAfter: Projection;
+    readonly runBefore: Projection;
+    readonly runId: string;
+  }> {
+    const source = await stageApprovalRequiredSource({
+      withUnselectedCandidateResult:
+        options.substituteUnselectedResult === true ||
+        options.twoCandidateSource === true,
+    });
+    const replay = await stageReplayRun(source, true);
+    const fence = {
+      attemptToken: replay.lease.attemptToken,
+      leaseEpoch: replay.lease.leaseEpoch,
+      runId: replay.runId,
+    } as const;
+    const repository = operatorRepository();
+    expect((await runProjection(replay.runId))["state"]).toBe("generating");
+    await repository.writeCheckpoint({
+      ...fence,
+      ...(await checkpointInput(replay)),
+    });
+    const calculation = await calculationFixture(replay, replay.claimed);
+    await repository.commitCalculationGraph({
+      ...fence,
+      canonicalGraphBytes: new Uint8Array(calculation.graphBytes),
+      canonicalResultBytes: new Uint8Array(calculation.resultBytes),
+      expectedInputSha256: new Uint8Array(replay.fixture.inputSha256),
+      graphId: calculation.graphId,
+      meterVector: calculation.meterVector,
+    });
+
+    const candidateProjection = async (): Promise<Projection> => {
+      const projection = await ownerPool.query<Projection>(
+        `SELECT
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_candidates
+            WHERE run_id = $1::uuid) AS candidates,
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_candidate_payloads
+            WHERE run_id = $1::uuid) AS candidate_payloads,
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_run_events
+            WHERE run_id = $1::uuid) AS events,
+           (SELECT pg_catalog.count(*)::text
+            FROM dasher.agent_run_event_payloads
+            WHERE run_id = $1::uuid) AS event_payloads`,
+        [replay.runId],
+      );
+      return projection.rows[0]!;
+    };
+    const candidateBefore = await candidateProjection();
+    const runBefore = await runProjection(replay.runId);
+
+    // The Replay candidate is the source's own selected candidate: identical
+    // spec bytes, identical precommit digest, and the exact source result that
+    // produced it. Its `generatedAt` is pinned to the source request instant.
+    const substitute = options.substituteUnselectedResult === true;
+    const namedResult = substitute
+      ? await unselectedSourceCandidateResult(source)
+      : {
+          precommitSha256: source.precommitSha256,
+          resultId: source.sourceResultId,
+          resultSha256: source.sourceResultSha256,
+          specBytes: source.candidateBytes,
+        };
+    let error: unknown;
+    let result:
+      | Awaited<ReturnType<AgentRunOperatorRepository["commitCandidate"]>>
+      | undefined;
+    try {
+      result = await repository.commitCandidate({
+        ...fence,
+        candidateId: source.candidateId,
+        canonicalDashboardSpecBytes: new Uint8Array(namedResult.specBytes),
+        commonBundleSha256: new Uint8Array(source.bundleSha256),
+        precommitValidationSha256: new Uint8Array(namedResult.precommitSha256),
+        sourceResultId: namedResult.resultId,
+        sourceResultSha256: new Uint8Array(namedResult.resultSha256),
+      });
+    } catch (failure: unknown) {
+      error = failure;
+    }
+    const candidateAfter = await candidateProjection();
+    const runAfter = await runProjection(replay.runId);
+
+    // Downstream candidate operations reuse the cloned source digests exactly;
+    // a Replay run can never run a live reviewer attempt.
+    let downstreamError: unknown;
+    if (error === undefined) {
+      try {
+        const closed = await repository.closeCandidateSet({
+          ...fence,
+          orderedCandidateSetSha256: new Uint8Array(source.candidateSetSha256),
+        });
+        expect(closed.candidateIds).toEqual([source.candidateId]);
+        const findings = await repository.commitValidationFindings({
+          ...fence,
+          candidateId: source.candidateId,
+          canonicalFindingsBytes: new Uint8Array(source.findingsBytes),
+        });
+        expect(findings.validationState).toBe("valid");
+        await repository.commitCandidateClaims({
+          ...fence,
+          candidateId: source.candidateId,
+          canonicalClaimEdgeSetBytes: new Uint8Array(source.claimBytes),
+        });
+        await repository.commitCandidateManifest({
+          ...fence,
+          candidateId: source.candidateId,
+          canonicalManifestBytes: new Uint8Array(source.manifestBytes),
+          reviewerResultSha256: new Uint8Array(source.reviewerResultSha256),
+        });
+        const ranked = await repository.finalizeRanking({
+          ...fence,
+          rankingProofSha256: new Uint8Array(source.rankingProofSha256),
+          selectedCandidateId: source.candidateId,
+          terminalOperationId: uuidV8(),
+        });
+        expect(ranked.selectedCandidateId).toBe(source.candidateId);
+      } catch (failure: unknown) {
+        downstreamError = failure;
+      }
+    }
+    const finalState = (await runProjection(replay.runId))["state"] ?? "";
+    const pool = requireRunPool();
+    expect(pool.idleCount).toBe(pool.totalCount);
+    expect(pool.waitingCount).toBe(0);
+    const reuseProbe = await operatorRepository().claimAgentRun({
+      claimRequestId: randomUUID(),
+      leaseSeconds: 60,
+    });
+    return {
+      candidateAfter,
+      candidateBefore,
+      downstreamError,
+      error,
+      finalState,
+      result,
+      reuseProbeStatus: reuseProbe.status,
+      runAfter,
+      runBefore,
+      runId: replay.runId,
+    };
+  }
+
+  it("attributes the null-origin provenance RED to the first real Replay commitCandidate", async () => {
+    const red = nullOriginRedEvidence;
+    expect(red).toBeDefined();
+    // The null-origin mismatch leaves the fixed body through the repository's
+    // normalized internal failure: no SQLSTATE, relation, or source value.
+    expectOpaqueInternalFailure(red?.error, red?.runId ?? "");
+    expect(red?.result).toBeUndefined();
+    // Zero candidate, payload, event, and run-projection mutation.
+    expect(red?.candidateAfter).toEqual(red?.candidateBefore);
+    expect(red?.candidateAfter).toMatchObject({
+      candidate_payloads: "0",
+      candidates: "0",
+    });
+    expect(red?.runAfter).toEqual(red?.runBefore);
+    // It reached the candidate commit: the whole consume/checkpoint/calculation
+    // prefix ran, so this RED cannot be an earlier-fence artifact.
+    expect(red?.runBefore["state"]).toBe("generating");
+    expect(red?.finalState).toBe("generating");
+    expect(red?.downstreamError).toBeUndefined();
+    expect(red?.reuseProbeStatus).toBe("no_eligible_run");
+  }, 900_000);
+
+  it("attributes the restored shared local-evaluation-time RED to that exact predicate", async () => {
+    const red = timeBindingRedEvidence;
+    expect(red).toBeDefined();
+    expect(red?.error).toBeDefined();
+    expectOpaqueFailure(red?.error, red?.runId ?? "");
+    expect(red?.result).toBeUndefined();
+    expect(red?.candidateAfter).toEqual(red?.candidateBefore);
+    expect(red?.candidateAfter).toMatchObject({
+      candidate_payloads: "0",
+      candidates: "0",
+    });
+    expect(red?.runAfter).toEqual(red?.runBefore);
+    expect(red?.runBefore["state"]).toBe("generating");
+    expect(red?.finalState).toBe("generating");
+    expect(red?.reuseProbeStatus).toBe("no_eligible_run");
+  }, 900_000);
+
+  it("denies the selected candidate named with the unselected source result", async () => {
+    const denial = await replayCandidateJourney({
+      substituteUnselectedResult: true,
+    });
+    // Canonical bytes deny, with zero candidate/payload/event/run mutation.
+    expect(denial.error).toBeDefined();
+    expect(denial.result).toBeUndefined();
+    expect(denial.candidateAfter).toEqual(denial.candidateBefore);
+    expect(denial.candidateAfter).toMatchObject({
+      candidate_payloads: "0",
+      candidates: "0",
+    });
+    expect(denial.runAfter).toEqual(denial.runBefore);
+    expect(denial.runBefore["state"]).toBe("generating");
+    expect(denial.reuseProbeStatus).toBe("no_eligible_run");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 900_000);
+
+  it("attributes the unbound candidate-to-result receipt to an incorrect admission", async () => {
+    const vulnerable = unboundReceiptEvidence;
+    expect(vulnerable).toBeDefined();
+    // The weakened migration admits the call canonical bytes deny, and the
+    // admission is a real persisted mutation, not merely a different error.
+    expect(vulnerable?.error).toBeUndefined();
+    expect(vulnerable?.result).toBeDefined();
+    expect(vulnerable?.candidateBefore).toMatchObject({
+      candidate_payloads: "0",
+      candidates: "0",
+    });
+    expect(vulnerable?.candidateAfter).toMatchObject({
+      candidate_payloads: "1",
+      candidates: "1",
+      event_payloads: String(
+        Number(vulnerable?.candidateBefore["event_payloads"]) + 1,
+      ),
+      events: String(Number(vulnerable?.candidateBefore["events"]) + 1),
+    });
+    expect(vulnerable?.runAfter["run_revision"]).toBe(
+      String(Number(vulnerable?.runBefore["run_revision"]) + 1),
+    );
+    expect(vulnerable?.runAfter["current_event_sequence"]).toBe(
+      String(Number(vulnerable?.runBefore["current_event_sequence"]) + 1),
+    );
+    // The diagnostic mutation is gone: the fixture teardown rolled it back.
+    const residue = await ownerPool.query<{ readonly count: string }>(
+      "SELECT pg_catalog.count(*)::text AS count FROM pg_catalog.pg_namespace WHERE nspname = 'dasher'",
+    );
+    expect(residue.rows[0]?.count).toBe("1");
+  }, 900_000);
+
+  it("commits the request-pinned Replay candidate from a two-candidate source", async () => {
+    const green = await replayCandidateJourney({ twoCandidateSource: true });
+    expect(green.error).toBeUndefined();
+    expect(green.downstreamError).toBeUndefined();
+    expect(green.candidateAfter).toMatchObject({
+      candidate_payloads: "1",
+      candidates: "1",
+    });
+    expect(green.finalState).toBe("approval_required");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 900_000);
+
+  it("commits the request-pinned Replay candidate and reaches approval_required", async () => {
+    const green = await replayCandidateJourney();
+    expect(green.error).toBeUndefined();
+    expect(green.downstreamError).toBeUndefined();
+    expect(green.result).toBeDefined();
+    // Exactly one candidate, one payload, and one event were persisted.
+    expect(green.candidateBefore).toMatchObject({
+      candidate_payloads: "0",
+      candidates: "0",
+    });
+    expect(green.candidateAfter).toMatchObject({
+      candidate_payloads: "1",
+      candidates: "1",
+      event_payloads: String(
+        Number(green.candidateBefore["event_payloads"]) + 1,
+      ),
+      events: String(Number(green.candidateBefore["events"]) + 1),
+    });
+    expect(green.runAfter).toMatchObject({
+      current_event_sequence: String(
+        Number(green.runBefore["current_event_sequence"]) + 1,
+      ),
+      run_revision: String(Number(green.runBefore["run_revision"]) + 1),
+    });
+    expect(green.finalState).toBe("approval_required");
+    expect(green.reuseProbeStatus).toBe("no_eligible_run");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 900_000);
+
+  it("pins the complete 22-method restricted operator inventory mechanically", () => {
+    expect(
+      Object.getOwnPropertyNames(AgentRunOperatorRepository.prototype)
+        .filter((name) => name !== "constructor")
+        .sort(),
+    ).toEqual(
+      [
+        "authorizeAttemptInvocation",
+        "claimAgentRun",
+        "cloneClaimedReplayPrerequisites",
+        "closeCandidateSet",
+        "commitBrief",
+        "commitCalculationGraph",
+        "commitCandidate",
+        "commitCandidateClaims",
+        "commitCandidateManifest",
+        "commitCommonEvidenceBundle",
+        "commitRunAbstention",
+        "commitValidationFindings",
+        "consumeReplayResult",
+        "finalizeRanking",
+        "finishRun",
+        "getClaimedRunInput",
+        "listClaimedReplayResults",
+        "reconcileAttempt",
+        "releaseAttempt",
+        "reserveAttempt",
+        "startAttempt",
+        "writeCheckpoint",
+      ].sort(),
+    );
+  });
+
+  it("denies all five attempt methods plus Brief and bundle before Replay mutation", async () => {
+    const source = await stageApprovalRequiredSource();
+    const replay = await stageReplayRun(source, false);
+    const repository = operatorRepository();
+    const fence = {
+      attemptToken: replay.lease.attemptToken,
+      leaseEpoch: replay.lease.leaseEpoch,
+      runId: replay.runId,
+    } as const;
+    const attemptId = uuidV8();
+    const requestBytes = await plannerRequestBytes(
+      replay,
+      attemptId,
+      replay.bundleSha256,
+    );
+    const dispatch = plannerDispatchDigest(replay, attemptId, requestBytes);
+    const denialActions: readonly (() => Promise<unknown>)[] = [
+      () =>
+        repository.commitBrief({
+          ...fence,
+          briefId: replay.briefId,
+          canonicalBriefBytes: new Uint8Array(replay.briefBytes),
+        }),
+      () =>
+        repository.commitCommonEvidenceBundle({
+          ...fence,
+          bundleId: replay.bundleId,
+          canonicalBundleBytes: new Uint8Array(replay.bundleBytes),
+        }),
+      () =>
+        repository.reserveAttempt({
+          ...fence,
+          attemptId,
+          attemptKind: "planner",
+          canonicalRequestBytes: new Uint8Array(requestBytes),
+          partition: "generation",
+          reservedVector: plannerReservedVector,
+        }),
+      () =>
+        repository.startAttempt({
+          ...fence,
+          attemptId,
+          dispatchRequestSha256: new Uint8Array(dispatch),
+        }),
+      () =>
+        repository.authorizeAttemptInvocation({
+          ...fence,
+          attemptId,
+          dispatchRequestSha256: new Uint8Array(dispatch),
+        }),
+      () =>
+        repository.reconcileAttempt({
+          ...fence,
+          actualAccountingBytes: new Uint8Array(
+            accountingBytes(plannerReservedVector),
+          ),
+          attemptId,
+          canonicalRecordedResultBytes: replay.results[0]!.canonicalResultBytes,
+          outcome: "succeeded",
+          resultSha256: replay.results[0]!.sourceResultSha256,
+        }),
+      () =>
+        repository.releaseAttempt({
+          ...fence,
+          attemptId,
+          reason: "cancelled_before_dispatch",
+          releaseProofSha256: new Uint8Array(createHash("sha256").digest()),
+        }),
+    ];
+    for (const action of denialActions) {
+      await expectOperatorDenial({
+        action,
+        error: OperationDeniedError,
+        runId: replay.runId,
+      });
+    }
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 600_000);
+
+  it("executes Replay clone, list, consume, checkpoint, and the complete candidate proof journey through the restricted operator repository", async () => {
+    const source = await stageApprovalRequiredSource();
+    const replay = await stageReplayRun(source);
+    const repository = operatorRepository();
+    const fence = {
+      attemptToken: replay.lease.attemptToken,
+      leaseEpoch: replay.lease.leaseEpoch,
+      runId: replay.runId,
+    } as const;
+    const checkpoint = await repository.writeCheckpoint({
+      ...fence,
+      ...(await checkpointInput(replay)),
+    });
+    expect(checkpoint.checkpointRevision).toBe(1);
+    const calculation = await calculationFixture(replay, replay.claimed);
+    await repository.commitCalculationGraph({
+      ...fence,
+      canonicalGraphBytes: new Uint8Array(calculation.graphBytes),
+      canonicalResultBytes: new Uint8Array(calculation.resultBytes),
+      expectedInputSha256: new Uint8Array(replay.fixture.inputSha256),
+      graphId: calculation.graphId,
+      meterVector: calculation.meterVector,
+    });
+    await repository.commitCandidate({
+      ...fence,
+      candidateId: source.candidateId,
+      canonicalDashboardSpecBytes: new Uint8Array(source.candidateBytes),
+      commonBundleSha256: new Uint8Array(replay.bundleSha256),
+      precommitValidationSha256: new Uint8Array(source.precommitSha256),
+      sourceResultId: source.sourceResultId,
+      sourceResultSha256: new Uint8Array(source.sourceResultSha256),
+    });
+    await repository.closeCandidateSet({
+      ...fence,
+      orderedCandidateSetSha256: new Uint8Array(source.candidateSetSha256),
+    });
+    await repository.commitValidationFindings({
+      ...fence,
+      candidateId: source.candidateId,
+      canonicalFindingsBytes: new Uint8Array(source.findingsBytes),
+    });
+    await repository.commitCandidateClaims({
+      ...fence,
+      candidateId: source.candidateId,
+      canonicalClaimEdgeSetBytes: new Uint8Array(source.claimBytes),
+    });
+    await repository.commitCandidateManifest({
+      ...fence,
+      candidateId: source.candidateId,
+      canonicalManifestBytes: new Uint8Array(source.manifestBytes),
+      reviewerResultSha256: new Uint8Array(source.reviewerResultSha256),
+    });
+    const ranked = await repository.finalizeRanking({
+      ...fence,
+      rankingProofSha256: new Uint8Array(source.rankingProofSha256),
+      selectedCandidateId: source.candidateId,
+      terminalOperationId: uuidV8(),
+    });
+    expect(ranked.mutation.state).toBe("approval_required");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("rejects Replay gaps, duplicate drift, reversal, overrun, and wrong digests without residue", async () => {
+    const source = await stageApprovalRequiredSource();
+    const replay = await stageReplayRun(source, false);
+    const repository = operatorRepository();
+    const fence = {
+      attemptToken: replay.lease.attemptToken,
+      leaseEpoch: replay.lease.leaseEpoch,
+      runId: replay.runId,
+    } as const;
+    const first = replay.results[0]!;
+    const second = replay.results[1]!;
+    const wrongDigest = Buffer.from(first.sourceResultSha256);
+    wrongDigest[0] = wrongDigest[0]! ^ 0xff;
+
+    await expectOperatorDenial({
+      action: () =>
+        repository.consumeReplayResult({
+          ...fence,
+          sourceResultSequence: second.sourceResultSequence,
+          sourceResultSha256: second.sourceResultSha256,
+        }),
+      error: OperationConflictError,
+      runId: replay.runId,
+    });
+    await expectOperatorDenial({
+      action: () =>
+        repository.consumeReplayResult({
+          ...fence,
+          sourceResultSequence: first.sourceResultSequence,
+          sourceResultSha256: new Uint8Array(wrongDigest),
+        }),
+      error: OperationDeniedError,
+      runId: replay.runId,
+    });
+    await expectOperatorDenial({
+      action: () =>
+        repository.consumeReplayResult({
+          ...fence,
+          sourceResultSequence: 4,
+          sourceResultSha256: first.sourceResultSha256,
+        }),
+      error: OperationConflictError,
+      runId: replay.runId,
+    });
+
+    await repository.consumeReplayResult({
+      ...fence,
+      sourceResultSequence: first.sourceResultSequence,
+      sourceResultSha256: first.sourceResultSha256,
+    });
+    await repository.consumeReplayResult({
+      ...fence,
+      sourceResultSequence: second.sourceResultSequence,
+      sourceResultSha256: second.sourceResultSha256,
+    });
+    await expectOperatorDenial({
+      action: () =>
+        repository.consumeReplayResult({
+          ...fence,
+          sourceResultSequence: first.sourceResultSequence,
+          sourceResultSha256: second.sourceResultSha256,
+        }),
+      error: OperationConflictError,
+      runId: replay.runId,
+    });
+    expect((await runProjection(replay.runId))["state"]).toBe("planning");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 600_000);
+
+  it("commits the mutually exclusive Replay abstention and finish journeys through restricted repositories", async () => {
+    const abstentionSource = await stageApprovalRequiredSource();
+    const abstentionReplay = await stageReplayRun(abstentionSource);
+    const abstentionId = uuidV8();
+    const abstained = await operatorRepository().commitRunAbstention({
+      attemptToken: abstentionReplay.lease.attemptToken,
+      canonicalAbstentionBytes: new Uint8Array(
+        await canonicalBytesOf({
+          abstention_id: abstentionId,
+          next_safe_step: "none",
+          reason: "unsupported_capability",
+          retryable: false,
+          schema: "run-abstention-v1",
+        }),
+      ),
+      leaseEpoch: abstentionReplay.lease.leaseEpoch,
+      runId: abstentionReplay.runId,
+      terminalOperationId: abstentionId,
+    });
+    expect(abstained.mutation.state).toBe("rejected");
+    await quiesceRuns();
+
+    const finishSource = await stageApprovalRequiredSource();
+    const finishReplay = await stageReplayRun(finishSource);
+    const finished = await operatorRepository().finishRun({
+      attemptToken: finishReplay.lease.attemptToken,
+      canonicalReasonBytes: new Uint8Array(
+        await canonicalBytesOf({
+          reason: "internal_failure",
+          schema: "run-finish-reason-v1",
+        }),
+      ),
+      leaseEpoch: finishReplay.lease.leaseEpoch,
+      runId: finishReplay.runId,
+      terminalOperationId: uuidV8(),
+      terminalOutcome: "failed",
+    });
+    expect(finished.state).toBe("failed");
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 600_000);
+
+  async function cancelReplaySource(source: ApprovalRequiredSource) {
+    const projection = await runProjection(source.runId);
+    return callCancel(
+      cancelCall(source.runId, Number(projection["run_revision"])),
+    );
+  }
+
+  async function commitReplayCandidate(
+    source: ApprovalRequiredSource,
+    replay: ReplayRun,
+  ): Promise<void> {
+    await operatorRepository().commitCandidate({
+      attemptToken: replay.lease.attemptToken,
+      candidateId: source.candidateId,
+      canonicalDashboardSpecBytes: new Uint8Array(source.candidateBytes),
+      commonBundleSha256: new Uint8Array(replay.bundleSha256),
+      leaseEpoch: replay.lease.leaseEpoch,
+      precommitValidationSha256: new Uint8Array(source.precommitSha256),
+      runId: replay.runId,
+      sourceResultId: source.sourceResultId,
+      sourceResultSha256: new Uint8Array(source.sourceResultSha256),
+    });
+  }
+
+  it("denies Replay input, clone, list, and consume after source cancellation with zero local mutation", async () => {
+    const discoverySource = await stageApprovalRequiredSource();
+    const discoveryReplay = await stageReplayRun(discoverySource, false, false);
+    await cancelReplaySource(discoverySource);
+    const discoveryFence = {
+      attemptToken: discoveryReplay.lease.attemptToken,
+      leaseEpoch: discoveryReplay.lease.leaseEpoch,
+      runId: discoveryReplay.runId,
+    } as const;
+    for (const action of [
+      () => operatorRepository().getClaimedRunInput(discoveryFence),
+      () =>
+        operatorRepository().cloneClaimedReplayPrerequisites(discoveryFence),
+    ]) {
+      await expectOperatorDenial({
+        action,
+        error: OperationDeniedError,
+        runId: discoveryReplay.runId,
+      });
+    }
+    await quiesceRuns();
+
+    const resultSource = await stageApprovalRequiredSource();
+    const resultReplay = await stageReplayRun(resultSource, false);
+    await cancelReplaySource(resultSource);
+    const resultFence = {
+      attemptToken: resultReplay.lease.attemptToken,
+      leaseEpoch: resultReplay.lease.leaseEpoch,
+      runId: resultReplay.runId,
+    } as const;
+    for (const action of [
+      () =>
+        operatorRepository().listClaimedReplayResults({
+          ...resultFence,
+          afterSourceSequence: 0,
+          limit: 5,
+        }),
+      () =>
+        operatorRepository().consumeReplayResult({
+          ...resultFence,
+          sourceResultSequence: resultReplay.results[0]!.sourceResultSequence,
+          sourceResultSha256: resultReplay.results[0]!.sourceResultSha256,
+        }),
+    ]) {
+      await expectOperatorDenial({
+        action,
+        error: OperationDeniedError,
+        runId: resultReplay.runId,
+      });
+    }
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 900_000);
+
+  it("denies Replay checkpoint, graph, candidate, abstention, and finish after source cancellation", async () => {
+    const source = await stageApprovalRequiredSource();
+    const replay = await stageReplayRun(source);
+    const fence = {
+      attemptToken: replay.lease.attemptToken,
+      leaseEpoch: replay.lease.leaseEpoch,
+      runId: replay.runId,
+    } as const;
+    const checkpoint = await checkpointInput(replay);
+    const calculation = await calculationFixture(replay, replay.claimed);
+    const abstentionId = uuidV8();
+    const abstentionBytes = await canonicalBytesOf({
+      abstention_id: abstentionId,
+      next_safe_step: "none",
+      reason: "unsupported_capability",
+      retryable: false,
+      schema: "run-abstention-v1",
+    });
+    const finishBytes = await canonicalBytesOf({
+      reason: "internal_failure",
+      schema: "run-finish-reason-v1",
+    });
+    await cancelReplaySource(source);
+    const actions: readonly (() => Promise<unknown>)[] = [
+      () => operatorRepository().writeCheckpoint({ ...fence, ...checkpoint }),
+      () =>
+        operatorRepository().commitCalculationGraph({
+          ...fence,
+          canonicalGraphBytes: new Uint8Array(calculation.graphBytes),
+          canonicalResultBytes: new Uint8Array(calculation.resultBytes),
+          expectedInputSha256: new Uint8Array(replay.fixture.inputSha256),
+          graphId: calculation.graphId,
+          meterVector: calculation.meterVector,
+        }),
+      () =>
+        operatorRepository().commitCandidate({
+          ...fence,
+          candidateId: source.candidateId,
+          canonicalDashboardSpecBytes: new Uint8Array(source.candidateBytes),
+          commonBundleSha256: new Uint8Array(replay.bundleSha256),
+          precommitValidationSha256: new Uint8Array(source.precommitSha256),
+          sourceResultId: source.sourceResultId,
+          sourceResultSha256: new Uint8Array(source.sourceResultSha256),
+        }),
+      () =>
+        operatorRepository().commitRunAbstention({
+          ...fence,
+          canonicalAbstentionBytes: new Uint8Array(abstentionBytes),
+          terminalOperationId: abstentionId,
+        }),
+      () =>
+        operatorRepository().finishRun({
+          ...fence,
+          canonicalReasonBytes: new Uint8Array(finishBytes),
+          terminalOperationId: uuidV8(),
+          terminalOutcome: "failed",
+        }),
+    ];
+    for (const action of actions) {
+      await expectOperatorDenial({
+        action,
+        error: OperationDeniedError,
+        runId: replay.runId,
+      });
+    }
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 900_000);
+
+  it("denies Replay close, validation, Claims, manifest, and ranking after source cancellation", async () => {
+    const closeSource = await stageApprovalRequiredSource();
+    const closeReplay = await stageReplayRun(closeSource);
+    await commitReplayCandidate(closeSource, closeReplay);
+    await cancelReplaySource(closeSource);
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().closeCandidateSet({
+          attemptToken: closeReplay.lease.attemptToken,
+          leaseEpoch: closeReplay.lease.leaseEpoch,
+          orderedCandidateSetSha256: new Uint8Array(
+            closeSource.candidateSetSha256,
+          ),
+          runId: closeReplay.runId,
+        }),
+      error: OperationDeniedError,
+      runId: closeReplay.runId,
+    });
+    await quiesceRuns();
+
+    const proofSource = await stageApprovalRequiredSource();
+    const proofReplay = await stageReplayRun(proofSource);
+    await commitReplayCandidate(proofSource, proofReplay);
+    const proofFence = {
+      attemptToken: proofReplay.lease.attemptToken,
+      leaseEpoch: proofReplay.lease.leaseEpoch,
+      runId: proofReplay.runId,
+    } as const;
+    await operatorRepository().closeCandidateSet({
+      ...proofFence,
+      orderedCandidateSetSha256: new Uint8Array(proofSource.candidateSetSha256),
+    });
+    await operatorRepository().commitValidationFindings({
+      ...proofFence,
+      candidateId: proofSource.candidateId,
+      canonicalFindingsBytes: new Uint8Array(proofSource.findingsBytes),
+    });
+    await operatorRepository().commitCandidateClaims({
+      ...proofFence,
+      candidateId: proofSource.candidateId,
+      canonicalClaimEdgeSetBytes: new Uint8Array(proofSource.claimBytes),
+    });
+    await cancelReplaySource(proofSource);
+    const proofActions: readonly (() => Promise<unknown>)[] = [
+      () =>
+        operatorRepository().commitValidationFindings({
+          ...proofFence,
+          candidateId: proofSource.candidateId,
+          canonicalFindingsBytes: new Uint8Array(proofSource.findingsBytes),
+        }),
+      () =>
+        operatorRepository().commitCandidateClaims({
+          ...proofFence,
+          candidateId: proofSource.candidateId,
+          canonicalClaimEdgeSetBytes: new Uint8Array(proofSource.claimBytes),
+        }),
+      () =>
+        operatorRepository().commitCandidateManifest({
+          ...proofFence,
+          candidateId: proofSource.candidateId,
+          canonicalManifestBytes: new Uint8Array(proofSource.manifestBytes),
+          reviewerResultSha256: new Uint8Array(
+            proofSource.reviewerResultSha256,
+          ),
+        }),
+      () =>
+        operatorRepository().finalizeRanking({
+          ...proofFence,
+          rankingProofSha256: new Uint8Array(proofSource.rankingProofSha256),
+          selectedCandidateId: proofSource.candidateId,
+          terminalOperationId: uuidV8(),
+        }),
+    ];
+    for (const action of proofActions) {
+      await expectOperatorDenial({
+        action,
+        error: OperationDeniedError,
+        runId: proofReplay.runId,
+      });
+    }
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 1_200_000);
+
+  /** Every row family and counter one post-claim call could move. */
+  async function operatorLedger(runId: string): Promise<Projection> {
+    const result = await ownerPool.query<Projection>(
+      `SELECT
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_attempts
+          WHERE run_id = $1::uuid) AS attempts,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_events
+          WHERE run_id = $1::uuid) AS events,
+         (SELECT pg_catalog.count(*)::text FROM dasher.agent_run_event_payloads
+          WHERE run_id = $1::uuid) AS event_payloads,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.agent_run_attempt_payloads
+          WHERE run_id = $1::uuid) AS attempt_payloads,
+         (SELECT pg_catalog.count(*)::text
+          FROM dasher.candidate_comparison_bundles
+          WHERE run_id = $1::uuid) AS bundles,
+         (SELECT COALESCE(
+            pg_catalog.sum(counter.reserved_units), 0)::text
+          FROM dasher.agent_run_budget_counters AS counter
+          WHERE counter.run_id = $1::uuid) AS reserved_units,
+         (SELECT COALESCE(
+            pg_catalog.sum(counter.used_units), 0)::text
+          FROM dasher.agent_run_budget_counters AS counter
+          WHERE counter.run_id = $1::uuid) AS used_units,
+         (SELECT COALESCE(
+            pg_catalog.sum(counter.released_units), 0)::text
+          FROM dasher.agent_run_budget_counters AS counter
+          WHERE counter.run_id = $1::uuid) AS released_units`,
+      [runId],
+    );
+    return result.rows[0]!;
+  }
+
+  /**
+   * Asserts the exact normalized public error, that the call moved no run,
+   * attempt, event or budget row, and that the pooled run-login client was
+   * rolled back and handed back to the pool rather than destroyed.
+   */
+  async function expectOperatorDenial(argv: {
+    readonly action: () => Promise<unknown>;
+    readonly error: typeof OperationConflictError | typeof OperationDeniedError;
+    readonly runId: string;
+  }): Promise<void> {
+    const pool = requireRunPool();
+    const beforeRun = await runProjection(argv.runId);
+    const beforeLedger = await operatorLedger(argv.runId);
+    const beforeTotal = pool.totalCount;
+    let raised: unknown;
+    await expect(
+      argv.action().catch((failure: unknown) => {
+        raised = failure;
+        throw failure;
+      }),
+    ).rejects.toBeInstanceOf(argv.error);
+    expectOpaqueFailure(raised, argv.runId);
+    expect(await runProjection(argv.runId)).toEqual(beforeRun);
+    expect(await operatorLedger(argv.runId)).toEqual(beforeLedger);
+    // Reusable, not destroyed: the pool kept the same clients and all of them
+    // are idle again.
+    expect(pool.totalCount).toBe(beforeTotal);
+    expect(pool.idleCount).toBe(pool.totalCount);
+    expect(pool.waitingCount).toBe(0);
+  }
+
+  /**
+   * One real, successful operator round-trip on the same pool the denial used.
+   * After quiescing, the only correct answer is no_eligible_run, and getting it
+   * proves the reused client still speaks the protocol.
+   */
+  async function expectReusablePool(): Promise<void> {
+    const probe = await operatorRepository().claimAgentRun({
+      claimRequestId: randomUUID(),
+      leaseSeconds: 60,
+    });
+    expect(probe.status).toBe("no_eligible_run");
+  }
+
+  it("denies a post-claim call carrying a superseded lease epoch", async () => {
+    const staged = await stageClaimedRun(1);
+    expect(staged.lease.leaseEpoch).toBe(1);
+
+    // A real later claim takes the run over and advances the epoch.
+    await ownerPool.query(
+      `SELECT pg_catalog.pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM (
+         (SELECT run.lease_expires_at FROM dasher.agent_runs AS run
+          WHERE run.run_id = $1::uuid) - pg_catalog.clock_timestamp()
+       )) + 0.25))`,
+      [staged.runId],
+    );
+    const retaken = await claimExpectedRun(staged.runId, 900);
+    expect(retaken.leaseEpoch).toBe(2);
+    expect(await runProjection(staged.runId)).toMatchObject({
+      lease_epoch: "2",
+    });
+
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().commitCommonEvidenceBundle({
+          attemptToken: staged.lease.attemptToken,
+          bundleId: staged.bundleId,
+          canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+          leaseEpoch: staged.lease.leaseEpoch,
+          runId: staged.runId,
+        }),
+      error: OperationDeniedError,
+      runId: staged.runId,
+    });
+
+    // The same call on the current epoch and its own token succeeds, so the
+    // superseded epoch was the only reason the first one was refused.
+    const committed = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: retaken.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: retaken.leaseEpoch,
+      runId: staged.runId,
+    });
+    expect(committed.mutation.runId).toBe(staged.runId);
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("denies a post-claim call carrying a token that was never issued", async () => {
+    const staged = await stageClaimedRun(900);
+    const forged = new Uint8Array(randomBytes(32));
+    expect(
+      Buffer.from(forged).equals(Buffer.from(staged.lease.attemptToken)),
+    ).toBe(false);
+
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().commitCommonEvidenceBundle({
+          attemptToken: forged,
+          bundleId: staged.bundleId,
+          canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+          leaseEpoch: staged.lease.leaseEpoch,
+          runId: staged.runId,
+        }),
+      error: OperationDeniedError,
+      runId: staged.runId,
+    });
+
+    // Everything except the token was already correct.
+    const committed = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    expect(committed.mutation.runId).toBe(staged.runId);
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("denies a post-claim call at the inclusive lease expiry boundary", async () => {
+    const staged = await stageClaimedRun(1);
+    // Before the boundary the identical call is admitted.
+    const committed = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    expect(committed.mutation.runId).toBe(staged.runId);
+
+    // pg_sleep_until parks the session on the run's own lease_expires_at, so
+    // the next statement's statement_timestamp() is the first instant at or
+    // after the boundary the frozen fence treats as expired.
+    const boundary = await ownerPool.query<{ readonly overshoot_ms: string }>(
+      `WITH lease AS (
+         SELECT run.lease_expires_at FROM dasher.agent_runs AS run
+         WHERE run.run_id = $1::uuid
+       ), waited AS (
+         SELECT pg_catalog.pg_sleep_until(lease.lease_expires_at) FROM lease
+       )
+       SELECT (EXTRACT(EPOCH FROM (
+         pg_catalog.clock_timestamp() - lease.lease_expires_at
+       )) * 1000)::bigint::text AS overshoot_ms
+       FROM lease, waited`,
+      [staged.runId],
+    );
+    const overshoot = Number(boundary.rows[0]!.overshoot_ms);
+    expect(overshoot).toBeGreaterThanOrEqual(0);
+    expect(overshoot).toBeLessThan(250);
+
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().commitCommonEvidenceBundle({
+          attemptToken: staged.lease.attemptToken,
+          bundleId: randomUUID(),
+          canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+          leaseEpoch: staged.lease.leaseEpoch,
+          runId: staged.runId,
+        }),
+      error: OperationDeniedError,
+      runId: staged.runId,
+    });
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("denies a post-claim call after the tenant cancels the claimed run", async () => {
+    const staged = await stageClaimedRun(900);
+    const current = await runProjection(staged.runId);
+    const cancelled = await callCancel(
+      cancelCall(staged.runId, Number(current.run_revision)),
+    );
+    expect(cancelled.state).toBe("cancelled");
+
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().commitCommonEvidenceBundle({
+          attemptToken: staged.lease.attemptToken,
+          bundleId: staged.bundleId,
+          canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+          leaseEpoch: staged.lease.leaseEpoch,
+          runId: staged.runId,
+        }),
+      error: OperationDeniedError,
+      runId: staged.runId,
+    });
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("denies a post-claim call after the requesting membership is revoked", async () => {
+    const staged = await stageClaimedRun(900);
+    // The run's own requesting membership is the authority the operator fence
+    // revalidates on every call.
+    await ownerPool.query(
+      `UPDATE dasher.memberships
+       SET state = 'revoked', revoked_at = transaction_timestamp()
+       WHERE organization_id = $1::uuid AND membership_id = $2::uuid`,
+      [organizationId(), requester.membershipId],
+    );
+    try {
+      await expectOperatorDenial({
+        action: () =>
+          operatorRepository().commitCommonEvidenceBundle({
+            attemptToken: staged.lease.attemptToken,
+            bundleId: staged.bundleId,
+            canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+            leaseEpoch: staged.lease.leaseEpoch,
+            runId: staged.runId,
+          }),
+        error: OperationDeniedError,
+        runId: staged.runId,
+      });
+    } finally {
+      await ownerPool.query(
+        `UPDATE dasher.memberships
+         SET state = 'active', revoked_at = NULL
+         WHERE organization_id = $1::uuid AND membership_id = $2::uuid`,
+        [organizationId(), requester.membershipId],
+      );
+    }
+
+    // Restoring the authority restores the call, so the revocation was the
+    // whole cause.
+    const committed = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    expect(committed.mutation.runId).toBe(staged.runId);
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("denies a reservation whose claimed input digest is not the run's", async () => {
+    const staged = await stageClaimedRun(900);
+    const bundle = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    const attemptId = randomUUID();
+    const drifted = await plannerRequestBytes(
+      staged,
+      attemptId,
+      Buffer.from(bundle.contentSha256),
+      createHash("sha256").update("task9d-r6-not-the-claimed-input").digest(),
+    );
+
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().reserveAttempt({
+          attemptId,
+          attemptKind: "planner",
+          attemptToken: staged.lease.attemptToken,
+          canonicalRequestBytes: new Uint8Array(drifted),
+          leaseEpoch: staged.lease.leaseEpoch,
+          partition: "generation",
+          reservedVector: plannerReservedVector,
+          runId: staged.runId,
+        }),
+      error: OperationConflictError,
+      runId: staged.runId,
+    });
+
+    // The identical reservation carrying the run's own claimed input digest is
+    // admitted, so the digest was the only difference.
+    const honest = await plannerRequestBytes(
+      staged,
+      attemptId,
+      Buffer.from(bundle.contentSha256),
+    );
+    const reserved = await operatorRepository().reserveAttempt({
+      attemptId,
+      attemptKind: "planner",
+      attemptToken: staged.lease.attemptToken,
+      canonicalRequestBytes: new Uint8Array(honest),
+      leaseEpoch: staged.lease.leaseEpoch,
+      partition: "generation",
+      reservedVector: plannerReservedVector,
+      runId: staged.runId,
+    });
+    expect(reserved.attemptId).toBe(attemptId);
+
+    await releaseReservedAttempt(staged, attemptId, honest);
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  it("denies a second reservation against live budget and attempt state", async () => {
+    const staged = await stageClaimedRun(900);
+    const bundle = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    const firstAttemptId = randomUUID();
+    const firstRequestBytes = await plannerRequestBytes(
+      staged,
+      firstAttemptId,
+      Buffer.from(bundle.contentSha256),
+    );
+    await operatorRepository().reserveAttempt({
+      attemptId: firstAttemptId,
+      attemptKind: "planner",
+      attemptToken: staged.lease.attemptToken,
+      canonicalRequestBytes: new Uint8Array(firstRequestBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      partition: "generation",
+      reservedVector: plannerReservedVector,
+      runId: staged.runId,
+    });
+
+    // The reservation is live in the budget: the planner vector is held
+    // against the generation partition and nothing has been released.
+    const charged = await operatorLedger(staged.runId);
+    expect(charged).toMatchObject({
+      attempts: "1",
+      released_units: "0",
+      reserved_units: "53001",
+      used_units: "0",
+    });
+
+    const secondAttemptId = randomUUID();
+    await expectOperatorDenial({
+      action: async () =>
+        operatorRepository().reserveAttempt({
+          attemptId: secondAttemptId,
+          attemptKind: "planner",
+          attemptToken: staged.lease.attemptToken,
+          canonicalRequestBytes: new Uint8Array(
+            await plannerRequestBytes(
+              staged,
+              secondAttemptId,
+              Buffer.from(bundle.contentSha256),
+            ),
+          ),
+          leaseEpoch: staged.lease.leaseEpoch,
+          partition: "generation",
+          reservedVector: plannerReservedVector,
+          runId: staged.runId,
+        }),
+      error: OperationConflictError,
+      runId: staged.runId,
+    });
+    expect(
+      (
+        await ownerPool.query<{ readonly count: string }>(
+          `SELECT pg_catalog.count(*)::text AS count
+           FROM dasher.agent_run_attempts WHERE attempt_id = $1::uuid`,
+          [secondAttemptId],
+        )
+      ).rows[0]?.count,
+    ).toBe("0");
+
+    await releaseReservedAttempt(staged, firstAttemptId, firstRequestBytes);
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  /**
+   * The permanent RED characterization of the frozen defect `0010` corrects.
+   *
+   * This re-issues the *exact* frozen `dasher_api.cancel_agent_run` body from
+   * the `0008` migration file's own bytes - the authoritative definition on the
+   * `0001`-`0009` series, since `0009` does not re-issue this routine - runs the
+   * identical production journey the GREEN case below runs, and restores the
+   * `0010` body from its own file bytes afterwards. Only the routine body
+   * varies; the schema, logins, fixtures and call path are held constant, so the
+   * body is the only thing the outcome can be attributed to.
+   *
+   * SCOPE NOTE: this isolates the frozen routine rather than installing a
+   * separate `0001`-`0009` database. It is a narrower instrument than a full
+   * phase-9 install and is reported as such.
+   */
+  /** The installed routine definition, owner and settings, as the catalog has it. */
+  async function cancelRoutineDefinition(): Promise<string> {
+    const result = await ownerPool.query<{ readonly definition: string }>(
+      `SELECT pg_catalog.pg_get_functiondef(
+                'dasher_api.cancel_agent_run(uuid, bigint, bytea, uuid, smallint, bytea, text)'::regprocedure
+              ) || '|owner=' || pg_catalog.pg_get_userbyid(routine.proowner)
+              || '|definer=' || routine.prosecdef::text
+              || '|volatile=' || routine.provolatile::text
+              || '|parallel=' || routine.proparallel::text
+              || '|leakproof=' || routine.proleakproof::text
+              || '|config=' || COALESCE(
+                   pg_catalog.array_to_string(routine.proconfig, ','), '')
+              || '|acl=' || COALESCE(routine.proacl::text, '')
+              AS definition
+         FROM pg_catalog.pg_proc AS routine
+        WHERE routine.oid = 'dasher_api.cancel_agent_run(uuid, bigint, bytea, uuid, smallint, bytea, text)'::regprocedure`,
+    );
+    return result.rows[0]!.definition;
+  }
+
+  async function reissueCancelRoutineFrom(
+    migrationIndex: 7 | 9,
+  ): Promise<void> {
+    const migrations = await discoverMigrations(canonicalMigrationDirectory);
+    const sql = migrations[migrationIndex]?.sql ?? "";
+    const lines = sql.split("\n");
+    const start = lines.indexOf(
+      "CREATE OR REPLACE FUNCTION dasher_api.cancel_agent_run(",
+    );
+    const end = lines.indexOf("$function$;", start);
+    if (start < 0 || end <= start) {
+      throw new Error("cancel_agent_run body not found in the migration bytes");
+    }
+    await ownerPool.query(lines.slice(start, end + 1).join("\n"));
+  }
+
+  it("cannot settle a live attempt on the frozen 0001-0009 routine", async () => {
+    const staged = await stageClaimedRun(900);
+    const bundle = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    const attemptId = randomUUID();
+    const requestBytes = await plannerRequestBytes(
+      staged,
+      attemptId,
+      Buffer.from(bundle.contentSha256),
+    );
+    await operatorRepository().reserveAttempt({
+      attemptId,
+      attemptKind: "planner",
+      attemptToken: staged.lease.attemptToken,
+      canonicalRequestBytes: new Uint8Array(requestBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      partition: "generation",
+      reservedVector: plannerReservedVector,
+      runId: staged.runId,
+    });
+
+    // The exact mechanism, read straight from the catalog: the append helper
+    // resolves its run from two transaction-local settings, and in a session
+    // that never installed them the lookup matches nothing at all.
+    expect(
+      (
+        await ownerPool.query<{ readonly found: string }>(
+          `SELECT pg_catalog.count(*)::text AS found
+             FROM dasher.agent_runs AS run
+            WHERE run.organization_id
+                    = current_setting('dasher.run_organization_id', true)::uuid
+              AND run.dashboard_id
+                    = current_setting('dasher.run_dashboard_id', true)::uuid
+              AND run.run_id = $1::uuid`,
+          [staged.runId],
+        )
+      ).rows[0]?.found,
+    ).toBe("0");
+
+    const canonicalDefinition = await cancelRoutineDefinition();
+    try {
+      await reissueCancelRoutineFrom(7);
+      const frozenDefinition = await cancelRoutineDefinition();
+      // The installed body really did change, and really is the frozen one:
+      // both run-context installs now sit after the settlement loop.
+      expect(frozenDefinition).not.toBe(canonicalDefinition);
+      expect(
+        frozenDefinition.indexOf("set_config('dasher.run_organization_id'"),
+      ).toBeGreaterThan(frozenDefinition.indexOf("FOR v_attempt IN"));
+      expect(
+        canonicalDefinition.indexOf("set_config('dasher.run_organization_id'"),
+      ).toBeLessThan(canonicalDefinition.indexOf("FOR v_attempt IN"));
+
+      const beforeRun = await runProjection(staged.runId);
+      const beforeEvents = await runEvents(staged.runId);
+      const beforeLedger = await ledgerCounts();
+      const beforeOperator = await operatorLedger(staged.runId);
+      const beforeAttempt = await ownerPool.query<Projection>(
+        `SELECT attempt.state,
+           (attempt.reconciled_at IS NULL)::text AS unreconciled,
+           (attempt.terminal_reason_sha256 IS NULL)::text AS no_reason
+         FROM dasher.agent_run_attempts AS attempt
+         WHERE attempt.attempt_id = $1::uuid`,
+        [attemptId],
+      );
+      expect(beforeAttempt.rows[0]).toEqual({
+        no_reason: "true",
+        state: "reserved_pre_dispatch",
+        unreconciled: "true",
+      });
+
+      // A fresh tenant cancellation of a run holding a nonterminal attempt
+      // fails through the frozen body's unexpected internal path. The public
+      // channel remains opaque; phase 10 is what restores the intended success.
+      const denied = cancelCall(
+        staged.runId,
+        Number(beforeRun["run_revision"]),
+      );
+      let raised: unknown;
+      await expect(
+        callCancel(denied).catch((failure: unknown) => {
+          raised = failure;
+          throw failure;
+        }),
+      ).rejects.toBeInstanceOf(OperationInternalError);
+      expect(raised).toMatchObject({
+        code: "internal_error",
+        message: "Internal operation failure",
+        outcome: "not_committed",
+        retrySafe: false,
+      });
+      const redSurface = `${String(raised)} ${JSON.stringify(
+        Object.getOwnPropertyNames(raised as object),
+      )} ${(raised as Error).message}`;
+      for (const forbidden of [
+        staged.runId,
+        "22P02",
+        "42501",
+        "agent_run",
+        "current_setting",
+      ]) {
+        expect(redSurface).not.toContain(forbidden);
+      }
+
+      // Nothing partial survived: no attempt, counter, event, run, operation or
+      // audit mutation at all. The whole transaction rolled back.
+      expect(await runProjection(staged.runId)).toEqual(beforeRun);
+      expect(await runEvents(staged.runId)).toEqual(beforeEvents);
+      expect(await ledgerCounts()).toEqual(beforeLedger);
+      expect(await operatorLedger(staged.runId)).toEqual(beforeOperator);
+      expect(
+        (
+          await ownerPool.query<Projection>(
+            `SELECT attempt.state,
+               (attempt.reconciled_at IS NULL)::text AS unreconciled,
+               (attempt.terminal_reason_sha256 IS NULL)::text AS no_reason
+             FROM dasher.agent_run_attempts AS attempt
+             WHERE attempt.attempt_id = $1::uuid`,
+            [attemptId],
+          )
+        ).rows[0],
+      ).toEqual(beforeAttempt.rows[0]);
+      expect(
+        (
+          await ownerPool.query<{ readonly count: string }>(
+            `SELECT pg_catalog.count(*)::text AS count
+               FROM dasher.audit_events WHERE audit_event_id = $1::uuid`,
+            [denied.operationAndAuditId],
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+
+      // The live attempt is the whole cause. Released through the operator, the
+      // very same frozen routine cancels the very same run: with no nonterminal
+      // attempt the settlement loop body never runs, so the only append the call
+      // makes is the aggregate one - by which point the frozen body has finally
+      // installed the two settings.
+      await releaseReservedAttempt(staged, attemptId, requestBytes);
+      const afterRelease = await runProjection(staged.runId);
+      const cancelled = await callCancel(
+        cancelCall(staged.runId, Number(afterRelease["run_revision"])),
+      );
+      expect(cancelled.state).toBe("cancelled");
+    } finally {
+      await reissueCancelRoutineFrom(9);
+    }
+
+    // The 0010 body is back, byte-for-byte, with its owner, definer status and
+    // fixed search path intact, so the characterization left no catalog residue
+    // for any later case.
+    expect(await cancelRoutineDefinition()).toBe(canonicalDefinition);
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+
+  /**
+   * The Task 9D closure proof for the `0010` correction.
+   *
+   * On `0001`-`0009` this exact journey is impossible. `cancel_agent_run`
+   * appends each per-attempt settlement event through
+   * `dasher_private.append_agent_run_event_v1`, which resolves its run from
+   * `dasher.run_organization_id` / `dasher.run_dashboard_id` (0007:8470-8479)
+   * and denies with P1001 when that select finds nothing (0007:8480-8482) - and
+   * the frozen body installs both settings only *after* the loop
+   * (0008:5869-5870). Every fresh cancellation of a run holding a nonterminal
+   * attempt therefore failed inside the first per-attempt append and rolled
+   * back, which is why every case above releases its reservation through the
+   * operator first. `0010` moves those two installs to immediately before the
+   * loop, and nothing else, so the settlement path below is now reachable.
+   */
+  it("settles a live reserved attempt through the real tenant cancel", async () => {
+    const staged = await stageClaimedRun(900);
+    const bundle = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    const attemptId = randomUUID();
+    await operatorRepository().reserveAttempt({
+      attemptId,
+      attemptKind: "planner",
+      attemptToken: staged.lease.attemptToken,
+      canonicalRequestBytes: new Uint8Array(
+        await plannerRequestBytes(
+          staged,
+          attemptId,
+          Buffer.from(bundle.contentSha256),
+        ),
+      ),
+      leaseEpoch: staged.lease.leaseEpoch,
+      partition: "generation",
+      reservedVector: plannerReservedVector,
+      runId: staged.runId,
+    });
+
+    // The attempt is genuinely live and nonterminal, and the whole planner
+    // reservation is outstanding against the generation partition.
+    const beforeRun = await runProjection(staged.runId);
+    expect(beforeRun).toMatchObject({ state: "planning" });
+    expect(await operatorLedger(staged.runId)).toMatchObject({
+      attempts: "1",
+      released_units: "0",
+      reserved_units: "53001",
+      used_units: "0",
+    });
+    const beforeAttempt = await ownerPool.query<Projection>(
+      `SELECT attempt.state,
+         (SELECT pg_catalog.count(*)::text
+          FROM pg_catalog.jsonb_each_text(
+            pg_catalog.to_jsonb(attempt.reserved_vector)) AS component
+          WHERE component.value::bigint > 0) AS nonzero_reserved_components,
+         (SELECT pg_catalog.count(*)::text
+          FROM pg_catalog.jsonb_each_text(
+            pg_catalog.to_jsonb(attempt.outstanding_vector)) AS component
+          WHERE component.value::bigint <> 0) AS nonzero_outstanding
+       FROM dasher.agent_run_attempts AS attempt
+       WHERE attempt.attempt_id = $1::uuid`,
+      [attemptId],
+    );
+    // Ten of the fourteen planner components are nonzero - candidates,
+    // repair_attempts, reviewer_attempts and specialist_attempts are zero for a
+    // planner - and every one of them is still outstanding.
+    expect(beforeAttempt.rows[0]).toEqual({
+      nonzero_outstanding: "10",
+      nonzero_reserved_components: "10",
+      state: "reserved_pre_dispatch",
+    });
+    const eventsBefore = await runEvents(staged.runId);
+    const beforeSequence = Number(beforeRun["current_event_sequence"]);
+    const beforeRevision = Number(beforeRun["run_revision"]);
+    const beforeEpoch = Number(beforeRun["lease_epoch"]);
+
+    // The real tenant cancel, through the production repository on the real
+    // restricted dasher_app login.
+    const call = cancelCall(staged.runId, beforeRevision);
+    const cancelled = await callCancel(call);
+    expect(cancelled.state).toBe("cancelled");
+    expect(cancelled.runId).toBe(staged.runId);
+
+    // Exactly two new events, in order: the per-attempt settlement first, then
+    // the aggregate header. The settlement event is the one the frozen series
+    // could never write.
+    const eventsAfter = await runEvents(staged.runId);
+    expect(eventsAfter).toHaveLength(eventsBefore.length + 2);
+    expect(eventsAfter.slice(0, eventsBefore.length)).toEqual(eventsBefore);
+    const settlement = eventsAfter[eventsBefore.length]!;
+    const header = eventsAfter[eventsBefore.length + 1]!;
+    expect(settlement["event_kind"]).toBe("attempt_cancelled_released");
+    expect(settlement["event_sequence"]).toBe(String(beforeSequence + 1));
+    expect(header["event_kind"]).toBe("run_cancelled");
+    expect(header["event_sequence"]).toBe(String(beforeSequence + 2));
+    expect(header["event_id"]).toBe(call.operationAndAuditId);
+
+    // The settlement event id is the frozen deterministic identity, and the
+    // chain links settlement -> header with no gap.
+    const derived = await ownerPool.query<{
+      readonly event_id: string;
+      readonly chained: boolean;
+    }>(
+      `SELECT dasher_private.uuid_v8_from_sha256_v1(pg_catalog.sha256(
+           pg_catalog.convert_to('dasher.cancel-released-event-id.v1','UTF8')
+           || pg_catalog.decode('00','hex')
+           || pg_catalog.uuid_send($1::uuid)
+           || pg_catalog.uuid_send($2::uuid)
+         ))::text AS event_id,
+         (SELECT header.prior_event_sha256 = settlement.event_sha256
+            AND header.prior_event_sequence = settlement.event_sequence
+          FROM dasher.agent_run_events AS header
+          JOIN dasher.agent_run_events AS settlement
+            ON settlement.run_id = header.run_id
+           AND settlement.event_sequence = $4::bigint
+          WHERE header.run_id = $3::uuid
+            AND header.event_sequence = $5::bigint) AS chained`,
+      [
+        call.operationAndAuditId,
+        attemptId,
+        staged.runId,
+        beforeSequence + 1,
+        beforeSequence + 2,
+      ],
+    );
+    expect(settlement["event_id"]).toBe(derived.rows[0]!.event_id);
+    expect(derived.rows[0]!.chained).toBe(true);
+
+    // The attempt is terminal-released: nothing used, the whole reservation
+    // released componentwise, nothing outstanding, and the frozen cancel-reason
+    // digest recorded.
+    const settled = await ownerPool.query<Projection>(
+      `SELECT attempt.state,
+         (SELECT pg_catalog.count(*)::text
+          FROM pg_catalog.jsonb_each_text(
+            pg_catalog.to_jsonb(attempt.used_vector)) AS component
+          WHERE component.value::bigint <> 0) AS nonzero_used,
+         (SELECT pg_catalog.count(*)::text
+          FROM pg_catalog.jsonb_each_text(
+            pg_catalog.to_jsonb(attempt.outstanding_vector)) AS component
+          WHERE component.value::bigint <> 0) AS nonzero_outstanding,
+         (SELECT pg_catalog.count(*)::text
+          FROM pg_catalog.jsonb_each_text(
+            pg_catalog.to_jsonb(attempt.released_vector)) AS released
+          JOIN pg_catalog.jsonb_each_text(
+            pg_catalog.to_jsonb(attempt.reserved_vector)) AS reserved
+            ON reserved.key = released.key
+          WHERE released.value = reserved.value) AS released_equals_reserved,
+         (attempt.actual_vector IS NULL)::text AS actual_is_null,
+         (attempt.reconciled_at IS NOT NULL)::text AS reconciled,
+         (attempt.terminal_reason_sha256 = pg_catalog.sha256(
+            pg_catalog.convert_to('dasher.run-cancel-reason.v1','UTF8')
+            || pg_catalog.decode('00','hex')
+            || pg_catalog.int4send(59)
+            || pg_catalog.convert_to(
+                 '{"reason":"user_requested","schema":"run-cancel-reason-v1"}',
+                 'UTF8')
+          ))::text AS reason_digest_matches
+       FROM dasher.agent_run_attempts AS attempt
+       WHERE attempt.attempt_id = $1::uuid`,
+      [attemptId],
+    );
+    expect(settled.rows[0]).toEqual({
+      actual_is_null: "true",
+      nonzero_outstanding: "0",
+      nonzero_used: "0",
+      reason_digest_matches: "true",
+      reconciled: "true",
+      released_equals_reserved: "14",
+      state: "cancelled_released",
+    });
+
+    // All 14 counter components released, none used, nothing outstanding.
+    const counters = await ownerPool.query<Projection>(
+      `SELECT pg_catalog.count(*)::text AS components,
+         pg_catalog.count(*) FILTER (
+           WHERE counter.released_units = counter.reserved_units)::text
+           AS fully_released,
+         pg_catalog.count(*) FILTER (WHERE counter.used_units <> 0)::text
+           AS used,
+         pg_catalog.count(*) FILTER (
+           WHERE counter.reserved_units - counter.used_units
+             - counter.released_units <> 0)::text AS outstanding
+       FROM dasher.agent_run_budget_counters AS counter
+       WHERE counter.run_id = $1::uuid AND counter.partition = 'generation'`,
+      [staged.runId],
+    );
+    expect(counters.rows[0]).toEqual({
+      components: "14",
+      fully_released: "14",
+      outstanding: "0",
+      used: "0",
+    });
+    expect(await operatorLedger(staged.runId)).toMatchObject({
+      attempts: "1",
+      released_units: "53001",
+      reserved_units: "53001",
+      used_units: "0",
+    });
+
+    // The run head advanced by exactly the two events, the lease is fenced and
+    // cleared, and the tenant-cancel projection is exactly the stored result.
+    const afterRun = await runProjection(staged.runId);
+    expect(afterRun).toMatchObject({
+      cancel_operation_id: call.operationAndAuditId,
+      cancel_result_revision: String(beforeRevision + 2),
+      cancel_result_sequence: String(beforeSequence + 2),
+      current_event_sequence: String(beforeSequence + 2),
+      lease_epoch: String(beforeEpoch + 1),
+      run_revision: String(beforeRevision + 2),
+      state: "cancelled",
+    });
+    expect(afterRun["head_sha256"]).toBe(header["event_sha256"]);
+    expect(afterRun["cancel_result_event_sha256"]).toBe(header["event_sha256"]);
+    expect(
+      (
+        await ownerPool.query<{ readonly cleared: boolean }>(
+          `SELECT run.lease_token_sha256 IS NULL
+             AND run.lease_owner_principal_id IS NULL
+             AND run.lease_owner_principal_revision IS NULL
+             AND run.lease_expires_at IS NULL AS cleared
+           FROM dasher.agent_runs AS run WHERE run.run_id = $1::uuid`,
+          [staged.runId],
+        )
+      ).rows[0]?.cleared,
+    ).toBe(true);
+
+    // The settlement event's retained body carries the exact released vector
+    // and the cancel operation, with the exact frozen key set.
+    const settlementBody = await ownerPool.query<Projection>(
+      `SELECT pg_catalog.array_to_string(ARRAY(
+           SELECT pg_catalog.jsonb_object_keys(
+             pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+               -> 'body') ORDER BY 1), ',') AS body_keys,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' ->> 'attempt_id') AS attempt_id,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' ->> 'cancel_operation_id') AS cancel_operation_id,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' -> 'released_vector' ->> 'total_tokens')
+           AS released_total_tokens,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' -> 'used_vector' ->> 'total_tokens') AS used_total_tokens
+       FROM dasher.agent_run_event_payloads AS payload
+       WHERE payload.run_id = $1::uuid AND payload.event_sequence = $2::bigint`,
+      [staged.runId, beforeSequence + 1],
+    );
+    expect(settlementBody.rows[0]).toEqual({
+      attempt_id: attemptId,
+      body_keys: "attempt_id,cancel_operation_id,released_vector,used_vector",
+      cancel_operation_id: call.operationAndAuditId,
+      released_total_tokens: "i64:6000",
+      used_total_tokens: "i64:0",
+    });
+
+    // The aggregate header names the settled attempt as released, not charged.
+    const headerBody = await ownerPool.query<Projection>(
+      `SELECT (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' -> 'released_attempt_ids')::text AS released_attempt_ids,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' -> 'charged_attempt_ids')::text AS charged_attempt_ids,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' -> 'used_vector' ->> 'total_tokens') AS used_total_tokens,
+         (pg_catalog.convert_from(payload.canonical_bytes,'UTF8')::jsonb
+           -> 'body' ->> 'fenced_lease_epoch') AS fenced_lease_epoch
+       FROM dasher.agent_run_event_payloads AS payload
+       WHERE payload.run_id = $1::uuid AND payload.event_sequence = $2::bigint`,
+      [staged.runId, beforeSequence + 2],
+    );
+    expect(headerBody.rows[0]).toEqual({
+      charged_attempt_ids: "[]",
+      fenced_lease_epoch: `i64:${String(beforeEpoch + 1)}`,
+      released_attempt_ids: `["${attemptId}"]`,
+      used_total_tokens: "i64:0",
+    });
+
+    // The immutable audit header for the operation exists exactly once.
+    expect(await auditProjection(call.operationAndAuditId)).toMatchObject({
+      action: "dashboard.agent_run_cancelled",
+      outcome: "succeeded",
+      target_id: staged.runId,
+      target_type: "agent_run",
+    });
+
+    // An exact retry returns the stored result and writes nothing.
+    const ledgerBefore = await ledgerCounts();
+    const replay = await callCancel(
+      cancelCall(staged.runId, beforeRevision, {
+        operationAndAuditId: call.operationAndAuditId,
+      }),
+    );
+    expect(replay).toEqual(cancelled);
+    expect(await ledgerCounts()).toEqual(ledgerBefore);
+    expect(await runProjection(staged.runId)).toEqual(afterRun);
+    expect(await runEvents(staged.runId)).toEqual(eventsAfter);
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+  // Left for last: the frozen delete guard on dasher.agent_run_policy_revisions
+  // has no organization column to check, so a policy revision cannot be
+  // removed once written. Installing the later revision is therefore a
+  // one-way step for the rest of this database, and every other case runs
+  // before it.
+  it("denies a post-claim call once a later policy revision exists", async () => {
+    const staged = await stageClaimedRun(900);
+    // The identical call is admitted while revision one is still the latest.
+    const admitted = await operatorRepository().commitCommonEvidenceBundle({
+      attemptToken: staged.lease.attemptToken,
+      bundleId: staged.bundleId,
+      canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+      leaseEpoch: staged.lease.leaseEpoch,
+      runId: staged.runId,
+    });
+    expect(admitted.mutation.runId).toBe(staged.runId);
+
+    await installLaterPolicyRevision();
+    expect(
+      (
+        await ownerPool.query<{ readonly count: string }>(
+          `SELECT pg_catalog.count(*)::text AS count
+           FROM dasher.agent_run_policy_revisions`,
+        )
+      ).rows[0]?.count,
+    ).toBe("2");
+    // The chain the fence revalidates still verifies; what changed is that the
+    // run's binding to revision one is no longer the latest revision.
+    const chain = await ownerPool.query<{ readonly valid: boolean }>(
+      "SELECT dasher_private.validate_agent_run_policy_chain_v1() AS valid",
+    );
+    expect(chain.rows[0]?.valid).toBe(true);
+
+    await expectOperatorDenial({
+      action: () =>
+        operatorRepository().commitCommonEvidenceBundle({
+          attemptToken: staged.lease.attemptToken,
+          bundleId: randomUUID(),
+          canonicalBundleBytes: new Uint8Array(staged.bundleBytes),
+          leaseEpoch: staged.lease.leaseEpoch,
+          runId: staged.runId,
+        }),
+      error: OperationDeniedError,
+      runId: staged.runId,
+    });
+
+    // The same advance is the request path's policy-revision drift: the
+    // retained request now binds a policy revision that is no longer the one
+    // the frozen function would issue against, and the replay is refused with
+    // no duplicate DML.
+    await expectDenialWithoutDml({
+      action: () => callRequest(staged.requestCall),
+      auditEventId: staged.requestCall.auditEventId,
+      error: OperationConflictError,
+      runId: staged.runId,
+      runRequestId: staged.requestCall.binding.runRequestId,
+    });
+
+    await quiesceRuns();
+    await expectReusablePool();
+  }, 300_000);
+});
