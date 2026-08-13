@@ -47,7 +47,16 @@ function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
 }
 
-/** Runs one statement as the application role under a request context. */
+/**
+ * Runs one statement as the application role, authenticated as a real session.
+ *
+ * Setting the context settings directly no longer establishes anything: they
+ * are honoured only alongside a keyed digest that `dasher_api.begin_request`
+ * stamps after validating a session token. Passing a null organization or user
+ * exercises the no-context path deliberately.
+ */
+const sessionTokens = new Map<string, Buffer>();
+
 async function asTenant<T>(
   organizationId: string | null,
   userId: string | null,
@@ -56,17 +65,15 @@ async function asTenant<T>(
   const client = await appPool.connect();
   try {
     await client.query("BEGIN");
-    if (organizationId !== null) {
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_organization_id",
-        organizationId,
-      ]);
-    }
-    if (userId !== null) {
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_user_id",
-        userId,
-      ]);
+    if (organizationId !== null && userId !== null) {
+      const token = sessionTokens.get(`${organizationId}:${userId}`);
+      if (token === undefined) {
+        throw new Error(`no seeded session for ${userId}`);
+      }
+      await client.query(
+        "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, token],
+      );
     }
     const result = await body(client);
     await client.query("COMMIT");
@@ -131,6 +138,23 @@ beforeAll(async () => {
            (membership_id, organization_id, user_id, role, state, authority_revision)
          VALUES ($1, $2, $3, 'admin', 'active', 1)`,
         [randomUUID(), organizationId, userId],
+      );
+      const sessionToken = sha256(`session:${organizationId}:${userId}`);
+      sessionTokens.set(`${organizationId}:${userId}`, sessionToken);
+      await seed.query(
+        `INSERT INTO dasher.sessions
+           (session_id, organization_id, user_id, authority_revision,
+            token_key_version, token_digest, csrf_key_version, csrf_digest,
+            issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+         VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+                 now() + interval '30 minutes', now() + interval '12 hours')`,
+        [
+          randomUUID(),
+          organizationId,
+          userId,
+          sessionToken,
+          sha256(`csrf:${organizationId}:${userId}`),
+        ],
       );
       await seed.query(
         `INSERT INTO dasher.dashboards
@@ -249,10 +273,13 @@ describe("tenant isolation", () => {
     `);
     expect(result.rows[0]?.relrowsecurity).toBe(true);
 
-    const rows = await asTenant(orgB, userA, async (client) =>
-      client.query("SELECT membership_id FROM dasher.memberships"),
+    const rows = await asTenant(orgA, userA, async (client) =>
+      client.query<{ readonly organization_id: string }>(
+        "SELECT organization_id FROM dasher.memberships",
+      ),
     );
-    expect(rows.rowCount).toBe(0);
+    expect(rows.rows.every((row) => row.organization_id === orgA)).toBe(true);
+    expect(rows.rowCount).toBeGreaterThan(0);
   });
 
   it("reads nothing without a request context", async () => {
@@ -262,11 +289,36 @@ describe("tenant isolation", () => {
     expect(rows.rowCount).toBe(0);
   });
 
-  it("reads nothing when the context names an organization the user is not in", async () => {
-    const rows = await asTenant(orgB, userA, async (client) =>
-      client.query("SELECT dashboard_id FROM dasher.dashboards"),
-    );
-    expect(rows.rowCount).toBe(0);
+  it("cannot establish a context for an organization the user is not in", async () => {
+    // Stronger than the property this replaced. A mismatched context used to
+    // be establishable and then denied by policy; now it cannot be established
+    // at all, because the only route in is a session token and no session
+    // pairs this user with that organization. Asserting the pair directly
+    // proves the digest binds both halves, not just the user.
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, sessionTokens.get(`${orgA}:${userA}`)],
+      );
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_organization_id",
+        orgB,
+      ]);
+      const principal = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_organization_id()::text AS who",
+      );
+      expect(principal.rows[0]?.who).toBeNull();
+
+      const rows = await client.query(
+        "SELECT dashboard_id FROM dasher.dashboards",
+      );
+      expect(rows.rowCount).toBe(0);
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
   });
 
   it("reads only its own organization's dashboards", async () => {
@@ -288,19 +340,38 @@ describe("tenant isolation", () => {
     expect(rows.rowCount).toBe(0);
   });
 
-  it("a revoked membership stops reading immediately", async () => {
-    await ownerPool.query(
-      `UPDATE dasher.memberships
-          SET state = 'revoked', revoked_at = now(), updated_at = now()
-        WHERE organization_id = $1 AND user_id = $2`,
-      [orgA, userA],
-    );
+  it("a membership revoked mid-transaction stops reading immediately", async () => {
+    // Revoking before the request would now be caught by `begin_request`,
+    // which is earlier and cheaper. The property worth holding is the harder
+    // one: a context already established must stop authorizing the moment the
+    // membership behind it is revoked, without waiting for the session to
+    // expire or the transaction to end.
+    const client = await appPool.connect();
     try {
-      const rows = await asTenant(orgA, userA, async (client) =>
-        client.query("SELECT dashboard_id FROM dasher.dashboards"),
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, sessionTokens.get(`${orgA}:${userA}`)],
       );
-      expect(rows.rowCount).toBe(0);
+      const before = await client.query(
+        "SELECT dashboard_id FROM dasher.dashboards",
+      );
+      expect(before.rowCount).toBe(1);
+
+      await ownerPool.query(
+        `UPDATE dasher.memberships
+            SET state = 'revoked', revoked_at = now(), updated_at = now()
+          WHERE organization_id = $1 AND user_id = $2`,
+        [orgA, userA],
+      );
+
+      const after = await client.query(
+        "SELECT dashboard_id FROM dasher.dashboards",
+      );
+      expect(after.rowCount).toBe(0);
+      await client.query("COMMIT");
     } finally {
+      client.release();
       await ownerPool.query(
         `UPDATE dasher.memberships
             SET state = 'active', revoked_at = NULL, updated_at = now()

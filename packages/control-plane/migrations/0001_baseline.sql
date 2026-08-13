@@ -9,7 +9,10 @@
 -- protect. From the first production deployment onward the series becomes
 -- forward-only and append-only, and this file becomes immutable.
 --
--- What is deliberately kept from the superseded series:
+-- What is kept from the superseded series:
+--   * a write seam: `dasher_app` reaches state-changing operations only
+--     through `dasher_api` SECURITY DEFINER functions that derive the acting
+--     principal themselves (in progress; see the note below)
 --   * row-level security on every tenant-scoped table, FORCEd on all but
 --     `memberships` — see the note above `context_allows` for why that one
 --     cannot be forced without recursing
@@ -30,25 +33,21 @@
 --     and service-principal allowlist tables, which enforced a privilege
 --     boundary between components that run in one process as one database user
 --
--- KNOWN GAPS, tracked as 26 failing cases in
--- test/accepted-invalid-states.integration.test.ts, in two classes.
+-- IN PROGRESS. `dasher_api` below is the write and authentication seam that
+-- replaces the direct table grants this file first shipped with. Three states
+-- are closed: a forged request context no longer authorizes anything, a
+-- session token resolves without needing the context it establishes, and an
+-- invitation is accepted without needing the membership acceptance creates.
 --
--- Incompleteness first, because it is the worse of the two: `dasher_app` holds
--- no write access to users, external_identities, organizations, memberships,
--- invitations, sessions, audit_events, source_snapshots, or evidence_records,
--- so nobody can sign in, be invited, or record evidence. Two of those are
--- circular rather than merely ungranted — resolving a session token needs the
--- request context that resolution would establish, and accepting an invitation
--- needs the membership acceptance would create. No grant fixes a cycle.
+-- 23 states this schema still wrongly accepts are enumerated as failing cases
+-- in test/accepted-invalid-states.integration.test.ts. Those markers are the
+-- remaining work: closing one turns its marker red, which forces it off.
 --
--- Then under-enforcement:
--- The superseded series granted `dasher_app` no direct table writes at all:
--- every mutation went through a `dasher_api` SECURITY DEFINER function that
--- checked actor identity, legal transitions, and audit atomicity. Replacing
--- that with direct INSERT/UPDATE grants dropped the enforcement along with the
--- ceremony, which was not intended. Fifteen states this schema wrongly accepts
--- are enumerated as failing tests. Closing them needs a trusted mutation seam,
--- not the sixteen-table ledger back.
+-- Still open: dashboards and agent runs remain directly writable, so actor
+-- attribution is forgeable, lifecycle transitions are unchecked, terminal runs
+-- are rewritable, published claim sets are unsealed, and audit events cannot be
+-- written at all outside accept_invitation. Snapshots and evidence records have
+-- no write path and no immutability trigger.
 
 -- ---------------------------------------------------------------------------
 -- Schemas and default privileges
@@ -109,35 +108,135 @@ ALTER DEFAULT PRIVILEGES REVOKE ALL ON TYPES FROM PUBLIC;
 -- nothing here verifies that the caller is entitled to the identity it names.
 -- ---------------------------------------------------------------------------
 
+-- The request context is a *signed* assertion, not a bare value.
+--
+-- PostgreSQL offers no way to stop a role setting a custom GUC: `REVOKE SET ON
+-- PARAMETER` is accepted for a two-part placeholder name and then has no
+-- effect, which was verified rather than assumed. So `dasher_app` can always
+-- write `dasher.context_user_id`. If policies trusted that value directly,
+-- anything able to issue SQL on the application connection could name any
+-- member of any organization, and row-level security would be decorative.
+--
+-- Instead `dasher_api.begin_request` validates a session token and stamps a
+-- third setting: a keyed digest over the principal it just proved. The
+-- accessors below recompute that digest and return NULL unless it matches.
+-- `dasher_app` can still write all three settings, but it cannot produce a
+-- digest for a principal it was never issued, because the key lives in
+-- `dasher_private`, which it has no rights to read.
+
+CREATE TABLE dasher_private.context_keys (
+  singleton boolean NOT NULL DEFAULT true,
+  secret bytea NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  CONSTRAINT context_keys_pkey PRIMARY KEY (singleton),
+  CONSTRAINT context_keys_singleton_check CHECK (singleton),
+  CONSTRAINT context_keys_secret_check CHECK (
+    pg_catalog.octet_length(secret) = 32
+  )
+);
+
+-- Two v4 UUIDs give 32 bytes from the same CSPRNG `gen_random_uuid` uses, so
+-- the key needs no extension. It is per-deployment: a database recreated from
+-- this migration gets a different one, which is the desired behaviour.
+INSERT INTO dasher_private.context_keys (secret)
+VALUES (
+  pg_catalog.decode(
+    pg_catalog.replace(pg_catalog.gen_random_uuid()::text, '-', '')
+    || pg_catalog.replace(pg_catalog.gen_random_uuid()::text, '-', ''),
+    'hex'
+  )
+);
+
+-- Keyed on both sides, so the digest cannot be extended into a valid digest
+-- for a longer payload. The payload is fixed-length anyway; this costs
+-- nothing and removes the need to reason about it.
+CREATE FUNCTION dasher_private.context_digest(
+  p_user_id uuid,
+  p_organization_id uuid
+)
+RETURNS bytea
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+  SELECT pg_catalog.sha256(
+    key_row.secret
+    || pg_catalog.convert_to(
+         p_user_id::text || ':' || p_organization_id::text,
+         'UTF8'
+       )
+    || key_row.secret
+  )
+  FROM dasher_private.context_keys AS key_row
+  WHERE key_row.singleton;
+$function$;
+
+-- Returns the principal only when the stamped digest matches it. Any tampering
+-- with any of the three settings — including clearing the digest — yields no
+-- row, and every policy then denies.
+CREATE FUNCTION dasher_private.verified_context()
+RETURNS TABLE (user_id uuid, organization_id uuid)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  claimed_user uuid;
+  claimed_organization uuid;
+  claimed_digest bytea;
+BEGIN
+  BEGIN
+    claimed_user :=
+      pg_catalog.current_setting('dasher.context_user_id', true)::uuid;
+    claimed_organization :=
+      pg_catalog.current_setting('dasher.context_organization_id', true)::uuid;
+    claimed_digest := pg_catalog.decode(
+      pg_catalog.current_setting('dasher.context_digest', true),
+      'hex'
+    );
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN;
+  END;
+
+  IF claimed_user IS NULL
+    OR claimed_organization IS NULL
+    OR claimed_digest IS NULL
+  THEN
+    RETURN;
+  END IF;
+
+  IF claimed_digest
+    <> dasher_private.context_digest(claimed_user, claimed_organization)
+  THEN
+    RETURN;
+  END IF;
+
+  user_id := claimed_user;
+  organization_id := claimed_organization;
+  RETURN NEXT;
+END
+$function$;
+
 CREATE FUNCTION dasher_private.context_user_id()
 RETURNS uuid
-LANGUAGE plpgsql
+LANGUAGE sql
 STABLE
 SET search_path = pg_catalog
 AS $function$
-BEGIN
-  RETURN pg_catalog.current_setting('dasher.context_user_id', true)::uuid;
-EXCEPTION
-  WHEN OTHERS THEN
-    RETURN NULL;
-END
+  SELECT verified.user_id FROM dasher_private.verified_context() AS verified;
 $function$;
 
 CREATE FUNCTION dasher_private.context_organization_id()
 RETURNS uuid
-LANGUAGE plpgsql
+LANGUAGE sql
 STABLE
 SET search_path = pg_catalog
 AS $function$
-BEGIN
-  RETURN pg_catalog.current_setting(
-    'dasher.context_organization_id',
-    true
-  )::uuid;
-EXCEPTION
-  WHEN OTHERS THEN
-    RETURN NULL;
-END
+  SELECT verified.organization_id
+  FROM dasher_private.verified_context() AS verified;
 $function$;
 
 CREATE FUNCTION dasher_private.reject_immutable_mutation()
@@ -1073,9 +1172,251 @@ GRANT SELECT, INSERT, UPDATE ON
   dasher.agent_runs
 TO dasher_app;
 
+-- `dasher_private.context_digest` is deliberately absent from this list and
+-- must stay absent. It is the key-holding primitive: any role able to execute
+-- it can mint a valid digest for any principal, which would defeat the whole
+-- construction. `verified_context` is safe to grant because it only ever
+-- returns a principal whose digest already checks out.
+GRANT EXECUTE ON FUNCTION dasher_private.verified_context() TO dasher_app;
 GRANT EXECUTE ON FUNCTION dasher_private.context_user_id() TO dasher_app;
 GRANT EXECUTE ON FUNCTION dasher_private.context_organization_id()
   TO dasher_app;
 GRANT EXECUTE ON FUNCTION dasher_private.context_allows(uuid, text)
   TO dasher_app;
 GRANT USAGE ON SCHEMA dasher_private TO dasher_app;
+
+-- ---------------------------------------------------------------------------
+-- dasher_api — the write and authentication seam
+--
+-- `dasher_app` holds no direct INSERT or UPDATE on any table. Everything that
+-- mutates state, and everything that must run before a request context exists,
+-- goes through one of these functions. They are SECURITY DEFINER, so they run
+-- as the schema owner and see past row-level security; each therefore derives
+-- the acting principal itself rather than accepting it as an argument.
+--
+-- Two of them exist because a grant cannot fix a cycle. Resolving a session
+-- token needs the context that resolution establishes, and accepting an
+-- invitation needs the membership that acceptance creates. Both are broken by
+-- running as the owner and validating a bearer secret instead.
+-- ---------------------------------------------------------------------------
+
+CREATE SCHEMA dasher_api AUTHORIZATION CURRENT_USER;
+REVOKE ALL ON SCHEMA dasher_api FROM PUBLIC;
+GRANT USAGE ON SCHEMA dasher_api TO dasher_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA dasher_api REVOKE ALL ON FUNCTIONS FROM PUBLIC;
+
+-- Pre-authentication: maps an identity-provider subject to a local user. Takes
+-- no context because none exists yet, and returns nothing but the user id.
+CREATE FUNCTION dasher_api.resolve_external_identity(
+  p_issuer text,
+  p_subject text
+)
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+  SELECT identity_row.user_id
+  FROM dasher.external_identities AS identity_row
+  WHERE identity_row.issuer = p_issuer
+    AND identity_row.subject = p_subject;
+$function$;
+
+-- Establishes the request context from a session token. This is the only way a
+-- context comes into existence: it validates the session, then stamps the
+-- keyed digest the accessors verify.
+--
+-- Must be called inside an explicit transaction. The settings are written with
+-- `is_local => true` so they are discarded at COMMIT or ROLLBACK, which is what
+-- keeps a pooled connection from carrying one request's principal into the
+-- next.
+CREATE FUNCTION dasher_api.begin_request(
+  p_token_key_version smallint,
+  p_token_digest bytea
+)
+RETURNS TABLE (user_id uuid, organization_id uuid)
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  session_row dasher.sessions%ROWTYPE;
+  membership_row dasher.memberships%ROWTYPE;
+  now_at timestamptz := pg_catalog.clock_timestamp();
+BEGIN
+  IF pg_catalog.octet_length(p_token_digest) <> 32 THEN
+    RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
+  END IF;
+
+  SELECT * INTO session_row
+  FROM dasher.sessions AS candidate
+  WHERE candidate.token_key_version = p_token_key_version
+    AND candidate.token_digest = p_token_digest;
+
+  IF NOT FOUND
+    OR session_row.revoked_at IS NOT NULL
+    OR now_at >= session_row.idle_expires_at
+    OR now_at >= session_row.absolute_expires_at
+  THEN
+    RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
+  END IF;
+
+  -- The membership must still be active *and* unchanged since the session was
+  -- issued. A role change or revocation bumps authority_revision, which
+  -- invalidates every session issued under the old authority.
+  SELECT * INTO membership_row
+  FROM dasher.memberships AS candidate
+  WHERE candidate.organization_id = session_row.organization_id
+    AND candidate.user_id = session_row.user_id;
+
+  IF NOT FOUND
+    OR membership_row.state <> 'active'
+    OR membership_row.authority_revision <> session_row.authority_revision
+  THEN
+    RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
+  END IF;
+
+  UPDATE dasher.sessions AS live
+  SET last_seen_at = now_at,
+      idle_expires_at = LEAST(
+        now_at + pg_catalog.make_interval(mins => 30),
+        live.absolute_expires_at
+      )
+  WHERE live.session_id = session_row.session_id;
+
+  PERFORM pg_catalog.set_config(
+    'dasher.context_user_id', session_row.user_id::text, true
+  );
+  PERFORM pg_catalog.set_config(
+    'dasher.context_organization_id',
+    session_row.organization_id::text,
+    true
+  );
+  PERFORM pg_catalog.set_config(
+    'dasher.context_digest',
+    pg_catalog.encode(
+      dasher_private.context_digest(
+        session_row.user_id,
+        session_row.organization_id
+      ),
+      'hex'
+    ),
+    true
+  );
+
+  user_id := session_row.user_id;
+  organization_id := session_row.organization_id;
+  RETURN NEXT;
+END
+$function$;
+
+-- The second cycle. The invitee holds no membership yet, so no context can
+-- exist for them; the invitation token is the only thing they can present.
+-- Creating the membership and recording the audit event happen in one
+-- statement, so neither can occur without the other.
+CREATE FUNCTION dasher_api.accept_invitation(
+  p_token_key_version smallint,
+  p_token_digest bytea,
+  p_user_id uuid,
+  p_request_id uuid,
+  p_deployment_revision text
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  invitation_row dasher.invitations%ROWTYPE;
+  existing_membership dasher.memberships%ROWTYPE;
+  new_membership_id uuid := pg_catalog.gen_random_uuid();
+  now_at timestamptz := pg_catalog.clock_timestamp();
+BEGIN
+  SELECT * INTO invitation_row
+  FROM dasher.invitations AS candidate
+  WHERE candidate.token_key_version = p_token_key_version
+    AND candidate.token_digest = p_token_digest
+  FOR UPDATE;
+
+  IF NOT FOUND
+    OR invitation_row.accepted_at IS NOT NULL
+    OR invitation_row.revoked_at IS NOT NULL
+    OR now_at >= invitation_row.expires_at
+  THEN
+    RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM dasher.users AS candidate
+    WHERE candidate.user_id = p_user_id
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
+  END IF;
+
+  SELECT * INTO existing_membership
+  FROM dasher.memberships AS candidate
+  WHERE candidate.organization_id = invitation_row.organization_id
+    AND candidate.user_id = p_user_id;
+
+  IF FOUND THEN
+    new_membership_id := existing_membership.membership_id;
+    UPDATE dasher.memberships AS held
+    SET state = 'active',
+        revoked_at = NULL,
+        authority_revision = held.authority_revision + 1,
+        updated_at = now_at
+    WHERE held.membership_id = existing_membership.membership_id;
+  ELSE
+    INSERT INTO dasher.memberships (
+      membership_id, organization_id, user_id, role, state, authority_revision
+    )
+    VALUES (
+      new_membership_id,
+      invitation_row.organization_id,
+      p_user_id,
+      invitation_row.granted_role,
+      'active',
+      1
+    );
+  END IF;
+
+  UPDATE dasher.invitations AS held
+  SET accepted_at = now_at, accepted_user_id = p_user_id
+  WHERE held.invitation_id = invitation_row.invitation_id;
+
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(),
+    invitation_row.organization_id,
+    'user',
+    p_user_id,
+    1,
+    p_request_id,
+    CASE WHEN existing_membership.membership_id IS NULL
+      THEN 'invitation.accepted'
+      ELSE 'invitation.accepted_existing_membership'
+    END,
+    'invitation',
+    invitation_row.invitation_id,
+    'succeeded',
+    p_deployment_revision
+  );
+
+  RETURN new_membership_id;
+END
+$function$;
+
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA dasher_api FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.resolve_external_identity(text, text) TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.begin_request(smallint, bytea) TO dasher_app;
+GRANT EXECUTE ON FUNCTION
+  dasher_api.accept_invitation(smallint, bytea, uuid, uuid, text) TO dasher_app;

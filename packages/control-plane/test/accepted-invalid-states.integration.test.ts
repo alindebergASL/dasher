@@ -67,23 +67,38 @@ function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
 }
 
-/** Runs a body as the application role under a named request context. */
+/** Session tokens, one per seeded member. */
+const tokens = new Map<string, Buffer>();
+
+/**
+ * Runs a body as the application role, authenticated as a real session.
+ *
+ * The context can no longer be asserted by setting GUCs: they are only
+ * honoured alongside a keyed digest that `begin_request` stamps after
+ * validating a token. The organization argument is kept for readability and
+ * checked against what the session actually proves.
+ */
 async function asTenant<T>(
   organizationId: string,
   userId: string,
   body: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
+  const token = tokens.get(userId);
+  if (token === undefined) {
+    throw new Error(`no seeded session for ${userId}`);
+  }
   const client = await appPool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("SELECT set_config($1, $2, true)", [
-      "dasher.context_organization_id",
-      organizationId,
-    ]);
-    await client.query("SELECT set_config($1, $2, true)", [
-      "dasher.context_user_id",
-      userId,
-    ]);
+    const established = await client.query<{
+      readonly organization_id: string;
+    }>(
+      "SELECT organization_id FROM dasher_api.begin_request($1::smallint, $2)",
+      [1, token],
+    );
+    if (established.rows[0]?.organization_id !== organizationId) {
+      throw new Error("session proved a different organization");
+    }
     const result = await body(client);
     await client.query("COMMIT");
     return result;
@@ -175,6 +190,23 @@ beforeAll(async () => {
            VALUES ($1, $2, $3, 'editor', 'active', 1)`,
           [randomUUID(), organizationId, userId],
         );
+        const token = sha256(`session-token:${userId}`);
+        tokens.set(userId, token);
+        await seed.query(
+          `INSERT INTO dasher.sessions
+             (session_id, organization_id, user_id, authority_revision,
+              token_key_version, token_digest, csrf_key_version, csrf_digest,
+              issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+           VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+                   now() + interval '30 minutes', now() + interval '12 hours')`,
+          [
+            randomUUID(),
+            organizationId,
+            userId,
+            token,
+            sha256(`csrf:${userId}`),
+          ],
+        );
       }
     }
     for (const [organizationId, dashboardId, userId] of [
@@ -213,23 +245,37 @@ afterAll(async () => {
 });
 
 describe("request identity", () => {
-  it.fails(
-    "a connection cannot act as a user it never authenticated as",
-    async () => {
-      // The application role chooses both GUCs itself, and `context_allows`
-      // verifies only that the named user holds a membership — not that this
-      // session legitimately acts as them. Anything able to issue SQL on the
-      // application connection can therefore name any member of any organization
-      // and read their rows. Nothing here proves a session.
-      const rows = await asTenant(otherOrg, carol, async (client) => {
-        const result = await client.query(
-          "SELECT organization_id FROM dasher.dashboards",
-        );
-        return result.rowCount ?? 0;
-      });
-      expect(rows).toBe(0);
-    },
-  );
+  it("a connection cannot act as a user it never authenticated as", async () => {
+    // Names a real, active member of another organization and sets both
+    // context settings directly, exactly as an attacker holding the
+    // application connection would. Without the keyed digest that only
+    // `begin_request` can stamp, the principal does not resolve and every
+    // policy denies.
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_organization_id",
+        otherOrg,
+      ]);
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_user_id",
+        carol,
+      ]);
+      const principal = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      expect(principal.rows[0]?.who).toBeNull();
+
+      const visible = await client.query(
+        "SELECT organization_id FROM dasher.dashboards",
+      );
+      expect(visible.rowCount).toBe(0);
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+  });
 });
 
 describe("attribution", () => {
@@ -568,37 +614,57 @@ describe("audit and evidence write paths", () => {
  * are circular rather than merely ungranted.
  */
 describe("sign-in and onboarding", () => {
-  it.fails(
-    "the application role can find a session by its token digest",
-    async () => {
-      // The circularity: `sessions_read` requires context_user_id() to equal the
-      // row's user_id, but resolving an opaque token to a user is precisely what
-      // the lookup is for. There is no context to set until the lookup succeeds,
-      // and the lookup cannot succeed without one.
-      const sessionId = randomUUID();
-      const digest = sha256(`token:${sessionId}`);
-      await ownerPool.query(
-        `INSERT INTO dasher.sessions
+  it("the application role can find a session by its token digest", async () => {
+    // The cycle is broken by not needing a context to start with:
+    // `begin_request` runs as the owner, so it can see past the sessions
+    // policy, validate the token, and only then establish the principal that
+    // every later statement is filtered by.
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      const established = await client.query<{
+        readonly user_id: string;
+        readonly organization_id: string;
+      }>("SELECT * FROM dasher_api.begin_request($1::smallint, $2)", [
+        1,
+        tokens.get(alice),
+      ]);
+      expect(established.rows[0]?.user_id).toBe(alice);
+      expect(established.rows[0]?.organization_id).toBe(org);
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+  });
+
+  it("a revoked or expired session establishes nothing", async () => {
+    const revoked = sha256(`revoked:${alice}`);
+    await ownerPool.query(
+      `INSERT INTO dasher.sessions
          (session_id, organization_id, user_id, authority_revision,
           token_key_version, token_digest, csrf_key_version, csrf_digest,
-          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at,
+          revoked_at, revocation_reason)
        VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
-               now() + interval '30 minutes', now() + interval '12 hours')`,
-        [sessionId, org, alice, digest, sha256(`csrf:${sessionId}`)],
-      );
+               now() + interval '30 minutes', now() + interval '12 hours',
+               now(), 'signed_out')`,
+      [randomUUID(), org, alice, revoked, sha256(`revoked-csrf:${alice}`)],
+    );
 
-      const client = await appPool.connect();
-      try {
-        const found = await client.query(
-          "SELECT user_id, organization_id FROM dasher.sessions WHERE token_digest = $1",
-          [digest],
-        );
-        expect(found.rowCount).toBe(1);
-      } finally {
-        client.release();
-      }
-    },
-  );
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await expectRejected(
+        client.query(
+          "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+          [1, revoked],
+        ),
+      );
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  });
 
   it.fails(
     "the application role can create the first organization and its owner",
@@ -631,26 +697,78 @@ describe("sign-in and onboarding", () => {
     },
   );
 
-  it.fails(
-    "the application role can resolve an external identity to a user",
-    async () => {
-      await ownerPool.query(
-        `INSERT INTO dasher.external_identities (issuer, subject, user_id)
+  it("the application role can resolve an external identity to a user", async () => {
+    // Pre-authentication, so there is no context to have. The function runs
+    // as the owner, takes an issuer and subject, and returns nothing but the
+    // user id it maps to.
+    await ownerPool.query(
+      `INSERT INTO dasher.external_identities (issuer, subject, user_id)
        VALUES ('https://issuer.example', $1, $2)`,
-        [`subject-${alice}`, alice],
+      [`subject-${alice}`, alice],
+    );
+
+    const client = await appPool.connect();
+    try {
+      const found = await client.query<{ readonly resolved: string | null }>(
+        "SELECT dasher_api.resolve_external_identity($1, $2) AS resolved",
+        ["https://issuer.example", `subject-${alice}`],
       );
-      const client = await appPool.connect();
-      try {
-        const found = await client.query(
-          "SELECT user_id FROM dasher.external_identities WHERE issuer = $1 AND subject = $2",
-          ["https://issuer.example", `subject-${alice}`],
-        );
-        expect(found.rowCount).toBe(1);
-      } finally {
-        client.release();
-      }
-    },
-  );
+      expect(found.rows[0]?.resolved).toBe(alice);
+
+      const missing = await client.query<{ readonly resolved: string | null }>(
+        "SELECT dasher_api.resolve_external_identity($1, $2) AS resolved",
+        ["https://issuer.example", "nobody"],
+      );
+      expect(missing.rows[0]?.resolved).toBeNull();
+    } finally {
+      client.release();
+    }
+  });
+
+  it("an invited user can accept without already holding a membership", async () => {
+    // The second cycle. The invitee has no membership, so no context can exist
+    // for them; the invitation token is the only thing they can present.
+    const invitee = randomUUID();
+    const invitationToken = sha256(`invite:${invitee}`);
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      invitee,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.invitations
+         (invitation_id, organization_id, normalized_email, granted_role,
+          role_ceiling, token_key_version, token_digest, created_by_user_id,
+          expires_at)
+       VALUES ($1, $2, 'invitee@example.com', 'editor', 'admin', 1, $3, $4,
+               now() + interval '7 days')`,
+      [randomUUID(), org, invitationToken, alice],
+    );
+
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      const accepted = await client.query<{ readonly membership: string }>(
+        `SELECT dasher_api.accept_invitation($1::smallint, $2, $3, $4, $5)
+           AS membership`,
+        [1, invitationToken, invitee, randomUUID(), "test"],
+      );
+      expect(accepted.rows[0]?.membership).toEqual(expect.any(String));
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    // Acceptance and its audit event are one statement, so neither can happen
+    // without the other.
+    const audit = await ownerPool.query(
+      `SELECT 1 FROM dasher.audit_events
+       WHERE organization_id = $1 AND action = 'invitation.accepted'`,
+      [org],
+    );
+    expect(audit.rowCount).toBe(1);
+  });
 });
 
 describe("timestamp coherence", () => {

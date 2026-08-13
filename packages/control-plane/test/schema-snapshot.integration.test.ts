@@ -86,17 +86,36 @@ it("the snapshot records that the application role cannot bypass row security", 
   );
 });
 
-it("the snapshot records forced row security on every table but memberships", async () => {
+it("the snapshot records forced row security on every tenant table but memberships", async () => {
   const committed = await readFile(snapshotPath, "utf8");
-  const rowSecurityLines = committed
-    .split("\n")
-    .filter((line) => line.includes(" rls="));
 
-  const unforced = rowSecurityLines.filter(
+  // Scoped to `dasher`. Tables in `dasher_private` hold no tenant rows, are
+  // unreachable from the application role, and are read by SECURITY DEFINER
+  // functions running as the owner — which FORCE would itself block, since a
+  // forced table applies its policies to the owner too.
+  const tenantRowSecurity = committed
+    .split("\n")
+    .filter((line) => line.includes(" rls=") && line.startsWith("dasher."));
+
+  const unforced = tenantRowSecurity.filter(
     (line) => !line.endsWith("rls=true force=true"),
   );
 
   expect(unforced).toEqual(["dasher.memberships rls=true force=false"]);
+});
+
+it("the private key table is unreachable rather than policy-protected", async () => {
+  const committed = await readFile(snapshotPath, "utf8");
+
+  // The context key is what makes a forged request context detectable, so its
+  // protection is that no role but the owner can reach it at all. If a grant
+  // ever appears here, the whole construction is void.
+  const grants = committed
+    .split("\n")
+    .filter((line) => line.includes("dasher_private.context_keys"))
+    .filter((line) => line.includes("grant"));
+
+  expect(grants).toEqual([]);
 });
 
 it("orders every section by bytes, so the render does not depend on the server collation", async () => {
