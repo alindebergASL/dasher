@@ -5,13 +5,16 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./agent-run-reducer": "./src/agent-run-reducer.ts",
+    "./agent-run-repository": "./src/agent-run-repository.ts",
+    "./agent-run-types": "./src/agent-run-types.ts",
     "./email": "./src/email.ts",
     "./invitation-repository": "./src/invitation-repository.ts",
     "./migrator": "./src/migrator.ts",
     "./preflight": "./src/preflight.ts",
     "./secrets": "./src/secrets.ts",
-    "./session-repository": "./src/session-repository.ts",
     "./session-cookie": "./src/session-cookie.ts",
+    "./session-repository": "./src/session-repository.ts",
     "./verified-principal": "./src/verified-principal.ts"
   },
   "scripts": {
@@ -25,6 +28,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@dasher/calculation-engine": "workspace:*",
     "@types/pg": "^8.20.0",
     "typescript": "^5.9.2",
     "vitest": "^4.1.10"

@@ -94,6 +94,71 @@ export {
 
 export { DashboardLifecycleRepository } from "./dashboard-lifecycle-repository.js";
 
+// The run-operator repository is deliberately absent from the package root:
+// it is a restricted worker capability reached only through the
+// `@dasher/control-plane/agent-run-repository` entry point, which keeps the
+// application surface free of every operator, retention and private seam.
+export { AgentRunRepository } from "./agent-run-repository.js";
+
+export {
+  AgentRunReducerError,
+  agentRunCheckpointStateSha256,
+  agentRunEventSemanticSha256,
+  agentRunEventSha256,
+  agentRunRetainedEnvelopeSha256,
+  reduceAgentRun,
+  type AgentRunEventDigestInput,
+} from "./agent-run-reducer.js";
+
+export {
+  AGENT_RUN_BUDGET_PARTITIONS,
+  AGENT_RUN_INDETERMINATE_REASONS,
+  AGENT_RUN_TERMINAL_STATES,
+  AGENT_RUN_VECTOR_FIELDS,
+} from "./agent-run-types.js";
+
+export type {
+  AgentCandidateProjection,
+  AgentRunAttemptKind,
+  AgentRunAttemptOutcome,
+  AgentRunAttemptProjection,
+  AgentRunAttemptReleaseMode,
+  AgentRunAttemptState,
+  AgentRunBudgetCounter,
+  AgentRunBudgetPartition,
+  AgentRunCheckpointProjection,
+  AgentRunEventKind,
+  AgentRunEventSummary,
+  AgentRunIndeterminateReason,
+  AgentRunLedgerEvent,
+  AgentRunProjection,
+  AgentRunPurpose,
+  AgentRunRecordedResultKind,
+  AgentRunReducerErrorCode,
+  AgentRunReducerInput,
+  AgentRunReduction,
+  AgentRunReleaseReason,
+  AgentRunRepositoryConfig,
+  AgentRunState,
+  AgentRunSummary,
+  AgentRunTerminalOperationKind,
+  AgentRunTerminalOutcome,
+  AgentRunTerminalState,
+  AgentRunValidationState,
+  AgentRunVectorField,
+  AttemptResourceVector,
+  CancelAgentRunInput,
+  CancelAgentRunResult,
+  CleanedAgentRunReduction,
+  GetAgentCandidateInput,
+  GetAgentRunCheckpointInput,
+  GetAgentRunInput,
+  ListAgentRunEventsInput,
+  RequestAgentRunInput,
+  RequestAgentRunResult,
+  RetainedAgentRunReduction,
+} from "./agent-run-types.js";
+
 export type {
   CompareAndSwapDashboardHeadInput,
   CompareAndSwapDashboardHeadResult,
