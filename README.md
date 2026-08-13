@@ -68,6 +68,8 @@ and [security status](docs/security/2026-07-30-security-status.md).
   deletion candidates; no gate outcome)
 - [Restructure proposal](docs/review/2026-08-13-restructure-proposal.md)
   (proposed; not accepted)
+- [Forward plan](docs/roadmap/2026-08-13-forward-plan.md): why Task 9E should
+  not be built, and the route to a pilot (proposed; not accepted)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
 - [Project and process efficiency review](docs/review/2026-08-12-project-efficiency-review.md)
   (advisory; no gate outcome) and its
