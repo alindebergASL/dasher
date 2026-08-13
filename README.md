@@ -42,8 +42,12 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - Identity, multi-tenant persistence, uploads, jobs, provider access, and MCP:
   not implemented.
 - Model calls: disabled.
-- Multi-dashboard durable/disposable lifecycle, passwordless or external-IdP
-  sign-in, and the agentic dashboard harness: not implemented.
+- Multi-dashboard lifecycle, passwordless or external-IdP sign-in, and the
+  agentic dashboard harness: not implemented.
+- Migrations: mutable until the first production deployment. A schema change is
+  made by editing `packages/control-plane/migrations/0001_baseline.sql` and
+  recreating the development database. See
+  [the restructure proposal](docs/review/2026-08-13-restructure-proposal.md).
 - Generated-code execution: disabled until the sandbox gate in `docs/security/GENERATED_CODE_GATE.md` is satisfied.
 - Pilot publication: private-only by accepted design; no publication system is
   implemented.
@@ -67,7 +71,8 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - [Removal register](docs/process/2026-08-12-removal-register.md) (advisory
   deletion candidates; no gate outcome)
 - [Restructure proposal](docs/review/2026-08-13-restructure-proposal.md)
-  (proposed; not accepted)
+  (proposed; steps 1-3 applied)
+- [Baseline squash status](docs/status/2026-08-13-baseline-squash.md)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
 - [Project and process efficiency review](docs/review/2026-08-12-project-efficiency-review.md)
   (advisory; no gate outcome) and its
