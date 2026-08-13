@@ -39,11 +39,11 @@
 -- forged; and each writes its own audit event in the same statement, so audit
 -- atomicity is a property of the schema rather than a convention.
 --
--- 25 of the 26 states enumerated in
--- test/accepted-invalid-states.integration.test.ts are closed. The one that
--- remains is self-serve provisioning: creating an organization and its first
--- owner has no entry point yet, since every existing route in assumes an
--- organization already exists.
+-- All 26 states enumerated in
+-- test/accepted-invalid-states.integration.test.ts are closed. Creating an
+-- organization is deliberately absent from the seam: PRODUCT_REQUIREMENTS.md
+-- makes managing organizations an administrator action and names public signup
+-- a non-goal, so provisioning is an operator path using owner credentials.
 
 -- ---------------------------------------------------------------------------
 -- Schemas and default privileges

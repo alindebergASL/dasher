@@ -592,64 +592,27 @@ describe("sign-in and onboarding", () => {
     }
   });
 
-  // Still open, and deliberately so: creating an organization and its first
-  // owner is self-serve provisioning, which no seam function covers yet. Every
-  // other identity workflow now has an entry point; this one is the last.
-  it.fails(
-    "the application role can create the first organization and its owner",
-    async () => {
-      const client = await appPool.connect();
-      try {
-        await client.query("BEGIN");
-        const newUser = randomUUID();
-        const newOrg = randomUUID();
-        await client.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
-          newUser,
-        ]);
-        await client.query(
-          "INSERT INTO dasher.organizations (organization_id, display_name) VALUES ($1, 'first org')",
-          [newOrg],
-        );
-        await client.query(
-          `INSERT INTO dasher.memberships
-           (membership_id, organization_id, user_id, role, state, authority_revision)
-         VALUES ($1, $2, $3, 'admin', 'active', 1)`,
-          [randomUUID(), newOrg, newUser],
-        );
-        await client.query("COMMIT");
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-  );
-
-  it("the application role can resolve an external identity to a user", async () => {
-    // Pre-authentication, so there is no context to have. The function runs
-    // as the owner, takes an issuer and subject, and returns nothing but the
-    // user id it maps to.
-    await ownerPool.query(
-      `INSERT INTO dasher.external_identities (issuer, subject, user_id)
-       VALUES ('https://issuer.example', $1, $2)`,
-      [`subject-${alice}`, alice],
-    );
-
+  it("the application role cannot create an organization", async () => {
+    // Not a gap. `PRODUCT_REQUIREMENTS.md:248` makes managing organizations an
+    // administrator action and names public signup a non-goal, which the
+    // roadmap repeats as an explicit deferral. Provisioning is therefore an
+    // operator path using owner credentials, not an application feature, and
+    // the denial below is the intended behaviour rather than missing work.
+    //
+    // This also settles how a development or pilot organization is seeded:
+    // doing it with owner credentials is not a workaround, it is what an
+    // administrator does in production.
     const client = await appPool.connect();
     try {
-      const found = await client.query<{ readonly resolved: string | null }>(
-        "SELECT dasher_api.resolve_external_identity($1, $2) AS resolved",
-        ["https://issuer.example", `subject-${alice}`],
+      await client.query("BEGIN");
+      await expectRejected(
+        client.query(
+          "INSERT INTO dasher.organizations (organization_id, display_name) VALUES ($1, 'self serve')",
+          [randomUUID()],
+        ),
       );
-      expect(found.rows[0]?.resolved).toBe(alice);
-
-      const missing = await client.query<{ readonly resolved: string | null }>(
-        "SELECT dasher_api.resolve_external_identity($1, $2) AS resolved",
-        ["https://issuer.example", "nobody"],
-      );
-      expect(missing.rows[0]?.resolved).toBeNull();
     } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
       client.release();
     }
   });
