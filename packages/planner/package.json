@@ -1,5 +1,5 @@
 {
-  "name": "@dasher/calculation-engine",
+  "name": "@dasher/planner",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,6 +9,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@dasher/dashboard-schema": "workspace:*",
+    "@dasher/river-domain": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "typescript": "^5.9.2",

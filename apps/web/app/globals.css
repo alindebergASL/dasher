@@ -1220,3 +1220,155 @@ footer {
     transform: rotate(90deg);
   }
 }
+
+/* Request workspace ------------------------------------------------------ */
+
+.request-workspace {
+  display: flex;
+  flex-direction: column;
+}
+
+.request-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.5rem clamp(1rem, 4vw, 2.5rem);
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.request-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.request-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.request-input {
+  flex: 1 1 22rem;
+  min-width: 0;
+  padding: 0.7rem 0.9rem;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.request-input:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+.request-submit {
+  flex: 0 0 auto;
+  padding: 0.7rem 1.25rem;
+  font: inherit;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--green);
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.request-submit:disabled {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+.request-examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.request-examples-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.request-example {
+  padding: 0.3rem 0.7rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--green);
+  background: var(--green-soft);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.request-example:hover:not(:disabled) {
+  border-color: var(--green);
+}
+
+.request-example:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.request-error {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.9rem;
+  color: var(--red);
+  background: var(--amber-soft);
+  border-radius: 6px;
+}
+
+.request-note {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  /*
+   * The executive brief must stay fully inside the first mobile viewport, so
+   * the request control cannot occupy layout height above it. On small screens
+   * it becomes a fixed strip at the bottom of the viewport: still reachable,
+   * but out of the flow, leaving the dashboard's own layout untouched.
+   */
+  .request-bar {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 40;
+    gap: 0.5rem;
+    padding: 0.6rem 1rem;
+    border-top: 1px solid var(--line);
+    border-bottom: none;
+    box-shadow: 0 -8px 24px rgba(24, 55, 46, 0.12);
+  }
+
+  .request-label,
+  .request-examples,
+  .request-note {
+    display: none;
+  }
+
+  .request-input {
+    flex: 1 1 8rem;
+    font-size: 0.95rem;
+  }
+
+  .request-submit {
+    padding: 0.6rem 0.9rem;
+  }
+
+  /* Room for the fixed strip, added below everything so nothing shifts up. */
+  .request-workspace {
+    padding-bottom: 4.5rem;
+  }
+}

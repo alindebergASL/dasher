@@ -3,6 +3,14 @@
 Status: Accepted execution roadmap
 Date: 2026-07-30
 
+> **Proposed amendments (2026-08-12):** the
+> [proposed re-sequencing](2026-08-12-proposed-resequencing.md) proposes running the
+> value loop and the trust plane as parallel tracks, and
+> [Requirements Amendment 01](../product/2026-08-12-requirements-amendment-01.md)
+> proposes that Gate 5's first live provider be chosen by evaluation rather than
+> fixed to Qwen, and retires synthetic model agreement as gate evidence for any
+> comprehension criterion. Until accepted, the sequence below governs.
+
 ## Outcome
 
 The private pilot must prove that a manager can move from a plain-language

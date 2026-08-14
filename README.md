@@ -56,7 +56,25 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - [ADR-003: Multi-tenant control plane](docs/architecture/ADR-003-multi-tenant-control-plane.md)
 - [ADR-004: Provider, OAuth, and MCP boundaries](docs/architecture/ADR-004-provider-oauth-mcp-boundaries.md)
 - [ADR-005: Agentic dashboard harness](docs/architecture/ADR-005-agentic-dashboard-harness.md)
+- [ADR-006: Schema freeze point and immutability tiers](docs/architecture/ADR-006-schema-freeze-point.md)
+  (proposed; not accepted)
+- [Requirements Amendment 01](docs/product/2026-08-12-requirements-amendment-01.md)
+  (proposed; not accepted)
+- [How Dasher drifted](docs/review/2026-08-12-drift-analysis.md) (advisory
+  root-cause analysis)
+- [Working practice](docs/process/2026-08-12-working-practice.md) (advisory
+  recommendations)
+- [Removal register](docs/process/2026-08-12-removal-register.md) (advisory
+  deletion candidates; no gate outcome)
+- [Restructure proposal](docs/review/2026-08-13-restructure-proposal.md)
+  (proposed; not accepted)
+- [Forward plan](docs/roadmap/2026-08-13-forward-plan.md): why Task 9E should
+  not be built, and the route to a pilot (proposed; not accepted)
 - [Private pilot execution roadmap](docs/roadmap/2026-07-30-private-pilot-roadmap.md)
+- [Project and process efficiency review](docs/review/2026-08-12-project-efficiency-review.md)
+  (advisory; no gate outcome) and its
+  [proposed re-sequencing](docs/roadmap/2026-08-12-proposed-resequencing.md)
+  (proposed; not accepted)
 - [Executive Brief owner-accepted synthetic validation](docs/validation/2026-07-30-executive-brief-gate.md)
 - [Six-agent Executive Brief rehearsal](docs/validation/2026-07-30-six-agent-executive-brief-rehearsal.md)
 
