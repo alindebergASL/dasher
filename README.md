@@ -30,6 +30,11 @@ pnpm audit --audit-level high
 pnpm audit --prod --audit-level high
 ```
 
+`pnpm --filter @dasher/planner test:mutation` runs Stryker against the planner:
+it breaks the code deliberately and requires the tests to notice. Its threshold
+is a floor set to the measured score, raised as coverage earns it. See
+[mutation testing](docs/process/2026-08-14-mutation-testing.md).
+
 `pnpm test` includes a reachability gate: every workspace package must be an
 entry point, reachable from one, or listed in [`reachability.json`](reachability.json)
 with a reason and a date. It fails in both directions — on a package nothing
