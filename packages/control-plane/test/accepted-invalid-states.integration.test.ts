@@ -876,3 +876,182 @@ describe("evidence immutability and completeness", () => {
     }
   });
 });
+
+describe("request context replay", () => {
+  it("a captured context cannot be replayed in another transaction", async () => {
+    // The test that should have existed. The earlier construction signed only
+    // the principal, which made the settings a bearer credential: authenticate
+    // once, read all of them with `current_setting`, and replay them later on
+    // any connection. Independent review found it; it reproduced; this pins it
+    // shut.
+    const captured = await asTenant(org, alice, async (client) => {
+      const result = await client.query<{
+        readonly user_id: string;
+        readonly organization_id: string;
+        readonly session_id: string;
+        readonly authority: string;
+        readonly digest: string;
+      }>(
+        `SELECT current_setting('dasher.context_user_id') AS user_id,
+                current_setting('dasher.context_organization_id') AS organization_id,
+                current_setting('dasher.context_session_id') AS session_id,
+                current_setting('dasher.context_authority') AS authority,
+                current_setting('dasher.context_digest') AS digest`,
+      );
+      return result.rows[0]!;
+    });
+
+    // Everything the caller could possibly have taken, replayed verbatim.
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const [name, value] of [
+        ["dasher.context_user_id", captured.user_id],
+        ["dasher.context_organization_id", captured.organization_id],
+        ["dasher.context_session_id", captured.session_id],
+        ["dasher.context_authority", captured.authority],
+        ["dasher.context_digest", captured.digest],
+      ] as const) {
+        await client.query("SELECT set_config($1, $2, true)", [name, value]);
+      }
+
+      const principal = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      expect(principal.rows[0]?.who).toBeNull();
+
+      const visible = await client.query(
+        "SELECT dashboard_id FROM dasher.dashboards",
+      );
+      expect(visible.rowCount).toBe(0);
+
+      await expectRejected(
+        client.query("SELECT dasher_api.create_dashboard($1, $2, 'test')", [
+          "replayed",
+          randomUUID(),
+        ]),
+      );
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  });
+
+  it("a captured context cannot be replayed after its session is revoked", async () => {
+    const victim = randomUUID();
+    const victimToken = sha256(`replay-victim:${victim}`);
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      victim,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.memberships
+         (membership_id, organization_id, user_id, role, state, authority_revision)
+       VALUES ($1, $2, $3, 'editor', 'active', 1)`,
+      [randomUUID(), org, victim],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.sessions
+         (session_id, organization_id, user_id, authority_revision,
+          token_key_version, token_digest, csrf_key_version, csrf_digest,
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+               now() + interval '30 minutes', now() + interval '12 hours')`,
+      [randomUUID(), org, victim, victimToken, sha256(`rv-csrf:${victim}`)],
+    );
+    tokens.set(victim, victimToken);
+
+    const captured = await asTenant(org, victim, async (client) => {
+      const result = await client.query<{ readonly settings: string }>(
+        `SELECT current_setting('dasher.context_user_id') || '|' ||
+                current_setting('dasher.context_organization_id') || '|' ||
+                current_setting('dasher.context_session_id') || '|' ||
+                current_setting('dasher.context_authority') || '|' ||
+                current_setting('dasher.context_digest') AS settings`,
+      );
+      return result.rows[0]!.settings.split("|");
+    });
+
+    await ownerPool.query(
+      `UPDATE dasher.sessions SET revoked_at = now(), revocation_reason = 'test'
+       WHERE user_id = $1`,
+      [victim],
+    );
+
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      const names = [
+        "dasher.context_user_id",
+        "dasher.context_organization_id",
+        "dasher.context_session_id",
+        "dasher.context_authority",
+        "dasher.context_digest",
+      ];
+      for (const [index, name] of names.entries()) {
+        await client.query("SELECT set_config($1, $2, true)", [
+          name,
+          captured[index],
+        ]);
+      }
+      const principal = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      expect(principal.rows[0]?.who).toBeNull();
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  });
+
+  it("a context established legitimately authorizes across its own transaction", async () => {
+    // The fix must not make the context single-use: every statement after
+    // begin_request, in that transaction, still resolves the principal.
+    const observed = await asTenant(org, alice, async (client) => {
+      const first = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      await client.query("SELECT count(*) FROM dasher.dashboards");
+      const second = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      return [first.rows[0]?.who, second.rows[0]?.who];
+    });
+    expect(observed).toEqual([alice, alice]);
+  });
+
+  it("a missing context key denies rather than admits", async () => {
+    // `NULL <> anything` is NULL, not TRUE. Comparing against a NULL expected
+    // digest fell through and admitted the caller, so key loss failed open.
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_user_id",
+        alice,
+      ]);
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_organization_id",
+        org,
+      ]);
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_session_id",
+        randomUUID(),
+      ]);
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_authority",
+        "1",
+      ]);
+      await client.query("SELECT set_config($1, $2, true)", [
+        "dasher.context_digest",
+        "00",
+      ]);
+      const principal = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      expect(principal.rows[0]?.who).toBeNull();
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  });
+});

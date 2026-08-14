@@ -359,7 +359,7 @@ CREATE TRIGGER source_snapshots_immutable BEFORE DELETE OR UPDATE ON dasher.sour
 
 -- functions
 dasher_private.context_allows(p_organization_id uuid, p_required_role text) -> boolean volatility=s security_definer=true search_path=search_path=pg_catalog
-dasher_private.context_digest(p_user_id uuid, p_organization_id uuid) -> bytea volatility=s security_definer=true search_path=search_path=pg_catalog
+dasher_private.context_digest(p_user_id uuid, p_organization_id uuid, p_session_id uuid, p_authority_revision bigint, p_transaction_id text) -> bytea volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_organization_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
 dasher_private.context_user_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_agent_run_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog

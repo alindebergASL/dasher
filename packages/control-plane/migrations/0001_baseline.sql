@@ -39,7 +39,22 @@
 -- forged; and each writes its own audit event in the same statement, so audit
 -- atomicity is a property of the schema rather than a convention.
 --
--- All 26 states enumerated in
+-- KNOWN OPEN. Two independent reviews of this seam found further defects, and
+-- only the replay is fixed here. Still open, each with a reproduced case:
+-- `accept_invitation` takes the accepting user as an argument and records it
+-- as the audit actor; a revoked admin accepting a viewer invitation returns as
+-- admin, because the reactivation branch never sets `role`; `record_evidence`
+-- writes no audit event though the action is in the allowlist; evidence and
+-- claim digests are length-checked but never tied to content; `finalize_run`
+-- stamps `valid` without validating anything; audit events hardcode authority
+-- revision 1; archive transitions accept the state they are already in;
+-- `begin_request` re-checks nothing in its session UPDATE, so a concurrent
+-- revocation can commit between the read and the write; REPEATABLE READ
+-- freezes the membership snapshot and defers revocation; and the SECURITY
+-- DEFINER owner is assumed to bypass forced row-level security, which holds
+-- only when that owner is superuser or BYPASSRLS.
+--
+-- All 26 originally enumerated states in
 -- test/accepted-invalid-states.integration.test.ts are closed. Creating an
 -- organization is deliberately absent from the seam: PRODUCT_REQUIREMENTS.md
 -- makes managing organizations an administrator action and names public signup
@@ -104,21 +119,25 @@ ALTER DEFAULT PRIVILEGES REVOKE ALL ON TYPES FROM PUBLIC;
 -- nothing here verifies that the caller is entitled to the identity it names.
 -- ---------------------------------------------------------------------------
 
--- The request context is a *signed* assertion, not a bare value.
+-- The request context is a signed assertion, bound to one transaction.
 --
 -- PostgreSQL offers no way to stop a role setting a custom GUC: `REVOKE SET ON
 -- PARAMETER` is accepted for a two-part placeholder name and then has no
 -- effect, which was verified rather than assumed. So `dasher_app` can always
--- write `dasher.context_user_id`. If policies trusted that value directly,
--- anything able to issue SQL on the application connection could name any
--- member of any organization, and row-level security would be decorative.
+-- write `dasher.context_user_id`, and it can always *read* every setting with
+-- `current_setting`. Anything the seam leaves in a setting is therefore
+-- material the caller holds.
 --
--- Instead `dasher_api.begin_request` validates a session token and stamps a
--- third setting: a keyed digest over the principal it just proved. The
--- accessors below recompute that digest and return NULL unless it matches.
--- `dasher_app` can still write all three settings, but it cannot produce a
--- digest for a principal it was never issued, because the key lives in
--- `dasher_private`, which it has no rights to read.
+-- That is why the digest covers the transaction identifier. Signing only the
+-- principal would make the digest a bearer credential: a caller could capture
+-- the settings after one legitimate request, and replay them later — in
+-- another transaction, on another connection, after the session was revoked —
+-- because nothing in the signed payload would have changed. Verified: it
+-- worked, and it is the defect this construction exists to prevent.
+--
+-- Binding the transaction identifier makes a captured set useless anywhere but
+-- where it was issued. The session and authority revision are bound too, so a
+-- context also names which session produced it and under what authority.
 
 CREATE TABLE dasher_private.context_keys (
   singleton boolean NOT NULL DEFAULT true,
@@ -144,11 +163,18 @@ VALUES (
 );
 
 -- Keyed on both sides, so the digest cannot be extended into a valid digest
--- for a longer payload. The payload is fixed-length anyway; this costs
--- nothing and removes the need to reason about it.
+-- for a longer payload.
+--
+-- Returns NULL when no key row exists. Every caller must treat that as a
+-- failure rather than comparing against it, because `NULL <> anything` is NULL
+-- and not TRUE — a comparison would fall through and admit the caller. That
+-- was the behaviour here before, and it made key loss fail open.
 CREATE FUNCTION dasher_private.context_digest(
   p_user_id uuid,
-  p_organization_id uuid
+  p_organization_id uuid,
+  p_session_id uuid,
+  p_authority_revision bigint,
+  p_transaction_id text
 )
 RETURNS bytea
 LANGUAGE sql
@@ -159,7 +185,11 @@ AS $function$
   SELECT pg_catalog.sha256(
     key_row.secret
     || pg_catalog.convert_to(
-         p_user_id::text || ':' || p_organization_id::text,
+         p_user_id::text
+         || ':' || p_organization_id::text
+         || ':' || p_session_id::text
+         || ':' || p_authority_revision::text
+         || ':' || p_transaction_id,
          'UTF8'
        )
     || key_row.secret
@@ -168,9 +198,15 @@ AS $function$
   WHERE key_row.singleton;
 $function$;
 
--- Returns the principal only when the stamped digest matches it. Any tampering
--- with any of the three settings — including clearing the digest — yields no
--- row, and every policy then denies.
+-- Returns the principal only when the stamped digest matches the settings
+-- *and* the transaction they were stamped in. Anything else yields no row, and
+-- every policy then denies.
+--
+-- `pg_current_xact_id_if_assigned` rather than `pg_current_xact_id`: the
+-- former returns NULL instead of assigning an identifier, so a caller cannot
+-- burn transaction identifiers by repeatedly failing this check. A legitimate
+-- context always has one assigned, because `begin_request` writes before it
+-- stamps.
 CREATE FUNCTION dasher_private.verified_context()
 RETURNS TABLE (user_id uuid, organization_id uuid)
 LANGUAGE plpgsql
@@ -181,13 +217,21 @@ AS $function$
 DECLARE
   claimed_user uuid;
   claimed_organization uuid;
+  claimed_session uuid;
+  claimed_authority bigint;
   claimed_digest bytea;
+  current_transaction text;
+  expected_digest bytea;
 BEGIN
   BEGIN
     claimed_user :=
       pg_catalog.current_setting('dasher.context_user_id', true)::uuid;
     claimed_organization :=
       pg_catalog.current_setting('dasher.context_organization_id', true)::uuid;
+    claimed_session :=
+      pg_catalog.current_setting('dasher.context_session_id', true)::uuid;
+    claimed_authority :=
+      pg_catalog.current_setting('dasher.context_authority', true)::bigint;
     claimed_digest := pg_catalog.decode(
       pg_catalog.current_setting('dasher.context_digest', true),
       'hex'
@@ -197,15 +241,31 @@ BEGIN
       RETURN;
   END;
 
+  current_transaction := pg_catalog.pg_current_xact_id_if_assigned()::text;
+
   IF claimed_user IS NULL
     OR claimed_organization IS NULL
+    OR claimed_session IS NULL
+    OR claimed_authority IS NULL
     OR claimed_digest IS NULL
+    OR current_transaction IS NULL
   THEN
     RETURN;
   END IF;
 
-  IF claimed_digest
-    <> dasher_private.context_digest(claimed_user, claimed_organization)
+  expected_digest := dasher_private.context_digest(
+    claimed_user,
+    claimed_organization,
+    claimed_session,
+    claimed_authority,
+    current_transaction
+  );
+
+  -- IS DISTINCT FROM, and an explicit NULL guard: a plain `<>` against a NULL
+  -- expected digest yields NULL, which is not TRUE, so the RETURN would be
+  -- skipped and the caller admitted.
+  IF expected_digest IS NULL
+    OR claimed_digest IS DISTINCT FROM expected_digest
   THEN
     RETURN;
   END IF;
@@ -1508,6 +1568,8 @@ BEGIN
       )
   WHERE live.session_id = session_row.session_id;
 
+  -- The UPDATE above has assigned this transaction an identifier, which the
+  -- digest below binds to. All five settings are transaction-local.
   PERFORM pg_catalog.set_config(
     'dasher.context_user_id', session_row.user_id::text, true
   );
@@ -1517,11 +1579,22 @@ BEGIN
     true
   );
   PERFORM pg_catalog.set_config(
+    'dasher.context_session_id', session_row.session_id::text, true
+  );
+  PERFORM pg_catalog.set_config(
+    'dasher.context_authority',
+    membership_row.authority_revision::text,
+    true
+  );
+  PERFORM pg_catalog.set_config(
     'dasher.context_digest',
     pg_catalog.encode(
       dasher_private.context_digest(
         session_row.user_id,
-        session_row.organization_id
+        session_row.organization_id,
+        session_row.session_id,
+        membership_row.authority_revision,
+        pg_catalog.pg_current_xact_id()::text
       ),
       'hex'
     ),
