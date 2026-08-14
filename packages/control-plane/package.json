@@ -5,9 +5,6 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./agent-run-reducer": "./src/agent-run-reducer.ts",
-    "./agent-run-repository": "./src/agent-run-repository.ts",
-    "./agent-run-types": "./src/agent-run-types.ts",
     "./email": "./src/email.ts",
     "./invitation-repository": "./src/invitation-repository.ts",
     "./migrator": "./src/migrator.ts",
@@ -15,19 +12,19 @@
     "./secrets": "./src/secrets.ts",
     "./session-cookie": "./src/session-cookie.ts",
     "./session-repository": "./src/session-repository.ts",
-    "./verified-principal": "./src/verified-principal.ts"
+    "./verified-principal": "./src/verified-principal.ts",
+    "./schema-snapshot": "./src/schema-snapshot.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude test/postgres.integration.test.ts",
-    "test:postgres": "vitest run test/postgres.integration.test.ts --no-file-parallelism"
+    "test": "vitest run --exclude 'test/*.integration.test.ts'",
+    "test:postgres": "vitest run test/postgres.integration.test.ts test/schema-snapshot.integration.test.ts test/accepted-invalid-states.integration.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@dasher/calculation-engine": "workspace:*",
     "@types/pg": "^8.20.0",
     "typescript": "^5.9.2",
     "vitest": "^4.1.10"
