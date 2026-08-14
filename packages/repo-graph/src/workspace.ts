@@ -17,6 +17,26 @@ import type { PackageNode, ReachabilityDeclaration } from "./reachability";
  * Nothing here spawns a process. The generated-code gate forbids execution
  * sinks in first-party source, and a repository-hygiene check is not a reason
  * to make an exception.
+ *
+ * WHAT THIS IS NOT. The scan is a regular expression over source text, not a
+ * module graph, and it is worth being exact about what that buys and what it
+ * does not:
+ *
+ *   * a package name inside a comment or an unrelated string counts as an
+ *     edge, so a package can be made to look reachable by mentioning it;
+ *   * an import that only a test file makes counts as an edge, so a package
+ *     nothing ships can still be "reachable";
+ *   * a dynamic import built from a variable is invisible, so a package can be
+ *     genuinely used and still look orphaned;
+ *   * reachability here is a compile-time claim about text, never a claim that
+ *     any of it executes.
+ *
+ * That is deliberate rather than unnoticed. The failure being caught is a
+ * package accumulating with nothing pointing at it at all, which a text scan
+ * catches perfectly well; the false-negative cases all require somebody to
+ * write the package name somewhere, which is the reviewed diff this gate wants
+ * anyway. A real module graph would be stricter and is the right upgrade if
+ * this is ever load-bearing for more than hygiene.
  */
 
 const sourceFilePattern = /\.tsx?$/u;

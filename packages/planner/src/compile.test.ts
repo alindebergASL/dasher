@@ -221,6 +221,33 @@ describe("what the dashboard says about who composed it", () => {
     expect(architectureFor(true)).not.toMatch(/no model was called/iu);
   });
 
+  it("draws no AI node in the diagram when no model ran", () => {
+    // The summary and the diagram are one panel to a reader. Saying "no model
+    // was called" beside a node labelled "AI dashboard planner" is a
+    // contradiction the reader has to resolve, and they will believe the
+    // picture.
+    const spec = compilePlan(planFor([site], ["conditions-summary"]), gauges, {
+      asOf: AS_OF,
+      planner: { id: "fake-keyword-planner-v1", usesModel: false },
+    });
+    expect(spec.architecture.nodes.some((node) => node.kind === "ai")).toBe(
+      false,
+    );
+    expect(spec.architecture.nodes.map((node) => node.label)).not.toContain(
+      "AI dashboard planner",
+    );
+  });
+
+  it("draws the AI node when a model did choose the layout", () => {
+    const spec = compilePlan(planFor([site], ["conditions-summary"]), gauges, {
+      asOf: AS_OF,
+      planner: { id: "real-model", usesModel: true },
+    });
+    expect(spec.architecture.nodes.some((node) => node.kind === "ai")).toBe(
+      true,
+    );
+  });
+
   it("attributes the layout either way, never leaving it unexplained", () => {
     for (const usesModel of [true, false]) {
       expect(architectureFor(usesModel)).toMatch(/chose this dashboard/iu);

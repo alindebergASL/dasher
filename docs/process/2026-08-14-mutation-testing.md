@@ -36,6 +36,11 @@ parallel rather than in front of the static gates.
 `@dasher/planner`'s compiler, plan contract, and run loop, plus
 `@dasher/river-domain`'s `facts.ts` — the composition rules the two share.
 
+That is four files, not everything a browser request touches: `river-domain`'s
+`metrics.ts` and `usgs.ts` and all of `dashboard-schema` are outside the run.
+They are covered by their own suites but not held to this gate, so read the
+score as being about the planning path rather than about the whole product.
+
 That last one is the reason this runs from the repository root rather than
 inside the planner. When the duplicated rules were extracted into
 `river-domain`, the planner's mutant count fell from 687 to 528 and its score
@@ -82,14 +87,15 @@ earn it.
 | Measured 2026-08-14 | Score  | Killed | Survived | No coverage |
 | ------------------- | ------ | ------ | -------- | ----------- |
 | `plan.ts`           | 80.95% | 51     | 12       | 0           |
-| `compile.ts`        | 69.44% | 259    | 107      | 7           |
+| `compile.ts`        | 69.60% | 261    | 107      | 7           |
 | `run.ts`            | 68.33% | 40     | 9        | 10          |
-| `facts.ts`          | 55.83% | 91     | 65       | 7           |
-| **total**           | 67.07% | 441    | 193      | 24          |
+| `facts.ts`          | 63.80% | 104    | 52       | 7           |
+| **total**           | 69.14% | 456    | 180      | 24          |
 
 The floor has been raised as coverage earned it: 58, then 61 when the shared
 composition rules came under the run, then 62, then 67 when `plan.ts` went from
-31.75% to 80.95%.
+31.75% to 80.95%, then 69 when review found a display string that had silently
+changed meaning.
 
 ## What survived, and which of it is worth attacking
 
@@ -135,5 +141,10 @@ identically to a cap of forty. A limit has to be asserted at the boundary —
 admits the maximum, refuses the first thing past it — or it is not tested at
 all.
 
-`facts.ts` at 55.83% is now the weakest, and is where the next round should
-go.
+`facts.ts` at 63.80% is now the weakest. It also supplied the counter-example
+to the paragraph above: `signed(null)` returned "Not enough history" and was
+changed to "Missing" during a refactor, which is a `StringLiteral` mutation
+that altered what a reader is told — too little history is not a missing
+reading. Review caught it; the gate did not. So "display copy is not worth
+chasing" holds for a headline nobody asserts and fails for a string that names
+a state.

@@ -161,3 +161,67 @@ it("bootstraps roles, migrates, and serves a request as an ordinary owner", asyn
   );
   expect(unscoped.rows[0]?.count).toBe("0");
 });
+
+it("refuses an over-privileged managed role without creating anything", async () => {
+  // A rejection that has already created roles and granted memberships has
+  // changed the cluster on its way to saying no. The operator asked whether
+  // this deployment was safe and got both an answer and a side effect.
+  const probe = `dasher_test_${randomUUID().replaceAll("-", "")}`;
+  const operator = await operatorPool.connect();
+  try {
+    await operator.query("ALTER ROLE dasher_app BYPASSRLS");
+  } finally {
+    operator.release();
+  }
+
+  const owner = await ownerPool.connect();
+  try {
+    await expect(bootstrapManagedRoles(owner, [probe])).rejects.toSatisfy(
+      (error: unknown) =>
+        (error as { code?: unknown }).code === "managed_role_overprivileged",
+    );
+  } finally {
+    owner.release();
+  }
+
+  const after = await operatorPool.query<{ readonly count: string }>(
+    "SELECT count(*)::text AS count FROM pg_catalog.pg_roles WHERE rolname = $1",
+    [probe],
+  );
+  expect(after.rows[0]?.count).toBe("0");
+
+  const restore = await operatorPool.connect();
+  try {
+    await restore.query("ALTER ROLE dasher_app NOBYPASSRLS");
+  } finally {
+    restore.release();
+  }
+});
+
+it("counts REPLICATION as over-privileged", async () => {
+  // Replication reads the write-ahead log, which carries every row of every
+  // tenant regardless of any policy. It belongs with the attributes that make
+  // row-level security meaningless rather than outside the list.
+  const operator = await operatorPool.connect();
+  try {
+    await operator.query("ALTER ROLE dasher_app REPLICATION");
+  } finally {
+    operator.release();
+  }
+
+  const owner = await ownerPool.connect();
+  try {
+    await expect(bootstrapManagedRoles(owner, [])).rejects.toSatisfy(
+      (error: unknown) =>
+        (error as { code?: unknown }).code === "managed_role_overprivileged",
+    );
+  } finally {
+    owner.release();
+    const restore = await operatorPool.connect();
+    try {
+      await restore.query("ALTER ROLE dasher_app NOREPLICATION");
+    } finally {
+      restore.release();
+    }
+  }
+});

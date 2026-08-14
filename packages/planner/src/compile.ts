@@ -417,11 +417,16 @@ export function compilePlan(
           kind: "process",
         },
         {
-          id: "ai",
-          label: "AI dashboard planner",
+          id: "planner",
+          label: options.planner.usesModel
+            ? "AI dashboard planner"
+            : "Dashboard planner (no model)",
           detail:
             "The planner chose this dashboard's title, audience, framing, gauge selection, and page layout. It never sees a reading and cannot state a fact, run code, or reach a credential; anything it proposes that Dasher cannot support is rejected and sent back for revision.",
-          kind: "ai",
+          // The diagram has to agree with the summary beside it. Drawing an AI
+          // node for a keyword matcher told the reader a model was involved in
+          // the same panel that said none was called.
+          kind: options.planner.usesModel ? "ai" : "process",
         },
         {
           id: "validate",
@@ -446,12 +451,12 @@ export function compilePlan(
         },
       ],
       edges: [
-        { from: "request", to: "ai", label: "what you asked for" },
+        { from: "request", to: "planner", label: "what you asked for" },
         { from: "usgs", to: "normalize", label: "read" },
         { from: "normalize", to: "calculate", label: "clean data" },
-        { from: "normalize", to: "ai", label: "gauge names only" },
-        { from: "ai", to: "validate", label: "proposed layout" },
-        { from: "validate", to: "ai", label: "corrections" },
+        { from: "normalize", to: "planner", label: "gauge names only" },
+        { from: "planner", to: "validate", label: "proposed layout" },
+        { from: "validate", to: "planner", label: "corrections" },
         { from: "validate", to: "pages", label: "approved layout" },
         { from: "calculate", to: "pages", label: "validated metrics" },
         { from: "pages", to: "attention", label: "monitor and refresh" },

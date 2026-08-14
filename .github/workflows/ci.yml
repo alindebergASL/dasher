@@ -65,8 +65,13 @@ jobs:
 
       # Stryker mutates in place and restores afterwards. If a crash ever left
       # a mutant behind, this reports it rather than letting the next step run
-      # against altered source.
-      - run: test -z "$(git status --porcelain)"
+      # against altered source. `always()` because the crash case is exactly
+      # when the run fails, and a residue check that only runs on success
+      # cannot diagnose the failure it exists for.
+      - if: always()
+        run: |
+          git status --porcelain
+          test -z "$(git status --porcelain)"
 
   verify:
     runs-on: ubuntu-latest

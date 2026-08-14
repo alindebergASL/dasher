@@ -82,7 +82,8 @@ const contractErrorMessages: Readonly<
     "or grant the owner BYPASSRLS deliberately",
   invalid_utf8: "a migration file is not valid UTF-8",
   managed_role_overprivileged:
-    "a managed role holds SUPERUSER, BYPASSRLS, CREATEROLE, or CREATEDB; " +
+    "a managed role holds SUPERUSER, BYPASSRLS, CREATEROLE, CREATEDB, or " +
+    "REPLICATION; " +
     "row-level security confines the application role only while it holds " +
     "none of them, and correcting it needs the elevated credentials that " +
     "granted it",
@@ -235,6 +236,14 @@ export async function bootstrapManagedRoles(
 ): Promise<void> {
   const loginRoleNames = validateLoginRoleNames(expectedAppLoginRoleNames);
 
+  // Before anything is created or granted. Checking afterwards still refused,
+  // but the login roles it had already made and the memberships it had already
+  // granted survived the rejection, so a refusal left the cluster changed.
+  await assertManagedRolesUnprivileged(client, [
+    managedGroupRoleName,
+    ...loginRoleNames,
+  ]);
+
   await client.query(`
     DO $bootstrap$
     BEGIN
@@ -267,6 +276,8 @@ export async function bootstrapManagedRoles(
     await client.query(`GRANT dasher_app TO "${name}"`);
   }
 
+  // And again afterwards, so a role created by this call is held to the same
+  // standard as one that already existed.
   await assertManagedRolesUnprivileged(client, [
     managedGroupRoleName,
     ...loginRoleNames,
@@ -303,6 +314,7 @@ async function assertManagedRolesUnprivileged(
           OR role_row.rolbypassrls
           OR role_row.rolcreaterole
           OR role_row.rolcreatedb
+          OR role_row.rolreplication
         )
     `,
     [[...roleNames]],
@@ -353,7 +365,7 @@ async function assertNoForcedRowSecurity(
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname = 'dasher'
-      AND relation.relkind = 'r'
+      AND relation.relkind IN ('r', 'p')
       AND relation.relforcerowsecurity
     ORDER BY relation.relname
   `);
@@ -487,6 +499,11 @@ export async function runMigrations(
       await client.query("BEGIN");
       try {
         await client.query(migration.sql);
+        // Inside the transaction, before the journal row. Checking afterwards
+        // reported the refusal but left the forced table and its journal entry
+        // committed, and a journaled migration is not retried -- so the
+        // database was stuck refusing every later run with no way forward.
+        await assertNoForcedRowSecurity(client);
         await client.query(
           `
             INSERT INTO dasher_meta.schema_migrations (
@@ -507,8 +524,8 @@ export async function runMigrations(
       appliedCount += 1;
     }
 
-    // After the series applies, so that a migration reintroducing FORCE is
-    // caught by the same run that applied it.
+    // Also once for a database that arrived already forced, where there is no
+    // migration of ours to roll back and the only correct answer is to refuse.
     await assertNoForcedRowSecurity(client);
 
     return {

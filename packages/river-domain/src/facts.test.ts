@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import { CALCULATION_EVIDENCE_ID, deriveRiverFacts } from "./facts";
+import { CALCULATION_EVIDENCE_ID, deriveRiverFacts, signed } from "./facts";
 import { buildGaugeMetrics } from "./metrics";
 import { parseUsgsInstantaneousValues, type RiverGauge } from "./usgs";
 
@@ -199,5 +199,22 @@ describe("evidence", () => {
       .sort()
       .at(-1);
     expect(latestObservationAt).toBe(newest);
+  });
+});
+
+describe("how a change is written for a reader", () => {
+  it("says there is not enough history rather than calling it missing", () => {
+    // These are different facts and a reader acts on them differently. A
+    // missing reading means the sensor told us nothing; too little history
+    // means the sensor is fine and the window is short. Extracting this helper
+    // collapsed the second into the first, silently, on the rendered path --
+    // both copies had agreed on "Not enough history" beforehand.
+    expect(signed(null, "ft")).toBe("Not enough history");
+  });
+
+  it("marks the direction of a change it can state", () => {
+    expect(signed(1.5, "ft")).toBe("+1.5 ft");
+    expect(signed(-1.5, "ft")).toBe("-1.5 ft");
+    expect(signed(0, "ft")).toBe("0 ft");
   });
 });

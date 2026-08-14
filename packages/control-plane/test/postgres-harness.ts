@@ -261,6 +261,20 @@ export async function dropUnprivilegedSchemaOwner(
 ): Promise<void> {
   const client = await operatorPool.connect();
   try {
+    // Terminate first, then drop. `WITH (FORCE)` also terminates, but it does
+    // so while the drop is in flight, so a client still closing its own socket
+    // can observe 57P01 from a connection it believed it had finished with --
+    // a teardown error that fails a run whose assertions all passed. Closing
+    // the backends as a separate statement leaves no such window.
+    await client.query(
+      `
+        SELECT pg_catalog.pg_terminate_backend(activity.pid)
+        FROM pg_catalog.pg_stat_activity AS activity
+        WHERE activity.datname = $1
+          AND activity.pid <> pg_catalog.pg_backend_pid()
+      `,
+      [databaseName],
+    );
     await executeServerFormattedSql(
       client,
       "DROP DATABASE IF EXISTS %I WITH (FORCE)",

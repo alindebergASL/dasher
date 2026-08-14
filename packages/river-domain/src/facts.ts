@@ -76,7 +76,9 @@ function formatNumber(value: number | null, maximumFractionDigits = 2): string {
 }
 
 export function signed(value: number | null, unit: string): string {
-  if (value === null) return "Missing";
+  // Distinct from `formatNumber`'s "Missing" on purpose: a null change means
+  // too few observations to span the window, not an absent reading.
+  if (value === null) return "Not enough history";
   const prefix = value > 0 ? "+" : "";
   return `${prefix}${formatNumber(value)} ${unit}`;
 }

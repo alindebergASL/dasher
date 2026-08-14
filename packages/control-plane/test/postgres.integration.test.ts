@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { copyFile, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,6 +17,7 @@ import {
   createTemporaryAppLogin,
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
+  executeServerFormattedSql,
 } from "./postgres-harness.js";
 
 /**
@@ -340,6 +344,80 @@ describe("tenant isolation", () => {
       ORDER BY relation.relname
     `);
     expect(result.rows.map((row) => row.relname)).toEqual([]);
+  });
+
+  it("leaves nothing behind when it refuses a migration that forces row security", async () => {
+    // Refusing is only half the contract. A migrator that reports rejection
+    // while committing the rejected schema has not protected anything: the
+    // table stays forced, the journal records the migration as applied, and
+    // because it is journaled a re-run will not retry it — so the database is
+    // stuck refusing forever with no path forward but manual repair.
+    const directory = await mkdtemp(join(tmpdir(), "dasher-forced-rls-"));
+    await copyFile(
+      join(baselineMigrationDirectory, "0001_baseline.sql"),
+      join(directory, "0001_baseline.sql"),
+    );
+    await writeFile(
+      join(directory, "0002_adversarial_force.sql"),
+      "ALTER TABLE dasher.dashboards FORCE ROW LEVEL SECURITY;\n",
+      "utf8",
+    );
+
+    const scratch = `dasher_test_db_${randomUUID().replaceAll("-", "")}`;
+    const provisioner = await operatorPool.connect();
+    try {
+      await executeServerFormattedSql(
+        provisioner,
+        "CREATE DATABASE %I OWNER %I",
+        [scratch, ownerRole],
+      );
+    } finally {
+      provisioner.release();
+    }
+
+    const url = new URL(config.ownerDsn);
+    url.username = ownerRole;
+    url.pathname = `/${scratch}`;
+    const scratchPool = new Pool({ connectionString: url.toString(), max: 2 });
+    const client = await scratchPool.connect();
+    try {
+      await bootstrapManagedRoles(client, []);
+      await expect(
+        runMigrations(borrowedClientPool(client), directory, []),
+      ).rejects.toSatisfy(
+        (error: unknown) =>
+          (error as { code?: unknown }).code === "forced_row_security",
+      );
+
+      const forced = await client.query<{ readonly relname: string }>(`
+        SELECT relation.relname::text AS relname
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'dasher' AND relation.relforcerowsecurity
+      `);
+      const journal = await client.query<{ readonly filename: string }>(
+        "SELECT filename FROM dasher_meta.schema_migrations ORDER BY sequence",
+      );
+
+      expect(forced.rows.map((row) => row.relname)).toEqual([]);
+      expect(journal.rows.map((row) => row.filename)).toEqual([
+        "0001_baseline.sql",
+      ]);
+    } finally {
+      client.release();
+      await scratchPool.end();
+      const cleanup = await operatorPool.connect();
+      try {
+        await executeServerFormattedSql(
+          cleanup,
+          "DROP DATABASE IF EXISTS %I WITH (FORCE)",
+          [scratch],
+        );
+      } finally {
+        cleanup.release();
+      }
+    }
   });
 
   it("refuses to migrate a database where a tenant table forces row security", async () => {

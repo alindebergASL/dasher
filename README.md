@@ -39,8 +39,10 @@ is a floor set to the measured score, raised as coverage earns it. See
 entry point, reachable from one, or listed in [`reachability.json`](reachability.json)
 with a reason and a date. It fails in both directions — on a package nothing
 imports, and on a declaration that has stopped being true — so dead weight has
-to be declared rather than merely tolerated. See
-[`packages/repo-graph`](packages/repo-graph/src/reachability.ts).
+to be declared rather than merely tolerated. Edges come from a text scan rather
+than a module graph, so it catches a package nothing points at and does not
+prove anything runs; the limits are enumerated in
+[`packages/repo-graph`](packages/repo-graph/src/workspace.ts).
 
 The same gates run in [GitHub Actions](.github/workflows/ci.yml). Current
 evidence and caveats are recorded in the
