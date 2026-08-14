@@ -25,8 +25,44 @@ catalog manifest that existed to prove those migrations were removed.
 | `migrator.ts`                | 24,416  | 424                  |
 | PostgreSQL integration suite | 32,178  | 476                  |
 
-Net: **2,935 insertions, 134,688 deletions** across 38 files. The superseded
-migrations are retained unreferenced under `packages/control-plane/migrations-archive/`.
+Net: **2,935 insertions, 134,688 deletions** across 38 files.
+
+## The superseded series
+
+The twelve files were deleted rather than kept as an unreferenced copy. They
+remain in history at their original paths and are read with:
+
+```bash
+git show f521b2c:packages/control-plane/migrations/0003_immutable_content.sql
+git ls-tree --name-only f521b2c packages/control-plane/migrations/
+```
+
+They were briefly retained under `migrations-archive/` and removed on
+2026-08-14. Keeping them offered nothing git does not, and 56,913 lines of
+unreferenced SQL sitting beside the live migration is the exact shape of thing
+that gets mistaken for live code — which is the failure this squash exists to
+correct.
+
+| File                                                                   | Lines  |
+| ---------------------------------------------------------------------- | ------ |
+| `0001_identity_audit.sql`                                              | 491    |
+| `0002_security_boundary.sql`                                           | 3,798  |
+| `0003_immutable_content.sql`                                           | 5,868  |
+| `0004_lifecycle_api_correction.sql`                                    | 2,422  |
+| `0005_security_definer_cleanup_coordination.sql`                       | 20     |
+| `0006_lifecycle_access_retention_guard_correction.sql`                 | 489    |
+| `0007_agent_run_ledger_and_calculations.sql`                           | 24,704 |
+| `0008_retention_lock_authority_correction.sql`                         | 5,910  |
+| `0009_agent_run_takeover_settlement_transition_correction.sql`         | 632    |
+| `0010_agent_run_cancel_attempt_context_correction.sql`                 | 652    |
+| `0011_agent_run_bundle_lock_authorized_phase_correction.sql`           | 88     |
+| `0012_agent_run_operator_reachability_and_replay_fence_correction.sql` | 11,839 |
+
+Seven of the twelve existed only to correct a predecessor — 38.7% of the
+series' 56,913 lines. `0012` is 11,839 lines containing twenty-two
+`CREATE OR REPLACE FUNCTION` statements and one `ALTER FUNCTION`: it re-emits
+every function body in order to change function attributes, because a
+forward-only immutable series cannot edit the original.
 
 ## Migrations are mutable until first production deploy
 

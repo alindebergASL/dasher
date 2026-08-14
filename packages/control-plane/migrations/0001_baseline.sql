@@ -1,7 +1,8 @@
 -- Dasher baseline schema.
 --
 -- This file replaces the twelve-migration series that preceded it. Those files
--- are retained, unreferenced, under `migrations-archive/` for provenance.
+-- live in history rather than in the tree; read them with
+-- `git ls-tree --name-only f521b2c packages/control-plane/migrations/`.
 --
 -- Migrations are MUTABLE until the first production deployment. Before that
 -- point, a schema change is made by editing this file and recreating the
