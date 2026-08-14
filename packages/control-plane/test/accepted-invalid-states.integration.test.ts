@@ -827,8 +827,8 @@ describe("evidence immutability and completeness", () => {
       );
       const evidence = await client.query<{ readonly id: string }>(
         `SELECT dasher_api.record_evidence(
-           $1, 'gauge_reading', '/value', 'identity', $2, now()) AS id`,
-        [snapshot.rows[0]!.id, sha256("42")],
+           $1, 'gauge_reading', '/value', 'identity', $2, now(), $3, 'test') AS id`,
+        [snapshot.rows[0]!.id, sha256("42"), randomUUID()],
       );
       return {
         snapshot: snapshot.rows[0]!.id,
@@ -845,6 +845,90 @@ describe("evidence immutability and completeness", () => {
     );
     expect(stored.rows[0]?.matches).toBe(true);
     expect(recorded.evidence).toEqual(expect.any(String));
+  });
+
+  it("recording evidence writes its audit event in the same transaction", async () => {
+    // I18 in the seam review brief claims every action named in
+    // `audit_events_action_check` that the seam performs writes its audit event
+    // alongside the state change, such that neither can occur without the
+    // other. `evidence_record.created` is in that allowlist and
+    // `record_evidence` wrote nothing, so the invariant was stated and untrue —
+    // an evidence record could exist with no trace of who put it there.
+    const requestId = randomUUID();
+    const evidenceId = await asTenant(org, alice, async (client) => {
+      const snapshot = await client.query<{ readonly id: string }>(
+        `SELECT dasher_api.record_source_snapshot(
+           'usgs', 'gauge/11447650', $1, now(), $2, 'test') AS id`,
+        [Buffer.from('{"value":7}'), randomUUID()],
+      );
+      const evidence = await client.query<{ readonly id: string }>(
+        `SELECT dasher_api.record_evidence(
+           $1, 'gauge_reading', '/value', 'identity', $2, now(), $3, 'test') AS id`,
+        [snapshot.rows[0]!.id, sha256("7"), requestId],
+      );
+      return evidence.rows[0]!.id;
+    });
+
+    const audited = await ownerPool.query<{
+      readonly action: string;
+      readonly target_id: string;
+      readonly actor_user_id: string;
+      readonly request_id: string;
+    }>(
+      `SELECT action, target_id::text, actor_user_id::text, request_id::text
+       FROM dasher.audit_events WHERE target_id = $1`,
+      [evidenceId],
+    );
+
+    expect(audited.rows).toHaveLength(1);
+    expect(audited.rows[0]).toMatchObject({
+      action: "evidence_record.created",
+      target_id: evidenceId,
+      actor_user_id: alice,
+      request_id: requestId,
+    });
+  });
+
+  it("leaves no evidence record behind when its audit event cannot be written", async () => {
+    // The other half of "neither can occur without the other". A rejected audit
+    // event must take the evidence with it, or the atomicity is only a claim
+    // about the happy path.
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT organization_id FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, tokens.get(alice)!],
+      );
+      const snapshot = await client.query<{ readonly id: string }>(
+        `SELECT dasher_api.record_source_snapshot(
+           'usgs', 'gauge/11447650', $1, now(), $2, 'test') AS id`,
+        [Buffer.from('{"value":8}'), randomUUID()],
+      );
+      // A deployment revision longer than the column admits: the audit insert
+      // fails after the evidence insert has already happened.
+      await expectRejected(
+        client.query(
+          `SELECT dasher_api.record_evidence(
+             $1, 'gauge_reading', '/value', 'identity', $2, now(), $3, $4) AS id`,
+          [snapshot.rows[0]!.id, sha256("8"), randomUUID(), "x".repeat(400)],
+        ),
+      );
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+
+    const orphans = await ownerPool.query<{ readonly count: string }>(
+      `SELECT count(*)::text AS count
+       FROM dasher.evidence_records AS record
+       WHERE record.content_sha256 = sha256('8')
+         AND NOT EXISTS (
+           SELECT 1 FROM dasher.audit_events AS event
+           WHERE event.target_id = record.evidence_id
+         )`,
+    );
+    expect(orphans.rows[0]?.count).toBe("0");
   });
 
   it("a recorded source snapshot cannot be rewritten", async () => {
