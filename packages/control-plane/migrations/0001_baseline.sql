@@ -39,21 +39,27 @@
 -- forged; and each writes its own audit event in the same statement, so audit
 -- atomicity is a property of the schema rather than a convention.
 --
--- KNOWN OPEN. Three independent reviews of this seam found further defects,
--- and only the replay is fixed here.
+-- KNOWN OPEN. Three independent reviews of this seam found further defects.
+-- Each one below was reproduced as a failing test before it was written, and
+-- each fix was then confirmed by breaking it again and requiring that test to
+-- go red.
 --
--- Since fixed: the opaque-token change above; authority revalidation in
--- `verified_context`; the membership guard that makes an authority change
--- advance the revision; and atomic session establishment. Still open: Still open, each with a reproduced case:
--- `accept_invitation` takes the accepting user as an argument and records it
--- as the audit actor; a revoked admin accepting a viewer invitation returns as
--- admin, because the reactivation branch never sets `role`; `record_evidence`
--- writes no audit event though the action is in the allowlist; evidence and
--- claim digests are length-checked but never tied to content; `finalize_run`
--- stamps `valid` without validating anything; audit events hardcode authority
--- revision 1; archive transitions accept the state they are already in;
--- `begin_request` re-checks nothing in its session UPDATE, so a concurrent
--- revocation can commit between the read and the write; REPEATABLE READ
+-- Fixed so far: context replay, by binding the digest to the transaction that
+-- established it; the fail-open when the context key was missing; taking the
+-- opaque token rather than the stored verifier, which was itself a credential;
+-- authority revalidation in `verified_context`, so a revoked or re-roled
+-- membership stops authorizing immediately; the membership guard that makes a
+-- role change advance the authority revision; atomic session establishment, so
+-- a concurrent revocation cannot commit between `begin_request`'s read and its
+-- write; and acceptance binding in `accept_invitation`, which no longer takes
+-- the accepting user as an argument, and whose reactivation branch now sets
+-- `role` to the granted role rather than leaving a revoked administrator's.
+--
+-- Still open, each with a reproduced case: `record_evidence` writes no audit
+-- event though the action is in the allowlist; evidence and claim digests are
+-- length-checked but never tied to content; `finalize_run` stamps `valid`
+-- without validating anything; audit events hardcode authority revision 1;
+-- archive transitions accept the state they are already in; REPEATABLE READ
 -- freezes the membership snapshot and defers revocation; and the SECURITY
 -- DEFINER owner is assumed to bypass forced row-level security, which holds
 -- only when that owner is superuser or BYPASSRLS.
@@ -1709,7 +1715,9 @@ $function$;
 CREATE FUNCTION dasher_api.accept_invitation(
   p_token_key_version smallint,
   p_token bytea,
-  p_user_id uuid,
+  p_issuer text,
+  p_subject text,
+  p_verified_email text,
   p_request_id uuid,
   p_deployment_revision text
 )
@@ -1722,8 +1730,10 @@ AS $function$
 DECLARE
   invitation_row dasher.invitations%ROWTYPE;
   existing_membership dasher.memberships%ROWTYPE;
+  accepting_user uuid;
   new_membership_id uuid := pg_catalog.gen_random_uuid();
   now_at timestamptz := pg_catalog.clock_timestamp();
+  normalized_email text := pg_catalog.lower(pg_catalog.btrim(p_verified_email));
 BEGIN
   SELECT * INTO invitation_row
   FROM dasher.invitations AS candidate
@@ -1739,22 +1749,49 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM dasher.users AS candidate
-    WHERE candidate.user_id = p_user_id
-  ) THEN
+  -- The invitation names who may join. Taking the accepting user as an
+  -- argument instead made this an "add anyone who exists" token: a holder
+  -- could grant membership to any user in the table, and the audit event named
+  -- that user as the actor. Acceptance is now bound to the address the
+  -- invitation was issued to.
+  --
+  -- What this cannot do is verify the identity assertion itself. The database
+  -- has no way to check an identity-provider token, so the caller is trusted to
+  -- present an issuer, subject, and email it has already verified. That trust
+  -- is narrow and stated rather than hidden: the caller may still only complete
+  -- an invitation addressed to the identity it presents.
+  IF normalized_email IS NULL
+    OR normalized_email <> invitation_row.normalized_email
+  THEN
     RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
+  END IF;
+
+  SELECT identity_row.user_id INTO accepting_user
+  FROM dasher.external_identities AS identity_row
+  WHERE identity_row.issuer = p_issuer
+    AND identity_row.subject = p_subject;
+
+  IF accepting_user IS NULL THEN
+    accepting_user := pg_catalog.gen_random_uuid();
+    INSERT INTO dasher.users (user_id) VALUES (accepting_user);
+    INSERT INTO dasher.external_identities (issuer, subject, user_id)
+    VALUES (p_issuer, p_subject, accepting_user);
   END IF;
 
   SELECT * INTO existing_membership
   FROM dasher.memberships AS candidate
   WHERE candidate.organization_id = invitation_row.organization_id
-    AND candidate.user_id = p_user_id;
+    AND candidate.user_id = accepting_user;
 
   IF FOUND THEN
     new_membership_id := existing_membership.membership_id;
+    -- Restored at exactly the role the invitation grants. Leaving `role`
+    -- untouched let a viewer invitation reactivate a revoked administrator as
+    -- an administrator, which made granted_role and role_ceiling meaningless
+    -- for anyone who had ever held a higher role.
     UPDATE dasher.memberships AS held
     SET state = 'active',
+        role = invitation_row.granted_role,
         revoked_at = NULL,
         authority_revision = held.authority_revision + 1,
         updated_at = now_at
@@ -1766,7 +1803,7 @@ BEGIN
     VALUES (
       new_membership_id,
       invitation_row.organization_id,
-      p_user_id,
+      accepting_user,
       invitation_row.granted_role,
       'active',
       1
@@ -1774,7 +1811,7 @@ BEGIN
   END IF;
 
   UPDATE dasher.invitations AS held
-  SET accepted_at = now_at, accepted_user_id = p_user_id
+  SET accepted_at = now_at, accepted_user_id = accepting_user
   WHERE held.invitation_id = invitation_row.invitation_id;
 
   INSERT INTO dasher.audit_events (
@@ -1786,7 +1823,7 @@ BEGIN
     pg_catalog.gen_random_uuid(),
     invitation_row.organization_id,
     'user',
-    p_user_id,
+    accepting_user,
     1,
     p_request_id,
     CASE WHEN existing_membership.membership_id IS NULL
@@ -1803,8 +1840,7 @@ BEGIN
 END
 $function$;
 
--- The acting principal, or a denial. Every mutating function starts here, so
--- no caller ever supplies its own identity.
+
 CREATE FUNCTION dasher_api.acting_principal(p_required_role text)
 RETURNS TABLE (user_id uuid, organization_id uuid)
 LANGUAGE plpgsql
@@ -2248,4 +2284,5 @@ GRANT EXECUTE ON FUNCTION
 GRANT EXECUTE ON FUNCTION
   dasher_api.begin_request(smallint, bytea) TO dasher_app;
 GRANT EXECUTE ON FUNCTION
-  dasher_api.accept_invitation(smallint, bytea, uuid, uuid, text) TO dasher_app;
+  dasher_api.accept_invitation(smallint, bytea, text, text, text, uuid, text)
+  TO dasher_app;

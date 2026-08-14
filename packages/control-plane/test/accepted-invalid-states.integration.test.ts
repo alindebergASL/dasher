@@ -639,9 +639,16 @@ describe("sign-in and onboarding", () => {
     try {
       await client.query("BEGIN");
       const accepted = await client.query<{ readonly membership: string }>(
-        `SELECT dasher_api.accept_invitation($1::smallint, $2, $3, $4, $5)
+        `SELECT dasher_api.accept_invitation($1::smallint, $2, $3, $4, $5, $6, 'test')
            AS membership`,
-        [1, invitationToken, invitee, randomUUID(), "test"],
+        [
+          1,
+          invitationToken,
+          "https://issuer.example",
+          `subject-invitee-${invitee}`,
+          "invitee@example.com",
+          randomUUID(),
+        ],
       );
       expect(accepted.rows[0]?.membership).toEqual(expect.any(String));
       await client.query("COMMIT");
@@ -1315,5 +1322,162 @@ describe("authority and establishment", () => {
       attacker.release();
       revoker.release();
     }
+  });
+});
+
+/**
+ * Invitation acceptance, written from the attack before the fix exists.
+ *
+ * The invitee holds no membership, so no request context can exist for them —
+ * that is the cycle acceptance has to break. Breaking it by taking the user as
+ * an argument made the token an "add anyone" token instead of "this person may
+ * join", which is a different and worse thing.
+ */
+describe("invitation acceptance", () => {
+  /** Issues an invitation and returns the raw token to present. */
+  async function issueInvitation(
+    email: string,
+    grantedRole: string,
+  ): Promise<Buffer> {
+    const raw = sha256(`invite:${email}:${randomUUID()}`);
+    await ownerPool.query(
+      `INSERT INTO dasher.invitations
+         (invitation_id, organization_id, normalized_email, granted_role,
+          role_ceiling, token_key_version, token_digest, created_by_user_id,
+          expires_at)
+       VALUES ($1, $2, $3, $4, 'admin', 1, sha256($5), $6,
+               now() + interval '7 days')`,
+      [randomUUID(), org, email, grantedRole, raw, alice],
+    );
+    return raw;
+  }
+
+  it("acceptance is refused when the verified email is not the invitee", async () => {
+    // The attack: hold a token addressed to someone else and claim it.
+    const raw = await issueInvitation("intended@example.com", "editor");
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await expectRejected(
+        client.query(
+          `SELECT dasher_api.accept_invitation($1::smallint, $2, $3, $4, $5, $6, 'test')`,
+          [
+            1,
+            raw,
+            "https://issuer.example",
+            `subject-${randomUUID()}`,
+            "someone.else@example.com",
+            randomUUID(),
+          ],
+        ),
+      );
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  });
+
+  it("a viewer invitation cannot restore a revoked admin as admin", async () => {
+    const returning = randomUUID();
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      returning,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.external_identities (issuer, subject, user_id)
+       VALUES ('https://issuer.example', $1, $2)`,
+      [`subject-returning-${returning}`, returning],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.memberships
+         (membership_id, organization_id, user_id, role, state,
+          authority_revision, revoked_at)
+       VALUES ($1, $2, $3, 'admin', 'revoked', 5, now())`,
+      [randomUUID(), org, returning],
+    );
+
+    const raw = await issueInvitation("returning@example.com", "viewer");
+    await asTenant(org, alice, () => Promise.resolve());
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `SELECT dasher_api.accept_invitation($1::smallint, $2, $3, $4, $5, $6, 'test')`,
+        [
+          1,
+          raw,
+          "https://issuer.example",
+          `subject-returning-${returning}`,
+          "returning@example.com",
+          randomUUID(),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const restored = await ownerPool.query<{
+      readonly role: string;
+      readonly state: string;
+    }>(
+      "SELECT role, state FROM dasher.memberships WHERE organization_id = $1 AND user_id = $2",
+      [org, returning],
+    );
+    expect(restored.rows[0]).toEqual({ role: "viewer", state: "active" });
+  });
+
+  it("acceptance creates the membership at exactly the granted role", async () => {
+    // The legitimate path must still work, and must record the resolved user
+    // rather than anything the caller named.
+    const joiner = randomUUID();
+    const subject = `subject-joiner-${joiner}`;
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      joiner,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.external_identities (issuer, subject, user_id)
+       VALUES ('https://issuer.example', $1, $2)`,
+      [subject, joiner],
+    );
+    const raw = await issueInvitation("joiner@example.com", "editor");
+
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `SELECT dasher_api.accept_invitation($1::smallint, $2, $3, $4, $5, $6, 'test')`,
+        [
+          1,
+          raw,
+          "https://issuer.example",
+          subject,
+          "joiner@example.com",
+          randomUUID(),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const created = await ownerPool.query<{ readonly role: string }>(
+      "SELECT role FROM dasher.memberships WHERE organization_id = $1 AND user_id = $2",
+      [org, joiner],
+    );
+    expect(created.rows[0]?.role).toBe("editor");
+
+    const audited = await ownerPool.query(
+      `SELECT 1 FROM dasher.audit_events
+       WHERE organization_id = $1 AND actor_user_id = $2
+         AND action = 'invitation.accepted'`,
+      [org, joiner],
+    );
+    expect(audited.rowCount).toBe(1);
   });
 });
