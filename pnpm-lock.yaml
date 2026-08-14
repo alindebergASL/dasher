@@ -140,6 +140,18 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@22.20.1)(jsdom@27.4.0)(vite@8.1.5(@types/node@22.20.1))
 
+  packages/repo-graph:
+    devDependencies:
+      "@types/node":
+        specifier: ^22.0.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@22.20.1)(jsdom@27.4.0)(vite@8.1.5(@types/node@22.20.1))
+
   packages/river-domain:
     dependencies:
       "@dasher/dashboard-schema":

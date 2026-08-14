@@ -30,6 +30,13 @@ pnpm audit --audit-level high
 pnpm audit --prod --audit-level high
 ```
 
+`pnpm test` includes a reachability gate: every workspace package must be an
+entry point, reachable from one, or listed in [`reachability.json`](reachability.json)
+with a reason and a date. It fails in both directions — on a package nothing
+imports, and on a declaration that has stopped being true — so dead weight has
+to be declared rather than merely tolerated. See
+[`packages/repo-graph`](packages/repo-graph/src/reachability.ts).
+
 The same gates run in [GitHub Actions](.github/workflows/ci.yml). Current
 evidence and caveats are recorded in the
 [foundation readiness status](docs/status/2026-07-30-foundation-readiness.md)

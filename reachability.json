@@ -1,0 +1,16 @@
+{
+  "$comment": "Which workspace packages are entry points, and which are knowingly reachable from none. Enforced by @dasher/repo-graph; see packages/repo-graph/src/reachability.ts for why this is a declaration rather than a rule against orphans. Adding an entry here should be a reviewed diff, not a quiet accumulation.",
+  "roots": ["@dasher/web", "@dasher/repo-graph"],
+  "unreachable": [
+    {
+      "name": "@dasher/control-plane",
+      "reason": "The multi-tenant schema and its migrator. Deliberately not wired to the product yet: no sign-in path exists, and ADR-003 gates the control plane on real customer data rather than on the planner or the UI. Step 5 of the restructure proposal is the persistence slice that gives it its first importer.",
+      "since": "2026-08-14"
+    },
+    {
+      "name": "@dasher/calculation-engine",
+      "reason": "Its only importer was the integration test cross-checking the PL/pgSQL evaluator that the baseline squash deleted. Wiring it into @dasher/planner is step 4 of the restructure proposal and is the next visible change.",
+      "since": "2026-08-14"
+    }
+  ]
+}
