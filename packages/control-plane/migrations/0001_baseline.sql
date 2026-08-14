@@ -42,15 +42,10 @@
 -- KNOWN OPEN. Three independent reviews of this seam found further defects,
 -- and only the replay is fixed here.
 --
--- Two are newly confirmed and are the most serious remaining:
---
---   * the stored session verifier is the credential. `begin_request` accepts
---     `token_digest` as its input, and `dasher_app` can SELECT that column for
---     every session belonging to the acting user. Reproduced: authenticate with
---     one session, read a second session's stored digest, revoke the first, and
---     authenticate as the second without ever holding its raw token. The
---     function should take the opaque token and derive the digest internally,
---     and the verifier columns should not be readable.
+-- One newly confirmed defect is fixed above: `begin_request` and
+-- `accept_invitation` now take the opaque token and derive the verifier
+-- themselves, and the verifier columns are no longer granted. The remaining
+-- one is still open:
 --
 --   * `authority_revision` is signed into the context but never revalidated.
 --     Reproduced: a context signed as viewer at revision 1 reads admin-only
@@ -1248,12 +1243,27 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA dasher FROM PUBLIC, dasher_app;
 GRANT SELECT ON
   dasher.organizations,
   dasher.memberships,
-  dasher.invitations,
-  dasher.sessions,
   dasher.audit_events,
   dasher.source_snapshots,
   dasher.evidence_records
 TO dasher_app;
+
+-- Sessions and invitations are granted by column, omitting the verifiers. A
+-- readable verifier is a credential: `begin_request` and `accept_invitation`
+-- match against sha256 of the presented token, so anything that could read
+-- `token_digest` could authenticate without ever holding the token.
+GRANT SELECT (
+  session_id, organization_id, user_id, authority_revision,
+  token_key_version, csrf_key_version, issued_at, last_seen_at,
+  idle_expires_at, absolute_expires_at, rotated_from_session_id,
+  replaced_by_session_id, revoked_at, revocation_reason
+) ON dasher.sessions TO dasher_app;
+
+GRANT SELECT (
+  invitation_id, organization_id, normalized_email, granted_role,
+  role_ceiling, token_key_version, created_by_user_id, created_at,
+  expires_at, accepted_at, accepted_user_id, revoked_at, revoked_by_user_id
+) ON dasher.invitations TO dasher_app;
 
 -- Read-only, all of it. Every state change goes through `dasher_api`, which is
 -- what makes actor attribution, legal transitions, and audit atomicity
@@ -1533,7 +1543,7 @@ $function$;
 -- next.
 CREATE FUNCTION dasher_api.begin_request(
   p_token_key_version smallint,
-  p_token_digest bytea
+  p_token bytea
 )
 RETURNS TABLE (user_id uuid, organization_id uuid)
 LANGUAGE plpgsql
@@ -1545,15 +1555,23 @@ DECLARE
   session_row dasher.sessions%ROWTYPE;
   membership_row dasher.memberships%ROWTYPE;
   now_at timestamptz := pg_catalog.clock_timestamp();
+  presented_digest bytea;
 BEGIN
-  IF pg_catalog.octet_length(p_token_digest) <> 32 THEN
+  -- The caller presents the opaque token; the verifier is derived here. If the
+  -- stored digest were the input, then anything able to read that column could
+  -- authenticate as the session it belongs to, which makes a verifier into a
+  -- credential. Reproduced before this was changed: a caller holding one
+  -- session read a second session's stored digest and authenticated as it,
+  -- after its own session had been revoked.
+  IF p_token IS NULL OR pg_catalog.octet_length(p_token) < 16 THEN
     RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
   END IF;
+  presented_digest := pg_catalog.sha256(p_token);
 
   SELECT * INTO session_row
   FROM dasher.sessions AS candidate
   WHERE candidate.token_key_version = p_token_key_version
-    AND candidate.token_digest = p_token_digest;
+    AND candidate.token_digest = presented_digest;
 
   IF NOT FOUND
     OR session_row.revoked_at IS NOT NULL
@@ -1631,7 +1649,7 @@ $function$;
 -- statement, so neither can occur without the other.
 CREATE FUNCTION dasher_api.accept_invitation(
   p_token_key_version smallint,
-  p_token_digest bytea,
+  p_token bytea,
   p_user_id uuid,
   p_request_id uuid,
   p_deployment_revision text
@@ -1651,7 +1669,7 @@ BEGIN
   SELECT * INTO invitation_row
   FROM dasher.invitations AS candidate
   WHERE candidate.token_key_version = p_token_key_version
-    AND candidate.token_digest = p_token_digest
+    AND candidate.token_digest = pg_catalog.sha256(p_token)
   FOR UPDATE;
 
   IF NOT FOUND

@@ -225,7 +225,7 @@ beforeAll(async () => {
              (session_id, organization_id, user_id, authority_revision,
               token_key_version, token_digest, csrf_key_version, csrf_digest,
               issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
-           VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+           VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
                    now() + interval '30 minutes', now() + interval '12 hours')`,
           [
             randomUUID(),
@@ -630,7 +630,7 @@ describe("sign-in and onboarding", () => {
          (invitation_id, organization_id, normalized_email, granted_role,
           role_ceiling, token_key_version, token_digest, created_by_user_id,
           expires_at)
-       VALUES ($1, $2, 'invitee@example.com', 'editor', 'admin', 1, $3, $4,
+       VALUES ($1, $2, 'invitee@example.com', 'editor', 'admin', 1, sha256($3), $4,
                now() + interval '7 days')`,
       [randomUUID(), org, invitationToken, alice],
     );
@@ -960,7 +960,7 @@ describe("request context replay", () => {
          (session_id, organization_id, user_id, authority_revision,
           token_key_version, token_digest, csrf_key_version, csrf_digest,
           issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
-       VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+       VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
                now() + interval '30 minutes', now() + interval '12 hours')`,
       [randomUUID(), org, victim, victimToken, sha256(`rv-csrf:${victim}`)],
     );
@@ -1064,6 +1064,99 @@ describe("request context replay", () => {
         "INSERT INTO dasher_private.context_keys (secret) VALUES ($1)",
         [saved.rows[0]!.secret],
       );
+    }
+  });
+});
+
+/**
+ * Written before the fix, from the attacker's position rather than from the
+ * code's structure: what does a caller hold, and what can it reach with it?
+ *
+ * Each case is required to fail against the schema as it stands, then pass
+ * after the fix, then fail again when the fix is deliberately reverted. A test
+ * that cannot detect the defect it names does not count as evidence — four in
+ * this file previously passed for reasons unrelated to what they claimed.
+ */
+describe("session credentials", () => {
+  it("the application role cannot read stored session verifiers", async () => {
+    // If the caller can read the column that authenticates a session, the
+    // stored verifier is a credential rather than a verifier.
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query("SELECT token_digest FROM dasher.sessions"),
+      ),
+    );
+    await expectRejected(
+      asTenant(org, alice, (client) =>
+        client.query("SELECT csrf_digest FROM dasher.sessions"),
+      ),
+    );
+  });
+
+  it("a stored verifier cannot be used to authenticate", async () => {
+    // The whole attack: hold one session, read another's stored verifier, and
+    // present it. Reads the digest as the owner so the case still stands even
+    // if the column grant above were the only thing stopping it — the point is
+    // that the digest must not be accepted as input, not merely that it is
+    // hard to obtain.
+    const second = randomUUID();
+    const secondRaw = sha256(`raw-second-device:${alice}`);
+    await ownerPool.query(
+      `INSERT INTO dasher.sessions
+         (session_id, organization_id, user_id, authority_revision,
+          token_key_version, token_digest, csrf_key_version, csrf_digest,
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
+               now() + interval '30 minutes', now() + interval '12 hours')`,
+      [second, org, alice, secondRaw, sha256(`csrf-second:${alice}`)],
+    );
+
+    const stored = await ownerPool.query<{ readonly token_digest: Buffer }>(
+      "SELECT token_digest FROM dasher.sessions WHERE session_id = $1",
+      [second],
+    );
+
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await expectRejected(
+        client.query(
+          "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+          [1, stored.rows[0]!.token_digest],
+        ),
+      );
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  });
+
+  it("the raw token still authenticates its own session", async () => {
+    // The fix must not break the legitimate path, which is the failure mode a
+    // careless correction here would introduce.
+    const third = randomUUID();
+    const thirdRaw = sha256(`raw-third-device:${alice}`);
+    await ownerPool.query(
+      `INSERT INTO dasher.sessions
+         (session_id, organization_id, user_id, authority_revision,
+          token_key_version, token_digest, csrf_key_version, csrf_digest,
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
+               now() + interval '30 minutes', now() + interval '12 hours')`,
+      [third, org, alice, thirdRaw, sha256(`csrf-third:${alice}`)],
+    );
+
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      const established = await client.query<{ readonly user_id: string }>(
+        "SELECT user_id FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, thirdRaw],
+      );
+      expect(established.rows[0]?.user_id).toBe(alice);
+      await client.query("COMMIT");
+    } finally {
+      client.release();
     }
   });
 });

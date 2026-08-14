@@ -146,7 +146,7 @@ beforeAll(async () => {
            (session_id, organization_id, user_id, authority_revision,
             token_key_version, token_digest, csrf_key_version, csrf_digest,
             issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
-         VALUES ($1, $2, $3, 1, 1, $4, 1, $5, now(), now(),
+         VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
                  now() + interval '30 minutes', now() + interval '12 hours')`,
         [
           randomUUID(),

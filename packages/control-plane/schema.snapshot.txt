@@ -433,7 +433,6 @@ dasher.external_identities dasher_ci_owner SELECT
 dasher.external_identities dasher_ci_owner TRIGGER
 dasher.external_identities dasher_ci_owner TRUNCATE
 dasher.external_identities dasher_ci_owner UPDATE
-dasher.invitations dasher_app SELECT
 dasher.invitations dasher_ci_owner DELETE
 dasher.invitations dasher_ci_owner INSERT
 dasher.invitations dasher_ci_owner REFERENCES
@@ -457,7 +456,6 @@ dasher.organizations dasher_ci_owner SELECT
 dasher.organizations dasher_ci_owner TRIGGER
 dasher.organizations dasher_ci_owner TRUNCATE
 dasher.organizations dasher_ci_owner UPDATE
-dasher.sessions dasher_app SELECT
 dasher.sessions dasher_ci_owner DELETE
 dasher.sessions dasher_ci_owner INSERT
 dasher.sessions dasher_ci_owner REFERENCES
