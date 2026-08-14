@@ -39,8 +39,26 @@
 -- forged; and each writes its own audit event in the same statement, so audit
 -- atomicity is a property of the schema rather than a convention.
 --
--- KNOWN OPEN. Two independent reviews of this seam found further defects, and
--- only the replay is fixed here. Still open, each with a reproduced case:
+-- KNOWN OPEN. Three independent reviews of this seam found further defects,
+-- and only the replay is fixed here.
+--
+-- Two are newly confirmed and are the most serious remaining:
+--
+--   * the stored session verifier is the credential. `begin_request` accepts
+--     `token_digest` as its input, and `dasher_app` can SELECT that column for
+--     every session belonging to the acting user. Reproduced: authenticate with
+--     one session, read a second session's stored digest, revoke the first, and
+--     authenticate as the second without ever holding its raw token. The
+--     function should take the opaque token and derive the digest internally,
+--     and the verifier columns should not be readable.
+--
+--   * `authority_revision` is signed into the context but never revalidated.
+--     Reproduced: a context signed as viewer at revision 1 reads admin-only
+--     rows after a mid-transaction promotion, because `context_allows` reads
+--     the live role and ignores the signed revision. Nothing requires a role
+--     change to advance the revision either.
+--
+-- Still open besides those: Still open, each with a reproduced case:
 -- `accept_invitation` takes the accepting user as an argument and records it
 -- as the audit actor; a revoked admin accepting a viewer invitation returns as
 -- admin, because the reactivation branch never sets `role`; `record_evidence`

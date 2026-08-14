@@ -905,6 +905,12 @@ describe("request context replay", () => {
     const client = await appPool.connect();
     try {
       await client.query("BEGIN");
+      // Force an identifier onto this transaction first. Without a write,
+      // `pg_current_xact_id_if_assigned` returns NULL and `verified_context`
+      // denies on that guard alone — which would make this test pass even if
+      // the transaction were removed from the digest entirely. Verified by
+      // mutation: it did.
+      await client.query("SELECT pg_current_xact_id()");
       for (const [name, value] of [
         ["dasher.context_user_id", captured.user_id],
         ["dasher.context_organization_id", captured.organization_id],
@@ -980,6 +986,7 @@ describe("request context replay", () => {
     const client = await appPool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("SELECT pg_current_xact_id()");
       const names = [
         "dasher.context_user_id",
         "dasher.context_organization_id",
@@ -1020,38 +1027,43 @@ describe("request context replay", () => {
   });
 
   it("a missing context key denies rather than admits", async () => {
-    // `NULL <> anything` is NULL, not TRUE. Comparing against a NULL expected
-    // digest fell through and admitted the caller, so key loss failed open.
-    const client = await appPool.connect();
+    // `NULL <> anything` is NULL, not TRUE, so comparing against a NULL
+    // expected digest fell through and admitted the caller. Exercising that
+    // branch requires the key to actually be gone: supplying a bad digest
+    // while the key exists only tests ordinary mismatch.
+    const saved = await ownerPool.query<{ readonly secret: Buffer }>(
+      "SELECT secret FROM dasher_private.context_keys",
+    );
+    expect(saved.rowCount).toBe(1);
+    await ownerPool.query("DELETE FROM dasher_private.context_keys");
+
     try {
-      await client.query("BEGIN");
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_user_id",
-        alice,
-      ]);
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_organization_id",
-        org,
-      ]);
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_session_id",
-        randomUUID(),
-      ]);
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_authority",
-        "1",
-      ]);
-      await client.query("SELECT set_config($1, $2, true)", [
-        "dasher.context_digest",
-        "00",
-      ]);
-      const principal = await client.query<{ readonly who: string | null }>(
-        "SELECT dasher_private.context_user_id()::text AS who",
-      );
-      expect(principal.rows[0]?.who).toBeNull();
-      await client.query("ROLLBACK");
+      const client = await appPool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_current_xact_id()");
+        for (const [name, value] of [
+          ["dasher.context_user_id", alice],
+          ["dasher.context_organization_id", org],
+          ["dasher.context_session_id", randomUUID()],
+          ["dasher.context_authority", "1"],
+          ["dasher.context_digest", "00"],
+        ] as const) {
+          await client.query("SELECT set_config($1, $2, true)", [name, value]);
+        }
+        const principal = await client.query<{ readonly who: string | null }>(
+          "SELECT dasher_private.context_user_id()::text AS who",
+        );
+        expect(principal.rows[0]?.who).toBeNull();
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
     } finally {
-      client.release();
+      await ownerPool.query(
+        "INSERT INTO dasher_private.context_keys (secret) VALUES ($1)",
+        [saved.rows[0]!.secret],
+      );
     }
   });
 });
