@@ -1,18 +1,21 @@
 import {
   parseDashboardSpec,
   type DashboardSpec,
-  type Evidence,
 } from "@dasher/dashboard-schema";
 
-import { buildGaugeMetrics, type GaugeMetrics } from "./metrics";
+import {
+  CALCULATION_EVIDENCE_ID,
+  deriveRiverFacts,
+  gaugeEvidenceId,
+  gaugeView,
+  signed,
+  uniqueEvidenceIds,
+  type ThresholdRule,
+} from "./facts";
+import { buildGaugeMetrics } from "./metrics";
 import type { RiverGauge } from "./usgs";
 
-export interface ThresholdRule {
-  id: string;
-  siteId: string;
-  label: string;
-  stageAbove: number;
-}
+export type { ThresholdRule } from "./facts";
 
 export interface RiverDashboardOptions {
   asOf: string;
@@ -22,142 +25,25 @@ export interface RiverDashboardOptions {
 
 type RiverDashboardSpec = Extract<DashboardSpec, { schemaVersion: "1.1" }>;
 
-function uniqueEvidenceIds(...groups: string[][]): string[] {
-  return [...new Set(groups.flat())];
-}
-
-function formatNumber(value: number | null, maximumFractionDigits = 2): string {
-  if (value === null) return "Missing";
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits }).format(
-    value,
-  );
-}
-
-function signed(value: number | null, unit: string): string {
-  if (value === null) return "Not enough history";
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${formatNumber(value)} ${unit}`;
-}
-
-function gaugeView(item: GaugeMetrics) {
-  return {
-    id: item.gauge.siteId,
-    name: item.gauge.name,
-    river: item.gauge.river,
-    latitude: item.gauge.latitude,
-    longitude: item.gauge.longitude,
-    stage: item.latestStage,
-    stageUnit: item.gauge.stage?.unit ?? "ft",
-    streamflow: item.latestStreamflow,
-    streamflowUnit: item.gauge.streamflow?.unit ?? "ft3/s",
-    direction: item.direction,
-    freshness: item.freshness,
-    evidenceIds: [`usgs-${item.gauge.siteId}`, "calculated-trends"],
-  } as const;
-}
-
 export function createRiverDashboard(
   gauges: RiverGauge[],
   options: RiverDashboardOptions,
 ): RiverDashboardSpec {
   const metrics = gauges.map((gauge) => buildGaugeMetrics(gauge, options.asOf));
-  const rising = metrics.filter(
-    (item) => item.stageFreshness === "fresh" && item.direction === "rising",
-  );
-  const falling = metrics.filter(
-    (item) => item.stageFreshness === "fresh" && item.direction === "falling",
-  );
-  const staleOrMissing = metrics.filter(
-    (item) => item.freshness !== "fresh" || item.dataIssues.length > 0,
-  );
-  const ranked = [...metrics]
-    .filter(
-      (item) =>
-        item.stageChange1h !== null &&
-        item.stageChange1h > 0.05 &&
-        item.freshness === "fresh" &&
-        item.dataIssues.length === 0,
-    )
-    .sort((a, b) => (b.stageChange1h ?? 0) - (a.stageChange1h ?? 0));
-  const latestObservationAt = metrics
-    .flatMap((item) => (item.latestAt ? [item.latestAt] : []))
-    .sort()
-    .at(-1);
-
-  const evidence: Evidence[] = metrics.map((item) => ({
-    id: `usgs-${item.gauge.siteId}`,
-    kind: "observed" as const,
-    label: `${item.gauge.river} gauge ${item.gauge.siteId}`,
-    sourceName: "U.S. Geological Survey",
-    sourceUrl: item.gauge.sourceUrl,
-    observedAt: item.latestAt ?? undefined,
-    retrievedAt: item.gauge.retrievedAt,
-    detail: `Water level and streamflow observations for ${item.gauge.name}.`,
-    confidence: "high" as const,
-  }));
-  evidence.push({
-    id: "calculated-trends",
-    kind: "calculated",
-    label: "Dasher river calculations",
-    sourceName: "Dasher",
-    retrievedAt: options.asOf,
-    detail:
-      "One-, six-, and 24-hour changes are calculated from the nearest qualifying USGS observations. Rising/falling uses a 0.05-foot tolerance.",
-    confidence: "high",
+  const {
+    rising,
+    falling,
+    staleOrMissing,
+    ranked,
+    evidence,
+    gaugeEvidenceIds,
+    allEvidenceIds,
+    alerts,
+    latestObservationAt,
+  } = deriveRiverFacts(metrics, {
+    asOf: options.asOf,
+    thresholds: options.thresholds,
   });
-
-  const alerts: Array<{
-    id: string;
-    severity: "info" | "attention" | "warning";
-    title: string;
-    detail: string;
-    evidenceIds: string[];
-  }> = metrics.flatMap((item) =>
-    item.dataIssues.map((detail, index) => ({
-      id: `${item.gauge.siteId}-quality-${index}`,
-      severity:
-        item.freshness === "fresh"
-          ? ("attention" as const)
-          : ("warning" as const),
-      title: item.gauge.river,
-      detail,
-      evidenceIds: [`usgs-${item.gauge.siteId}`, "calculated-trends"],
-    })),
-  );
-
-  for (const threshold of options.thresholds ?? []) {
-    const item = metrics.find(
-      (candidate) => candidate.gauge.siteId === threshold.siteId,
-    );
-    if (
-      item?.latestStage !== null &&
-      item?.latestStage !== undefined &&
-      item.stageFreshness === "fresh" &&
-      item.latestStage > threshold.stageAbove
-    ) {
-      alerts.push({
-        id: threshold.id,
-        severity: "attention",
-        title: threshold.label,
-        detail: `${item.gauge.river} is ${formatNumber(item.latestStage)} ft, above the user threshold of ${formatNumber(threshold.stageAbove)} ft.`,
-        evidenceIds: [`usgs-${item.gauge.siteId}`, "calculated-trends"],
-      });
-    }
-  }
-
-  if (alerts.length === 0) {
-    alerts.push({
-      id: "no-alerts",
-      severity: "info",
-      title: "No configured thresholds are active",
-      detail:
-        "All current data-quality and user-defined threshold checks are clear.",
-      evidenceIds: [
-        ...metrics.map((item) => `usgs-${item.gauge.siteId}`),
-        "calculated-trends",
-      ],
-    });
-  }
 
   const fastest = ranked[0];
   const summaryClaims = [
@@ -170,8 +56,6 @@ export function createRiverDashboard(
       : "All gauges are fresh and complete.",
   ];
 
-  const allEvidenceIds = evidence.map((item) => item.id);
-  const gaugeEvidenceIds = metrics.map((item) => `usgs-${item.gauge.siteId}`);
   const firstAttention = metrics.find((item) => item.dataIssues.length > 0);
   const attentionAlerts = alerts.filter((alert) => alert.severity !== "info");
   const highestPriorityAlert = [...attentionAlerts].sort(
@@ -200,14 +84,19 @@ export function createRiverDashboard(
         statementTypes: ["observed", "calculated"],
         headline: `${metrics.length} gauge${metrics.length === 1 ? "" : "s"} monitored`,
         detail: `${rising.length} gauge${rising.length === 1 ? " is" : "s are"} rising and ${falling.length} gauge${falling.length === 1 ? " is" : "s are"} falling based on fresh water-level readings.`,
-        evidenceIds: uniqueEvidenceIds(gaugeEvidenceIds, ["calculated-trends"]),
+        evidenceIds: uniqueEvidenceIds(gaugeEvidenceIds, [
+          CALCULATION_EVIDENCE_ID,
+        ]),
       },
       changed: fastest
         ? {
             statementTypes: ["calculated"],
             headline: `${fastest.gauge.river} rose fastest`,
             detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.stageChange1h, "ft")} at ${fastest.gauge.name}.`,
-            evidenceIds: [`usgs-${fastest.gauge.siteId}`, "calculated-trends"],
+            evidenceIds: [
+              gaugeEvidenceId(fastest.gauge.siteId),
+              CALCULATION_EVIDENCE_ID,
+            ],
           }
         : {
             statementTypes: ["calculated"],
@@ -215,7 +104,7 @@ export function createRiverDashboard(
             detail:
               "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
             evidenceIds: uniqueEvidenceIds(gaugeEvidenceIds, [
-              "calculated-trends",
+              CALCULATION_EVIDENCE_ID,
             ]),
           },
       important: highestPriorityAlert
@@ -234,7 +123,7 @@ export function createRiverDashboard(
               "No data-quality or user-defined threshold checks need attention.",
             evidenceIds: uniqueEvidenceIds(
               ...alerts.map((alert) => alert.evidenceIds),
-              ["calculated-trends"],
+              [CALCULATION_EVIDENCE_ID],
             ),
           },
     },
@@ -242,13 +131,13 @@ export function createRiverDashboard(
       ? {
           title: `Review ${firstAttention.gauge.river} gauge`,
           detail: `${firstAttention.gauge.name}: ${firstAttention.dataIssues[0]}`,
-          evidenceIds: [`usgs-${firstAttention.gauge.siteId}`],
+          evidenceIds: [gaugeEvidenceId(firstAttention.gauge.siteId)],
         }
       : {
           title: "Review the dashboard before publishing",
           detail:
             "Confirm the calculated conditions match the source readings and intended audience.",
-          evidenceIds: ["calculated-trends"],
+          evidenceIds: [CALCULATION_EVIDENCE_ID],
         },
     notice:
       "USGS readings may be provisional and subject to revision. Planning view only; use USGS and local emergency-management sources for official conditions and warnings.",
@@ -266,19 +155,24 @@ export function createRiverDashboard(
             claims: [
               {
                 text: summaryClaims[0]!,
-                evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+                evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
               },
               {
                 text: summaryClaims[1]!,
                 evidenceIds: fastest
-                  ? [`usgs-${fastest.gauge.siteId}`, "calculated-trends"]
-                  : ["calculated-trends"],
+                  ? [
+                      gaugeEvidenceId(fastest.gauge.siteId),
+                      CALCULATION_EVIDENCE_ID,
+                    ]
+                  : [CALCULATION_EVIDENCE_ID],
               },
               {
                 text: summaryClaims[2]!,
                 evidenceIds:
                   staleOrMissing.length > 0
-                    ? staleOrMissing.map((item) => `usgs-${item.gauge.siteId}`)
+                    ? staleOrMissing.map((item) =>
+                        gaugeEvidenceId(item.gauge.siteId),
+                      )
                     : gaugeEvidenceIds,
               },
             ],
@@ -299,19 +193,19 @@ export function createRiverDashboard(
                 label: "Rising",
                 value: String(rising.length),
                 direction: "up",
-                evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+                evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
               },
               {
                 label: "Falling",
                 value: String(falling.length),
                 direction: "down",
-                evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+                evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
               },
               {
                 label: "Freshness checks",
                 value: String(staleOrMissing.length),
                 direction: staleOrMissing.length ? "unknown" : "steady",
-                evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+                evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
               },
             ],
             evidenceIds: allEvidenceIds,
@@ -336,9 +230,12 @@ export function createRiverDashboard(
               label: item.gauge.river,
               value: signed(item.stageChange1h, "ft"),
               note: `${item.direction}; 6h ${signed(item.stageChange6h, "ft")}`,
-              evidenceIds: [`usgs-${item.gauge.siteId}`, "calculated-trends"],
+              evidenceIds: [
+                gaugeEvidenceId(item.gauge.siteId),
+                CALCULATION_EVIDENCE_ID,
+              ],
             })),
-            evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
           {
             id: "attention",
@@ -373,10 +270,10 @@ export function createRiverDashboard(
                 id: item.gauge.siteId,
                 label: item.gauge.river,
                 unit: item.gauge.stage?.unit ?? "ft",
-                evidenceIds: [`usgs-${item.gauge.siteId}`],
+                evidenceIds: [gaugeEvidenceId(item.gauge.siteId)],
                 points: item.stagePoints,
               })),
-            evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
           {
             id: "change-windows",
@@ -387,9 +284,12 @@ export function createRiverDashboard(
               label: item.gauge.river,
               value: `1h ${signed(item.stageChange1h, "ft")}`,
               note: `6h ${signed(item.stageChange6h, "ft")} · 24h ${signed(item.stageChange24h, "ft")}`,
-              evidenceIds: [`usgs-${item.gauge.siteId}`, "calculated-trends"],
+              evidenceIds: [
+                gaugeEvidenceId(item.gauge.siteId),
+                CALCULATION_EVIDENCE_ID,
+              ],
             })),
-            evidenceIds: [...gaugeEvidenceIds, "calculated-trends"],
+            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
         ],
       },

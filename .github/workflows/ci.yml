@@ -41,10 +41,11 @@ jobs:
 
       - run: test -z "$(git status --porcelain)"
 
-  # Mutation testing for the planner, the only reachable product logic. Its own
-  # job so a ~100s run does not sit in front of the static gates; it is a gate
-  # rather than a report because a test suite that stops discriminating is
-  # exactly the failure it exists to name, and one nobody runs finds nothing.
+  # Mutation testing for the reachable product logic: the planner and the river
+  # composition rules it shares with river-domain. Its own job so a ~100s run
+  # does not sit in front of the static gates; it is a gate rather than a report
+  # because a test suite that stops discriminating is exactly the failure it
+  # exists to name, and one nobody runs finds nothing.
   mutation:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -60,7 +61,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm --filter @dasher/planner test:mutation
+      - run: pnpm test:mutation
 
       # Stryker mutates in place and restores afterwards. If a crash ever left
       # a mutant behind, this reports it rather than letting the next step run

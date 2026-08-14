@@ -30,8 +30,8 @@ pnpm audit --audit-level high
 pnpm audit --prod --audit-level high
 ```
 
-`pnpm --filter @dasher/planner test:mutation` runs Stryker against the planner:
-it breaks the code deliberately and requires the tests to notice. Its threshold
+`pnpm test:mutation` runs Stryker against the planner and the river composition
+rules: it breaks the code deliberately and requires the tests to notice. Its threshold
 is a floor set to the measured score, raised as coverage earns it. See
 [mutation testing](docs/process/2026-08-14-mutation-testing.md).
 

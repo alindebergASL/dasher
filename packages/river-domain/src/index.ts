@@ -12,8 +12,16 @@ export {
   type Observation,
   type RiverGauge,
 } from "./usgs";
+export { createRiverDashboard, type RiverDashboardOptions } from "./dashboard";
 export {
-  createRiverDashboard,
-  type RiverDashboardOptions,
+  CALCULATION_EVIDENCE_ID,
+  deriveRiverFacts,
+  gaugeEvidenceId,
+  gaugeView,
+  signed,
+  uniqueEvidenceIds,
+  type DeriveRiverFactsOptions,
+  type RiverAlert,
+  type RiverFacts,
   type ThresholdRule,
-} from "./dashboard";
+} from "./facts";

@@ -8,8 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:mutation": "stryker run"
+    "test": "vitest run"
   },
   "dependencies": {
     "@dasher/dashboard-schema": "workspace:*",
@@ -17,8 +16,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@stryker-mutator/core": "^10.0.0",
-    "@stryker-mutator/vitest-runner": "^10.0.0",
     "typescript": "^5.9.2",
     "vitest": "^4.1.10"
   }

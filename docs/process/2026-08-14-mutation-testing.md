@@ -1,6 +1,6 @@
-# Mutation testing the planner
+# Mutation testing the reachable product logic
 
-Status: Applied — Stryker runs in CI against `@dasher/planner`
+Status: Applied — Stryker runs in CI against the reachable product logic
 Date: 2026-08-14
 
 ## Why here
@@ -25,13 +25,27 @@ equivalent discipline is applied per fix by hand.
 ## Running it
 
 ```bash
-pnpm --filter @dasher/planner test:mutation
+pnpm test:mutation
 ```
 
-Roughly 100 seconds for 687 mutants. It has its own CI job so it runs in
+Roughly 100 seconds for 692 mutants. It has its own CI job so it runs in
 parallel rather than in front of the static gates.
 
-## Two configuration decisions
+## What is mutated, and why it runs from the root
+
+`@dasher/planner`'s compiler, plan contract, and run loop, plus
+`@dasher/river-domain`'s `facts.ts` — the composition rules the two share.
+
+That last one is the reason this runs from the repository root rather than
+inside the planner. When the duplicated rules were extracted into
+`river-domain`, the planner's mutant count fell from 687 to 528 and its score
+_rose_ from 58.92 to 64.23, because 159 mutants had moved into a file the run
+no longer looked at. The gate would have rewarded the refactor for putting code
+beyond its reach. Mutating across both packages, and running both suites via
+`vitest.stryker.config.ts`, is what keeps the score measuring the same thing
+before and after a move.
+
+## Three configuration decisions
 
 **`inPlace: true`.** Stryker normally copies the project into a sandbox and
 mutates the copy. That does not work here: the sandbox root is the package
@@ -44,6 +58,11 @@ The cost is that a crash mid-run could leave a mutant in the working tree.
 Stryker restores from a backup directory when it finishes, and the CI job runs
 `git status --porcelain` afterwards so an unrestored file is reported rather
 than silently carried into the next step.
+
+**A dedicated Vitest config.** The shared rules are exercised from both
+packages, so mutating them has to run both suites or the score measures the
+wrong thing. `vitest.stryker.config.ts` selects exactly those two; nothing else
+discovers it, since each package's own `vitest run` uses its own directory.
 
 **`vitest.related: false`.** Stryker asks Vitest which tests relate to a mutated
 file. `run.test.ts` imports through `./index` rather than from the source files
@@ -62,10 +81,11 @@ earn it.
 
 | Measured 2026-08-14 | Score  | Killed | Survived | No coverage |
 | ------------------- | ------ | ------ | -------- | ----------- |
-| `compile.ts`        | 61.17% | 323    | 191      | 14          |
-| `plan.ts`           | 31.75% | 20     | 29       | 14          |
+| `compile.ts`        | 69.19% | 256    | 107      | 7           |
 | `run.ts`            | 67.80% | 39     | 9        | 10          |
-| **total**           | 58.92% | 382    | 229      | 38          |
+| `facts.ts`          | 53.99% | 88     | 68       | 7           |
+| `plan.ts`           | 31.75% | 20     | 29       | 14          |
+| **total**           | 61.68% | 403    | 213      | 38          |
 
 ## What survived, and which of it is worth attacking
 
@@ -73,12 +93,12 @@ The survivors are not one population. Sorted by mutator:
 
 | Mutator                 | Survived |
 | ----------------------- | -------- |
-| `ConditionalExpression` | 74       |
+| `ConditionalExpression` | 67       |
 | `StringLiteral`         | 55       |
-| `EqualityOperator`      | 35       |
-| `MethodExpression`      | 13       |
-| `LogicalOperator`       | 12       |
-| everything else         | 40       |
+| `EqualityOperator`      | 33       |
+| `ArrayDeclaration`      | 11       |
+| `MethodExpression`      | 10       |
+| everything else         | 37       |
 
 The 55 surviving `StringLiteral` mutants are mostly display copy and error
 text. Emptying a headline that no assertion reads is a mutant nobody should
