@@ -86,6 +86,31 @@ async function asTenant<T>(
   }
 }
 
+/**
+ * Re-issues a seeded session at the membership's current authority.
+ *
+ * A role or state change now advances `authority_revision`, which invalidates
+ * every session issued under the old authority — that is the point of it. In
+ * production the user signs in again; here the seeded session is moved forward
+ * so a test that changes authority does not silently strand every test after
+ * it.
+ */
+async function resyncSessionAuthority(
+  organizationId: string,
+  userId: string,
+): Promise<void> {
+  await ownerPool.query(
+    `UPDATE dasher.sessions AS s
+       SET authority_revision = m.authority_revision
+     FROM dasher.memberships AS m
+     WHERE m.organization_id = s.organization_id
+       AND m.user_id = s.user_id
+       AND s.organization_id = $1
+       AND s.user_id = $2`,
+    [organizationId, userId],
+  );
+}
+
 async function expectSqlState(
   operation: Promise<unknown>,
   sqlState: string,
@@ -360,7 +385,8 @@ describe("tenant isolation", () => {
 
       await ownerPool.query(
         `UPDATE dasher.memberships
-            SET state = 'revoked', revoked_at = now(), updated_at = now()
+            SET state = 'revoked', revoked_at = now(), updated_at = now(),
+                authority_revision = authority_revision + 1
           WHERE organization_id = $1 AND user_id = $2`,
         [orgA, userA],
       );
@@ -374,18 +400,24 @@ describe("tenant isolation", () => {
       client.release();
       await ownerPool.query(
         `UPDATE dasher.memberships
-            SET state = 'active', revoked_at = NULL, updated_at = now()
+            SET state = 'active', revoked_at = NULL, updated_at = now(),
+                authority_revision = authority_revision + 1
           WHERE organization_id = $1 AND user_id = $2`,
         [orgA, userA],
       );
+      await resyncSessionAuthority(orgA, userA);
     }
   });
 
   it("a viewer cannot read the audit log, which requires admin", async () => {
     await ownerPool.query(
-      "UPDATE dasher.memberships SET role = 'viewer', updated_at = now() WHERE organization_id = $1 AND user_id = $2",
+      `UPDATE dasher.memberships
+         SET role = 'viewer', updated_at = now(),
+             authority_revision = authority_revision + 1
+       WHERE organization_id = $1 AND user_id = $2`,
       [orgA, userA],
     );
+    await resyncSessionAuthority(orgA, userA);
     try {
       const rows = await asTenant(orgA, userA, async (client) =>
         client.query("SELECT audit_event_id FROM dasher.audit_events"),
@@ -393,9 +425,13 @@ describe("tenant isolation", () => {
       expect(rows.rowCount).toBe(0);
     } finally {
       await ownerPool.query(
-        "UPDATE dasher.memberships SET role = 'admin', updated_at = now() WHERE organization_id = $1 AND user_id = $2",
+        `UPDATE dasher.memberships
+           SET role = 'admin', updated_at = now(),
+               authority_revision = authority_revision + 1
+         WHERE organization_id = $1 AND user_id = $2`,
         [orgA, userA],
       );
+      await resyncSessionAuthority(orgA, userA);
     }
   });
 

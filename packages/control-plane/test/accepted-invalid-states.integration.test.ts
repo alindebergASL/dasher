@@ -1160,3 +1160,160 @@ describe("session credentials", () => {
     }
   });
 });
+
+/**
+ * Three coupled defects, written from the attack before any fix exists.
+ *
+ * They are one unit because fixing any alone leaves the others open: binding a
+ * context to an authority revision means nothing if a role change need not
+ * advance that revision, and neither helps if establishment is not atomic
+ * against a concurrent revocation.
+ */
+describe("authority and establishment", () => {
+  it("a role change must advance the authority revision", async () => {
+    // Every other authority check trusts this. Nothing enforced it, so an
+    // operator could grant admin while leaving the revision — and every
+    // session issued under the old authority — apparently valid.
+    const subject = randomUUID();
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      subject,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.memberships
+         (membership_id, organization_id, user_id, role, state, authority_revision)
+       VALUES ($1, $2, $3, 'viewer', 'active', 1)`,
+      [randomUUID(), org, subject],
+    );
+
+    await expectRejected(
+      ownerPool.query(
+        `UPDATE dasher.memberships SET role = 'admin', updated_at = now()
+         WHERE organization_id = $1 AND user_id = $2`,
+        [org, subject],
+      ),
+    );
+
+    // Advancing it together is the legal form.
+    await ownerPool.query(
+      `UPDATE dasher.memberships
+         SET role = 'admin',
+             authority_revision = authority_revision + 1,
+             updated_at = now()
+       WHERE organization_id = $1 AND user_id = $2`,
+      [org, subject],
+    );
+  });
+
+  it("a context stops authorizing once its authority is superseded", async () => {
+    // Signed at revision N; the live membership moves to N+1. The context must
+    // not carry over, in either direction — this reproduced as a viewer
+    // context reading admin-only rows after a mid-transaction promotion.
+    const subject = randomUUID();
+    const raw = sha256(`authority-subject:${subject}`);
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      subject,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.memberships
+         (membership_id, organization_id, user_id, role, state, authority_revision)
+       VALUES ($1, $2, $3, 'viewer', 'active', 1)`,
+      [randomUUID(), org, subject],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.sessions
+         (session_id, organization_id, user_id, authority_revision,
+          token_key_version, token_digest, csrf_key_version, csrf_digest,
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
+               now() + interval '30 minutes', now() + interval '12 hours')`,
+      [randomUUID(), org, subject, raw, sha256(`auth-csrf:${subject}`)],
+    );
+
+    const client = await appPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, raw],
+      );
+      const before = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      expect(before.rows[0]?.who).toBe(subject);
+
+      await ownerPool.query(
+        `UPDATE dasher.memberships
+           SET role = 'admin',
+               authority_revision = authority_revision + 1,
+               updated_at = now()
+         WHERE organization_id = $1 AND user_id = $2`,
+        [org, subject],
+      );
+
+      const after = await client.query<{ readonly who: string | null }>(
+        "SELECT dasher_private.context_user_id()::text AS who",
+      );
+      expect(after.rows[0]?.who).toBeNull();
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  });
+
+  it("a session revoked while establishment blocks does not establish", async () => {
+    // The race: begin_request read the session, then refreshed it with an
+    // UPDATE whose only predicate was the session id. Blocking behind a
+    // concurrent revocation and resuming after it commits, the UPDATE still
+    // matched, so a context was stamped for a session that was already gone.
+    const subject = randomUUID();
+    const raw = sha256(`race-subject:${subject}`);
+    const sessionId = randomUUID();
+    await ownerPool.query("INSERT INTO dasher.users (user_id) VALUES ($1)", [
+      subject,
+    ]);
+    await ownerPool.query(
+      `INSERT INTO dasher.memberships
+         (membership_id, organization_id, user_id, role, state, authority_revision)
+       VALUES ($1, $2, $3, 'editor', 'active', 1)`,
+      [randomUUID(), org, subject],
+    );
+    await ownerPool.query(
+      `INSERT INTO dasher.sessions
+         (session_id, organization_id, user_id, authority_revision,
+          token_key_version, token_digest, csrf_key_version, csrf_digest,
+          issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
+               now() + interval '30 minutes', now() + interval '12 hours')`,
+      [sessionId, org, subject, raw, sha256(`race-csrf:${subject}`)],
+    );
+
+    const revoker = await ownerPool.connect();
+    const attacker = await appPool.connect();
+    try {
+      // Hold the row lock without committing.
+      await revoker.query("BEGIN");
+      await revoker.query(
+        `UPDATE dasher.sessions SET revoked_at = now(), revocation_reason = 'race'
+         WHERE session_id = $1`,
+        [sessionId],
+      );
+
+      // begin_request now blocks behind that lock.
+      await attacker.query("BEGIN");
+      const establishing = attacker.query(
+        "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+        [1, raw],
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await revoker.query("COMMIT");
+
+      await expectRejected(establishing);
+    } finally {
+      await attacker.query("ROLLBACK").catch(() => undefined);
+      await revoker.query("ROLLBACK").catch(() => undefined);
+      attacker.release();
+      revoker.release();
+    }
+  });
+});

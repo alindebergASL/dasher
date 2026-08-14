@@ -42,18 +42,9 @@
 -- KNOWN OPEN. Three independent reviews of this seam found further defects,
 -- and only the replay is fixed here.
 --
--- One newly confirmed defect is fixed above: `begin_request` and
--- `accept_invitation` now take the opaque token and derive the verifier
--- themselves, and the verifier columns are no longer granted. The remaining
--- one is still open:
---
---   * `authority_revision` is signed into the context but never revalidated.
---     Reproduced: a context signed as viewer at revision 1 reads admin-only
---     rows after a mid-transaction promotion, because `context_allows` reads
---     the live role and ignores the signed revision. Nothing requires a role
---     change to advance the revision either.
---
--- Still open besides those: Still open, each with a reproduced case:
+-- Since fixed: the opaque-token change above; authority revalidation in
+-- `verified_context`; the membership guard that makes an authority change
+-- advance the revision; and atomic session establishment. Still open: Still open, each with a reproduced case:
 -- `accept_invitation` takes the accepting user as an argument and records it
 -- as the audit actor; a revoked admin accepting a viewer invitation returns as
 -- admin, because the reactivation branch never sets `role`; `record_evidence`
@@ -221,7 +212,7 @@ $function$;
 -- context always has one assigned, because `begin_request` writes before it
 -- stamps.
 CREATE FUNCTION dasher_private.verified_context()
-RETURNS TABLE (user_id uuid, organization_id uuid)
+RETURNS TABLE (user_id uuid, organization_id uuid, authority_revision bigint)
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
@@ -283,8 +274,26 @@ BEGIN
     RETURN;
   END IF;
 
+  -- The digest proves the context was issued. It does not prove the
+  -- membership behind it still stands, so that is checked live: an inactive
+  -- membership, or one whose authority has moved past the revision this
+  -- context names, yields no principal at all. Doing it here rather than in
+  -- `context_allows` means one place decides whether a context is live, and
+  -- nothing downstream can reach a different answer.
+  IF NOT EXISTS (
+    SELECT 1
+    FROM dasher.memberships AS m
+    WHERE m.organization_id = claimed_organization
+      AND m.user_id = claimed_user
+      AND m.state = 'active'
+      AND m.authority_revision = claimed_authority
+  ) THEN
+    RETURN;
+  END IF;
+
   user_id := claimed_user;
   organization_id := claimed_organization;
+  authority_revision := claimed_authority;
   RETURN NEXT;
 END
 $function$;
@@ -1106,13 +1115,14 @@ SET search_path = pg_catalog
 AS $function$
   SELECT
     p_organization_id IS NOT NULL
-    AND p_organization_id = dasher_private.context_organization_id()
+    AND p_organization_id = verified.organization_id
     AND EXISTS (
       SELECT 1
       FROM dasher.memberships AS m
       WHERE m.organization_id = p_organization_id
-        AND m.user_id = dasher_private.context_user_id()
+        AND m.user_id = verified.user_id
         AND m.state = 'active'
+        AND m.authority_revision = verified.authority_revision
         AND CASE m.role
               WHEN 'viewer' THEN 1
               WHEN 'editor' THEN 2
@@ -1124,7 +1134,8 @@ AS $function$
               WHEN 'editor' THEN 2
               WHEN 'admin' THEN 3
             END
-    );
+    )
+  FROM dasher_private.verified_context() AS verified;
 $function$;
 
 ALTER TABLE dasher.users ENABLE ROW LEVEL SECURITY;
@@ -1332,6 +1343,46 @@ BEGIN
   RETURN NEW;
 END
 $function$;
+
+-- Every authority check downstream trusts `authority_revision` to move when
+-- the membership's authority moves. Nothing enforced that, so a role could be
+-- granted while every session issued under the old authority stayed valid.
+CREATE FUNCTION dasher_private.guard_membership_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $function$
+BEGIN
+  IF NEW.membership_id <> OLD.membership_id
+    OR NEW.organization_id <> OLD.organization_id
+    OR NEW.user_id <> OLD.user_id
+    OR NEW.created_at <> OLD.created_at
+  THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'membership identity is immutable';
+  END IF;
+
+  IF NEW.role <> OLD.role OR NEW.state <> OLD.state THEN
+    IF NEW.authority_revision <> OLD.authority_revision + 1 THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '55000',
+        MESSAGE = 'an authority change must advance authority_revision by one';
+    END IF;
+  ELSIF NEW.authority_revision <> OLD.authority_revision THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'authority_revision advances only with an authority change';
+  END IF;
+
+  RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER memberships_guard
+BEFORE UPDATE ON dasher.memberships
+FOR EACH ROW
+EXECUTE FUNCTION dasher_private.guard_membership_update();
 
 CREATE TRIGGER agent_runs_guard
 BEFORE UPDATE ON dasher.agent_runs
@@ -1568,19 +1619,35 @@ BEGIN
   END IF;
   presented_digest := pg_catalog.sha256(p_token);
 
-  SELECT * INTO session_row
-  FROM dasher.sessions AS candidate
-  WHERE candidate.token_key_version = p_token_key_version
-    AND candidate.token_digest = presented_digest;
+  -- Validate and refresh in one statement. Reading first and updating on the
+  -- session id alone left a race: blocked behind a concurrent revocation, the
+  -- update re-evaluated its predicate against the new row version, still
+  -- matched on id, and stamped a context for a session already revoked. Every
+  -- validity condition now lives in the predicate that takes the row lock, so
+  -- resuming after such a commit finds nothing to update.
+  UPDATE dasher.sessions AS live
+  SET last_seen_at = now_at,
+      idle_expires_at = LEAST(
+        now_at + pg_catalog.make_interval(mins => 30),
+        live.absolute_expires_at
+      )
+  WHERE live.token_key_version = p_token_key_version
+    AND live.token_digest = presented_digest
+    AND live.revoked_at IS NULL
+    AND now_at < live.idle_expires_at
+    AND now_at < live.absolute_expires_at
+  RETURNING * INTO session_row;
 
-  IF NOT FOUND
-    OR session_row.revoked_at IS NOT NULL
-    OR now_at >= session_row.idle_expires_at
-    OR now_at >= session_row.absolute_expires_at
-  THEN
+  IF NOT FOUND THEN
     RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
   END IF;
 
+  -- Deliberately not locked. Holding a share lock here for the life of the
+  -- request would make every role change and revocation queue behind in-flight
+  -- requests, which is worse than the window it closes: if the membership moves
+  -- after this read, `context_allows` denies on the authority mismatch at the
+  -- next statement anyway.
+  --
   -- The membership must still be active *and* unchanged since the session was
   -- issued. A role change or revocation bumps authority_revision, which
   -- invalidates every session issued under the old authority.
@@ -1595,14 +1662,6 @@ BEGIN
   THEN
     RAISE EXCEPTION USING ERRCODE = '28000', MESSAGE = 'dasher_denied';
   END IF;
-
-  UPDATE dasher.sessions AS live
-  SET last_seen_at = now_at,
-      idle_expires_at = LEAST(
-        now_at + pg_catalog.make_interval(mins => 30),
-        live.absolute_expires_at
-      )
-  WHERE live.session_id = session_row.session_id;
 
   -- The UPDATE above has assigned this transaction an identifier, which the
   -- digest below binds to. All five settings are transaction-local.

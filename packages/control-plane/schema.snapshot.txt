@@ -355,6 +355,7 @@ CREATE TRIGGER claims_seal BEFORE INSERT ON dasher.claims FOR EACH ROW EXECUTE F
 CREATE TRIGGER dashboard_versions_immutable BEFORE DELETE OR UPDATE ON dasher.dashboard_versions FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 CREATE TRIGGER dashboards_guard BEFORE UPDATE ON dasher.dashboards FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_dashboard_update()
 CREATE TRIGGER evidence_records_immutable BEFORE DELETE OR UPDATE ON dasher.evidence_records FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
+CREATE TRIGGER memberships_guard BEFORE UPDATE ON dasher.memberships FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_membership_update()
 CREATE TRIGGER source_snapshots_immutable BEFORE DELETE OR UPDATE ON dasher.source_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 
 -- functions
@@ -366,6 +367,7 @@ dasher_private.guard_agent_run_update() -> trigger volatility=v security_definer
 dasher_private.guard_claim_insert() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_claim_support() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_dashboard_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.guard_membership_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.reject_immutable_mutation() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.verified_context() -> record volatility=s security_definer=true search_path=search_path=pg_catalog
 
