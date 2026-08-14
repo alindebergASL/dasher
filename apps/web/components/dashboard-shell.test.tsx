@@ -2,16 +2,54 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import {
-  createRiverDashboard,
-  parseUsgsInstantaneousValues,
-} from "@dasher/river-domain";
+import { compilePlan, type DashboardPlan } from "@dasher/planner";
+import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 import { parseDashboardSpec } from "@dasher/dashboard-schema";
 
 import { DashboardShell } from "./dashboard-shell";
 
-const dashboard = createRiverDashboard(parseUsgsInstantaneousValues(fixture), {
+/**
+ * The shell renders what the planner compiles, so the fixture is built the way
+ * the running app builds one. It used to come from `createRiverDashboard`, a
+ * second composition that nothing rendered — which meant this suite exercised
+ * a shape no user ever saw.
+ *
+ * The plan below reproduces that fixed layout section for section, so the
+ * assertions still describe the same dashboard.
+ */
+const gauges = parseUsgsInstantaneousValues(fixture);
+
+const plan: DashboardPlan = {
+  planVersion: "plan-v1",
+  title: "Sacramento River Conditions",
+  audience: "Regional leaders",
+  framing: "Current river conditions for the Sacramento gauges.",
+  siteIds: gauges.map((gauge) => gauge.siteId),
+  pages: [
+    {
+      id: "overview",
+      title: "Overview",
+      description: "Conditions, movement, and anything needing attention.",
+      sections: [
+        "conditions-summary",
+        "headline-metrics",
+        "gauge-map",
+        "fastest-rising",
+        "attention",
+      ],
+    },
+    {
+      id: "gauge-details",
+      title: "Gauge details",
+      description: "Per-gauge readings and recent movement.",
+      sections: ["gauge-table", "stage-trends", "change-windows"],
+    },
+  ],
+};
+
+const dashboard = compilePlan(plan, gauges, {
   asOf: "2026-07-29T12:02:00.000Z",
+  planner: { id: "dashboard-shell-fixture", usesModel: false },
   thresholds: [
     {
       id: "freeport-demo-threshold",
@@ -217,7 +255,19 @@ describe("DashboardShell", () => {
     expect(screen.getAllByText("River gauge readings").length).toBeGreaterThan(
       0,
     );
-    expect(screen.getByText(/does not use AI/i)).toBeInTheDocument();
+    // The diagram has to be honest about who composed the dashboard, and the
+    // provider decides which sentence that is. The fixture matches the running
+    // app, whose only provider is keyword matching, so the panel must not claim
+    // a model chose anything. The original text here said "does not use AI",
+    // written before any planner existed; asserting the opposite would have
+    // been just as wrong in the other direction.
+    expect(
+      screen.getByText(/deterministic planner chose this dashboard/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no model was called/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Dasher computed every number/i),
+    ).toBeInTheDocument();
     const closeButton = screen.getByRole("button", {
       name: "Close architecture",
     });

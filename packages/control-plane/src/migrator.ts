@@ -59,6 +59,8 @@ export type MigrationContractErrorCode =
   | "empty_series"
   | "executor_not_database_owner"
   | "file_too_large"
+  | "forced_row_security"
+  | "managed_role_overprivileged"
   | "invalid_utf8"
   | "journal_identity_mismatch"
   | "malformed_filename"
@@ -74,7 +76,17 @@ const contractErrorMessages: Readonly<
   executor_not_database_owner:
     "migrations must be applied by the database owner",
   file_too_large: "a migration file exceeds the size limit",
+  forced_row_security:
+    "a table forces row-level security, which disables the SECURITY DEFINER " +
+    "write seam unless the schema owner is superuser or BYPASSRLS; drop FORCE " +
+    "or grant the owner BYPASSRLS deliberately",
   invalid_utf8: "a migration file is not valid UTF-8",
+  managed_role_overprivileged:
+    "a managed role holds SUPERUSER, BYPASSRLS, CREATEROLE, CREATEDB, or " +
+    "REPLICATION; " +
+    "row-level security confines the application role only while it holds " +
+    "none of them, and correcting it needs the elevated credentials that " +
+    "granted it",
   journal_identity_mismatch:
     "the journal records more migrations than the directory contains",
   malformed_filename:
@@ -206,15 +218,31 @@ function validateLoginRoleNames(names: readonly string[]): readonly string[] {
 /**
  * Creates the restricted application role and any login roles that inherit it.
  *
- * `dasher_app` is NOBYPASSRLS, which is what makes forced row-level security
- * mean anything: a connection with a missing or wrong request context reads
- * zero rows rather than another organization's rows.
+ * `dasher_app` is NOBYPASSRLS, which is what makes row-level security mean
+ * anything: a connection with a missing or wrong request context reads zero
+ * rows rather than another organization's rows. It is confined because it is
+ * not the table owner, so the policies apply to it in full — which is why
+ * dropping FORCE costs it nothing. FORCE only ever bound the owner, and
+ * binding the owner is what broke the SECURITY DEFINER seam.
+ *
+ * This runs as an ordinary role. Creating a role with these attributes,
+ * granting membership, and reading `pg_roles` all need nothing beyond
+ * CREATEROLE; only *changing* SUPERUSER or BYPASSRLS on an existing role
+ * requires holding it, and that is verified rather than enforced below.
  */
 export async function bootstrapManagedRoles(
   client: MigrationClient,
   expectedAppLoginRoleNames: readonly string[],
 ): Promise<void> {
   const loginRoleNames = validateLoginRoleNames(expectedAppLoginRoleNames);
+
+  // Before anything is created or granted. Checking afterwards still refused,
+  // but the login roles it had already made and the memberships it had already
+  // granted survived the rejection, so a refusal left the cluster changed.
+  await assertManagedRolesUnprivileged(client, [
+    managedGroupRoleName,
+    ...loginRoleNames,
+  ]);
 
   await client.query(`
     DO $bootstrap$
@@ -227,9 +255,6 @@ export async function bootstrapManagedRoles(
     END
     $bootstrap$;
   `);
-  await client.query(
-    "ALTER ROLE dasher_app NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE",
-  );
 
   for (const name of loginRoleNames) {
     await client.query(
@@ -248,10 +273,54 @@ export async function bootstrapManagedRoles(
         $bootstrap$;
       `,
     );
-    await client.query(
-      `ALTER ROLE "${name}" NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE`,
-    );
     await client.query(`GRANT dasher_app TO "${name}"`);
+  }
+
+  // And again afterwards, so a role created by this call is held to the same
+  // standard as one that already existed.
+  await assertManagedRolesUnprivileged(client, [
+    managedGroupRoleName,
+    ...loginRoleNames,
+  ]);
+}
+
+/**
+ * Verifies the managed roles hold none of the attributes that would let them
+ * ignore row-level security.
+ *
+ * This used to be `ALTER ROLE ... NOBYPASSRLS NOSUPERUSER`, which corrected a
+ * wrong role in place. PostgreSQL only lets a superuser clear SUPERUSER and
+ * only a BYPASSRLS role clear BYPASSRLS, so that one statement required the
+ * whole deployment to run with privileges it otherwise never needed.
+ *
+ * Verifying instead is both sufficient and better. The roles are created here
+ * with the right attributes, so the only way to reach a wrong one is for
+ * somebody to have granted it deliberately with elevated credentials -- and
+ * silently reverting that hides a misconfigured environment rather than
+ * reporting it. An ordinary deploy role has no business editing role
+ * attributes anyway.
+ */
+async function assertManagedRolesUnprivileged(
+  client: MigrationClient,
+  roleNames: readonly string[],
+): Promise<void> {
+  const result = await client.query<{ readonly rolname: string }>(
+    `
+      SELECT role_row.rolname::text AS rolname
+      FROM pg_catalog.pg_roles AS role_row
+      WHERE role_row.rolname = ANY ($1::text[])
+        AND (
+          role_row.rolsuper
+          OR role_row.rolbypassrls
+          OR role_row.rolcreaterole
+          OR role_row.rolcreatedb
+          OR role_row.rolreplication
+        )
+    `,
+    [[...roleNames]],
+  );
+  if (result.rows.length > 0) {
+    return reject("managed_role_overprivileged");
   }
 }
 
@@ -264,6 +333,44 @@ async function assertDatabaseOwner(client: MigrationClient): Promise<void> {
   `);
   if (result.rows[0]?.is_owner !== true) {
     return reject("executor_not_database_owner");
+  }
+}
+
+/**
+ * Refuses a schema whose tables force row-level security.
+ *
+ * FORCE subjects the table owner to the policies, and every `dasher_api`
+ * function is SECURITY DEFINER, so it subjects the write seam to the policies
+ * the seam exists to establish: `begin_request` cannot update the session row
+ * it is authenticating, because the policy demands a request context that does
+ * not exist until `begin_request` has produced it. The result is that every
+ * request is denied, with the same error a wrong token produces.
+ *
+ * The integration suites now migrate as an ordinary role, so they do observe
+ * this: reintroducing FORCE breaks them without any help from this check. The
+ * preflight stays because a test only covers the schema in this repository,
+ * and this runs against whatever schema a deployment actually has.
+ *
+ * An owner that is superuser or BYPASSRLS does bypass the policies and could
+ * carry FORCE safely. That is not accepted silently: the schema should not
+ * require a privileged owner in order to function, so reintroducing FORCE
+ * means changing this check on purpose.
+ */
+async function assertNoForcedRowSecurity(
+  client: MigrationClient,
+): Promise<void> {
+  const result = await client.query<{ readonly relname: string }>(`
+    SELECT relation.relname::text AS relname
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'dasher'
+      AND relation.relkind IN ('r', 'p')
+      AND relation.relforcerowsecurity
+    ORDER BY relation.relname
+  `);
+  if (result.rows.length > 0) {
+    return reject("forced_row_security");
   }
 }
 
@@ -392,6 +499,11 @@ export async function runMigrations(
       await client.query("BEGIN");
       try {
         await client.query(migration.sql);
+        // Inside the transaction, before the journal row. Checking afterwards
+        // reported the refusal but left the forced table and its journal entry
+        // committed, and a journaled migration is not retried -- so the
+        // database was stuck refusing every later run with no way forward.
+        await assertNoForcedRowSecurity(client);
         await client.query(
           `
             INSERT INTO dasher_meta.schema_migrations (
@@ -411,6 +523,10 @@ export async function runMigrations(
       }
       appliedCount += 1;
     }
+
+    // Also once for a database that arrived already forced, where there is no
+    // migration of ours to roll back and the only correct answer is to refuse.
+    await assertNoForcedRowSecurity(client);
 
     return {
       discoveredCount: migrations.length,

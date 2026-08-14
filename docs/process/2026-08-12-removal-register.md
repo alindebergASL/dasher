@@ -97,6 +97,63 @@ of unknown value. Others are unaudited.
 **Effort.** Minutes to audit. Highest ratio of confidence gained to work done on
 this entire list.
 
+### 1.4 The session and invitation repositories — REMOVED 2026-08-14
+
+**What.** `session-repository.ts` (1,530), `invitation-repository.ts` (1,172),
+and their unit tests (1,244 and 1,882). 5,828 lines.
+
+**Why.** They call seven SQL functions that do not exist:
+`initialize_context`, `issue_session`, `rotate_session`, `revoke_session`,
+`issue_invitation`, `change_membership_role`, `revoke_membership`. The eighth
+name they use, `accept_invitation`, does exist but takes seven arguments where
+the repository passes twelve. Every one of these calls fails at the first line
+of SQL the database parses.
+
+This is not code that merely sits. It was a **public export** of
+`@dasher/control-plane`, with 119 passing unit tests, so it read as working
+infrastructure. Anyone starting the sign-in work — the piece the forward plan
+names as the real blocker to a pilot — would have started here and spent the
+first day discovering that none of it can run. That is the tax this register
+exists to charge for.
+
+The unit tests passed because they inject a fake client that returns canned
+rows. No mock can detect a function that does not exist; only the database can.
+That is a defect in the testing approach, not merely in this code, and it is
+addressed separately by preparing every repository statement against a migrated
+schema.
+
+**What was kept.** `secrets.ts`, `session-cookie.ts`, `verified-principal.ts`,
+and `email.ts` are untouched. They contain no SQL, they are independently
+correct and tested, and real session and invitation code will want them. They
+now have no consumer inside the package, which is worth knowing when the
+reachability gate lands.
+
+### 1.5 The fixed-page river composition — REMOVED 2026-08-14
+
+**What.** `createRiverDashboard` and its tests, 683 lines.
+
+**Why.** It composed a dashboard the application stopped rendering when the
+planner landed: `apps/web` calls `runPlanner`, which calls `compilePlan`. Its
+only remaining caller was a component test, which meant the web suite was
+asserting against a shape no user ever saw.
+
+Worse, it carried a second copy of the composition rules — which gauges are
+rising, which need a freshness check, which thresholds have fired. The copies
+had already drifted, and the tests had followed the wrong one: an identical
+mutation died here and survived in the planner, so the tested copy was the one
+nothing rendered and the untested copy was the one readers saw. That is the tax
+this register charges for, and it was being paid in the most expensive currency
+available — confidence in the wrong thing.
+
+**What was kept.** The rules themselves moved to `river-domain/facts.ts` first,
+under `deriveRiverFacts`, and the planner now uses them. Deleting the
+composition afterwards was a layout change rather than a behaviour change.
+
+The tests that covered the rules were rewritten against `deriveRiverFacts`
+directly rather than dropped. The mutation gate caught their loss immediately —
+`facts.ts` fell from 53.99% to 43.56% and the build broke — and the replacements
+put it at 55.83%, above where it started.
+
 ---
 
 ## Tier 2 — Delete via the Freeze Point. Requires ADR-006.

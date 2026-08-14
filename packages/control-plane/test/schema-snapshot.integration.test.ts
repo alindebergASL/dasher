@@ -86,22 +86,26 @@ it("the snapshot records that the application role cannot bypass row security", 
   );
 });
 
-it("the snapshot records forced row security on every tenant table but memberships", async () => {
+it("the snapshot records row security enabled and unforced on every tenant table", async () => {
   const committed = await readFile(snapshotPath, "utf8");
 
-  // Scoped to `dasher`. Tables in `dasher_private` hold no tenant rows, are
-  // unreachable from the application role, and are read by SECURITY DEFINER
-  // functions running as the owner — which FORCE would itself block, since a
-  // forced table applies its policies to the owner too.
+  // Scoped to `dasher`. Tables in `dasher_private` hold no tenant rows and are
+  // unreachable from the application role.
+  //
+  // Enabled confines the application role, which is not the owner. Unforced
+  // keeps the SECURITY DEFINER seam working, because FORCE applies a table's
+  // policies to its owner and every seam function runs as that owner — so a
+  // forced table denies the seam the writes it exists to perform, unless the
+  // owner is superuser or BYPASSRLS. The migrator refuses a schema that forces
+  // it; this asserts the committed snapshot agrees.
   const tenantRowSecurity = committed
     .split("\n")
     .filter((line) => line.includes(" rls=") && line.startsWith("dasher."));
 
-  const unforced = tenantRowSecurity.filter(
-    (line) => !line.endsWith("rls=true force=true"),
-  );
-
-  expect(unforced).toEqual(["dasher.memberships rls=true force=false"]);
+  expect(tenantRowSecurity.length).toBeGreaterThan(0);
+  expect(
+    tenantRowSecurity.filter((line) => !line.endsWith("rls=true force=false")),
+  ).toEqual([]);
 });
 
 it("the private key table is unreachable rather than policy-protected", async () => {

@@ -25,6 +25,7 @@ function run(
 /** A provider that returns whatever it is handed, for adversarial cases. */
 class ScriptedProvider implements PlanningProvider {
   readonly id = "scripted-test-provider";
+  readonly usesModel = false;
   private index = 0;
 
   constructor(private readonly outputs: readonly unknown[]) {}

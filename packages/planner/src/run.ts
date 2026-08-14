@@ -63,7 +63,10 @@ export async function runPlanner(
   const knownSiteIds = availableSites.map((site) => site.siteId);
   const compileOptions: CompileOptions = {
     asOf: options.asOf,
-    plannerId: options.provider.id,
+    planner: {
+      id: options.provider.id,
+      usesModel: options.provider.usesModel,
+    },
     thresholds: options.thresholds,
   };
 

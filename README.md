@@ -30,6 +30,20 @@ pnpm audit --audit-level high
 pnpm audit --prod --audit-level high
 ```
 
+`pnpm test:mutation` runs Stryker against the planner and the river composition
+rules: it breaks the code deliberately and requires the tests to notice. Its threshold
+is a floor set to the measured score, raised as coverage earns it. See
+[mutation testing](docs/process/2026-08-14-mutation-testing.md).
+
+`pnpm test` includes a reachability gate: every workspace package must be an
+entry point, reachable from one, or listed in [`reachability.json`](reachability.json)
+with a reason and a date. It fails in both directions — on a package nothing
+imports, and on a declaration that has stopped being true — so dead weight has
+to be declared rather than merely tolerated. Edges come from a text scan rather
+than a module graph, so it catches a package nothing points at and does not
+prove anything runs; the limits are enumerated in
+[`packages/repo-graph`](packages/repo-graph/src/workspace.ts).
+
 The same gates run in [GitHub Actions](.github/workflows/ci.yml). Current
 evidence and caveats are recorded in the
 [foundation readiness status](docs/status/2026-07-30-foundation-readiness.md)

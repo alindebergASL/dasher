@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { copyFile, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -12,7 +15,9 @@ import {
   baselineMigrationDirectory,
   borrowedClientPool,
   createTemporaryAppLogin,
-  dropTemporaryAppLogin,
+  createUnprivilegedSchemaOwner,
+  dropUnprivilegedSchemaOwner,
+  executeServerFormattedSql,
 } from "./postgres-harness.js";
 
 /**
@@ -29,7 +34,11 @@ import {
 
 const config = parsePostgresIntegrationEnv(process.env);
 const appUsername = `dasher_test_${randomUUID().replaceAll("-", "")}`;
+const ownerSuffix = randomUUID().replaceAll("-", "");
+const ownerRole = `dasher_test_owner_${ownerSuffix}`;
+const databaseName = `dasher_test_db_${ownerSuffix}`;
 
+let operatorPool: Pool;
 let ownerPool: Pool;
 let appPool: Pool;
 
@@ -124,7 +133,18 @@ async function expectSqlState(
 }
 
 beforeAll(async () => {
-  ownerPool = new Pool({ connectionString: config.ownerDsn, max: 4 });
+  // The schema owner is an ordinary role, not the superuser the test database
+  // was created with. A superuser bypasses row-level security whatever the
+  // catalog says, so these isolation properties would hold vacuously for the
+  // owner and hide anything that only an unprivileged deployment suffers.
+  operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  const ownerDsn = await createUnprivilegedSchemaOwner(
+    operatorPool,
+    config.ownerDsn,
+    ownerRole,
+    databaseName,
+  );
+  ownerPool = new Pool({ connectionString: ownerDsn, max: 4 });
   const client = await ownerPool.connect();
   try {
     await bootstrapManagedRoles(client, []);
@@ -137,8 +157,13 @@ beforeAll(async () => {
     client.release();
   }
 
-  await createTemporaryAppLogin(ownerPool, config.appDsn, appUsername);
-  const appUrl = new URL(config.appDsn);
+  // The application credential keeps its own password from the environment;
+  // only the database it points at moves to the one this run provisioned.
+  const appDsnUrl = new URL(config.appDsn);
+  appDsnUrl.pathname = `/${databaseName}`;
+  const appDsn = appDsnUrl.toString();
+  await createTemporaryAppLogin(ownerPool, appDsn, appUsername);
+  const appUrl = new URL(appDsn);
   appUrl.username = appUsername;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
 
@@ -226,9 +251,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await appPool?.end();
-  if (ownerPool !== undefined) {
-    await dropTemporaryAppLogin(ownerPool, config.appDatabase, appUsername);
-    await ownerPool.end();
+  await ownerPool?.end();
+  if (operatorPool !== undefined) {
+    await dropUnprivilegedSchemaOwner(operatorPool, ownerRole, databaseName, [
+      appUsername,
+    ]);
+    await operatorPool.end();
   }
 });
 
@@ -269,10 +297,21 @@ describe("tenant isolation", () => {
     expect(result.rows[0]?.rolbypassrls).toBe(false);
   });
 
-  it("every tenant table forces row-level security, except memberships", async () => {
-    // `memberships` enables RLS without FORCE so that the SECURITY DEFINER
-    // authority lookup every other policy calls does not recurse into the
-    // memberships policy. See dasher_private.context_allows.
+  it("no tenant table forces row-level security", async () => {
+    // FORCE makes the *table owner* subject to the policies. Every dasher_api
+    // function is SECURITY DEFINER and therefore runs as that owner, so FORCE
+    // subjects the seam to the very policies it exists to establish:
+    // `begin_request` cannot update the session row it is authenticating,
+    // because the policy demands a request context that does not exist until
+    // `begin_request` finishes. The seam only survives FORCE when its owner is
+    // superuser or BYPASSRLS, which a production deployment has no reason to
+    // be — and which this suite is no longer, so reintroducing FORCE now
+    // breaks these tests outright rather than passing quietly.
+    //
+    // Reproduced against a NOSUPERUSER NOBYPASSRLS owner: with FORCE the whole
+    // seam is dead and `begin_request` raises `dasher_denied` for a valid
+    // token, indistinguishable from a wrong password; without it, the seam
+    // works and the application role is still confined to its organization.
     const result = await ownerPool.query<{
       readonly relname: string;
     }>(`
@@ -282,10 +321,128 @@ describe("tenant isolation", () => {
         ON namespace.oid = relation.relnamespace
       WHERE namespace.nspname = 'dasher'
         AND relation.relkind = 'r'
-        AND NOT (relation.relrowsecurity AND relation.relforcerowsecurity)
+        AND relation.relforcerowsecurity
       ORDER BY relation.relname
     `);
-    expect(result.rows.map((row) => row.relname)).toEqual(["memberships"]);
+    expect(result.rows.map((row) => row.relname)).toEqual([]);
+  });
+
+  it("every tenant table still enables row-level security", async () => {
+    // Dropping FORCE must not drop RLS. The application role is not the table
+    // owner, so policies still apply to it in full; that is what confines a
+    // tenant, and it does not depend on FORCE.
+    const result = await ownerPool.query<{
+      readonly relname: string;
+    }>(`
+      SELECT relation.relname::text AS relname
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'dasher'
+        AND relation.relkind = 'r'
+        AND NOT relation.relrowsecurity
+      ORDER BY relation.relname
+    `);
+    expect(result.rows.map((row) => row.relname)).toEqual([]);
+  });
+
+  it("leaves nothing behind when it refuses a migration that forces row security", async () => {
+    // Refusing is only half the contract. A migrator that reports rejection
+    // while committing the rejected schema has not protected anything: the
+    // table stays forced, the journal records the migration as applied, and
+    // because it is journaled a re-run will not retry it — so the database is
+    // stuck refusing forever with no path forward but manual repair.
+    const directory = await mkdtemp(join(tmpdir(), "dasher-forced-rls-"));
+    await copyFile(
+      join(baselineMigrationDirectory, "0001_baseline.sql"),
+      join(directory, "0001_baseline.sql"),
+    );
+    await writeFile(
+      join(directory, "0002_adversarial_force.sql"),
+      "ALTER TABLE dasher.dashboards FORCE ROW LEVEL SECURITY;\n",
+      "utf8",
+    );
+
+    const scratch = `dasher_test_db_${randomUUID().replaceAll("-", "")}`;
+    const provisioner = await operatorPool.connect();
+    try {
+      await executeServerFormattedSql(
+        provisioner,
+        "CREATE DATABASE %I OWNER %I",
+        [scratch, ownerRole],
+      );
+    } finally {
+      provisioner.release();
+    }
+
+    const url = new URL(config.ownerDsn);
+    url.username = ownerRole;
+    url.pathname = `/${scratch}`;
+    const scratchPool = new Pool({ connectionString: url.toString(), max: 2 });
+    const client = await scratchPool.connect();
+    try {
+      await bootstrapManagedRoles(client, []);
+      await expect(
+        runMigrations(borrowedClientPool(client), directory, []),
+      ).rejects.toSatisfy(
+        (error: unknown) =>
+          (error as { code?: unknown }).code === "forced_row_security",
+      );
+
+      const forced = await client.query<{ readonly relname: string }>(`
+        SELECT relation.relname::text AS relname
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'dasher' AND relation.relforcerowsecurity
+      `);
+      const journal = await client.query<{ readonly filename: string }>(
+        "SELECT filename FROM dasher_meta.schema_migrations ORDER BY sequence",
+      );
+
+      expect(forced.rows.map((row) => row.relname)).toEqual([]);
+      expect(journal.rows.map((row) => row.filename)).toEqual([
+        "0001_baseline.sql",
+      ]);
+    } finally {
+      client.release();
+      await scratchPool.end();
+      const cleanup = await operatorPool.connect();
+      try {
+        await executeServerFormattedSql(
+          cleanup,
+          "DROP DATABASE IF EXISTS %I WITH (FORCE)",
+          [scratch],
+        );
+      } finally {
+        cleanup.release();
+      }
+    }
+  });
+
+  it("refuses to migrate a database where a tenant table forces row security", async () => {
+    // The suite observes the failure directly now that it migrates as an
+    // ordinary role. This asserts the second line of defence: the contract is
+    // also refused at migration time, where it holds for whatever schema a
+    // deployment brings rather than only for the one committed here.
+    const client = await ownerPool.connect();
+    try {
+      await client.query(
+        "ALTER TABLE dasher.dashboards FORCE ROW LEVEL SECURITY",
+      );
+      await expect(
+        runMigrations(borrowedClientPool(client), baselineMigrationDirectory),
+      ).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === "forced_row_security",
+      );
+    } finally {
+      await client.query(
+        "ALTER TABLE dasher.dashboards NO FORCE ROW LEVEL SECURITY",
+      );
+      client.release();
+    }
   });
 
   it("memberships still enables row-level security for the application role", async () => {

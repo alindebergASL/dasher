@@ -41,6 +41,38 @@ jobs:
 
       - run: test -z "$(git status --porcelain)"
 
+  # Mutation testing for the reachable product logic: the planner and the river
+  # composition rules it shares with river-domain. Its own job so a ~100s run
+  # does not sit in front of the static gates; it is a gate rather than a report
+  # because a test suite that stops discriminating is exactly the failure it
+  # exists to name, and one nobody runs finds nothing.
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm test:mutation
+
+      # Stryker mutates in place and restores afterwards. If a crash ever left
+      # a mutant behind, this reports it rather than letting the next step run
+      # against altered source. `always()` because the crash case is exactly
+      # when the run fails, and a residue check that only runs on success
+      # cannot diagnose the failure it exists for.
+      - if: always()
+        run: |
+          git status --porcelain
+          test -z "$(git status --porcelain)"
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
