@@ -81,11 +81,15 @@ earn it.
 
 | Measured 2026-08-14 | Score  | Killed | Survived | No coverage |
 | ------------------- | ------ | ------ | -------- | ----------- |
-| `compile.ts`        | 69.19% | 256    | 107      | 7           |
-| `run.ts`            | 67.80% | 39     | 9        | 10          |
+| `plan.ts`           | 80.95% | 51     | 12       | 0           |
+| `compile.ts`        | 69.44% | 259    | 107      | 7           |
+| `run.ts`            | 68.33% | 40     | 9        | 10          |
 | `facts.ts`          | 55.83% | 91     | 65       | 7           |
-| `plan.ts`           | 31.75% | 20     | 29       | 14          |
-| **total**           | 62.14% | 406    | 210      | 38          |
+| **total**           | 67.07% | 441    | 193      | 24          |
+
+The floor has been raised as coverage earned it: 58, then 61 when the shared
+composition rules came under the run, then 62, then 67 when `plan.ts` went from
+31.75% to 80.95%.
 
 ## What survived, and which of it is worth attacking
 
@@ -93,14 +97,14 @@ The survivors are not one population. Sorted by mutator:
 
 | Mutator                 | Survived |
 | ----------------------- | -------- |
-| `ConditionalExpression` | 67       |
-| `StringLiteral`         | 53       |
+| `ConditionalExpression` | 62       |
+| `StringLiteral`         | 51       |
 | `EqualityOperator`      | 31       |
-| `MethodExpression`      | 12       |
 | `ArrayDeclaration`      | 11       |
-| everything else         | 36       |
+| `MethodExpression`      | 11       |
+| everything else         | 27       |
 
-The 53 surviving `StringLiteral` mutants are mostly display copy and error
+The 51 surviving `StringLiteral` mutants are mostly display copy and error
 text. Emptying a headline that no assertion reads is a mutant nobody should
 chase; pinning exact prose in tests buys brittleness rather than confidence.
 They are deliberately not excluded from the run — excluding a mutator to raise
@@ -116,6 +120,20 @@ if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
 ```
 
 Changing `||` to `&&` survives, so the attempt-budget guard is not tested at
-its boundary. `plan.ts` at 31.75% is the weakest file: it is the contract that
-decides what a planning model is allowed to say, which makes its limits a
-boundary worth pinning rather than an implementation detail.
+its boundary.
+
+`plan.ts` was the weakest file at 31.75%, which mattered because it is the
+contract deciding what a planning model may say. It is now the strongest at
+80.95%, with no uncovered mutants left, and all twelve survivors are
+`StringLiteral` in finding messages — text fed back to a provider for a
+revision pass, where the code and the path carry the meaning and the wording
+does not.
+
+The lesson generalises. Its limits were exercised through the run loop and
+looked covered, but nothing asserted the numbers, so a cap of four pages tested
+identically to a cap of forty. A limit has to be asserted at the boundary —
+admits the maximum, refuses the first thing past it — or it is not tested at
+all.
+
+`facts.ts` at 55.83% is now the weakest, and is where the next round should
+go.
