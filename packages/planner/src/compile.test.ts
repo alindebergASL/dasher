@@ -17,9 +17,9 @@ import type { DashboardPlan } from "./plan";
  * title, the gauges, and the page layout, and this computes every number,
  * every alert, and every freshness judgement from the observations. It is the
  * largest file in the reachable product and had no test of its own — the
- * closest equivalents live in `river-domain`, against `createRiverDashboard`,
- * which nothing renders any more. Three mutations to the rules below survived
- * both this package's suite and the full end-to-end suite before these existed:
+ * closest equivalents tested a second, fixed-page composition that nothing
+ * rendered, since deleted. Three mutations to the rules below survived both
+ * this package's suite and the full end-to-end suite before these existed:
  * inverting the stale-gauge filter, moving the threshold comparison off its
  * boundary, and pinning the summary tone to `normal`.
  *

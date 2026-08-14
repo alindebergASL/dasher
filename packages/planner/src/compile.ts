@@ -51,9 +51,9 @@ function deriveFacts(
   plannerId: string,
 ): Facts {
   // Every judgement below the layout — rising, falling, stale, ranked,
-  // thresholds, evidence — is the river domain's, shared with
-  // `createRiverDashboard` so the two cannot disagree about the same gauge.
-  // What the planner adds is a record of its own part in the composition.
+  // thresholds, evidence — belongs to the river domain rather than to the
+  // planner, so that composing a dashboard cannot change what is true about a
+  // gauge. What the planner adds is a record of its own part in the work.
   return deriveRiverFacts(metrics, {
     asOf: options.asOf,
     thresholds: options.thresholds,

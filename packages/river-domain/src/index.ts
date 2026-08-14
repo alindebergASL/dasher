@@ -12,7 +12,6 @@ export {
   type Observation,
   type RiverGauge,
 } from "./usgs";
-export { createRiverDashboard, type RiverDashboardOptions } from "./dashboard";
 export {
   CALCULATION_EVIDENCE_ID,
   deriveRiverFacts,

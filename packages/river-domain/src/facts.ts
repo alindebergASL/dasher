@@ -7,18 +7,18 @@ import type { GaugeMetrics } from "./metrics";
  *
  * These rules — which gauges count as rising, which need a freshness check,
  * which thresholds have been breached, and what evidence backs each — used to
- * exist twice, character for character, in `createRiverDashboard` here and in
- * the planner's `compilePlan`. The second copy was made when the planner
- * landed, and the tests did not follow it: the identical mutation died in this
- * package and survived in the planner, so the tested copy was the one nothing
- * rendered and the untested copy was the one readers saw.
+ * exist twice, character for character: here in a fixed-page
+ * `createRiverDashboard`, and in the planner's `compilePlan`. The second copy
+ * was made when the planner landed and the tests did not follow it, so the
+ * identical mutation died in this package and survived in the planner: the
+ * tested copy was the one nothing rendered and the untested copy was the one
+ * readers saw. They had already drifted, and nothing asserted the difference.
  *
- * They had already drifted. The two `no-alerts` messages differed, and nothing
- * asserted either, so nothing could have told anyone which was current.
- *
- * Layout stays with each caller. A fixed-page dashboard and a plan-driven one
- * arrange things differently and should; what they must not do is disagree
- * about whether a gauge is stale.
+ * The fixed-page composition has since been deleted; the planner is the only
+ * caller. This module stays separate from it anyway, because these are
+ * judgements about a river rather than decisions about a layout, and the next
+ * thing that composes a dashboard should reach the same verdict about a stale
+ * gauge as the planner does.
  */
 
 /** Evidence recorded for Dasher's own arithmetic rather than for a reading. */

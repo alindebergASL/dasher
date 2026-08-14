@@ -128,6 +128,32 @@ correct and tested, and real session and invitation code will want them. They
 now have no consumer inside the package, which is worth knowing when the
 reachability gate lands.
 
+### 1.5 The fixed-page river composition — REMOVED 2026-08-14
+
+**What.** `createRiverDashboard` and its tests, 683 lines.
+
+**Why.** It composed a dashboard the application stopped rendering when the
+planner landed: `apps/web` calls `runPlanner`, which calls `compilePlan`. Its
+only remaining caller was a component test, which meant the web suite was
+asserting against a shape no user ever saw.
+
+Worse, it carried a second copy of the composition rules — which gauges are
+rising, which need a freshness check, which thresholds have fired. The copies
+had already drifted, and the tests had followed the wrong one: an identical
+mutation died here and survived in the planner, so the tested copy was the one
+nothing rendered and the untested copy was the one readers saw. That is the tax
+this register charges for, and it was being paid in the most expensive currency
+available — confidence in the wrong thing.
+
+**What was kept.** The rules themselves moved to `river-domain/facts.ts` first,
+under `deriveRiverFacts`, and the planner now uses them. Deleting the
+composition afterwards was a layout change rather than a behaviour change.
+
+The tests that covered the rules were rewritten against `deriveRiverFacts`
+directly rather than dropped. The mutation gate caught their loss immediately —
+`facts.ts` fell from 53.99% to 43.56% and the build broke — and the replacements
+put it at 55.83%, above where it started.
+
 ---
 
 ## Tier 2 — Delete via the Freeze Point. Requires ADR-006.
