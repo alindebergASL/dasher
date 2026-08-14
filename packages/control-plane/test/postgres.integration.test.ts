@@ -12,7 +12,8 @@ import {
   baselineMigrationDirectory,
   borrowedClientPool,
   createTemporaryAppLogin,
-  dropTemporaryAppLogin,
+  createUnprivilegedSchemaOwner,
+  dropUnprivilegedSchemaOwner,
 } from "./postgres-harness.js";
 
 /**
@@ -29,7 +30,11 @@ import {
 
 const config = parsePostgresIntegrationEnv(process.env);
 const appUsername = `dasher_test_${randomUUID().replaceAll("-", "")}`;
+const ownerSuffix = randomUUID().replaceAll("-", "");
+const ownerRole = `dasher_test_owner_${ownerSuffix}`;
+const databaseName = `dasher_test_db_${ownerSuffix}`;
 
+let operatorPool: Pool;
 let ownerPool: Pool;
 let appPool: Pool;
 
@@ -124,7 +129,18 @@ async function expectSqlState(
 }
 
 beforeAll(async () => {
-  ownerPool = new Pool({ connectionString: config.ownerDsn, max: 4 });
+  // The schema owner is an ordinary role, not the superuser the test database
+  // was created with. A superuser bypasses row-level security whatever the
+  // catalog says, so these isolation properties would hold vacuously for the
+  // owner and hide anything that only an unprivileged deployment suffers.
+  operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  const ownerDsn = await createUnprivilegedSchemaOwner(
+    operatorPool,
+    config.ownerDsn,
+    ownerRole,
+    databaseName,
+  );
+  ownerPool = new Pool({ connectionString: ownerDsn, max: 4 });
   const client = await ownerPool.connect();
   try {
     await bootstrapManagedRoles(client, []);
@@ -137,8 +153,13 @@ beforeAll(async () => {
     client.release();
   }
 
-  await createTemporaryAppLogin(ownerPool, config.appDsn, appUsername);
-  const appUrl = new URL(config.appDsn);
+  // The application credential keeps its own password from the environment;
+  // only the database it points at moves to the one this run provisioned.
+  const appDsnUrl = new URL(config.appDsn);
+  appDsnUrl.pathname = `/${databaseName}`;
+  const appDsn = appDsnUrl.toString();
+  await createTemporaryAppLogin(ownerPool, appDsn, appUsername);
+  const appUrl = new URL(appDsn);
   appUrl.username = appUsername;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
 
@@ -226,9 +247,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await appPool?.end();
-  if (ownerPool !== undefined) {
-    await dropTemporaryAppLogin(ownerPool, config.appDatabase, appUsername);
-    await ownerPool.end();
+  await ownerPool?.end();
+  if (operatorPool !== undefined) {
+    await dropUnprivilegedSchemaOwner(operatorPool, ownerRole, databaseName, [
+      appUsername,
+    ]);
+    await operatorPool.end();
   }
 });
 
@@ -276,8 +300,9 @@ describe("tenant isolation", () => {
     // `begin_request` cannot update the session row it is authenticating,
     // because the policy demands a request context that does not exist until
     // `begin_request` finishes. The seam only survives FORCE when its owner is
-    // superuser or BYPASSRLS, which is what this test suite happens to run as
-    // and a production deployment has no reason to be.
+    // superuser or BYPASSRLS, which a production deployment has no reason to
+    // be — and which this suite is no longer, so reintroducing FORCE now
+    // breaks these tests outright rather than passing quietly.
     //
     // Reproduced against a NOSUPERUSER NOBYPASSRLS owner: with FORCE the whole
     // seam is dead and `begin_request` raises `dasher_denied` for a valid
@@ -318,10 +343,10 @@ describe("tenant isolation", () => {
   });
 
   it("refuses to migrate a database where a tenant table forces row security", async () => {
-    // The preflight, not a test, is what protects a deployment: this suite
-    // runs as superuser and therefore cannot observe the failure FORCE causes.
-    // So the contract is asserted at migration time instead, where it holds
-    // whoever runs it.
+    // The suite observes the failure directly now that it migrates as an
+    // ordinary role. This asserts the second line of defence: the contract is
+    // also refused at migration time, where it holds for whatever schema a
+    // deployment brings rather than only for the one committed here.
     const client = await ownerPool.connect();
     try {
       await client.query(

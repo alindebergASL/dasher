@@ -1100,9 +1100,10 @@ CREATE INDEX agent_runs_dashboard_idx
 -- `sessions` demands a request context that does not exist until
 -- `begin_request` has finished creating it. Reproduced against a NOSUPERUSER
 -- NOBYPASSRLS owner: every call raises `dasher_denied` for a valid token,
--- which is indistinguishable from a wrong password. It is a total outage that
--- no test here can see, because this suite runs as superuser and superusers
--- bypass row security whatever FORCE says.
+-- which is indistinguishable from a wrong password. That went unseen for as
+-- long as it did because the suite connected as a superuser, and superusers
+-- bypass row security whatever FORCE says; it now migrates as an ordinary
+-- role, so the same mistake fails the tests immediately.
 --
 -- Nothing is lost by dropping it. FORCE constrains only the migration owner
 -- and the definer bodies; it never touched dasher_app, which is not the owner

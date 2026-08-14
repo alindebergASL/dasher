@@ -60,6 +60,7 @@ export type MigrationContractErrorCode =
   | "executor_not_database_owner"
   | "file_too_large"
   | "forced_row_security"
+  | "managed_role_overprivileged"
   | "invalid_utf8"
   | "journal_identity_mismatch"
   | "malformed_filename"
@@ -80,6 +81,11 @@ const contractErrorMessages: Readonly<
     "write seam unless the schema owner is superuser or BYPASSRLS; drop FORCE " +
     "or grant the owner BYPASSRLS deliberately",
   invalid_utf8: "a migration file is not valid UTF-8",
+  managed_role_overprivileged:
+    "a managed role holds SUPERUSER, BYPASSRLS, CREATEROLE, or CREATEDB; " +
+    "row-level security confines the application role only while it holds " +
+    "none of them, and correcting it needs the elevated credentials that " +
+    "granted it",
   journal_identity_mismatch:
     "the journal records more migrations than the directory contains",
   malformed_filename:
@@ -218,10 +224,10 @@ function validateLoginRoleNames(names: readonly string[]): readonly string[] {
  * dropping FORCE costs it nothing. FORCE only ever bound the owner, and
  * binding the owner is what broke the SECURITY DEFINER seam.
  *
- * Note that this function cannot run as an ordinary role: `ALTER ROLE ...
- * NOSUPERUSER` requires SUPERUSER and `... NOBYPASSRLS` requires BYPASSRLS. It
- * is an operator step run once with elevated credentials, distinct from the
- * role that owns the schema and applies migrations thereafter.
+ * This runs as an ordinary role. Creating a role with these attributes,
+ * granting membership, and reading `pg_roles` all need nothing beyond
+ * CREATEROLE; only *changing* SUPERUSER or BYPASSRLS on an existing role
+ * requires holding it, and that is verified rather than enforced below.
  */
 export async function bootstrapManagedRoles(
   client: MigrationClient,
@@ -240,9 +246,6 @@ export async function bootstrapManagedRoles(
     END
     $bootstrap$;
   `);
-  await client.query(
-    "ALTER ROLE dasher_app NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE",
-  );
 
   for (const name of loginRoleNames) {
     await client.query(
@@ -261,10 +264,51 @@ export async function bootstrapManagedRoles(
         $bootstrap$;
       `,
     );
-    await client.query(
-      `ALTER ROLE "${name}" NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE`,
-    );
     await client.query(`GRANT dasher_app TO "${name}"`);
+  }
+
+  await assertManagedRolesUnprivileged(client, [
+    managedGroupRoleName,
+    ...loginRoleNames,
+  ]);
+}
+
+/**
+ * Verifies the managed roles hold none of the attributes that would let them
+ * ignore row-level security.
+ *
+ * This used to be `ALTER ROLE ... NOBYPASSRLS NOSUPERUSER`, which corrected a
+ * wrong role in place. PostgreSQL only lets a superuser clear SUPERUSER and
+ * only a BYPASSRLS role clear BYPASSRLS, so that one statement required the
+ * whole deployment to run with privileges it otherwise never needed.
+ *
+ * Verifying instead is both sufficient and better. The roles are created here
+ * with the right attributes, so the only way to reach a wrong one is for
+ * somebody to have granted it deliberately with elevated credentials -- and
+ * silently reverting that hides a misconfigured environment rather than
+ * reporting it. An ordinary deploy role has no business editing role
+ * attributes anyway.
+ */
+async function assertManagedRolesUnprivileged(
+  client: MigrationClient,
+  roleNames: readonly string[],
+): Promise<void> {
+  const result = await client.query<{ readonly rolname: string }>(
+    `
+      SELECT role_row.rolname::text AS rolname
+      FROM pg_catalog.pg_roles AS role_row
+      WHERE role_row.rolname = ANY ($1::text[])
+        AND (
+          role_row.rolsuper
+          OR role_row.rolbypassrls
+          OR role_row.rolcreaterole
+          OR role_row.rolcreatedb
+        )
+    `,
+    [[...roleNames]],
+  );
+  if (result.rows.length > 0) {
+    return reject("managed_role_overprivileged");
   }
 }
 
@@ -290,11 +334,10 @@ async function assertDatabaseOwner(client: MigrationClient): Promise<void> {
  * not exist until `begin_request` has produced it. The result is that every
  * request is denied, with the same error a wrong token produces.
  *
- * This is checked here rather than asserted in a test because the integration
- * suite connects as a superuser, and superusers bypass row security whatever
- * FORCE says. A deployment whose owner is an ordinary role is exactly the case
- * no test in this repository can observe, so the check has to run where the
- * deployment does.
+ * The integration suites now migrate as an ordinary role, so they do observe
+ * this: reintroducing FORCE breaks them without any help from this check. The
+ * preflight stays because a test only covers the schema in this repository,
+ * and this runs against whatever schema a deployment actually has.
  *
  * An owner that is superuser or BYPASSRLS does bypass the policies and could
  * carry FORCE safely. That is not accepted silently: the schema should not

@@ -12,7 +12,8 @@ import {
   baselineMigrationDirectory,
   borrowedClientPool,
   createTemporaryAppLogin,
-  dropTemporaryAppLogin,
+  createUnprivilegedSchemaOwner,
+  dropUnprivilegedSchemaOwner,
 } from "./postgres-harness.js";
 
 /**
@@ -50,7 +51,11 @@ import {
 
 const config = parsePostgresIntegrationEnv(process.env);
 const appUsername = `dasher_test_${randomUUID().replaceAll("-", "")}`;
+const ownerSuffix = randomUUID().replaceAll("-", "");
+const ownerRole = `dasher_test_owner_${ownerSuffix}`;
+const databaseName = `dasher_test_db_${ownerSuffix}`;
 
+let operatorPool: Pool;
 let ownerPool: Pool;
 let appPool: Pool;
 
@@ -179,7 +184,21 @@ async function publishThroughSeam(
 }
 
 beforeAll(async () => {
-  ownerPool = new Pool({ connectionString: config.ownerDsn, max: 4 });
+  // Everything below runs against a schema owner that is NOSUPERUSER and
+  // NOBYPASSRLS, which is the deployment this schema targets. Connecting as
+  // the superuser the test database was created with would hide any failure
+  // that only an ordinary owner suffers, and one already got through that way:
+  // forcing row-level security disabled the whole write seam against an
+  // ordinary owner while all 40 of these passed. The DSN from the environment
+  // is now used only to provision.
+  operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  const ownerDsn = await createUnprivilegedSchemaOwner(
+    operatorPool,
+    config.ownerDsn,
+    ownerRole,
+    databaseName,
+  );
+  ownerPool = new Pool({ connectionString: ownerDsn, max: 4 });
   const client = await ownerPool.connect();
   try {
     await bootstrapManagedRoles(client, []);
@@ -192,8 +211,13 @@ beforeAll(async () => {
     client.release();
   }
 
-  await createTemporaryAppLogin(ownerPool, config.appDsn, appUsername);
-  const appUrl = new URL(config.appDsn);
+  // The application credential keeps its own password from the environment;
+  // only the database it points at moves to the one this run provisioned.
+  const appDsnUrl = new URL(config.appDsn);
+  appDsnUrl.pathname = `/${databaseName}`;
+  const appDsn = appDsnUrl.toString();
+  await createTemporaryAppLogin(ownerPool, appDsn, appUsername);
+  const appUrl = new URL(appDsn);
   appUrl.username = appUsername;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
 
@@ -266,10 +290,29 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await appPool?.end();
-  if (ownerPool !== undefined) {
-    await dropTemporaryAppLogin(ownerPool, config.appDatabase, appUsername);
-    await ownerPool.end();
+  await ownerPool?.end();
+  if (operatorPool !== undefined) {
+    await dropUnprivilegedSchemaOwner(operatorPool, ownerRole, databaseName, [
+      appUsername,
+    ]);
+    await operatorPool.end();
   }
+});
+
+describe("the deployment these cases run against", () => {
+  it("owns the schema as an ordinary role", async () => {
+    // Guards the premise of every case below. If this suite is ever pointed
+    // back at a superuser connection, row security stops applying to the owner
+    // and a whole class of failure goes quiet again -- which is how forcing it
+    // survived 40 passing tests.
+    const result = await ownerPool.query<{
+      readonly rolsuper: boolean;
+      readonly rolbypassrls: boolean;
+    }>(
+      "SELECT rolsuper, rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = CURRENT_USER",
+    );
+    expect(result.rows[0]).toEqual({ rolsuper: false, rolbypassrls: false });
+  });
 });
 
 describe("request identity", () => {

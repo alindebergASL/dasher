@@ -119,37 +119,6 @@ export async function createTemporaryAppLogin(
   }
 }
 
-export async function dropTemporaryAppLogin(
-  ownerPool: Pool,
-  databaseName: string,
-  appUsername: string,
-): Promise<void> {
-  const client = await ownerPool.connect();
-
-  try {
-    await client.query(
-      `
-        SELECT pg_catalog.pg_terminate_backend(activity.pid)
-        FROM pg_catalog.pg_stat_activity AS activity
-        WHERE activity.usename = $1
-          AND activity.pid <> pg_catalog.pg_backend_pid()
-      `,
-      [appUsername],
-    );
-    await executeServerFormattedSql(client, "REVOKE dasher_app FROM %I", [
-      appUsername,
-    ]);
-    await executeServerFormattedSql(
-      client,
-      "REVOKE CONNECT ON DATABASE %I FROM %I",
-      [databaseName, appUsername],
-    );
-    await executeServerFormattedSql(client, "DROP ROLE %I", [appUsername]);
-  } finally {
-    client.release();
-  }
-}
-
 export function borrowedClientPool(
   client: PoolClient,
   rejectJournalInsert = false,
@@ -210,3 +179,108 @@ export async function expectMigrationRejection(
  * `dasher_run_operator` membership the migrator's expected-login allowlist
  * already models.
  */
+
+/**
+ * Provisions the deployment this repository actually targets: a schema owner
+ * that is an ordinary role.
+ *
+ * The integration suites connect as the superuser the test database was
+ * created with, and a superuser bypasses row-level security whatever the
+ * catalog says. That made a whole class of deployment failure invisible —
+ * forcing row security disabled the entire SECURITY DEFINER seam against an
+ * ordinary owner while every test stayed green.
+ *
+ * The split mirrors the real thing. The credential in
+ * `DASHER_TEST_OWNER_DSN` is the *operator*: it creates roles and databases
+ * once, with privileges an application deploy has no business holding.
+ * Everything after that — migrating, seeding, and every query the suite makes
+ * as the owner — runs as the ordinary role this returns.
+ */
+export async function createUnprivilegedSchemaOwner(
+  operatorPool: Pool,
+  operatorDsn: string,
+  roleName: string,
+  databaseName: string,
+): Promise<string> {
+  if (!/^dasher_test_owner_[0-9a-f]{32}$/u.test(roleName)) {
+    throw new Error("schema owner identifier was not preflighted");
+  }
+  if (!/^dasher_test_db_[0-9a-f]{32}$/u.test(databaseName)) {
+    throw new Error("schema owner database identifier was not preflighted");
+  }
+
+  const password = decodeURIComponent(new URL(operatorDsn).password);
+  const client = await operatorPool.connect();
+  try {
+    // CREATEROLE so it can create the application roles; CREATEDB so nothing
+    // needs the operator again. Deliberately NOSUPERUSER and NOBYPASSRLS:
+    // those two are the point of the exercise.
+    await executeServerFormattedSql(
+      client,
+      "CREATE ROLE %I WITH LOGIN INHERIT NOSUPERUSER NOBYPASSRLS NOREPLICATION CREATEDB CREATEROLE PASSWORD %L",
+      [roleName, password],
+    );
+    await executeServerFormattedSql(client, "CREATE DATABASE %I OWNER %I", [
+      databaseName,
+      roleName,
+    ]);
+
+    // `dasher_app` is cluster-wide, so in a shared cluster it usually already
+    // exists and was created by somebody else. PostgreSQL 16 lets a CREATEROLE
+    // role grant only memberships it administers, and creating a role is what
+    // confers that — so an owner handed a pre-existing `dasher_app` cannot
+    // grant it to the login roles it creates. Passing admin across is part of
+    // provisioning, not something the deploy can do for itself. On a fresh
+    // cluster the owner creates `dasher_app` itself and this is unnecessary.
+    const existing = await client.query<{ readonly present: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'dasher_app') AS present",
+    );
+    if (existing.rows[0]?.present === true) {
+      await executeServerFormattedSql(
+        client,
+        "GRANT dasher_app TO %I WITH ADMIN OPTION",
+        [roleName],
+      );
+    }
+  } finally {
+    client.release();
+  }
+
+  const url = new URL(operatorDsn);
+  url.username = roleName;
+  url.password = encodeURIComponent(password);
+  url.pathname = `/${databaseName}`;
+  return url.toString();
+}
+
+export async function dropUnprivilegedSchemaOwner(
+  operatorPool: Pool,
+  roleName: string,
+  databaseName: string,
+  dependentRoleNames: readonly string[] = [],
+): Promise<void> {
+  const client = await operatorPool.connect();
+  try {
+    await executeServerFormattedSql(
+      client,
+      "DROP DATABASE IF EXISTS %I WITH (FORCE)",
+      [databaseName],
+    );
+    // Roles the owner created hold grants recorded against it as grantor, and
+    // PostgreSQL refuses to drop a role anything still depends on. They go
+    // first, then whatever else the owner granted.
+    for (const dependent of dependentRoleNames) {
+      await executeServerFormattedSql(client, "DROP ROLE IF EXISTS %I", [
+        dependent,
+      ]);
+    }
+    await executeServerFormattedSql(client, "DROP OWNED BY %I CASCADE", [
+      roleName,
+    ]);
+    await executeServerFormattedSql(client, "DROP ROLE IF EXISTS %I", [
+      roleName,
+    ]);
+  } finally {
+    client.release();
+  }
+}

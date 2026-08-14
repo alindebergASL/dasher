@@ -101,14 +101,20 @@ Row-level security is enabled on every tenant table, composite
 in another organization, `dasher_app` is `NOBYPASSRLS`, and audit events,
 dashboard versions, claims, and claim evidence reject `UPDATE` and `DELETE`.
 
-`FORCE ROW LEVEL SECURITY` was removed on 2026-08-14. It bound the table owner,
-and every `dasher_api` function is `SECURITY DEFINER` and so runs as that owner,
-which left the seam unable to perform the writes it exists for unless the owner
-was superuser or `BYPASSRLS`. Reproduced against an ordinary owner: the seam was
-entirely dead, refusing valid tokens with the error a wrong one produces. It
-cost `dasher_app` nothing, because that role is not the owner and the policies
-apply to it in full either way. The migrator now refuses a series that
-reintroduces `FORCE`.
+`FORCE ROW LEVEL SECURITY` was removed on 2026-08-14, and the PostgreSQL
+suites now migrate as an ordinary `NOSUPERUSER NOBYPASSRLS` role rather than as
+the superuser their database was created with. The credential in
+`DASHER_TEST_OWNER_DSN` provisions a schema owner and then steps back, which is
+the split a deployment has anyway.
+
+`FORCE` bound the table owner, and every `dasher_api` function is
+`SECURITY DEFINER` and so runs as that owner, which left the seam unable to
+perform the writes it exists for unless the owner was superuser or `BYPASSRLS`.
+Reproduced against an ordinary owner: the seam was entirely dead, refusing valid
+tokens with the error a wrong one produces. It cost `dasher_app` nothing,
+because that role is not the owner and the policies apply to it in full either
+way. The migrator refuses a series that reintroduces `FORCE`, and now the tests
+would fail on one anyway.
 
 The secret key ring, session-cookie metadata, verified-principal construction,
 and email normalization are unchanged. The session and invitation repositories

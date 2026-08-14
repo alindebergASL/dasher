@@ -16,7 +16,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude 'test/*.integration.test.ts'",
-    "test:postgres": "vitest run test/postgres.integration.test.ts test/schema-snapshot.integration.test.ts test/accepted-invalid-states.integration.test.ts --no-file-parallelism"
+    "test:postgres": "vitest run test/postgres.integration.test.ts test/schema-snapshot.integration.test.ts test/accepted-invalid-states.integration.test.ts test/unprivileged-owner.integration.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "pg": "^8.22.0",
