@@ -49,7 +49,7 @@ const plan: DashboardPlan = {
 
 const dashboard = compilePlan(plan, gauges, {
   asOf: "2026-07-29T12:02:00.000Z",
-  plannerId: "dashboard-shell-fixture",
+  planner: { id: "dashboard-shell-fixture", usesModel: false },
   thresholds: [
     {
       id: "freeport-demo-threshold",
@@ -255,13 +255,16 @@ describe("DashboardShell", () => {
     expect(screen.getAllByText("River gauge readings").length).toBeGreaterThan(
       0,
     );
-    // The diagram has to be honest about where the model acted. It chose the
-    // layout and the framing; it produced no number. The previous fixture came
-    // from a composition with no model in it at all and said "does not use
-    // AI", which would now be false for what the app actually renders.
+    // The diagram has to be honest about who composed the dashboard, and the
+    // provider decides which sentence that is. The fixture matches the running
+    // app, whose only provider is keyword matching, so the panel must not claim
+    // a model chose anything. The original text here said "does not use AI",
+    // written before any planner existed; asserting the opposite would have
+    // been just as wrong in the other direction.
     expect(
-      screen.getByText(/planning model chose the layout and framing/i),
+      screen.getByText(/deterministic planner chose this dashboard/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/no model was called/i)).toBeInTheDocument();
     expect(
       screen.getByText(/Dasher computed every number/i),
     ).toBeInTheDocument();

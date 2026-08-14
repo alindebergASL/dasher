@@ -29,8 +29,12 @@ import type { DashboardPlan, PlanSectionKind } from "./plan";
 
 export interface CompileOptions {
   asOf: string;
-  /** Identifies the provider that produced the plan, for the evidence record. */
-  plannerId: string;
+  /**
+   * What produced the plan. The dashboard states who chose its composition, so
+   * that sentence is derived from the provider rather than asserted as a
+   * constant — a constant cannot stay true across a change of provider.
+   */
+  planner: { readonly id: string; readonly usesModel: boolean };
   /**
    * User-configured threshold alerts. These are deliberately not part of the
    * plan contract: a threshold is the user's standing instruction, not a
@@ -45,11 +49,21 @@ const PLANNER_EVIDENCE_ID = "planner-composition";
 
 type Facts = RiverFacts;
 
-function deriveFacts(
-  metrics: GaugeMetrics[],
-  options: CompileOptions,
-  plannerId: string,
-): Facts {
+/**
+ * Names what chose the composition, in the reader's terms.
+ *
+ * A deterministic planner and a model are different claims about the system,
+ * and the difference is exactly what a reader of the architecture panel wants
+ * to know. Saying "model" when none ran overstates Dasher's role; saying
+ * nothing leaves the layout unattributed.
+ */
+function composerSentence(planner: CompileOptions["planner"]): string {
+  return planner.usesModel
+    ? "A planning model chose this dashboard's title, audience, framing, gauge selection, and page layout."
+    : "A deterministic planner chose this dashboard's title, audience, framing, gauge selection, and page layout; no model was called.";
+}
+
+function deriveFacts(metrics: GaugeMetrics[], options: CompileOptions): Facts {
   // Every judgement below the layout — rising, falling, stale, ranked,
   // thresholds, evidence — belongs to the river domain rather than to the
   // planner, so that composing a dashboard cannot change what is true about a
@@ -62,10 +76,9 @@ function deriveFacts(
         id: PLANNER_EVIDENCE_ID,
         kind: "interpreted",
         label: "Dashboard composition",
-        sourceName: `Dasher planner (${plannerId})`,
+        sourceName: `Dasher planner (${options.planner.id})`,
         retrievedAt: options.asOf,
-        detail:
-          "A planning model chose this dashboard's title, audience, framing, gauge selection, and page layout. It did not produce any reading, calculation, or claim: every value shown here is computed by Dasher from the source observations and validated against the dashboard contract before display.",
+        detail: `${composerSentence(options.planner)} It did not produce any reading, calculation, or claim: every value shown here is computed by Dasher from the source observations and validated against the dashboard contract before display.`,
         confidence: "medium",
       },
     ],
@@ -267,7 +280,7 @@ export function compilePlan(
   const metrics = selected.map((gauge) =>
     buildGaugeMetrics(gauge, options.asOf),
   );
-  const facts = deriveFacts(metrics, options, options.plannerId);
+  const facts = deriveFacts(metrics, options);
 
   const pages = plan.pages
     .map((page) => ({
@@ -373,8 +386,7 @@ export function compilePlan(
     evidence: facts.evidence,
     architecture: {
       title: "How this dashboard works",
-      summary:
-        "A planning model chose the layout and framing. Dasher computed every number from USGS-format readings and validated the result against the dashboard contract before rendering.",
+      summary: `${composerSentence(options.planner)} Dasher computed every number from USGS-format readings and validated the result against the dashboard contract before rendering.`,
       nodes: [
         {
           id: "request",

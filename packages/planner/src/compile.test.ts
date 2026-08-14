@@ -102,7 +102,7 @@ describe("user-defined threshold alerts", () => {
   function compileWithThreshold(stageAbove: number) {
     return compilePlan(planFor([site], ["attention"]), [gauge], {
       asOf: AS_OF,
-      plannerId: "test-planner",
+      planner: { id: "test-planner", usesModel: true },
       thresholds: [
         {
           id: "flood-watch",
@@ -145,7 +145,7 @@ describe("missing or stale sensor warnings", () => {
     return compilePlan(
       planFor([site], ["conditions-summary", "attention"]),
       [freshGauge],
-      { asOf, plannerId: "test-planner" },
+      { asOf, planner: { id: "test-planner", usesModel: true } },
     );
   }
 
@@ -179,7 +179,7 @@ describe("missing or stale sensor warnings", () => {
     // nobody has looked at.
     const spec = compilePlan(planFor([site], ["attention"]), [freshGauge], {
       asOf: staleAsOf,
-      plannerId: "test-planner",
+      planner: { id: "test-planner", usesModel: true },
       thresholds: [
         {
           id: "stale-threshold",
@@ -192,5 +192,41 @@ describe("missing or stale sensor warnings", () => {
     expect(alertsOf(spec).map((alert) => alert.id)).not.toContain(
       "stale-threshold",
     );
+  });
+});
+
+describe("what the dashboard says about who composed it", () => {
+  function architectureFor(usesModel: boolean) {
+    return compilePlan(planFor([site], ["conditions-summary"]), gauges, {
+      asOf: AS_OF,
+      planner: { id: "fake-keyword-planner-v1", usesModel },
+    }).architecture.summary;
+  }
+
+  it("does not claim a model chose the layout when no model was called", () => {
+    // FakePlanningProvider is keyword matching -- `text.includes("flood")` --
+    // and README records that model calls are disabled. Telling a reader that
+    // "a planning model chose the layout" is then a claim about AI that is not
+    // true of the running system, in the one panel whose job is to explain how
+    // the dashboard was made.
+    expect(architectureFor(false)).not.toMatch(/planning model/iu);
+    expect(architectureFor(false)).toMatch(/no model was called/iu);
+  });
+
+  it("says a model chose the layout when one did", () => {
+    // The other direction matters as much. A dashboard that never credits the
+    // model understates where the judgement came from, and a reader deciding
+    // how much to trust the framing is entitled to know.
+    expect(architectureFor(true)).toMatch(/planning model/iu);
+    expect(architectureFor(true)).not.toMatch(/no model was called/iu);
+  });
+
+  it("attributes the layout either way, never leaving it unexplained", () => {
+    for (const usesModel of [true, false]) {
+      expect(architectureFor(usesModel)).toMatch(/chose this dashboard/iu);
+      expect(architectureFor(usesModel)).toMatch(
+        /Dasher computed every number/iu,
+      );
+    }
   });
 });

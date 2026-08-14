@@ -38,6 +38,18 @@ export interface PlanningRequest {
  */
 export interface PlanningProvider {
   readonly id: string;
+  /**
+   * Whether a model actually chooses the composition.
+   *
+   * The dashboard tells its reader who made the layout decisions, and that
+   * sentence has to come from the provider rather than be assumed by the
+   * compiler. It was assumed once: the architecture panel said "a planning
+   * model chose the layout" while the only provider in the repository was
+   * keyword matching, which is a claim about AI that was not true of the
+   * running system, in the one panel whose job is to explain how the dashboard
+   * was made.
+   */
+  readonly usesModel: boolean;
   plan(request: PlanningRequest): Promise<unknown>;
 }
 
@@ -58,6 +70,8 @@ export interface PlanningProvider {
  */
 export class FakePlanningProvider implements PlanningProvider {
   readonly id = "fake-keyword-planner-v1";
+  /** Keyword matching over the request text. No model, no network. */
+  readonly usesModel = false;
 
   async plan(request: PlanningRequest): Promise<unknown> {
     const draft = this.draft(request);
