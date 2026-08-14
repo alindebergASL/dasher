@@ -269,10 +269,20 @@ describe("tenant isolation", () => {
     expect(result.rows[0]?.rolbypassrls).toBe(false);
   });
 
-  it("every tenant table forces row-level security, except memberships", async () => {
-    // `memberships` enables RLS without FORCE so that the SECURITY DEFINER
-    // authority lookup every other policy calls does not recurse into the
-    // memberships policy. See dasher_private.context_allows.
+  it("no tenant table forces row-level security", async () => {
+    // FORCE makes the *table owner* subject to the policies. Every dasher_api
+    // function is SECURITY DEFINER and therefore runs as that owner, so FORCE
+    // subjects the seam to the very policies it exists to establish:
+    // `begin_request` cannot update the session row it is authenticating,
+    // because the policy demands a request context that does not exist until
+    // `begin_request` finishes. The seam only survives FORCE when its owner is
+    // superuser or BYPASSRLS, which is what this test suite happens to run as
+    // and a production deployment has no reason to be.
+    //
+    // Reproduced against a NOSUPERUSER NOBYPASSRLS owner: with FORCE the whole
+    // seam is dead and `begin_request` raises `dasher_denied` for a valid
+    // token, indistinguishable from a wrong password; without it, the seam
+    // works and the application role is still confined to its organization.
     const result = await ownerPool.query<{
       readonly relname: string;
     }>(`
@@ -282,10 +292,54 @@ describe("tenant isolation", () => {
         ON namespace.oid = relation.relnamespace
       WHERE namespace.nspname = 'dasher'
         AND relation.relkind = 'r'
-        AND NOT (relation.relrowsecurity AND relation.relforcerowsecurity)
+        AND relation.relforcerowsecurity
       ORDER BY relation.relname
     `);
-    expect(result.rows.map((row) => row.relname)).toEqual(["memberships"]);
+    expect(result.rows.map((row) => row.relname)).toEqual([]);
+  });
+
+  it("every tenant table still enables row-level security", async () => {
+    // Dropping FORCE must not drop RLS. The application role is not the table
+    // owner, so policies still apply to it in full; that is what confines a
+    // tenant, and it does not depend on FORCE.
+    const result = await ownerPool.query<{
+      readonly relname: string;
+    }>(`
+      SELECT relation.relname::text AS relname
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'dasher'
+        AND relation.relkind = 'r'
+        AND NOT relation.relrowsecurity
+      ORDER BY relation.relname
+    `);
+    expect(result.rows.map((row) => row.relname)).toEqual([]);
+  });
+
+  it("refuses to migrate a database where a tenant table forces row security", async () => {
+    // The preflight, not a test, is what protects a deployment: this suite
+    // runs as superuser and therefore cannot observe the failure FORCE causes.
+    // So the contract is asserted at migration time instead, where it holds
+    // whoever runs it.
+    const client = await ownerPool.connect();
+    try {
+      await client.query(
+        "ALTER TABLE dasher.dashboards FORCE ROW LEVEL SECURITY",
+      );
+      await expect(
+        runMigrations(borrowedClientPool(client), baselineMigrationDirectory),
+      ).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as { code?: unknown }).code === "forced_row_security",
+      );
+    } finally {
+      await client.query(
+        "ALTER TABLE dasher.dashboards NO FORCE ROW LEVEL SECURITY",
+      );
+      client.release();
+    }
   });
 
   it("memberships still enables row-level security for the application role", async () => {

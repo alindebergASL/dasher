@@ -59,6 +59,7 @@ export type MigrationContractErrorCode =
   | "empty_series"
   | "executor_not_database_owner"
   | "file_too_large"
+  | "forced_row_security"
   | "invalid_utf8"
   | "journal_identity_mismatch"
   | "malformed_filename"
@@ -74,6 +75,10 @@ const contractErrorMessages: Readonly<
   executor_not_database_owner:
     "migrations must be applied by the database owner",
   file_too_large: "a migration file exceeds the size limit",
+  forced_row_security:
+    "a table forces row-level security, which disables the SECURITY DEFINER " +
+    "write seam unless the schema owner is superuser or BYPASSRLS; drop FORCE " +
+    "or grant the owner BYPASSRLS deliberately",
   invalid_utf8: "a migration file is not valid UTF-8",
   journal_identity_mismatch:
     "the journal records more migrations than the directory contains",
@@ -206,9 +211,17 @@ function validateLoginRoleNames(names: readonly string[]): readonly string[] {
 /**
  * Creates the restricted application role and any login roles that inherit it.
  *
- * `dasher_app` is NOBYPASSRLS, which is what makes forced row-level security
- * mean anything: a connection with a missing or wrong request context reads
- * zero rows rather than another organization's rows.
+ * `dasher_app` is NOBYPASSRLS, which is what makes row-level security mean
+ * anything: a connection with a missing or wrong request context reads zero
+ * rows rather than another organization's rows. It is confined because it is
+ * not the table owner, so the policies apply to it in full — which is why
+ * dropping FORCE costs it nothing. FORCE only ever bound the owner, and
+ * binding the owner is what broke the SECURITY DEFINER seam.
+ *
+ * Note that this function cannot run as an ordinary role: `ALTER ROLE ...
+ * NOSUPERUSER` requires SUPERUSER and `... NOBYPASSRLS` requires BYPASSRLS. It
+ * is an operator step run once with elevated credentials, distinct from the
+ * role that owns the schema and applies migrations thereafter.
  */
 export async function bootstrapManagedRoles(
   client: MigrationClient,
@@ -264,6 +277,45 @@ async function assertDatabaseOwner(client: MigrationClient): Promise<void> {
   `);
   if (result.rows[0]?.is_owner !== true) {
     return reject("executor_not_database_owner");
+  }
+}
+
+/**
+ * Refuses a schema whose tables force row-level security.
+ *
+ * FORCE subjects the table owner to the policies, and every `dasher_api`
+ * function is SECURITY DEFINER, so it subjects the write seam to the policies
+ * the seam exists to establish: `begin_request` cannot update the session row
+ * it is authenticating, because the policy demands a request context that does
+ * not exist until `begin_request` has produced it. The result is that every
+ * request is denied, with the same error a wrong token produces.
+ *
+ * This is checked here rather than asserted in a test because the integration
+ * suite connects as a superuser, and superusers bypass row security whatever
+ * FORCE says. A deployment whose owner is an ordinary role is exactly the case
+ * no test in this repository can observe, so the check has to run where the
+ * deployment does.
+ *
+ * An owner that is superuser or BYPASSRLS does bypass the policies and could
+ * carry FORCE safely. That is not accepted silently: the schema should not
+ * require a privileged owner in order to function, so reintroducing FORCE
+ * means changing this check on purpose.
+ */
+async function assertNoForcedRowSecurity(
+  client: MigrationClient,
+): Promise<void> {
+  const result = await client.query<{ readonly relname: string }>(`
+    SELECT relation.relname::text AS relname
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'dasher'
+      AND relation.relkind = 'r'
+      AND relation.relforcerowsecurity
+    ORDER BY relation.relname
+  `);
+  if (result.rows.length > 0) {
+    return reject("forced_row_security");
   }
 }
 
@@ -411,6 +463,10 @@ export async function runMigrations(
       }
       appliedCount += 1;
     }
+
+    // After the series applies, so that a migration reintroducing FORCE is
+    // caught by the same run that applied it.
+    await assertNoForcedRowSecurity(client);
 
     return {
       discoveredCount: migrations.length,

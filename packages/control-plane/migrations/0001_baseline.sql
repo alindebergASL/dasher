@@ -56,14 +56,19 @@
 -- the accepting user as an argument, and whose reactivation branch now sets
 -- `role` to the granted role rather than leaving a revoked administrator's.
 --
+-- Also fixed: the schema no longer requires a privileged owner. It used to
+-- force row-level security on thirteen tables, which subjects the table owner
+-- to the policies -- and every seam function runs as that owner. Against a
+-- NOSUPERUSER NOBYPASSRLS owner the entire seam was dead, denying every valid
+-- token with the error a wrong one produces. FORCE is gone, and the migrator
+-- refuses a series that reintroduces it.
+--
 -- Still open, each with a reproduced case: `record_evidence` writes no audit
 -- event though the action is in the allowlist; evidence and claim digests are
 -- length-checked but never tied to content; `finalize_run` stamps `valid`
 -- without validating anything; audit events hardcode authority revision 1;
--- archive transitions accept the state they are already in; REPEATABLE READ
--- freezes the membership snapshot and defers revocation; and the SECURITY
--- DEFINER owner is assumed to bypass forced row-level security, which holds
--- only when that owner is superuser or BYPASSRLS.
+-- archive transitions accept the state they are already in; and REPEATABLE
+-- READ freezes the membership snapshot and defers revocation.
 --
 -- All 26 originally enumerated states in
 -- test/accepted-invalid-states.integration.test.ts are closed. Creating an
@@ -1085,27 +1090,45 @@ CREATE INDEX agent_runs_dashboard_idx
 -- ---------------------------------------------------------------------------
 -- Row-level security
 --
--- Every tenant-scoped table enables RLS, and every one but `memberships`
--- forces it. The application connects as dasher_app, which is NOBYPASSRLS, so
--- a missing request context yields zero rows rather than another
--- organization's rows.
+-- Every tenant-scoped table enables RLS. None forces it, and that is a
+-- decision rather than an omission.
 --
--- A *wrong* context is a different matter and is not currently prevented:
--- dasher_app sets these GUCs itself and nothing binds them to a verified
--- session, so anything able to issue SQL on this connection can name any
--- member of any organization. See the request-identity case in
--- test/accepted-invalid-states.integration.test.ts.
+-- FORCE subjects the *table owner* to the policies. Every dasher_api function
+-- is SECURITY DEFINER and so runs as that owner, which means FORCE subjects
+-- the seam to the policies the seam exists to establish. `begin_request`
+-- cannot update the session row it is authenticating, because the policy on
+-- `sessions` demands a request context that does not exist until
+-- `begin_request` has finished creating it. Reproduced against a NOSUPERUSER
+-- NOBYPASSRLS owner: every call raises `dasher_denied` for a valid token,
+-- which is indistinguishable from a wrong password. It is a total outage that
+-- no test here can see, because this suite runs as superuser and superusers
+-- bypass row security whatever FORCE says.
+--
+-- Nothing is lost by dropping it. FORCE constrains only the migration owner
+-- and the definer bodies; it never touched dasher_app, which is not the owner
+-- and is confined by these policies in full. Every seam function already
+-- filters on `actor.organization_id` from the verified context, and every
+-- guard trigger on `NEW.organization_id`, so none of them was relying on RLS
+-- to scope a query. The migrator refuses to apply a series that reintroduces
+-- FORCE; see `forced_row_security` in migrator.ts.
+--
+-- A wrong context is prevented separately, and not by RLS: the GUCs are only
+-- honoured alongside a keyed digest that `begin_request` stamps after
+-- validating a token, and `verified_context` revalidates the membership behind
+-- it on every call.
 -- ---------------------------------------------------------------------------
 
 -- True when the request context names this organization and the acting user
 -- holds an active membership at or above the required role.
 --
--- SECURITY DEFINER, and `dasher.memberships` is the one table below that
--- enables row-level security without FORCE. Both facts serve the same purpose:
--- every policy calls this function, and this function reads memberships, so if
--- that read were itself subject to the memberships policy the evaluation would
--- recurse until PostgreSQL raises `stack depth limit exceeded`. Running as the
--- table owner against a non-forced table breaks the cycle.
+-- SECURITY DEFINER, so this runs as the table owner. Every policy calls this
+-- function and this function reads memberships, so if that read were itself
+-- subject to the memberships policy the evaluation would recurse until
+-- PostgreSQL raises `stack depth limit exceeded`. Running as the owner against
+-- a table that does not force row security breaks the cycle -- which is now
+-- true of every table here, not just memberships. The property suite found
+-- this the hard way, with `stack depth limit exceeded` on the first attempt to
+-- read a dashboard as a tenant.
 --
 -- The function is safe to define this way: it takes an organization and a role
 -- name, returns only a boolean, and reads nothing outside the membership row
@@ -1146,33 +1169,19 @@ AS $function$
 $function$;
 
 ALTER TABLE dasher.users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.users FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.external_identities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.external_identities FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.organizations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.organizations FORCE ROW LEVEL SECURITY;
--- Not FORCEd: see dasher_private.context_allows above.
 ALTER TABLE dasher.memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dasher.invitations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.invitations FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.audit_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.audit_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.source_snapshots ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.source_snapshots FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.evidence_records ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.evidence_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.dashboards ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.dashboards FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.dashboard_versions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.dashboard_versions FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.claims ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.claims FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.claim_evidence ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.claim_evidence FORCE ROW LEVEL SECURITY;
 ALTER TABLE dasher.agent_runs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dasher.agent_runs FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY organizations_read ON dasher.organizations
   AS PERMISSIVE FOR SELECT TO dasher_app

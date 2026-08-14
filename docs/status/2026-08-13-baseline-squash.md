@@ -96,13 +96,24 @@ the code was changed instead.
 
 ## Kept
 
-Row-level security is forced on every tenant table but one, composite
+Row-level security is enabled on every tenant table, composite
 `(organization_id, …)` foreign keys prevent a child row from referencing a parent
 in another organization, `dasher_app` is `NOBYPASSRLS`, and audit events,
 dashboard versions, claims, and claim evidence reject `UPDATE` and `DELETE`.
 
-Identity, sessions, invitations, the secret key ring, and email normalization are
-unchanged — 285 tests still pass against them.
+`FORCE ROW LEVEL SECURITY` was removed on 2026-08-14. It bound the table owner,
+and every `dasher_api` function is `SECURITY DEFINER` and so runs as that owner,
+which left the seam unable to perform the writes it exists for unless the owner
+was superuser or `BYPASSRLS`. Reproduced against an ordinary owner: the seam was
+entirely dead, refusing valid tokens with the error a wrong one produces. It
+cost `dasher_app` nothing, because that role is not the owner and the policies
+apply to it in full either way. The migrator now refuses a series that
+reintroduces `FORCE`.
+
+The secret key ring, session-cookie metadata, verified-principal construction,
+and email normalization are unchanged. The session and invitation repositories
+that sat on top of them were deleted on 2026-08-14: they called seven SQL
+functions that do not exist. See the removal register.
 
 ## Dropped
 
@@ -116,12 +127,16 @@ and the multi-role `SECURITY DEFINER` apparatus.
 from thirty-plus columns to thirteen. The agent-run ledger went from sixteen
 tables to one.
 
-## The one place SECURITY DEFINER survived, and why
+## Why `context_allows` is SECURITY DEFINER
 
-`dasher_private.context_allows` is `SECURITY DEFINER`, and `dasher.memberships`
-enables row-level security without `FORCE`. Both facts serve one purpose: every
-policy calls that function, and the function reads memberships, so if that read
-were itself subject to the memberships policy the evaluation would recurse.
+`dasher_private.context_allows` is `SECURITY DEFINER`, and originally
+`dasher.memberships` was the one table that enabled row-level security without
+`FORCE`. Both facts served one purpose: every policy calls that function, and
+the function reads memberships, so if that read were itself subject to the
+memberships policy the evaluation would recurse.
+
+`FORCE` is now absent everywhere, so what was a carve-out for one table is the
+rule for all of them, and the recursion cannot arise.
 
 This was not designed in. The property suite found it — `stack depth limit
 exceeded` on the first attempt to read a dashboard as a tenant. That is precisely

@@ -309,20 +309,20 @@ CREATE UNIQUE INDEX source_snapshots_pkey ON dasher.source_snapshots USING btree
 CREATE UNIQUE INDEX users_pkey ON dasher.users USING btree (user_id)
 
 -- row security
-dasher.agent_runs rls=true force=true
-dasher.audit_events rls=true force=true
-dasher.claim_evidence rls=true force=true
-dasher.claims rls=true force=true
-dasher.dashboard_versions rls=true force=true
-dasher.dashboards rls=true force=true
-dasher.evidence_records rls=true force=true
-dasher.external_identities rls=true force=true
-dasher.invitations rls=true force=true
+dasher.agent_runs rls=true force=false
+dasher.audit_events rls=true force=false
+dasher.claim_evidence rls=true force=false
+dasher.claims rls=true force=false
+dasher.dashboard_versions rls=true force=false
+dasher.dashboards rls=true force=false
+dasher.evidence_records rls=true force=false
+dasher.external_identities rls=true force=false
+dasher.invitations rls=true force=false
 dasher.memberships rls=true force=false
-dasher.organizations rls=true force=true
-dasher.sessions rls=true force=true
-dasher.source_snapshots rls=true force=true
-dasher.users rls=true force=true
+dasher.organizations rls=true force=false
+dasher.sessions rls=true force=false
+dasher.source_snapshots rls=true force=false
+dasher.users rls=true force=false
 dasher_private.context_keys rls=false force=false
 
 -- policies
