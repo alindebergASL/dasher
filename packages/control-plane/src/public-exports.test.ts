@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import * as packageRoot from "@dasher/control-plane";
 import * as emailExports from "@dasher/control-plane/email";
-import * as invitationRepositoryExports from "@dasher/control-plane/invitation-repository";
 import * as migratorExports from "@dasher/control-plane/migrator";
 import * as secretExports from "@dasher/control-plane/secrets";
 import * as sessionCookieExports from "@dasher/control-plane/session-cookie";
-import * as sessionRepositoryExports from "@dasher/control-plane/session-repository";
 import * as verifiedPrincipalExports from "@dasher/control-plane/verified-principal";
 
 describe("control-plane public exports", () => {
@@ -14,16 +12,11 @@ describe("control-plane public exports", () => {
     expect(Object.keys(packageRoot).sort()).toEqual([
       "EmailNormalizationError",
       "IntegrationPreflightError",
-      "InvitationRepository",
       "MigrationContractError",
-      "OperationConflictError",
-      "OperationDeniedError",
-      "OperationInternalError",
       "POSTGRES_INTEGRATION_ENV_NAMES",
       "SecretKeyRing",
       "SecretPrimitiveError",
       "SessionCookieMetadataError",
-      "SessionRepository",
       "VerifiedPrincipal",
       "VerifiedPrincipalError",
       "bootstrapManagedRoles",
@@ -55,12 +48,6 @@ describe("control-plane public exports", () => {
     expect(Object.keys(emailExports)).toContain("normalizeEmailAddress");
     expect(Object.keys(sessionCookieExports)).toContain(
       "createSessionCookieMetadata",
-    );
-    expect(Object.keys(sessionRepositoryExports)).toContain(
-      "SessionRepository",
-    );
-    expect(Object.keys(invitationRepositoryExports)).toContain(
-      "InvitationRepository",
     );
     expect(Object.keys(verifiedPrincipalExports)).toContain(
       "VerifiedPrincipal",

@@ -51,45 +51,4 @@ export {
   type VerifiedPrincipalErrorCode,
 } from "./verified-principal.js";
 
-export {
-  InvitationRepository,
-  OperationConflictError,
-  OperationDeniedError,
-  OperationInternalError,
-  type AcceptInvitationInput,
-  type AcceptInvitationResult,
-  type InvitationRepositoryConfig,
-  type InvitationRole,
-  type InvitationSecurityEvent,
-  type InvitationSecurityEventSink,
-  type IssueInvitationInput,
-  type IssueInvitationResult,
-  type OperationInternalOutcome,
-  type PgCompatibleClient,
-  type PgCompatiblePool,
-  type PgCompatibleQueryResult,
-  type SecurityEventReason,
-} from "./invitation-repository.js";
-
-export {
-  SessionRepository,
-  type ChangeMembershipRoleInput,
-  type ChangeMembershipRoleResult,
-  type IssueSessionInput,
-  type IssueSessionResult,
-  type ResolveSessionInput,
-  type ResolveSessionResult,
-  type RevokeMembershipInput,
-  type RevokeMembershipResult,
-  type RevokeSessionInput,
-  type RevokeSessionResult,
-  type RotateSessionInput,
-  type RotateSessionResult,
-  type SessionRepositoryConfig,
-  type SessionRole,
-  type SessionSecurityEvent,
-  type SessionSecurityEventReason,
-  type SessionSecurityEventSink,
-} from "./session-repository.js";
-
 export { renderSchemaSnapshot } from "./schema-snapshot.js";
