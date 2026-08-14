@@ -28,15 +28,21 @@ equivalent discipline is applied per fix by hand.
 pnpm test:mutation
 ```
 
-Roughly 100 seconds for 692 mutants. It has its own CI job so it runs in
+Roughly 100 seconds for 708 mutants. It has its own CI job so it runs in
 parallel rather than in front of the static gates.
 
 ## What is mutated, and why it runs from the root
 
-`@dasher/planner`'s compiler, plan contract, and run loop, plus
+`@dasher/planner`'s compiler, plan contract, free-text gate, and run loop, plus
 `@dasher/river-domain`'s `facts.ts` — the composition rules the two share.
 
-That is four files, not everything a browser request touches: `river-domain`'s
+`freetext.ts` joined the run on 2026-08-14 with the gate it implements. It is
+pattern-matching over strings, which is the shape of code where a passing suite
+proves least: a regex can be weakened in a dozen ways that no example in the
+test file happens to exercise. It scored 100% — 36 mutants, none survived — and
+that is the number to defend rather than a licence to stop.
+
+That is five files, not everything a browser request touches: `river-domain`'s
 `metrics.ts` and `usgs.ts` and all of `dashboard-schema` are outside the run.
 They are covered by their own suites but not held to this gate, so read the
 score as being about the planning path rather than about the whole product.
@@ -84,18 +90,27 @@ So it fails on regression today, and is raised deliberately as coverage
 improves. Raising it is a one-line change and should accompany the tests that
 earn it.
 
-| Measured 2026-08-14 | Score  | Killed | Survived | No coverage |
-| ------------------- | ------ | ------ | -------- | ----------- |
-| `plan.ts`           | 80.95% | 51     | 12       | 0           |
-| `compile.ts`        | 69.60% | 261    | 107      | 7           |
-| `run.ts`            | 68.33% | 40     | 9        | 10          |
-| `facts.ts`          | 63.80% | 104    | 52       | 7           |
-| **total**           | 69.14% | 456    | 180      | 24          |
+| Measured 2026-08-14 | Score   | Killed | Survived | No coverage |
+| ------------------- | ------- | ------ | -------- | ----------- |
+| `freetext.ts`       | 100.00% | 36     | 0        | 0           |
+| `plan.ts`           | 77.03%  | 57     | 14       | 3           |
+| `compile.ts`        | 69.60%  | 261    | 107      | 7           |
+| `run.ts`            | 68.33%  | 40     | 9        | 10          |
+| `facts.ts`          | 63.80%  | 104    | 52       | 7           |
+| **total**           | 70.48%  | 498    | 182      | 27          |
+
+`plan.ts` moved from 80.95% to 77.03% in the same change, and the drop is real
+rather than a regression: the free-text gate added a branch and two finding
+messages to `findPlanProblems`, and the three new uncovered mutants are the
+`StringLiteral` bodies of those messages — provider-facing revision text, where
+the code and the path carry the meaning. The total rose because `freetext.ts`
+brought 36 killed mutants with it.
 
 The floor has been raised as coverage earned it: 58, then 61 when the shared
 composition rules came under the run, then 62, then 67 when `plan.ts` went from
 31.75% to 80.95%, then 69 when review found a display string that had silently
-changed meaning.
+changed meaning. It stays at 69 as of the free-text gate: the total is 70.48%,
+and half a point of headroom is not a floor worth standing on.
 
 ## What survived, and which of it is worth attacking
 

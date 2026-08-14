@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { findSmuggledText } from "./freetext";
+
 /**
  * The `DashboardPlan` is the only structure a planning model is permitted to
  * emit. It carries composition and framing decisions — what the dashboard is
@@ -7,9 +9,17 @@ import { z } from "zod";
  * out — and it carries no facts.
  *
  * Every number, evidence item, freshness state, and claim on the rendered
- * dashboard is computed by `compilePlan` from the observations. A model cannot
- * assert a measurement through this contract because there is nowhere in it to
- * put one.
+ * dashboard is computed by `compilePlan` from the observations. No field of
+ * this schema is a place to put a reading.
+ *
+ * That last sentence used to read "a model cannot assert a measurement through
+ * this contract because there is nowhere in it to put one", and it was false as
+ * written. `title`, `audience`, `framing`, and the page headings are free text
+ * rendered verbatim, so a plan titled "Sacramento at 12.4 ft" asserted a reading
+ * that no field was named for. The shape of the object was doing the arguing;
+ * the strings inside it were unexamined. `findPlanProblems` now checks them —
+ * see `freetext.ts` for exactly which categories are caught and which are
+ * knowingly not.
  */
 
 export const PLAN_MAX_PAGES = 4;
@@ -85,6 +95,8 @@ export type PlanFindingCode =
   | "duplicate_page_id"
   | "duplicate_section"
   | "section_needs_sites"
+  | "free_text_measurement"
+  | "free_text_directive"
   | "spec_rejected";
 
 export interface PlanFinding {
@@ -189,6 +201,22 @@ export function findPlanProblems(
         });
       }
     }
+  }
+
+  for (const smuggled of findSmuggledText(plan)) {
+    findings.push(
+      smuggled.kind === "measurement"
+        ? {
+            code: "free_text_measurement",
+            path: smuggled.path,
+            message: `Free text may not carry a measurement, and "${smuggled.excerpt}" is one. Dasher computes and displays every reading itself from the observations; describe the composition instead and leave the numbers to the dashboard.`,
+          }
+        : {
+            code: "free_text_directive",
+            path: smuggled.path,
+            message: `Free text may not instruct the reader to act, and "${smuggled.excerpt}" does. Dasher has no basis for a safety instruction and no evidence record that could support one; describe what the dashboard shows instead.`,
+          },
+    );
   }
 
   return findings;

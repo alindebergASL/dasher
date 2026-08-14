@@ -55,7 +55,13 @@ and [security status](docs/security/2026-07-30-security-status.md).
 - Live USGS requests: not implemented in this foundation slice.
 - Identity, multi-tenant persistence, uploads, jobs, provider access, and MCP:
   not implemented.
-- Model calls: disabled.
+- Model calls: disabled in the product, and gated rather than merely absent. A
+  real provider now exists at `@dasher/planner/anthropic`; nothing in `apps/web`
+  imports it, `@anthropic-ai/sdk` is a devDependency rather than a dependency,
+  and [a test](apps/web/no-model-calls.test.ts) fails if either stops being
+  true. The only caller is
+  [the adversarial eval](packages/planner/eval/adversarial.ts), which needs an
+  explicit key and model and exits non-zero without them.
 - Multi-dashboard lifecycle, passwordless or external-IdP sign-in, and the
   agentic dashboard harness: not implemented.
 - Migrations: mutable until the first production deployment. A schema change is

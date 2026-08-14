@@ -10,6 +10,7 @@
   "timeoutMS": 20000,
   "mutate": [
     "packages/planner/src/compile.ts",
+    "packages/planner/src/freetext.ts",
     "packages/planner/src/plan.ts",
     "packages/planner/src/run.ts",
     "packages/river-domain/src/facts.ts"

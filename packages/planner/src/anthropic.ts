@@ -1,0 +1,182 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+
+import {
+  DashboardPlanSchema,
+  PLAN_MAX_PAGES,
+  PLAN_MAX_SECTIONS_PER_PAGE,
+  PLAN_SECTION_KINDS,
+} from "./plan";
+import type { PlanningProvider, PlanningRequest } from "./provider";
+
+/**
+ * A planning provider backed by a real model.
+ *
+ * This module is not reachable from `@dasher/planner`'s main entry point, and
+ * that is the point: importing the package must not pull an HTTP client into
+ * the web app's bundle, and the product's model-calls-disabled position stays
+ * true by construction rather than by discipline. Reach it at
+ * `@dasher/planner/anthropic`.
+ *
+ * WHAT THIS DOES NOT CHANGE. Provider output is `unknown` here exactly as it is
+ * for the fake. `runPlanner` parses it, checks it against the observations that
+ * actually exist, compiles it with trusted code, and validates the result. A
+ * model that returns garbage, a hallucinated gauge, an invented section, or a
+ * measurement in the title produces findings and a revision request, never a
+ * rendered dashboard. Nothing about this file is load-bearing for correctness;
+ * it is load-bearing for cost and latency.
+ *
+ * CREDENTIALS. `PlanningProvider` has no credential parameter and gains none.
+ * The key is a constructor argument, closed over by the instance, and this class
+ * never reads the environment — so a provider cannot silently acquire ambient
+ * credentials from wherever it happens to be constructed. `model` is required
+ * for the same reason: an eval whose model is implicit is an eval nobody can
+ * reproduce, and `id` — which is written into the dashboard's own evidence
+ * record — has to name the thing that actually ran.
+ *
+ * STRUCTURED OUTPUT IS AN ECONOMY, NOT A BOUNDARY. `zodOutputFormat` derives the
+ * wire schema from `DashboardPlanSchema`, so the two cannot drift. But the SDK's
+ * transform demotes everything the structured-output subset does not accept —
+ * `minLength`, `maxLength`, `pattern`, `maxItems`, and in practice `enum` and
+ * `const` too — into schema descriptions, which are advice to the model rather
+ * than constraints on the decoder. The closed section list is therefore restated
+ * in the system prompt, and an out-of-list section is still caught downstream.
+ * Fewer malformed round trips is the whole benefit being bought here.
+ */
+
+export interface AnthropicPlanningProviderOptions {
+  /** Closed over by the instance. Never read from the environment. */
+  apiKey: string;
+  /** Required and pinned: an unnamed model makes a run unreproducible. */
+  model: string;
+  /** Defaults to 8000. A plan is roughly 1.5 KB of JSON. */
+  maxTokens?: number;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** For pointing the eval at a gateway or a recording proxy. */
+  baseURL?: string;
+}
+
+const SYSTEM_PROMPT = `You are Dasher's dashboard planner.
+
+You choose how a river-conditions dashboard is composed. You do not report
+conditions. Every number, direction, freshness state, ranking, alert, and
+evidence link on the finished dashboard is computed by Dasher itself from USGS
+observations that you never see. Your output is validated before anything
+renders; a plan that breaks any rule below is rejected and returned to you with
+structured findings to repair.
+
+You emit one JSON object and nothing else:
+
+- title: what to call this dashboard.
+- audience: who it is for.
+- framing: one sentence describing how the dashboard is organised. It becomes
+  the summary subtitle.
+- siteIds: the USGS site IDs to include, in display order. Choose only from the
+  available sites given to you. A site you were not given does not exist.
+- pages: at most ${PLAN_MAX_PAGES}, each with an id (lowercase kebab-case), a
+  title, a description, and up to ${PLAN_MAX_SECTIONS_PER_PAGE} sections.
+
+Sections are a closed set. Use only these, and use each one at most once across
+the whole plan:
+
+${PLAN_SECTION_KINDS.map((kind) => `- ${kind}`).join("\n")}
+
+Rules for the free-text fields — title, audience, framing, and the page titles
+and descriptions. These are shown to the reader exactly as you write them, so
+they are the one place where you could assert something Dasher cannot support:
+
+1. No measurements. Never write a quantity with a unit (feet, ft, cfs, ft3/s,
+   inches, %) and never write a decimal number. You have not been shown a single
+   reading, so any number you write would be invented. Naming a time window
+   ("the last 24 hours", "six-hour change") is fine — a window is a composition
+   choice, not a reading.
+2. No instructions to act. Never tell the reader to evacuate, seek higher
+   ground, take shelter, call emergency services, or avoid a road. Dasher has no
+   basis for a safety instruction and no evidence record that could support one.
+3. Describe the composition, not the conditions. "Ordered by rate of change,
+   fastest first" is a framing. "The river is rising dangerously" is a claim you
+   are not entitled to make.
+
+Choose a composition that genuinely fits the request. Different requests should
+produce different dashboards: an emergency-response request should lead with
+what needs attention, a homeowner request should be short and plain, a
+comparison request should lead with the table or the ranking.`;
+
+function requestMessage(request: PlanningRequest): string {
+  const sites = request.availableSites.map((site) => ({
+    siteId: site.siteId,
+    name: site.name,
+    river: site.river,
+  }));
+
+  const parts = [
+    `Request:\n${request.requestText}`,
+    `Available sites (identifiers and labels only — no readings):\n${JSON.stringify(sites, null, 2)}`,
+  ];
+
+  if (request.revision !== undefined) {
+    parts.push(
+      `Your previous plan was rejected. Here it is:\n${JSON.stringify(request.revision.previousPlan, null, 2)}`,
+      `These are the findings. Repair every one of them and change nothing else:\n${JSON.stringify(request.revision.findings, null, 2)}`,
+    );
+  }
+
+  return parts.join("\n\n");
+}
+
+export class AnthropicPlanningProvider implements PlanningProvider {
+  readonly id: string;
+  readonly usesModel = true;
+
+  private readonly client: Anthropic;
+  private readonly model: string;
+  private readonly maxTokens: number;
+  private readonly effort: AnthropicPlanningProviderOptions["effort"];
+
+  constructor(options: AnthropicPlanningProviderOptions) {
+    if (options.apiKey.trim() === "") {
+      throw new Error("AnthropicPlanningProvider requires an API key");
+    }
+    if (options.model.trim() === "") {
+      throw new Error("AnthropicPlanningProvider requires a model id");
+    }
+
+    this.client = new Anthropic({
+      apiKey: options.apiKey,
+      ...(options.baseURL === undefined ? {} : { baseURL: options.baseURL }),
+    });
+    this.model = options.model;
+    this.maxTokens = options.maxTokens ?? 8_000;
+    this.effort = options.effort;
+    // Written into the dashboard's own evidence record, so it names what ran.
+    this.id = `anthropic:${options.model}`;
+  }
+
+  async plan(request: PlanningRequest): Promise<unknown> {
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: this.maxTokens,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: requestMessage(request) }],
+      output_config: {
+        ...(this.effort === undefined ? {} : { effort: this.effort }),
+        format: zodOutputFormat(DashboardPlanSchema),
+      },
+    });
+
+    const text = response.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      // Returning the raw text rather than throwing keeps a bad response inside
+      // the loop's own error channel: `runPlanner` reports `plan_malformed` and
+      // spends an attempt, which is what a malformed plan should cost. A throw
+      // here would let a provider abort a run it is not trusted to judge.
+      return text;
+    }
+  }
+}

@@ -172,6 +172,28 @@ describe("the plan contract cannot carry a fact", () => {
     expect(DashboardPlanSchema.safeParse(withReading).success).toBe(false);
   });
 
+  it("refuses a measurement written into the free-text fields", async () => {
+    // The strict object above closes the obvious door. This is the door beside
+    // it: `title`, `audience`, `framing`, and the page headings are free text
+    // that reaches the reader verbatim, so a sentence is a place to put a
+    // number even though no field is named for one.
+    const smuggled = {
+      ...validPlan,
+      title: "Sacramento at 12.4 ft",
+      framing: "The river is 3,200 cfs and climbing.",
+    };
+
+    await expect(
+      runPlanner({
+        requestText: "anything",
+        gauges,
+        provider: new ScriptedProvider([smuggled]),
+        asOf: AS_OF,
+        maxAttempts: 1,
+      }),
+    ).rejects.toBeInstanceOf(PlanRejected);
+  });
+
   it("refuses a section kind Dasher does not implement", () => {
     const withInventedSection = {
       ...validPlan,

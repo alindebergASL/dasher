@@ -29,6 +29,14 @@ export {
 } from "./plan";
 
 export {
+  findSmuggledText,
+  freeTextWithDigits,
+  planFreeText,
+  type SmuggledText,
+  type SmuggledTextKind,
+} from "./freetext";
+
+export {
   FakePlanningProvider,
   type AvailableSite,
   type PlanningProvider,
