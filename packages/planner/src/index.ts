@@ -40,6 +40,7 @@ export {
   FakePlanningProvider,
   type AvailableSite,
   type PlanningProvider,
+  type PlanningRefinement,
   type PlanningRequest,
   type PlanningRevision,
 } from "./provider";

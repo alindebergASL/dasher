@@ -1228,13 +1228,25 @@ footer {
   flex-direction: column;
 }
 
-.request-bar {
+.request-bar,
+.refine-bar {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   padding: 1.5rem clamp(1rem, 4vw, 2.5rem);
   border-bottom: 1px solid var(--line);
   background: var(--card);
+}
+
+/*
+ * The refinement control sits below the request that produced the dashboard,
+ * because that is the order the work happens in: describe it, then change it.
+ * Lighter chrome than the request bar so the two read as a primary action and
+ * a follow-up rather than as two equal choices.
+ */
+.refine-bar {
+  padding-top: 0;
+  border-bottom-style: dashed;
 }
 
 .request-label {
@@ -1352,10 +1364,28 @@ footer {
     box-shadow: 0 -8px 24px rgba(24, 55, 46, 0.12);
   }
 
+  /*
+   * Only the request bar is pinned; two fixed strips would eat the viewport on
+   * the smallest screens. But the rule the pinning exists to satisfy — no
+   * control may take layout height above the dashboard — applies to this one
+   * too, so it moves below the pages it changes instead. `.request-workspace`
+   * is a flex column, so ordering it last is enough.
+   */
+  .refine-bar {
+    order: 1;
+    padding: 0.9rem 1rem 4.5rem;
+    border-top: 1px solid var(--line);
+    border-bottom: none;
+  }
+
   .request-label,
   .request-examples,
   .request-note {
     display: none;
+  }
+
+  .refine-bar .request-label {
+    display: block;
   }
 
   .request-input {

@@ -12,6 +12,7 @@
     "packages/planner/src/compile.ts",
     "packages/planner/src/freetext.ts",
     "packages/planner/src/plan.ts",
+    "packages/planner/src/provider.ts",
     "packages/planner/src/run.ts",
     "packages/river-domain/src/facts.ts"
   ],
@@ -22,6 +23,6 @@
   "thresholds": {
     "high": 85,
     "low": 70,
-    "break": 69
+    "break": 71
   }
 }

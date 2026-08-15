@@ -47,7 +47,7 @@ test("a request naming an unavailable gauge is rejected and repaired", async ({
 
   // The rejection is disclosed rather than hidden.
   await expect(
-    page.getByText(/that plan was rejected and corrected/),
+    page.getByText(/first plan was rejected by Dasher and corrected/),
   ).toBeVisible();
 
   // The unavailable Feather River site never reaches the page.
@@ -77,4 +77,57 @@ test("an empty request is refused with a usable message", async ({ page }) => {
   await expect(page.locator("p.request-error")).toHaveText(
     "Type what you want to monitor to get started.",
   );
+});
+
+test("a change instruction edits the dashboard on screen", async ({ page }) => {
+  await page.goto("/");
+
+  const heading = page.getByRole("heading", { level: 1 });
+  await expect(heading).toHaveText("Sacramento River Conditions");
+  await expect(page.getByRole("heading", { name: "Gauge map" })).toBeVisible();
+
+  await page.getByLabel("Change this dashboard").fill("Drop the map");
+  await page.getByRole("button", { name: "Apply change" }).click();
+
+  await expect(page.getByRole("heading", { name: "Gauge map" })).toHaveCount(0);
+
+  // Refinement edits the plan rather than re-composing it: the title and the
+  // sections the reader did not mention are still there.
+  await expect(heading).toHaveText("Sacramento River Conditions");
+  await expect(
+    page.getByRole("heading", { name: "Conditions summary" }),
+  ).toBeVisible();
+});
+
+test("a change it cannot interpret says so instead of redrawing", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page.getByLabel("Change this dashboard").fill("Make it more upbeat");
+  await page.getByRole("button", { name: "Apply change" }).click();
+
+  await expect(page.getByText(/did not understand that change/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Gauge map" })).toBeVisible();
+});
+
+test("a change survives a fresh request replacing the dashboard", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  // Refine, then re-plan. The second request must compose from scratch rather
+  // than carry the earlier edit, or the reader can never get the map back.
+  await page.getByRole("button", { name: "Drop the map" }).click();
+  await expect(page.getByRole("heading", { name: "Gauge map" })).toHaveCount(0);
+
+  await page
+    .getByLabel("What do you want to monitor?")
+    .fill("I need a flood watch view for emergency response");
+  await page.getByRole("button", { name: "Build dashboard" }).click();
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "Sacramento Flood Watch",
+  );
+  await expect(page.getByRole("heading", { name: "Gauge map" })).toBeVisible();
 });

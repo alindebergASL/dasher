@@ -14,6 +14,7 @@ import {
   createTemporaryAppLogin,
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
+  ignoreTeardownShutdown,
 } from "./postgres-harness.js";
 
 /**
@@ -192,6 +193,7 @@ beforeAll(async () => {
   // ordinary owner while all 40 of these passed. The DSN from the environment
   // is now used only to provision.
   operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  ignoreTeardownShutdown(operatorPool);
   const ownerDsn = await createUnprivilegedSchemaOwner(
     operatorPool,
     config.ownerDsn,
@@ -199,6 +201,7 @@ beforeAll(async () => {
     databaseName,
   );
   ownerPool = new Pool({ connectionString: ownerDsn, max: 4 });
+  ignoreTeardownShutdown(ownerPool);
   const client = await ownerPool.connect();
   try {
     await bootstrapManagedRoles(client, []);
@@ -220,6 +223,7 @@ beforeAll(async () => {
   const appUrl = new URL(appDsn);
   appUrl.username = appUsername;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
+  ignoreTeardownShutdown(appPool);
 
   const seed = await ownerPool.connect();
   try {

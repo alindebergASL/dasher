@@ -18,6 +18,7 @@ import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
   executeServerFormattedSql,
+  ignoreTeardownShutdown,
 } from "./postgres-harness.js";
 
 /**
@@ -138,6 +139,7 @@ beforeAll(async () => {
   // catalog says, so these isolation properties would hold vacuously for the
   // owner and hide anything that only an unprivileged deployment suffers.
   operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  ignoreTeardownShutdown(operatorPool);
   const ownerDsn = await createUnprivilegedSchemaOwner(
     operatorPool,
     config.ownerDsn,
@@ -145,6 +147,7 @@ beforeAll(async () => {
     databaseName,
   );
   ownerPool = new Pool({ connectionString: ownerDsn, max: 4 });
+  ignoreTeardownShutdown(ownerPool);
   const client = await ownerPool.connect();
   try {
     await bootstrapManagedRoles(client, []);
@@ -166,6 +169,7 @@ beforeAll(async () => {
   const appUrl = new URL(appDsn);
   appUrl.username = appUsername;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
+  ignoreTeardownShutdown(appPool);
 
   // Seed two organizations as the owner, bypassing tenant policies. Every
   // assertion below then reads through the restricted application role.
@@ -379,6 +383,7 @@ describe("tenant isolation", () => {
     url.username = ownerRole;
     url.pathname = `/${scratch}`;
     const scratchPool = new Pool({ connectionString: url.toString(), max: 2 });
+    ignoreTeardownShutdown(scratchPool);
     const client = await scratchPool.connect();
     try {
       await bootstrapManagedRoles(client, []);

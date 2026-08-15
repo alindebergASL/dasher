@@ -13,6 +13,7 @@ import { renderSchemaSnapshot } from "../src/schema-snapshot.js";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
+  ignoreTeardownShutdown,
 } from "./postgres-harness.js";
 
 /**
@@ -34,11 +35,13 @@ let targetPool: Pool;
 
 beforeAll(async () => {
   adminPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  ignoreTeardownShutdown(adminPool);
   await adminPool.query(`CREATE DATABASE ${databaseName}`);
 
   const target = new URL(config.ownerDsn);
   target.pathname = `/${databaseName}`;
   targetPool = new Pool({ connectionString: target.toString(), max: 2 });
+  ignoreTeardownShutdown(targetPool);
 
   const client = await targetPool.connect();
   try {

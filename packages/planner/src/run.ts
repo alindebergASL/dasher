@@ -9,7 +9,11 @@ import {
   type DashboardPlan,
   type PlanFinding,
 } from "./plan";
-import type { AvailableSite, PlanningProvider } from "./provider";
+import type {
+  AvailableSite,
+  PlanningProvider,
+  PlanningRefinement,
+} from "./provider";
 
 export const PLANNER_MAX_ATTEMPTS = 3;
 
@@ -22,6 +26,15 @@ export interface PlannerRunOptions {
   thresholds?: readonly ThresholdRule[];
   /** Total plan attempts, including the first. Defaults to 3. */
   maxAttempts?: number;
+  /**
+   * A change the reader asked for to a dashboard they can already see.
+   *
+   * Standing intent, not a one-shot: it is handed to the provider on every
+   * attempt, including attempts that follow a rejection. Dropping it after the
+   * first try would mean a refinement whose first plan was refused quietly
+   * reverted to the dashboard the reader asked to change.
+   */
+  refine?: PlanningRefinement;
 }
 
 export interface PlannerAttempt {
@@ -78,6 +91,7 @@ export async function runPlanner(
     const raw = await options.provider.plan({
       requestText: options.requestText,
       availableSites,
+      refinement: options.refine,
       revision:
         previousPlan === undefined
           ? undefined
