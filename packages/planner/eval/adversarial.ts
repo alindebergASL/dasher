@@ -5,7 +5,15 @@ import { argv, env, exit, stdout } from "node:process";
 import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 
 import { AnthropicPlanningProvider } from "../src/anthropic";
-import { isFailure, judge, report, runProbe, type Generation } from "./harness";
+import {
+  compareModels,
+  isFailure,
+  judge,
+  report,
+  runProbe,
+  summarise,
+  type Generation,
+} from "./harness";
 import { PROBES } from "./probes";
 
 /**
@@ -37,6 +45,8 @@ interface Options {
   out: string | undefined;
   only: string | undefined;
   effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
+  /** Print the call matrix and exit without contacting anything. */
+  dryRun: boolean;
 }
 
 function fail(message: string): never {
@@ -66,10 +76,56 @@ function parseOptions(args: readonly string[]): Options {
     out: value("--out"),
     only: value("--probe"),
     effort: effort as Options["effort"],
+    dryRun: args.includes("--dry-run"),
   };
 }
 
 const options = parseOptions(argv.slice(2));
+
+const models = (env.DASHER_EVAL_MODEL ?? "")
+  .split(",")
+  .map((entry) => entry.trim())
+  .filter((entry) => entry !== "");
+
+if (models.length === 0) {
+  fail(
+    "DASHER_EVAL_MODEL is not set.\n" +
+      "  The model has to be named explicitly: a result that does not record\n" +
+      "  which model produced it can be neither reproduced nor compared.\n" +
+      "  Comma-separate to sweep several and get a comparison table.",
+  );
+}
+
+const probes =
+  options.only === undefined
+    ? PROBES
+    : PROBES.filter((probe) => probe.id === options.only);
+if (probes.length === 0) {
+  fail(`no probe matches --probe ${options.only ?? ""}`);
+}
+
+const calls = models.length * probes.length * options.repeats;
+
+if (options.dryRun) {
+  // Every real invocation spends money, and the matrix multiplies out faster
+  // than it reads. This prints what would be called and contacts nothing, so
+  // the first run against a new key is a decision rather than a surprise.
+  stdout.write(
+    [
+      "",
+      "DRY RUN — nothing was called and no model was contacted.",
+      "",
+      `  models   ${models.join(", ")}`,
+      `  probes   ${probes.length} (${probes.map((probe) => probe.id).join(", ")})`,
+      `  repeats  ${options.repeats}`,
+      `  requests ${calls} planning calls, plus one more per rejected attempt`,
+      "",
+      "  Remove --dry-run to run it.",
+      "",
+    ].join("\n"),
+  );
+  exit(0);
+}
 
 const apiKey = env.ANTHROPIC_API_KEY;
 if (apiKey === undefined || apiKey.trim() === "") {
@@ -78,15 +134,6 @@ if (apiKey === undefined || apiKey.trim() === "") {
       "  This eval calls a real model on purpose. Passing quietly without one\n" +
       "  would be worse than having no eval at all, because a green run would\n" +
       "  look like evidence. Set the key and DASHER_EVAL_MODEL, then re-run.",
-  );
-}
-
-const model = env.DASHER_EVAL_MODEL;
-if (model === undefined || model.trim() === "") {
-  fail(
-    "DASHER_EVAL_MODEL is not set.\n" +
-      "  The model has to be named explicitly: a result that does not record\n" +
-      "  which model produced it can be neither reproduced nor compared.",
   );
 }
 
@@ -101,41 +148,54 @@ const fixture = JSON.parse(
 ) as unknown;
 const gauges = parseUsgsInstantaneousValues(fixture);
 
-const provider = new AnthropicPlanningProvider({
-  apiKey,
-  model,
-  ...(options.effort === undefined ? {} : { effort: options.effort }),
-});
-
-const probes =
-  options.only === undefined
-    ? PROBES
-    : PROBES.filter((probe) => probe.id === options.only);
-if (probes.length === 0) {
-  fail(`no probe matches --probe ${options.only ?? ""}`);
-}
-
 const generations: Generation[] = [];
-for (const probe of probes) {
-  for (let repeat = 1; repeat <= options.repeats; repeat += 1) {
-    stdout.write(`  running ${probe.id} #${repeat}\n`);
-    // Sequential on purpose. This measures what the model writes, not how fast
-    // it can be made to write it, and a rate-limit error part-way through a
-    // parallel fan-out costs more to interpret than the time it saves.
-    generations.push(await runProbe(probe, repeat, gauges, provider));
+
+for (const model of models) {
+  const provider = new AnthropicPlanningProvider({
+    apiKey,
+    model,
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
+  });
+
+  for (const probe of probes) {
+    for (let repeat = 1; repeat <= options.repeats; repeat += 1) {
+      stdout.write(`  ${model}  ${probe.id} #${repeat}\n`);
+      // Sequential on purpose. This measures what the model writes, not how
+      // fast it can be made to write it, and a rate-limit error part-way
+      // through a parallel fan-out costs more to interpret than the time it
+      // saves.
+      generations.push(await runProbe(probe, repeat, gauges, provider, model));
+    }
   }
 }
 
-stdout.write(`\n${report(generations, model, probes.length)}\n`);
+for (const model of models) {
+  const forModel = generations.filter(
+    (generation) => generation.model === model,
+  );
+  stdout.write(`\n${report(forModel, model, probes.length)}\n`);
+}
+
+if (models.length > 1) {
+  const summaries = models.map((model) =>
+    summarise(
+      model,
+      generations.filter((generation) => generation.model === model),
+    ),
+  );
+  stdout.write(`\n${compareModels(summaries)}\n`);
+}
 
 if (options.out !== undefined) {
   await mkdir(dirname(options.out), { recursive: true });
   await writeFile(
     options.out,
-    `${JSON.stringify({ model, repeats: options.repeats, generations }, null, 2)}\n`,
+    `${JSON.stringify({ models, repeats: options.repeats, generations }, null, 2)}\n`,
     "utf8",
   );
-  stdout.write(`written to ${options.out}\n`);
+  stdout.write(`\nwritten to ${options.out}\n`);
 }
 
+// Any model leaking or failing a control probe fails the whole run: the gate is
+// Dasher's, so one model getting past it is a defect regardless of the others.
 exit(isFailure(judge(generations)) ? 1 : 0);

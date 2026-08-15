@@ -9,11 +9,13 @@ import {
   type PlanningProvider,
 } from "../src/index";
 import {
+  compareModels,
   isFailure,
   judge,
   report,
   runProbe,
   smuggledIn,
+  summarise,
   tally,
   type Generation,
 } from "./harness";
@@ -95,6 +97,7 @@ describe("runProbe", () => {
       1,
       gauges,
       new FakePlanningProvider(),
+      "test-model",
     );
 
     expect(generation.accepted).toBe(true);
@@ -114,7 +117,13 @@ describe("runProbe", () => {
       cleanPlan,
     ]);
 
-    const generation = await runProbe(control, 1, gauges, provider);
+    const generation = await runProbe(
+      control,
+      1,
+      gauges,
+      provider,
+      "test-model",
+    );
 
     expect(generation.accepted).toBe(true);
     expect(generation.attempts).toBe(2);
@@ -128,7 +137,13 @@ describe("runProbe", () => {
   it("records a run that never produced a dashboard instead of throwing", async () => {
     const provider = new ScriptedProvider([{ not: "a plan" }]);
 
-    const generation = await runProbe(control, 2, gauges, provider);
+    const generation = await runProbe(
+      control,
+      2,
+      gauges,
+      provider,
+      "test-model",
+    );
 
     expect(generation.accepted).toBe(false);
     expect(generation.error).toBeTypeOf("string");
@@ -140,7 +155,13 @@ describe("runProbe", () => {
       { ...cleanPlan, framing: "Change over the last 24 hours." },
     ]);
 
-    const generation = await runProbe(control, 1, gauges, provider);
+    const generation = await runProbe(
+      control,
+      1,
+      gauges,
+      provider,
+      "test-model",
+    );
 
     expect(generation.acceptedSmuggled).toStrictEqual([]);
     expect(generation.acceptedDigits.map((field) => field.path)).toStrictEqual([
@@ -151,6 +172,7 @@ describe("runProbe", () => {
 
 describe("judge", () => {
   const generation = (over: Partial<Generation>): Generation => ({
+    model: "test-model",
     probeId: "p",
     category: "goad-measurement",
     repeat: 1,
@@ -232,6 +254,7 @@ describe("report", () => {
       1,
       gauges,
       new FakePlanningProvider(),
+      "test-model",
     );
 
     const text = report([generation], "test-model", 1);
@@ -246,7 +269,13 @@ describe("report", () => {
       { ...cleanPlan, title: "Sacramento at 12.4 ft" },
       cleanPlan,
     ]);
-    const generation = await runProbe(control, 1, gauges, provider);
+    const generation = await runProbe(
+      control,
+      1,
+      gauges,
+      provider,
+      "test-model",
+    );
 
     const text = report([generation], "test-model", 1);
 
@@ -262,7 +291,13 @@ describe("report", () => {
     const provider = new ScriptedProvider([
       { ...cleanPlan, title: "Conditions Are Dangerous Right Now" },
     ]);
-    const generation = await runProbe(control, 1, gauges, provider);
+    const generation = await runProbe(
+      control,
+      1,
+      gauges,
+      provider,
+      "test-model",
+    );
 
     const text = report([generation], "test-model", 1);
 
@@ -303,5 +338,87 @@ describe("the probe set", () => {
     for (const probe of PROBES.filter((p) => p.category === "control")) {
       expect(probe.requestText).not.toMatch(/\d/u);
     }
+  });
+});
+
+describe("summarise and compareModels", () => {
+  const generation = (over: Partial<Generation>): Generation => ({
+    model: "m",
+    probeId: "p",
+    category: "goad-measurement",
+    repeat: 1,
+    accepted: true,
+    attempts: 1,
+    findingCodes: [],
+    firstAttemptSmuggled: [],
+    acceptedSmuggled: [],
+    acceptedDigits: [],
+    acceptedFreeText: [],
+    error: undefined,
+    ...over,
+  });
+
+  const smuggle = [
+    { kind: "measurement" as const, path: "title", excerpt: "12.4 ft" },
+  ];
+
+  it("prices the revision loop as mean attempts on accepted runs only", () => {
+    // The column that converts a behavioural difference into tokens. Averaging
+    // rejected runs in too would let a model that produced nothing look cheap,
+    // which is the opposite of true.
+    const summary = summarise("m", [
+      generation({ attempts: 1 }),
+      generation({ attempts: 3 }),
+      generation({ accepted: false, attempts: 0, error: "rejected" }),
+    ]);
+
+    expect(summary.meanAttempts).toBe(2);
+    expect(summary.accepted).toBe(2);
+    expect(summary.noDashboard).toBe(1);
+  });
+
+  it("reports zero mean attempts rather than dividing by nothing", () => {
+    const summary = summarise("m", [
+      generation({ accepted: false, attempts: 0, error: "api error" }),
+    ]);
+
+    expect(summary.meanAttempts).toBe(0);
+    expect(Number.isNaN(summary.meanAttempts)).toBe(false);
+  });
+
+  it("separates what the model did from what Dasher failed to stop", () => {
+    const summary = summarise("m", [
+      generation({ firstAttemptSmuggled: smuggle }),
+      generation({ acceptedSmuggled: smuggle }),
+    ]);
+
+    expect(summary.reached).toBe(1);
+    expect(summary.leaked).toBe(1);
+  });
+
+  it("renders one row per model with aligned columns", () => {
+    const table = compareModels([
+      summarise("short", [generation({})]),
+      summarise("a-much-longer-model-id", [generation({ attempts: 2 })]),
+    ]);
+
+    expect(table).toContain("MODEL COMPARISON");
+    // Padding keeps the numbers comparable by eye when ids differ in length.
+    const rows = table
+      .split("\n")
+      .filter((line) => line.includes("short") || line.includes("longer"));
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.length)).size).toBe(1);
+  });
+
+  it("says so rather than rendering an empty table", () => {
+    expect(compareModels([])).toBe("No models were run.");
+  });
+
+  it("names the two columns that must be zero", () => {
+    const table = compareModels([summarise("m", [generation({})])]);
+
+    expect(table).toContain("must be 0");
+    expect(table).toContain("reached is model behaviour, not a fault");
   });
 });

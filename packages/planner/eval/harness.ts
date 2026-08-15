@@ -27,6 +27,8 @@ import type { Probe, ProbeCategory } from "./probes";
 export const EVAL_AS_OF = "2026-07-29T12:02:00.000Z";
 
 export interface Generation {
+  /** Which model produced this. Present so a sweep's rows stay attributable. */
+  model: string;
   probeId: string;
   category: ProbeCategory;
   repeat: number;
@@ -93,9 +95,10 @@ export async function runProbe(
   repeat: number,
   gauges: readonly RiverGauge[],
   provider: PlanningProvider,
+  model: string,
 ): Promise<Generation> {
   const recorder = new RecordingProvider(provider);
-  const base = { probeId: probe.id, category: probe.category, repeat };
+  const base = { model, probeId: probe.id, category: probe.category, repeat };
 
   try {
     const run = await runPlanner({
@@ -163,6 +166,95 @@ export function judge(generations: readonly Generation[]): EvalVerdict {
 /** A verdict is a failure only on the two things that indicate our bug. */
 export function isFailure(verdict: EvalVerdict): boolean {
   return verdict.gateDefects.length > 0 || verdict.controlFailures.length > 0;
+}
+
+/** One model's row in a sweep, all of it derived rather than asserted. */
+export interface ModelSummary {
+  model: string;
+  generations: number;
+  accepted: number;
+  /** Runs where the model reached for a number or directive on attempt 1. */
+  reached: number;
+  /** Runs where something survived into the accepted plan. Must be 0. */
+  leaked: number;
+  /** Control probes that produced no dashboard. Must be 0. */
+  controlFailures: number;
+  /** Accepted text carrying a digit the two hard edges did not catch. */
+  digits: number;
+  /** Mean attempts per accepted run — the cost of the revision loop. */
+  meanAttempts: number;
+  /** Runs that produced nothing at all, including API errors. */
+  noDashboard: number;
+}
+
+export function summarise(
+  model: string,
+  generations: readonly Generation[],
+): ModelSummary {
+  const verdict = judge(generations);
+  const accepted = generations.filter((g) => g.accepted);
+  return {
+    model,
+    generations: generations.length,
+    accepted: accepted.length,
+    reached: verdict.reachedForSomething.length,
+    leaked: verdict.gateDefects.length,
+    controlFailures: verdict.controlFailures.length,
+    digits: verdict.digitsSurvived.length,
+    meanAttempts:
+      accepted.length === 0
+        ? 0
+        : accepted.reduce((total, g) => total + g.attempts, 0) /
+          accepted.length,
+    noDashboard: generations.filter((g) => !g.accepted).length,
+  };
+}
+
+/**
+ * The sweep's answer, as a table.
+ *
+ * `leaked` and `controlFailures` are defects in Dasher and must be zero for
+ * every model. `reached` is the interesting column: it is how often a model
+ * tried to write a reading or an instruction before the loop corrected it, and
+ * it is a property of the model rather than a fault. A model that never reaches
+ * costs fewer round trips; a model that reaches often still ships correct
+ * dashboards, just more slowly and more expensively.
+ *
+ * `meanAttempts` prices that directly. It is the column to read when choosing
+ * what to ship, because it converts a behavioural difference into tokens.
+ */
+export function compareModels(summaries: readonly ModelSummary[]): string {
+  if (summaries.length === 0) return "No models were run.";
+
+  const columns = [
+    ["model", (s: ModelSummary) => s.model],
+    ["runs", (s: ModelSummary) => String(s.generations)],
+    ["accepted", (s: ModelSummary) => String(s.accepted)],
+    ["reached", (s: ModelSummary) => String(s.reached)],
+    ["leaked", (s: ModelSummary) => String(s.leaked)],
+    ["ctrl fail", (s: ModelSummary) => String(s.controlFailures)],
+    ["digits", (s: ModelSummary) => String(s.digits)],
+    ["mean tries", (s: ModelSummary) => s.meanAttempts.toFixed(2)],
+  ] as const;
+
+  const rows = summaries.map((summary) =>
+    columns.map(([, read]) => read(summary)),
+  );
+  const widths = columns.map(([heading], index) =>
+    Math.max(heading.length, ...rows.map((row) => row[index]?.length ?? 0)),
+  );
+  const line = (cells: readonly string[]) =>
+    cells.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join("  ");
+
+  return [
+    "MODEL COMPARISON",
+    `  ${line(columns.map(([heading]) => heading))}`,
+    `  ${line(widths.map((width) => "-".repeat(width)))}`,
+    ...rows.map((row) => `  ${line(row)}`),
+    "",
+    "  leaked and ctrl fail are defects in Dasher; both must be 0 for every row.",
+    "  reached is model behaviour, not a fault — mean tries is what it costs.",
+  ].join("\n");
 }
 
 export function tally(

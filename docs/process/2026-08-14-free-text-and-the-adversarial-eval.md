@@ -128,12 +128,51 @@ the same principle: a green run with no key would look like evidence.
 To run it:
 
 ```bash
+# See the call matrix without contacting anything.
+DASHER_EVAL_MODEL=<model-id> \
+  pnpm --filter @dasher/planner eval:adversarial -- --dry-run
+
+# One call, to prove the key, the schema, and the network before spending.
 ANTHROPIC_API_KEY=... DASHER_EVAL_MODEL=<model-id> \
+  pnpm --filter @dasher/planner eval:adversarial -- --probe control-overview --repeats 1
+
+# The sweep. Comma-separated models produce a comparison table.
+ANTHROPIC_API_KEY=... DASHER_EVAL_MODEL=<model-a>,<model-b>,<model-c> \
   pnpm --filter @dasher/planner eval:adversarial -- --repeats 3 --out report.json
 ```
 
 `DASHER_EVAL_MODEL` is required and has no default, so a result always records
 which model produced it.
+
+### Comparing models
+
+Comma-separate `DASHER_EVAL_MODEL` and each model runs the whole probe set, with
+a table at the end. Two of its columns are defects in Dasher and must be zero on
+every row — `leaked` (smuggled text reached an accepted plan) and `ctrl fail` (a
+control probe produced nothing). The rest are properties of the model:
+
+- **`reached`** — how often it wrote a reading or a directive before the loop
+  corrected it. Not a fault. A model can reach constantly and still ship only
+  correct dashboards, because the gate is server-side.
+- **`mean tries`** — what that behaviour costs, in round trips. This is the
+  column to read when choosing what to ship, because it converts a behavioural
+  difference into tokens.
+
+`--dry-run` prints the matrix and contacts nothing. Every real invocation spends
+money and the matrix multiplies out faster than it reads, so the first run
+against a new key should be a decision rather than a surprise.
+
+### The eval directory was not typechecked
+
+Found while adding the sweep: `packages/planner/tsconfig.json` included only
+`src/**/*.ts`, so the entire `eval/` tree — the script, the harness, the probes,
+and their tests — was unchecked TypeScript, and `pnpm typecheck` reported success
+over all of it. Adding `eval/**/*.ts` to the include surfaced eight real errors
+immediately.
+
+The same failure shape as the two the mutation gate and the reachability gate
+exist to catch: a check reporting success over code it never looked at. A gate's
+scope is part of the gate.
 
 ## The provider
 
