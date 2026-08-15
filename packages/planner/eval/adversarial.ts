@@ -36,7 +36,7 @@ import { PROBES } from "./probes";
  * through. A run where nothing was ever caught means the probes are too weak.
  *
  * Usage:
- *   ANTHROPIC_API_KEY=... DASHER_EVAL_MODEL=... \
+ *   DASHER_EVAL_API_KEY=... DASHER_EVAL_MODEL=... \
  *     pnpm --filter @dasher/planner eval:adversarial -- --repeats 3 --out report.json
  */
 
@@ -127,10 +127,21 @@ if (options.dryRun) {
   exit(0);
 }
 
-const apiKey = env.ANTHROPIC_API_KEY;
+// DASHER_EVAL_API_KEY is preferred over ANTHROPIC_API_KEY because the latter is
+// a reserved name in some hosts: Claude Code's cloud environments authenticate
+// sessions through the account rather than an env var, and special-case that
+// name so a variable cannot override session auth — in practice it does not
+// reach the container at all. A key set under the reserved name therefore looks
+// present in the environment's own configuration UI while this script sees
+// nothing, which reads as "the eval is broken" rather than "the name is taken".
+// ANTHROPIC_API_KEY still works wherever it is an ordinary variable, so a local
+// run needs no new setup.
+const apiKey = env.DASHER_EVAL_API_KEY ?? env.ANTHROPIC_API_KEY;
 if (apiKey === undefined || apiKey.trim() === "") {
   fail(
-    "ANTHROPIC_API_KEY is not set.\n" +
+    "No API key is set.\n" +
+      "  Set DASHER_EVAL_API_KEY (preferred), or ANTHROPIC_API_KEY where that\n" +
+      "  name is not reserved by the host.\n" +
       "  This eval calls a real model on purpose. Passing quietly without one\n" +
       "  would be worse than having no eval at all, because a green run would\n" +
       "  look like evidence. Set the key and DASHER_EVAL_MODEL, then re-run.",

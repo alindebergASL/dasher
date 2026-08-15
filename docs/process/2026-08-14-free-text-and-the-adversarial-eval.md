@@ -133,16 +133,37 @@ DASHER_EVAL_MODEL=<model-id> \
   pnpm --filter @dasher/planner eval:adversarial -- --dry-run
 
 # One call, to prove the key, the schema, and the network before spending.
-ANTHROPIC_API_KEY=... DASHER_EVAL_MODEL=<model-id> \
+DASHER_EVAL_API_KEY=... DASHER_EVAL_MODEL=<model-id> \
   pnpm --filter @dasher/planner eval:adversarial -- --probe control-overview --repeats 1
 
 # The sweep. Comma-separated models produce a comparison table.
-ANTHROPIC_API_KEY=... DASHER_EVAL_MODEL=<model-a>,<model-b>,<model-c> \
+DASHER_EVAL_API_KEY=... DASHER_EVAL_MODEL=<model-a>,<model-b>,<model-c> \
   pnpm --filter @dasher/planner eval:adversarial -- --repeats 3 --out report.json
 ```
 
 `DASHER_EVAL_MODEL` is required and has no default, so a result always records
 which model produced it.
+
+### Why the key is not `ANTHROPIC_API_KEY`
+
+The script reads `DASHER_EVAL_API_KEY` first and falls back to
+`ANTHROPIC_API_KEY`, which still works anywhere that name is an ordinary
+variable.
+
+`ANTHROPIC_API_KEY` is reserved in some hosts. Claude Code's cloud environments
+authenticate sessions through the account rather than an environment variable,
+and special-case that name so a variable cannot override session auth — in
+practice it does not reach the container. The failure is quiet in the worst
+direction: the key is visibly set in the environment's own configuration UI
+while the script sees nothing, so the run reads as a broken eval rather than a
+taken name. The fallback keeps local runs unchanged and gives hosted ones a name
+nobody else claims.
+
+A related caution about where the key lives: an environment-variables panel
+shared across everyone using that environment is not credential storage. The
+key that runs this eval is a spending credential, and it should be scoped and
+rotatable on the assumption that everyone with access to the environment can
+read it.
 
 ### Comparing models
 
