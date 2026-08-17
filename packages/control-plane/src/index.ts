@@ -52,3 +52,12 @@ export {
 } from "./verified-principal.js";
 
 export { renderSchemaSnapshot } from "./schema-snapshot.js";
+
+export {
+  RequestContextError,
+  withRequestContext,
+  type RequestCredential,
+  type RequestContextErrorCode,
+  type RequestPool,
+  type RequestPrincipal,
+} from "./request-context.js";

@@ -14,6 +14,7 @@ describe("control-plane public exports", () => {
       "IntegrationPreflightError",
       "MigrationContractError",
       "POSTGRES_INTEGRATION_ENV_NAMES",
+      "RequestContextError",
       "SecretKeyRing",
       "SecretPrimitiveError",
       "SessionCookieMetadataError",
@@ -28,6 +29,7 @@ describe("control-plane public exports", () => {
       "parsePostgresIntegrationEnv",
       "renderSchemaSnapshot",
       "runMigrations",
+      "withRequestContext",
     ]);
   });
 
