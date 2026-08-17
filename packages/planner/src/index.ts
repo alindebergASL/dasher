@@ -38,11 +38,14 @@ export {
 
 export {
   FakePlanningProvider,
+  isUninterpretable,
+  readRefinementIntent,
   type AvailableSite,
   type PlanningProvider,
   type PlanningRefinement,
   type PlanningRequest,
   type PlanningRevision,
+  type RefinementIntent,
 } from "./provider";
 
 export { compilePlan, type CompileOptions } from "./compile";

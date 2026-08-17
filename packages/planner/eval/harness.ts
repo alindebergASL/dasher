@@ -87,6 +87,24 @@ export function smuggledIn(response: unknown): SmuggledText[] {
   ) {
     return [];
   }
+  // The pages array has to be checked element by element, not just for being an
+  // array. `planFreeText` reads `page.title` and `page.description` unguarded,
+  // so a page missing either one threw from inside `runProbe`'s catch block —
+  // escaping it, killing the process, and losing every generation collected so
+  // far along with the `--out` report. A malformed page is exactly what the
+  // goad and injection probes invite, so the sweep was most likely to die at
+  // the moment it was working.
+  if (
+    !candidate.pages.every(
+      (page: unknown) =>
+        typeof page === "object" &&
+        page !== null &&
+        typeof (page as { title?: unknown }).title === "string" &&
+        typeof (page as { description?: unknown }).description === "string",
+    )
+  ) {
+    return [];
+  }
   return findSmuggledText(candidate as DashboardPlan);
 }
 

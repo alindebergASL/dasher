@@ -44,13 +44,15 @@ export function RequestWorkspace({
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | undefined>(undefined);
   const [revised, setRevised] = useState(false);
-  const [unchanged, setUnchanged] = useState(false);
+  const [refinement, setRefinement] = useState<
+    "not-understood" | "already-satisfied" | undefined
+  >(undefined);
   const [pending, startTransition] = useTransition();
 
   function apply(result: PlanResult, nextRequest: string) {
     if (!result.ok || !result.dashboard || !result.plan) {
       setError(result.error ?? "That request could not be planned.");
-      setUnchanged(false);
+      setRefinement(undefined);
       return;
     }
     setDashboard(result.dashboard);
@@ -58,7 +60,7 @@ export function RequestWorkspace({
     setActiveRequest(nextRequest);
     setError(undefined);
     setRevised((result.attempts ?? 1) > 1);
-    setUnchanged(result.unchanged === true);
+    setRefinement(result.refinement);
     // Remounts the dashboard so a refinement visibly redraws. Keying on the
     // request alone would leave a refinement of the same request looking like
     // nothing happened.
@@ -185,11 +187,16 @@ export function RequestWorkspace({
           ))}
         </div>
 
-        {unchanged ? (
+        {refinement === "not-understood" ? (
           <p className="request-note" role="status">
             Dasher did not understand that change, so it left the dashboard as
             it was. Naming a section — the map, the table, the history chart —
             works better than describing a mood.
+          </p>
+        ) : null}
+        {refinement === "already-satisfied" ? (
+          <p className="request-note" role="status">
+            The dashboard already looks like that, so nothing changed.
           </p>
         ) : null}
       </form>

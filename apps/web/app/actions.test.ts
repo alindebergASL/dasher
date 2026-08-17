@@ -69,15 +69,36 @@ describe("refineDashboard", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(result.unchanged).toBe(true);
+    expect(result.refinement).toBe("not-understood");
   });
 
-  it("does not claim `unchanged` when something actually changed", async () => {
+  it("reports nothing when something actually changed", async () => {
     const plan = await firstPlan();
 
     const result = await refineDashboard(DEFAULT_REQUEST, "Drop the map", plan);
 
-    expect(result.unchanged).toBe(false);
+    expect(result.refinement).toBeUndefined();
+  });
+
+  it("does not call an understood-but-already-true change a failure", async () => {
+    // The shipped suggestion chip, on the dashboard it ships with. The plan
+    // comes back identical because the chart is already there — telling the
+    // reader Dasher did not understand would be false, and it is the first
+    // thing a new visitor sees.
+    const plan = await firstPlan();
+    const sections = (
+      plan as { pages: { sections: string[] }[] }
+    ).pages.flatMap((page) => page.sections);
+    expect(sections).toContain("stage-trends");
+
+    const result = await refineDashboard(
+      DEFAULT_REQUEST,
+      "Add the history chart",
+      plan,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.refinement).toBe("already-satisfied");
   });
 
   it.each([

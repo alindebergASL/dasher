@@ -1,7 +1,11 @@
 # The free-text hole, the gate over it, and the eval that measures the rest
 
-Status: Applied — gate merged and covered by tests; eval built, never run
+Status: Applied — gate merged and covered by tests; eval built and since run
 Date: 2026-08-14
+Updated: 2026-08-17 — the eval has now been run. See
+`docs/validation/eval/2026-08-15-adversarial-sweep.md` for the result and its
+artifacts. The "it has not been run" section below is preserved as it stood,
+with a dated note, because it was true when written.
 
 ## The claim that was false
 
@@ -116,6 +120,15 @@ invisible in the worst possible way. It surfaces as a clean result, which reads
 as evidence of a property the run never measured.
 
 ### It has not been run
+
+> **Superseded 2026-08-15.** An operator ran the full sweep against exact head
+> `373d9f1` on a separate host, three models, 135 generations. The result and its
+> artifacts are in `docs/validation/eval/2026-08-15-adversarial-sweep.md`. The
+> paragraph below stood at the time of writing and is kept rather than rewritten,
+> because a document that quietly updates its own history is worth less than one
+> that shows it. The environment constraint it describes is still real: this
+> repository's own sessions have no product API key, and the run happened
+> elsewhere with an operator's.
 
 **No model has ever been called.** This environment has no API key, and borrowing
 the session's credentials would be using the harness's authorization for the
@@ -241,9 +254,15 @@ provider into a server action because it was easier than plumbing a flag.
 
 ## Open, and deliberately so
 
-- The claim category is ungated. Decide where the third edge belongs from eval
-  evidence, not before it.
-- The eval has never been run, so nothing here is a measurement of any model.
+- The claim category is ungated. The evidence asked for now exists: the first
+  sweep found that 57% of accepted plans assert data liveness ("real-time",
+  "live", "right now") about what was a static fixture, which is a sharper and
+  more gateable target than "unquantified claim" because Dasher already computes
+  freshness and can contradict the text. Recommended, not yet decided — see
+  `docs/validation/eval/2026-08-15-adversarial-sweep.md`.
+- ~~The eval has never been run, so nothing here is a measurement of any model.~~
+  Run on 2026-08-15 against head `373d9f1`: 135 generations across three models,
+  0 leaked, 0 control failures, 3 corrected reaches.
 - `apps/web` still uses `FakePlanningProvider`. Wiring the real provider into the
   product is a separate decision that should follow a first eval run, and would
   need credential storage, a per-organization provider choice, cost controls, and

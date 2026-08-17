@@ -54,9 +54,12 @@ export interface PlanResult {
   /** How many plan attempts were needed, including revisions. */
   attempts?: number;
   /**
-   * True when a refinement produced the same plan it started from, so the UI
-   * can say the instruction was not understood rather than showing an
-   * unchanged dashboard and letting the reader wonder.
+   * Present only when a refinement produced the same plan it started from, and
+   * says why, because the two reasons need opposite messages:
+   *
+   * - `not-understood` — nothing in the instruction was recognised.
+   * - `already-satisfied` — it was understood and the dashboard already
+   *   matched it, so telling the reader it failed would be false.
    */
-  unchanged?: boolean;
+  refinement?: "not-understood" | "already-satisfied";
 }

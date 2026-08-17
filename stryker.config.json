@@ -2,8 +2,13 @@
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "packageManager": "pnpm",
   "testRunner": "vitest",
-  "plugins": ["@stryker-mutator/vitest-runner"],
-  "reporters": ["clear-text", "progress"],
+  "plugins": [
+    "@stryker-mutator/vitest-runner"
+  ],
+  "reporters": [
+    "clear-text",
+    "progress"
+  ],
   "coverageAnalysis": "perTest",
   "inPlace": true,
   "ignoreStatic": true,
@@ -23,6 +28,6 @@
   "thresholds": {
     "high": 85,
     "low": 70,
-    "break": 71
+    "break": 73
   }
 }

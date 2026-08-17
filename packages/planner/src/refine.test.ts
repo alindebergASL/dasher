@@ -5,8 +5,11 @@ import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 import {
   FakePlanningProvider,
+  isUninterpretable,
   PlanRejected,
+  readRefinementIntent,
   runPlanner,
+  type AvailableSite,
   type DashboardPlan,
   type PlanningProvider,
   type PlanningRequest,
@@ -88,6 +91,23 @@ describe("refining a dashboard the reader can see", () => {
 
     const second = await refine(first.plan, "Add the history chart.");
 
+    expect(sectionsOf(second.plan)).toContain("stage-trends");
+  });
+
+  it("both removes and adds when one instruction asks for both", async () => {
+    // Deciding remove-or-add once for the whole sentence deleted the section
+    // the reader asked to add, and the loop reported success. Each named
+    // section belongs to the verb in front of it.
+    const first = await build("Show me the gauge map.");
+    expect(sectionsOf(first.plan)).toContain("gauge-map");
+    expect(sectionsOf(first.plan)).not.toContain("stage-trends");
+
+    const second = await refine(
+      first.plan,
+      "Remove the map and add the history chart.",
+    );
+
+    expect(sectionsOf(second.plan)).not.toContain("gauge-map");
     expect(sectionsOf(second.plan)).toContain("stage-trends");
   });
 
@@ -251,5 +271,74 @@ describe("the two correction channels stay distinct", () => {
     );
     expect(run.attempts.at(-1)?.accepted).toBe(true);
     expect(run.plan.siteIds).not.toContain("99999999");
+  });
+});
+
+/**
+ * The intent reader is public because `apps/web` needs the same answer the loop
+ * uses: an identical plan means "already true" when the instruction was read and
+ * "not understood" when it was not, and those need opposite messages.
+ */
+describe("readRefinementIntent", () => {
+  const SITES: readonly AvailableSite[] = [
+    { siteId: "11446500", name: "American R at Fair Oaks", river: "American" },
+    {
+      siteId: "11447650",
+      name: "Sacramento R at Freeport",
+      river: "Sacramento",
+    },
+  ];
+
+  const intent = (instruction: string) =>
+    readRefinementIntent(instruction, SITES);
+
+  it("attributes each named section to the verb in front of it", () => {
+    const read = intent("Remove the map and add the history chart.");
+
+    expect(read.remove).toStrictEqual(["gauge-map"]);
+    expect(read.add).toStrictEqual(["stage-trends"]);
+  });
+
+  it("reads the reverse order the same way", () => {
+    const read = intent("Add the history chart and drop the map.");
+
+    expect(read.remove).toStrictEqual(["gauge-map"]);
+    expect(read.add).toStrictEqual(["stage-trends"]);
+  });
+
+  it("falls back to the instruction's single verb when none precedes a section", () => {
+    expect(intent("The map — drop it.").remove).toStrictEqual(["gauge-map"]);
+  });
+
+  it("reads a collapse request", () => {
+    expect(intent("Make it shorter.").collapse).toBe(true);
+    expect(intent("Drop the map.").collapse).toBe(false);
+  });
+
+  it("narrows to a named river only when the instruction restricts", () => {
+    expect(intent("Just the American River.").narrowToSiteIds).toStrictEqual([
+      "11446500",
+    ]);
+    // Naming a river without restricting is not a narrowing request.
+    expect(intent("The American River is nice.").narrowToSiteIds).toStrictEqual(
+      [],
+    );
+  });
+
+  it.each([
+    ["a mood", "Make it feel more optimistic"],
+    ["an unrecognised subject", "I own a house near the river"],
+    ["nothing at all", "   "],
+  ])("reports %s as uninterpretable", (_label, instruction) => {
+    expect(isUninterpretable(intent(instruction))).toBe(true);
+  });
+
+  it.each([
+    ["a removal", "Drop the map"],
+    ["an addition", "Add the history chart"],
+    ["a collapse", "Make it shorter"],
+    ["a narrowing", "Only the Sacramento River"],
+  ])("does not report %s as uninterpretable", (_label, instruction) => {
+    expect(isUninterpretable(intent(instruction))).toBe(false);
   });
 });

@@ -1388,6 +1388,14 @@ footer {
     display: block;
   }
 
+  /* The hint above the build form is hidden here to keep the pinned control
+     out of the layout, but the refine bar's note is feedback about what the
+     reader just did. Hiding it left a phone with no answer at all, visually or
+     to a screen reader, since it carries role="status". */
+  .refine-bar .request-note {
+    display: block;
+  }
+
   .request-input {
     flex: 1 1 8rem;
     font-size: 0.95rem;

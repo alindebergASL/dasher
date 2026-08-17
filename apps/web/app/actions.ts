@@ -3,7 +3,9 @@
 import {
   DashboardPlanSchema,
   FakePlanningProvider,
+  isUninterpretable,
   PlanRejected,
+  readRefinementIntent,
   runPlanner,
   type DashboardPlan,
   type PlannerRunOptions,
@@ -52,14 +54,34 @@ async function plan(
       thresholds: DEMO_THRESHOLDS,
       ...(refine === undefined ? {} : { refine }),
     });
+    const same =
+      refine !== undefined &&
+      JSON.stringify(run.plan) === JSON.stringify(refine.previousPlan);
     return {
       ok: true,
       dashboard: run.dashboard,
       plan: run.plan,
       attempts: run.attempts.length,
-      unchanged:
-        refine !== undefined &&
-        JSON.stringify(run.plan) === JSON.stringify(refine.previousPlan),
+      // An identical plan has two very different causes. Reporting both as
+      // "not understood" tells a reader their working request failed — the
+      // shipped "Add the history chart" chip does exactly that on the default
+      // dashboard, which already has one.
+      ...(same
+        ? {
+            refinement: isUninterpretable(
+              readRefinementIntent(
+                refine.instruction,
+                gauges.map((gauge) => ({
+                  siteId: gauge.siteId,
+                  name: gauge.name,
+                  river: gauge.river,
+                })),
+              ),
+            )
+              ? ("not-understood" as const)
+              : ("already-satisfied" as const),
+          }
+        : {}),
     };
   } catch (error) {
     if (error instanceof PlanRejected) {

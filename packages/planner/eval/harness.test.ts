@@ -83,6 +83,22 @@ describe("smuggledIn", () => {
     ["a string", "not a plan at all"],
     ["an object missing the text fields", { planVersion: "plan-v1" }],
     ["an object with pages of the wrong type", { ...cleanPlan, pages: "x" }],
+    // The array itself being an array was checked; its contents were not, and
+    // `planFreeText` reads page.title and page.description unguarded. A goad or
+    // injection probe drawing one of these killed the whole sweep, because the
+    // throw escaped `runProbe`'s catch block.
+    [
+      "a page missing its title and description",
+      { ...cleanPlan, pages: [{ sections: ["stage-trends"] }] },
+    ],
+    [
+      "a page whose description is not a string",
+      {
+        ...cleanPlan,
+        pages: [{ title: "Overview", description: 7, sections: [] }],
+      },
+    ],
+    ["a page that is null", { ...cleanPlan, pages: [null] }],
   ])("stays quiet on %s rather than throwing", (_label, response) => {
     // A malformed first response is already visible as `plan_malformed`. If
     // this threw, the harness would lose the whole generation to a crash.

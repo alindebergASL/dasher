@@ -301,10 +301,120 @@ const SECTION_WORDS: ReadonlyArray<[PlanSectionKind, readonly string[]]> = [
   ["change-windows", ["window", "change"]],
 ];
 
-function sectionsNamedIn(text: string): PlanSectionKind[] {
-  return SECTION_WORDS.filter(([, words]) =>
-    words.some((word) => text.includes(word)),
-  ).map(([section]) => section);
+const REMOVE_WORDS = [
+  "remove",
+  "drop",
+  "hide",
+  "without",
+  "take off",
+  "no ",
+] as const;
+const ADD_WORDS = ["add", "include", "show", "put back", "bring back"] as const;
+const COLLAPSE_WORDS = [
+  "shorter",
+  "simpler",
+  "one page",
+  "single page",
+  "condense",
+] as const;
+const NARROW_WORDS = ["just", "only", "focus"] as const;
+
+/**
+ * What an instruction asks for, read once so the loop and the caller cannot
+ * disagree about whether it was understood.
+ */
+export interface RefinementIntent {
+  readonly remove: readonly PlanSectionKind[];
+  readonly add: readonly PlanSectionKind[];
+  readonly collapse: boolean;
+  readonly narrowToSiteIds: readonly string[];
+}
+
+function firstIndexOfAny(text: string, words: readonly string[]): number {
+  let earliest = -1;
+  for (const word of words) {
+    const at = text.indexOf(word);
+    if (at !== -1 && (earliest === -1 || at < earliest)) earliest = at;
+  }
+  return earliest;
+}
+
+/**
+ * The verb governing a named section is the nearest one in front of it.
+ *
+ * "Remove the map and add the history chart" names two sections under opposite
+ * verbs. Deciding remove-or-add once for the whole sentence deleted the section
+ * the reader asked to add and still reported success, so each named section is
+ * attributed to the verb it actually sits behind.
+ */
+function verbBefore(text: string, at: number): "remove" | "add" | undefined {
+  let best: { at: number; kind: "remove" | "add" } | undefined;
+  const scan = (words: readonly string[], kind: "remove" | "add"): void => {
+    for (const word of words) {
+      for (let from = 0; ;) {
+        const found = text.indexOf(word, from);
+        if (found === -1 || found >= at) break;
+        if (best === undefined || found > best.at) best = { at: found, kind };
+        from = found + 1;
+      }
+    }
+  };
+  scan(REMOVE_WORDS, "remove");
+  scan(ADD_WORDS, "add");
+  return best?.kind;
+}
+
+export function readRefinementIntent(
+  instruction: string,
+  sites: readonly AvailableSite[],
+): RefinementIntent {
+  const text = instruction.toLowerCase();
+  const has = (words: readonly string[]): boolean =>
+    words.some((word) => text.includes(word));
+
+  const remove: PlanSectionKind[] = [];
+  const add: PlanSectionKind[] = [];
+  const anyRemove = has(REMOVE_WORDS);
+  const anyAdd = has(ADD_WORDS);
+
+  for (const [section, words] of SECTION_WORDS) {
+    const at = firstIndexOfAny(text, words);
+    if (at === -1) continue;
+    const verb = verbBefore(text, at);
+    if (verb === "remove") remove.push(section);
+    else if (verb === "add") add.push(section);
+    // Named with no verb in front of it: fall back to the instruction's own
+    // single verb, so "the map — drop it" still reads as a removal.
+    else if (anyRemove && !anyAdd) remove.push(section);
+    else if (anyAdd && !anyRemove) add.push(section);
+  }
+
+  return {
+    remove,
+    add,
+    collapse: has(COLLAPSE_WORDS),
+    narrowToSiteIds: has(NARROW_WORDS)
+      ? sites
+          .filter((site) => text.includes(site.river.toLowerCase()))
+          .map((site) => site.siteId)
+      : [],
+  };
+}
+
+/**
+ * True when nothing in the instruction was recognised.
+ *
+ * This is what separates "Dasher did not understand that" from "the dashboard
+ * already looks like that". Both leave the plan identical, and reporting the
+ * second as the first tells a reader their working request failed.
+ */
+export function isUninterpretable(intent: RefinementIntent): boolean {
+  return (
+    intent.remove.length === 0 &&
+    intent.add.length === 0 &&
+    !intent.collapse &&
+    intent.narrowToSiteIds.length === 0
+  );
 }
 
 /**
@@ -321,27 +431,26 @@ function refine(
   sites: readonly AvailableSite[],
 ): DashboardPlan {
   const plan = refinement.previousPlan;
-  const text = refinement.instruction.toLowerCase();
-  const has = (...needles: string[]) =>
-    needles.some((needle) => text.includes(needle));
-
-  const named = sectionsNamedIn(text);
-  const removing = has("remove", "drop", "hide", "without", "take off", "no ");
-  const adding = has("add", "include", "show", "put back", "bring back");
+  const intent = readRefinementIntent(refinement.instruction, sites);
 
   let pages = plan.pages.map((page) => ({ ...page }));
 
-  if (removing && named.length > 0) {
-    const doomed = new Set(named);
+  // Removals first, then additions. Both run: a compound instruction asks for
+  // two things and letting the first verb claim the whole sentence dropped the
+  // other one silently.
+  if (intent.remove.length > 0) {
+    const doomed = new Set(intent.remove);
     pages = pages
       .map((page) => ({
         ...page,
         sections: page.sections.filter((section) => !doomed.has(section)),
       }))
       .filter((page) => page.sections.length > 0);
-  } else if (adding && named.length > 0) {
+  }
+
+  if (intent.add.length > 0) {
     const present = new Set(pages.flatMap((page) => page.sections));
-    const missing = named.filter((section) => !present.has(section));
+    const missing = intent.add.filter((section) => !present.has(section));
     // Onto the first page with room. A section appended to a full page would be
     // dropped by the contract's own limit, which looks like the request was
     // ignored rather than refused.
@@ -356,7 +465,7 @@ function refine(
   }
 
   // "Make it shorter" collapses to a single page, keeping order.
-  if (has("shorter", "simpler", "one page", "single page", "condense")) {
+  if (intent.collapse) {
     const flattened = [...new Set(pages.flatMap((page) => page.sections))];
     pages = [
       {
@@ -378,15 +487,11 @@ function refine(
     ];
   }
 
-  const narrowed = sites.filter((site) =>
-    text.includes(site.river.toLowerCase()),
-  );
-
   return {
     ...plan,
     siteIds:
-      has("just", "only", "focus") && narrowed.length > 0
-        ? narrowed.map((site) => site.siteId)
+      intent.narrowToSiteIds.length > 0
+        ? [...intent.narrowToSiteIds]
         : plan.siteIds,
     pages,
   };
