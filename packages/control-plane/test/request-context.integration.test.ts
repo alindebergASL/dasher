@@ -788,3 +788,107 @@ it("still allows an ordinary statement with a conventional trailing semicolon", 
   );
   expect(result.rows[0]?.one).toBe(1);
 });
+
+/**
+ * Forging the request context directly.
+ *
+ * The guard above stops a callback taking the transaction. This asks the next
+ * question: the row-level-security predicate reads five settings, and
+ * `set_config` is an ordinary statement the handle allows — so can a callback
+ * simply write Carol's organization into them and read her rows?
+ *
+ * It cannot, and the reason is the fifth setting. `begin_request` stores a
+ * digest over user, organization, session, authority revision, and the
+ * transaction id, computed by a `SECURITY DEFINER` function whose key the
+ * application role cannot reach. `context_allows` recomputes and compares it, so
+ * a forged field invalidates the whole context rather than replacing one part of
+ * it. These are the negative tests for that claim; without them it is an
+ * argument from reading the schema.
+ */
+
+it("cannot compute a context digest as the application role", async () => {
+  // The keyed function is the root of the whole construction. If the app role
+  // could call it, every other assertion here would be worthless.
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async (handle) =>
+        handle.query(
+          "SELECT dasher_private.context_digest($1, $2, $3, 1, '0') AS digest",
+          [carol, otherOrg, randomUUID()],
+        ),
+    ),
+  ).rejects.toMatchObject({ code: "42501" });
+});
+
+it("cannot read another tenant by overwriting every context setting", async () => {
+  // The full forgery: inside Alice's legitimate transaction, replace all five
+  // settings with Carol's values plus an invented digest, then go looking for
+  // Carol's dashboard by its id.
+  const rows = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => {
+      await handle.query(
+        "SELECT set_config('dasher.context_user_id', $1, true)",
+        [carol],
+      );
+      await handle.query(
+        "SELECT set_config('dasher.context_organization_id', $1, true)",
+        [otherOrg],
+      );
+      await handle.query(
+        "SELECT set_config('dasher.context_session_id', $1, true)",
+        [randomUUID()],
+      );
+      await handle.query(
+        "SELECT set_config('dasher.context_authority', '1', true)",
+      );
+      await handle.query(
+        "SELECT set_config('dasher.context_digest', $1, true)",
+        [Buffer.alloc(32, 7).toString("hex")],
+      );
+
+      const result = await handle.query<{ dashboard_id: string }>(
+        "SELECT dashboard_id FROM dasher.dashboards WHERE dashboard_id = $1",
+        [dashboards.get(otherOrg)],
+      );
+      return result.rows;
+    },
+  );
+
+  expect(rows).toStrictEqual([]);
+});
+
+it("loses its own access when only the digest is altered", async () => {
+  // The sharper version. Alice keeps her real identity in four settings and
+  // changes only the digest. If the digest were decorative, her own rows would
+  // still be visible and the binding would be proving nothing.
+  const rows = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => {
+      // Not an exact count: earlier tests in this file commit dashboards of
+      // their own, and the property under test is "she could see her rows, then
+      // could not" rather than how many there were.
+      const before = await handle.query(
+        "SELECT dashboard_id FROM dasher.dashboards",
+      );
+      expect(before.rows.length).toBeGreaterThan(0);
+
+      await handle.query(
+        "SELECT set_config('dasher.context_digest', $1, true)",
+        [Buffer.alloc(32, 9).toString("hex")],
+      );
+
+      const after = await handle.query(
+        "SELECT dashboard_id FROM dasher.dashboards",
+      );
+      return after.rows;
+    },
+  );
+
+  // The context is bound as a whole, not field by field.
+  expect(rows).toStrictEqual([]);
+});
