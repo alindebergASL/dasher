@@ -685,3 +685,106 @@ it("releases exactly once on the ordinary path", async () => {
   expect(released).toStrictEqual([undefined]);
   realClient.release();
 });
+
+/**
+ * The two escapes from the leading-keyword check, found by probe at 5068a4e.
+ *
+ * Both are asserted on outcome, not just on the block. "It threw" is the weaker
+ * claim; what matters is that the transaction still belonged to its owner
+ * afterwards — the write neither vanished under a reported success nor became
+ * durable ahead of one.
+ */
+
+it("refuses ABORT, the documented synonym for ROLLBACK", async () => {
+  // Before `abort` was listed: the callback issued ABORT, returned normally,
+  // the wrapper reported success, and the write was gone. A caller had no way
+  // to know their request had been discarded.
+  const title = `abort-probe-${randomUUID()}`;
+
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async (handle) => {
+        await handle.query(
+          "SELECT dasher_api.create_dashboard($1, $2, $3) AS dashboard_id",
+          [title, randomUUID(), "test"],
+        );
+        return handle.query("ABORT");
+      },
+    ),
+  ).rejects.toMatchObject({ code: "transaction_control" });
+
+  // The request failed, so nothing persisted — and, crucially, the caller was
+  // told it failed rather than being handed a success over a discarded write.
+  const after = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) =>
+      handle.query(
+        "SELECT dashboard_id FROM dasher.dashboards WHERE title = $1",
+        [title],
+      ),
+  );
+  expect(after.rows).toStrictEqual([]);
+});
+
+it("refuses a second statement smuggled after a first", async () => {
+  // `pg` sends a parameterless query over the simple protocol, which runs every
+  // statement in the string. Before this rule, `SELECT 1; COMMIT` committed the
+  // request's transaction early and the write survived outside the wrapper's
+  // control — durable ahead of a success the wrapper had not yet decided on.
+  const title = `multi-statement-probe-${randomUUID()}`;
+
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async (handle) => {
+        await handle.query(
+          "SELECT dasher_api.create_dashboard($1, $2, $3) AS dashboard_id",
+          [title, randomUUID(), "test"],
+        );
+        return handle.query("SELECT 1; COMMIT");
+      },
+    ),
+  ).rejects.toMatchObject({ code: "transaction_control" });
+
+  const after = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) =>
+      handle.query(
+        "SELECT dashboard_id FROM dasher.dashboards WHERE title = $1",
+        [title],
+      ),
+  );
+  expect(after.rows).toStrictEqual([]);
+});
+
+it.each([
+  ["ABORT with a trailing semicolon", "ABORT;"],
+  ["a leading-whitespace ABORT", "   abort"],
+  ["ROLLBACK TO SAVEPOINT", "ROLLBACK TO SAVEPOINT sp1"],
+  ["a statement pair with no transaction keyword", "SELECT 1; SELECT 2"],
+  ["a trailing statement after a semicolon and newline", "SELECT 1;\nCOMMIT"],
+])("also refuses %s", async (_label, sql) => {
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async (handle) => handle.query(sql),
+    ),
+  ).rejects.toMatchObject({ code: "transaction_control" });
+});
+
+it("still allows an ordinary statement with a conventional trailing semicolon", async () => {
+  // The multi-statement rule must not make normal SQL unusable; a single
+  // trailing semicolon is how a great many callers write a query.
+  const result = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => handle.query<{ one: number }>("SELECT 1 AS one;"),
+  );
+  expect(result.rows[0]?.one).toBe(1);
+});

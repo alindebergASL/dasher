@@ -106,15 +106,42 @@ export interface TransactionHandle {
  * Statements that would take the transaction away from its owner.
  *
  * This is a leading-keyword check, not a SQL parser: it reads the first word of
- * the statement and nothing else. It cannot be defeated by a string literal
- * containing "commit" because it never looks past the start, and it is not
- * trying to stop a determined caller — a determined caller has `query`. It stops
- * the realistic accident, which is a helper that wraps its own work in
- * BEGIN/COMMIT and silently ends the request's transaction early, leaving every
- * later statement running with no context and reading zero rows as data.
+ * the statement and nothing else. It is not trying to stop a determined caller —
+ * a determined caller has `query`. It stops the realistic accident: a helper
+ * that wraps its own work in BEGIN/COMMIT and silently ends the request's
+ * transaction early, leaving every later statement running with no context and
+ * reading zero rows as data.
+ *
+ * `abort` is here because PostgreSQL documents it as a synonym for `ROLLBACK`.
+ * Its absence was found by probe rather than by reading: a callback that issued
+ * `ABORT` and returned normally had its write discarded while the request
+ * reported success — the exact false-success this guard exists to prevent, and
+ * a keyword list that omits a documented synonym is a filter pretending to be a
+ * boundary.
  */
 const TRANSACTION_CONTROL =
-  /^\s*(?:begin|commit|rollback|end|start\s+transaction|savepoint|release\s+savepoint|prepare\s+transaction)\b/iu;
+  /^\s*(?:begin|commit|rollback|abort|end|start\s+transaction|savepoint|release\s+savepoint|prepare\s+transaction)\b/iu;
+
+/**
+ * A statement that carries a second statement after it.
+ *
+ * The leading-keyword check reads the first word, so `SELECT 1; COMMIT` passed
+ * it and committed early — proven by probe. `pg` sends a parameterless query
+ * over the simple protocol, which executes every statement in the string, so
+ * one call is not one statement unless something says so.
+ *
+ * The rule is deliberately blunt: at most one `;`, and only as the final
+ * character. That allows the conventional trailing semicolon and rejects
+ * everything else, including a semicolon inside a string literal — which this
+ * cannot tell from a real separator without becoming the parser it is not.
+ * Erring toward refusal is right here, because the cost is a caller rewriting
+ * one query and the alternative is silent loss of transaction ownership.
+ */
+function carriesExtraStatement(sql: string): boolean {
+  const trimmed = sql.trim();
+  const first = trimmed.indexOf(";");
+  return first !== -1 && first !== trimmed.length - 1;
+}
 
 interface OwnedHandle extends TransactionHandle {
   /** Stop accepting work. Called before the owner commits or rolls back. */
@@ -141,10 +168,10 @@ function createHandle(client: PoolClient): OwnedHandle {
           "this request's transaction has finished; the handle can no longer be used",
         );
       }
-      if (TRANSACTION_CONTROL.test(sql)) {
+      if (TRANSACTION_CONTROL.test(sql) || carriesExtraStatement(sql)) {
         throw new RequestContextError(
           "transaction_control",
-          "the request owns its transaction; the work callback must not end or nest it",
+          "the request owns its transaction; the work callback must not end or nest it, or send more than one statement",
         );
       }
 
