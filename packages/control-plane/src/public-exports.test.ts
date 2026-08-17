@@ -14,7 +14,6 @@ describe("control-plane public exports", () => {
       "IntegrationPreflightError",
       "MigrationContractError",
       "POSTGRES_INTEGRATION_ENV_NAMES",
-      "RequestContextError",
       "SecretKeyRing",
       "SecretPrimitiveError",
       "SessionCookieMetadataError",
@@ -29,8 +28,18 @@ describe("control-plane public exports", () => {
       "parsePostgresIntegrationEnv",
       "renderSchemaSnapshot",
       "runMigrations",
-      "withRequestContext",
     ]);
+  });
+
+  it("does not expose the generic transaction capability", () => {
+    // `withRequestContext` hands its callback a handle whose `query` takes SQL.
+    // Exported, that is a generic data-access capability any caller can reach,
+    // and the repository facade that should own it never gets written. It stays
+    // internal until named domain operations exist to expose instead.
+    const names = Object.keys(packageRoot);
+    expect(names).not.toContain("withRequestContext");
+    expect(names).not.toContain("RequestContextError");
+    expect(names.filter((name) => name.startsWith("Request"))).toEqual([]);
   });
 
   it("does not re-export anything from the removed agent-run or lifecycle surfaces", () => {

@@ -52,6 +52,7 @@ let appPool: Pool;
 
 const tokens = new Map<string, Buffer>();
 const dashboards = new Map<string, string>();
+const expiredTokens = new Map<string, Buffer>();
 
 function sha256(value: string): Buffer {
   return createHash("sha256").update(value).digest();
@@ -123,6 +124,65 @@ beforeAll(async () => {
          VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
                  now() + interval '30 minutes', now() + interval '12 hours')`,
         [randomUUID(), organizationId, userId, token, sha256(`csrf:${userId}`)],
+      );
+
+      // Expiry seeds. `sessions_idle_expiry_check` requires
+      // `issued_at < idle_expires_at <= absolute_expires_at`, which makes
+      // "absolute expired but idle still fresh" a state the table cannot hold:
+      // if absolute is past, idle is necessarily past too. So the absolute
+      // ceiling is not tested by a rejected row — it is tested below by what
+      // `begin_request` refreshes idle expiry TO.
+      for (const [label, issued, idle, absolute] of [
+        [
+          "idle",
+          "now() - interval '2 hours'",
+          "now() - interval '1 minute'",
+          "now() + interval '12 hours'",
+        ],
+        [
+          "expired",
+          "now() - interval '3 hours'",
+          "now() - interval '2 minutes'",
+          "now() - interval '1 minute'",
+        ],
+      ] as const) {
+        const expiredToken = sha256(`${label}-expired:${userId}`);
+        expiredTokens.set(`${label}:${organizationId}`, expiredToken);
+        await seed.query(
+          `INSERT INTO dasher.sessions
+             (session_id, organization_id, user_id, authority_revision,
+              token_key_version, token_digest, csrf_key_version, csrf_digest,
+              issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+           VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, ${issued}, ${issued},
+                   ${idle}, ${absolute})`,
+          [
+            randomUUID(),
+            organizationId,
+            userId,
+            expiredToken,
+            sha256(`${label}-csrf:${userId}`),
+          ],
+        );
+      }
+
+      // A live session whose absolute ceiling is nearer than the 30-minute idle
+      // refresh window, so the cap is observable.
+      const nearCeilingToken = sha256(`near-ceiling:${userId}`);
+      expiredTokens.set(`ceiling:${organizationId}`, nearCeilingToken);
+      await seed.query(
+        `INSERT INTO dasher.sessions
+           (session_id, organization_id, user_id, authority_revision,
+            token_key_version, token_digest, csrf_key_version, csrf_digest,
+            issued_at, last_seen_at, idle_expires_at, absolute_expires_at)
+         VALUES ($1, $2, $3, 1, 1, sha256($4), 1, $5, now(), now(),
+                 now() + interval '2 minutes', now() + interval '5 minutes')`,
+        [
+          randomUUID(),
+          organizationId,
+          userId,
+          nearCeilingToken,
+          sha256(`ceiling-csrf:${userId}`),
+        ],
       );
 
       const dashboardId = randomUUID();
@@ -334,4 +394,294 @@ it("rolls back a seam write when the work throws afterwards", async () => {
       ),
   );
   expect(survived.rows).toStrictEqual([]);
+});
+
+/**
+ * The handle, and what a callback cannot do with it.
+ *
+ * These exist because of a reproduction, not a theory. Against a real pool at
+ * `max: 1`, a callback that retained its `PoolClient`, and used it after its own
+ * transaction had committed and released, executed inside the NEXT request's
+ * transaction and read that request's tenant setting. A raw client handed to
+ * application code is a cross-tenant execution primitive with a delay on it.
+ */
+
+it("rejects a handle used after its own transaction finished", async () => {
+  let escaped: Parameters<Parameters<typeof withRequestContext>[2]>[0];
+
+  await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => {
+      escaped = handle;
+      return handle.query("SELECT 1");
+    },
+  );
+
+  await expect(escaped!.query("SELECT 1")).rejects.toMatchObject({
+    code: "stale_handle",
+  });
+});
+
+it("rejects an escaped handle even while another tenant holds the connection", async () => {
+  // The reproduction, exactly. `appPool` is max: 1, so Carol's transaction runs
+  // on the same backend Alice's did. Before the handle was invalidated, Alice's
+  // retained reference executed here and read Carol's context.
+  let alicesHandle: Parameters<Parameters<typeof withRequestContext>[2]>[0];
+
+  await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => {
+      alicesHandle = handle;
+      return handle.query("SELECT 1");
+    },
+  );
+
+  const outcome = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(carol)! },
+    async (carolsHandle, principal) => {
+      expect(principal.organizationId).toBe(otherOrg);
+      const attempt = await alicesHandle!
+        .query(
+          "SELECT current_setting('dasher.context_organization_id', true) AS org",
+        )
+        .then(
+          (result): { executed: boolean; error?: unknown } => {
+            void result;
+            return { executed: true };
+          },
+          (error: unknown): { executed: boolean; error?: unknown } => ({
+            executed: false,
+            error,
+          }),
+        );
+      // Carol's own handle still works; only the escaped one is dead.
+      await carolsHandle.query("SELECT 1");
+      return attempt;
+    },
+  );
+
+  expect(outcome).toMatchObject({ executed: false });
+  expect(outcome.error).toMatchObject({ code: "stale_handle" });
+});
+
+it("gives the callback no way to release or reach the client", async () => {
+  await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => {
+      // Structural, not advisory: there is nothing on the handle but `query`.
+      expect(Object.keys(handle)).toStrictEqual([
+        "query",
+        "invalidate",
+        "outstanding",
+      ]);
+      expect((handle as { release?: unknown }).release).toBeUndefined();
+      expect((handle as { connection?: unknown }).connection).toBeUndefined();
+      return undefined;
+    },
+  );
+});
+
+it.each([
+  ["COMMIT", "COMMIT"],
+  ["ROLLBACK", "ROLLBACK"],
+  ["a nested BEGIN", "BEGIN"],
+  ["END", "end"],
+  ["a savepoint", "SAVEPOINT sp1"],
+])("refuses %s from inside the callback", async (_label, sql) => {
+  // A helper that wraps its own work in BEGIN/COMMIT would end the request's
+  // transaction early, leaving every later statement with no context and
+  // reading zero rows as data.
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async (handle) => handle.query(sql),
+    ),
+  ).rejects.toMatchObject({ code: "transaction_control" });
+});
+
+it("commits a seam write when the work returns, and it is still there afterwards", async () => {
+  // The proof the first version of this file never made: it showed that a
+  // failing request persists nothing, and never that a succeeding one does.
+  // "Nothing was written" passes both ways.
+  const created = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => {
+      const result = await handle.query<{ dashboard_id: string }>(
+        "SELECT dasher_api.create_dashboard($1, $2, $3) AS dashboard_id",
+        ["persisted by commit", randomUUID(), "test"],
+      );
+      return result.rows[0]?.dashboard_id;
+    },
+  );
+
+  expect(created).toBeDefined();
+
+  const found = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) =>
+      handle.query<{ title: string }>(
+        "SELECT title FROM dasher.dashboards WHERE dashboard_id = $1",
+        [created],
+      ),
+  );
+  expect(found.rows.map((row) => row.title)).toStrictEqual([
+    "persisted by commit",
+  ]);
+});
+
+it("refuses to commit when the callback returns with a query still in flight", async () => {
+  let leaked: Promise<unknown> | undefined;
+  const dashboardId = randomUUID();
+
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async (handle) => {
+        // Started, deliberately not awaited — the realistic async accident.
+        leaked = handle.query(
+          "SELECT dasher_api.create_dashboard($1, $2, $3) AS dashboard_id",
+          ["written by a leaked promise", dashboardId, "test"],
+        );
+        return "returned too early";
+      },
+    ),
+  ).rejects.toMatchObject({ code: "operations_outstanding" });
+
+  await leaked?.catch(() => undefined);
+
+  const survived = await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) =>
+      handle.query(
+        "SELECT dashboard_id FROM dasher.dashboards WHERE title = $1",
+        ["written by a leaked promise"],
+      ),
+  );
+  expect(survived.rows).toStrictEqual([]);
+});
+
+it.each([
+  ["an idle-expired session", "idle"],
+  ["a fully expired session", "expired"],
+])("refuses %s", async (_label, kind) => {
+  await expect(
+    withRequestContext(
+      appPool,
+      { tokenKeyVersion: 1, token: expiredTokens.get(`${kind}:${org}`)! },
+      async (handle) => handle.query("SELECT 1"),
+    ),
+  ).rejects.toMatchObject({ code: "denied" });
+});
+
+it("caps the idle refresh at the absolute ceiling rather than extending past it", async () => {
+  // `sessions_idle_expiry_check` requires idle <= absolute, so a session that
+  // is absolute-expired but idle-fresh cannot exist as a row. The ceiling is
+  // therefore enforced at refresh: `begin_request` sets idle to
+  // LEAST(now + 30 minutes, absolute_expires_at). Without the LEAST, a session
+  // could be renewed indefinitely past its absolute limit — and the row would
+  // then violate its own check constraint, so this is also what keeps the
+  // refresh legal.
+  const before = await ownerPool.query<{ absolute: string; idle: string }>(
+    `SELECT absolute_expires_at::text AS absolute, idle_expires_at::text AS idle
+       FROM dasher.sessions WHERE token_digest = sha256($1)`,
+    [expiredTokens.get(`ceiling:${org}`)!],
+  );
+  expect(before.rows).toHaveLength(1);
+
+  await withRequestContext(
+    appPool,
+    { tokenKeyVersion: 1, token: expiredTokens.get(`ceiling:${org}`)! },
+    async (handle) => handle.query("SELECT 1"),
+  );
+
+  const after = await ownerPool.query<{ capped: boolean; grew: boolean }>(
+    `SELECT idle_expires_at = absolute_expires_at AS capped,
+            idle_expires_at > $2::timestamptz AS grew
+       FROM dasher.sessions WHERE token_digest = sha256($1)`,
+    [expiredTokens.get(`ceiling:${org}`)!, before.rows[0]!.idle],
+  );
+  // It refreshed (so the session is live) but stopped exactly at the ceiling.
+  expect(after.rows[0]?.grew).toBe(true);
+  expect(after.rows[0]?.capped).toBe(true);
+});
+
+it.each([
+  ["a token below the minimum length", Buffer.alloc(8, 1)],
+  ["an empty token", Buffer.alloc(0)],
+])("refuses %s without reaching the database", async (_label, token) => {
+  // Checked locally so a malformed credential never becomes a round trip, and
+  // so it is indistinguishable from a well-formed one that is simply wrong.
+  await expect(
+    withRequestContext(appPool, { tokenKeyVersion: 1, token }, async (handle) =>
+      handle.query("SELECT 1"),
+    ),
+  ).rejects.toMatchObject({ code: "denied" });
+});
+
+it("evicts the backend when ROLLBACK fails, and still raises the original error", async () => {
+  // A backend whose ROLLBACK failed may still be in a transaction, or be dead.
+  // Returning it to the pool carries that state into the next request, so it
+  // has to be destroyed — while the caller still sees their own error, not the
+  // rollback's.
+  const released: unknown[] = [];
+  const realClient = await appPool.connect();
+  const failingPool = {
+    connect: async () =>
+      ({
+        query: async (sql: string, params?: unknown[]) => {
+          if (/^\s*rollback/iu.test(sql)) throw new Error("rollback failed");
+          return realClient.query(sql, params);
+        },
+        release: (reason?: unknown) => released.push(reason),
+      }) as never,
+  };
+
+  await expect(
+    withRequestContext(
+      failingPool,
+      { tokenKeyVersion: 1, token: tokens.get(alice)! },
+      async () => {
+        throw new Error("the request's own failure");
+      },
+    ),
+  ).rejects.toThrow("the request's own failure");
+
+  expect(released).toHaveLength(1);
+  expect(released[0]).toBeInstanceOf(Error);
+  expect((released[0] as Error).message).toBe("rollback failed");
+
+  await realClient.query("ROLLBACK").catch(() => undefined);
+  realClient.release();
+});
+
+it("releases exactly once on the ordinary path", async () => {
+  const released: unknown[] = [];
+  const realClient = await appPool.connect();
+  const countingPool = {
+    connect: async () =>
+      ({
+        query: async (sql: string, params?: unknown[]) =>
+          realClient.query(sql, params),
+        release: (reason?: unknown) => released.push(reason),
+      }) as never,
+  };
+
+  await withRequestContext(
+    countingPool,
+    { tokenKeyVersion: 1, token: tokens.get(alice)! },
+    async (handle) => handle.query("SELECT 1"),
+  );
+
+  // The `finally` also calls release; the guard is what keeps it to one.
+  expect(released).toStrictEqual([undefined]);
+  realClient.release();
 });

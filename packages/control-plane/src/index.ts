@@ -53,11 +53,9 @@ export {
 
 export { renderSchemaSnapshot } from "./schema-snapshot.js";
 
-export {
-  RequestContextError,
-  withRequestContext,
-  type RequestCredential,
-  type RequestContextErrorCode,
-  type RequestPool,
-  type RequestPrincipal,
-} from "./request-context.js";
+// `request-context.ts` is deliberately NOT exported. Its handle still accepts
+// SQL, and a generic data-access capability in the public API is one import
+// away from becoming an application's data layer. The public surface will be a
+// repository facade that closes over a handle and exposes named domain
+// operations; it cannot be designed until something persists. Until then this
+// module is internal to the package and reachable only by its own tests.

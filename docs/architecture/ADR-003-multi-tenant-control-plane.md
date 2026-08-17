@@ -79,14 +79,27 @@ Server administrators use separate identities and an audited break-glass
 path; they are not implicit organization members. Membership and role changes
 take effect without waiting for a long-lived token to expire.
 
-Tenant tables use PostgreSQL `ENABLE ROW LEVEL SECURITY` and
+Tenant tables use PostgreSQL `ENABLE ROW LEVEL SECURITY`, and deliberately not
 `FORCE ROW LEVEL SECURITY`. Runtime roles are `NOBYPASSRLS`; migration
-ownership is separate. Every tenant transaction derives user, organization,
-role revision, and request context from the authenticated server session,
-applies it using server-derived `SET LOCAL` transaction semantics without
-string interpolation, and clears it when the transaction ends. Request bodies,
-query parameters, model output, and job payloads cannot select tenant context.
-Missing or inconsistent context denies access.
+ownership is separate.
+
+> **Corrected 2026-08-17.** This paragraph required `FORCE ROW LEVEL SECURITY`
+> and the implementation never had it: all 14 tenant tables are
+> `rls=true force=false` in `schema.snapshot.txt`. The code is right and the ADR
+> was stale. Forcing row security applies policies to the table's owner as well,
+> and every write goes through a `SECURITY DEFINER` seam that runs as that owner
+> — so forcing denies the seam the writes it exists to perform, unless the owner
+> is superuser or `BYPASSRLS`, which is exactly what this design refuses. The
+> migrator rejects a schema that forces it, and `unprivileged-owner` covers the
+> ordinary-owner deployment this targets. Enabled-but-not-forced is the
+> requirement; the seam, not the policy, is what governs the owner.
+
+Every tenant transaction derives user, organization, role revision, and request
+context from the authenticated server session, applies it using server-derived
+`SET LOCAL` transaction semantics without string interpolation, and clears it
+when the transaction ends. Request bodies, query parameters, model output, and
+job payloads cannot select tenant context. Missing or inconsistent context
+denies access.
 
 Service-layer authorization remains explicit. Row-level security is the
 backstop, not the only policy engine. Workers do not bypass row security to
