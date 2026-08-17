@@ -59,3 +59,19 @@ export { renderSchemaSnapshot } from "./schema-snapshot.js";
 // repository facade that closes over a handle and exposes named domain
 // operations; it cannot be designed until something persists. Until then this
 // module is internal to the package and reachable only by its own tests.
+
+export {
+  DashboardRepositoryError,
+  withDashboardRepository,
+  type DashboardRepository,
+  type DashboardRepositoryErrorCode,
+  type LoadedDashboard,
+  type SaveDashboardInput,
+  type SavedDashboard,
+} from "./dashboard-repository.js";
+
+export {
+  seedDevPrincipal,
+  type DevPrincipalSeed,
+  type DevSeedOptions,
+} from "./dev-seed.js";
