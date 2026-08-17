@@ -62,4 +62,10 @@ export interface PlanResult {
    *   matched it, so telling the reader it failed would be false.
    */
   refinement?: "not-understood" | "already-satisfied";
+  /**
+   * Present when the dashboard was persisted and can be reopened at
+   * `/d/{id}`. Absent when the app runs without a database or the browser has
+   * no session — both ordinary states, not failures.
+   */
+  dashboardId?: string;
 }

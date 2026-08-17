@@ -3,6 +3,17 @@ import { RequestWorkspace } from "@/components/request-workspace";
 import { planDashboard } from "./actions";
 import { DEFAULT_REQUEST } from "./planning";
 
+/**
+ * Rendered per request, not prerendered.
+ *
+ * Generating a dashboard now reads the session cookie to decide whether to
+ * persist it, and `cookies()` is not available while a page is being statically
+ * generated at build time. This page was static before persistence existed;
+ * saying so explicitly is better than relying on Next inferring it from a call
+ * several modules deep.
+ */
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   const result = await planDashboard(DEFAULT_REQUEST);
 

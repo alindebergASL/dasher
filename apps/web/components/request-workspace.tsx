@@ -47,6 +47,7 @@ export function RequestWorkspace({
   const [refinement, setRefinement] = useState<
     "not-understood" | "already-satisfied" | undefined
   >(undefined);
+  const [savedId, setSavedId] = useState<string | undefined>(undefined);
   const [pending, startTransition] = useTransition();
 
   function apply(result: PlanResult, nextRequest: string) {
@@ -61,6 +62,10 @@ export function RequestWorkspace({
     setError(undefined);
     setRevised((result.attempts ?? 1) > 1);
     setRefinement(result.refinement);
+    // A refinement returns no id: it produces a new version of a dashboard
+    // that is not persisted by this slice, so keeping the previous link would
+    // point at a dashboard the reader is no longer looking at.
+    setSavedId(result.dashboardId);
     // Remounts the dashboard so a refinement visibly redraws. Keying on the
     // request alone would leave a refinement of the same request looking like
     // nothing happened.
@@ -192,6 +197,15 @@ export function RequestWorkspace({
             Dasher did not understand that change, so it left the dashboard as
             it was. Naming a section — the map, the table, the history chart —
             works better than describing a mood.
+          </p>
+        ) : null}
+        {savedId !== undefined ? (
+          <p className="request-note" role="status">
+            Saved.{" "}
+            <a className="request-permalink" href={`/d/${savedId}`}>
+              Open this dashboard by link
+            </a>{" "}
+            — it will still be here after a reload.
           </p>
         ) : null}
         {refinement === "already-satisfied" ? (

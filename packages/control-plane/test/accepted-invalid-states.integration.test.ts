@@ -7,7 +7,7 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
+} from "../src/index";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
@@ -15,7 +15,7 @@ import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
   ignoreTeardownShutdown,
-} from "./postgres-harness.js";
+} from "./postgres-harness";
 
 /**
  * States the baseline schema accepts and should not.

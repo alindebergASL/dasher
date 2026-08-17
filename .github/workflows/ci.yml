@@ -78,6 +78,29 @@ jobs:
     timeout-minutes: 30
     env:
       NEXT_TELEMETRY_DISABLED: "1"
+    env:
+      # The persistence end-to-end tests skip themselves without these, so
+      # setting them here is what keeps the reload slice actually gated rather
+      # than silently unproven. The seed DSN is the schema owner because
+      # seeding writes tables the application role cannot — that separation is
+      # the design, not an inconvenience.
+      DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
+      DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+      DASHER_DEV_BOOTSTRAP: "1"
+    services:
+      postgres:
+        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+        env:
+          POSTGRES_DB: dasher_e2e
+          POSTGRES_PASSWORD: dasher_ci_owner_password
+          POSTGRES_USER: dasher_ci_owner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=dasher_ci_owner --dbname=dasher_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -112,6 +135,19 @@ jobs:
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
+
+      # The application login is created here rather than by the migrator,
+      # which grants `dasher_app` to it but does not invent logins. Without it
+      # the app would connect as the owner and every row-security assertion in
+      # the end-to-end tests would be meaningless.
+      - run: |
+          PGPASSWORD=dasher_ci_owner_password psql -h localhost -U dasher_ci_owner -d dasher_e2e -v ON_ERROR_STOP=1 -c \
+            "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='dasher_web_app') THEN CREATE ROLE dasher_web_app LOGIN PASSWORD 'dasher_ci_app_password'; END IF; END \$\$;"
+
+      - run: pnpm --filter @dasher/control-plane migrate
+        env:
+          DASHER_MIGRATE_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+          DASHER_APP_LOGIN_ROLES: dasher_web_app
 
       - run: pnpm test:e2e
 

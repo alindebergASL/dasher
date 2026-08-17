@@ -7,7 +7,7 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
+} from "../src/index";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
@@ -15,7 +15,7 @@ import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
   ignoreTeardownShutdown,
-} from "./postgres-harness.js";
+} from "./postgres-harness";
 
 /**
  * The deployment contract: everything after provisioning works when the schema

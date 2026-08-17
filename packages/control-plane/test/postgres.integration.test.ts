@@ -10,7 +10,7 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
+} from "../src/index";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
@@ -19,7 +19,7 @@ import {
   dropUnprivilegedSchemaOwner,
   executeServerFormattedSql,
   ignoreTeardownShutdown,
-} from "./postgres-harness.js";
+} from "./postgres-harness";
 
 /**
  * Properties the deployed schema must hold, exercised against a real

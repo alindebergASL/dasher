@@ -4,7 +4,7 @@ import {
   IntegrationPreflightError,
   parsePostgresIntegrationEnv,
   type PostgresIntegrationEnvironment,
-} from "../src/index.js";
+} from "../src/index";
 
 const ownerDsn =
   "postgresql://owner_marker:owner_password_marker@localhost:5432/dasher_marker";

@@ -5,7 +5,7 @@ export {
   type IntegrationPreflightErrorCode,
   type PostgresIntegrationConfig,
   type PostgresIntegrationEnvironment,
-} from "./preflight.js";
+} from "./preflight";
 
 export {
   MigrationContractError,
@@ -17,7 +17,7 @@ export {
   type MigrationContractErrorCode,
   type MigrationPool,
   type MigrationRunResult,
-} from "./migrator.js";
+} from "./migrator";
 
 export {
   SecretKeyRing,
@@ -28,20 +28,20 @@ export {
   type SecretKind,
   type SecretPersistenceMaterial,
   type SecretPrimitiveErrorCode,
-} from "./secrets.js";
+} from "./secrets";
 
 export {
   EmailNormalizationError,
   normalizeEmailAddress,
   type EmailNormalizationErrorCode,
-} from "./email.js";
+} from "./email";
 
 export {
   SessionCookieMetadataError,
   createSessionCookieMetadata,
   type SessionCookieMetadata,
   type SessionCookieMetadataErrorCode,
-} from "./session-cookie.js";
+} from "./session-cookie";
 
 export {
   VerifiedPrincipal,
@@ -49,9 +49,9 @@ export {
   createVerifiedPrincipalFromServerVerification,
   type ServerVerifiedPrincipalInput,
   type VerifiedPrincipalErrorCode,
-} from "./verified-principal.js";
+} from "./verified-principal";
 
-export { renderSchemaSnapshot } from "./schema-snapshot.js";
+export { renderSchemaSnapshot } from "./schema-snapshot";
 
 // `request-context.ts` is deliberately NOT exported. Its handle still accepts
 // SQL, and a generic data-access capability in the public API is one import
@@ -68,10 +68,10 @@ export {
   type LoadedDashboard,
   type SaveDashboardInput,
   type SavedDashboard,
-} from "./dashboard-repository.js";
+} from "./dashboard-repository";
 
 export {
   seedDevPrincipal,
   type DevPrincipalSeed,
   type DevSeedOptions,
-} from "./dev-seed.js";
+} from "./dev-seed";

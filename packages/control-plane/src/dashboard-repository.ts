@@ -4,7 +4,7 @@ import {
   type RequestPool,
   type RequestPrincipal,
   type TransactionHandle,
-} from "./request-context.js";
+} from "./request-context";
 
 /**
  * The dashboard repository: the package's first public data-access surface.
@@ -42,7 +42,7 @@ export interface SaveDashboardInput {
   readonly provider: string;
   readonly model: string;
   /** The compiled spec, canonicalised by the caller. Opaque here. */
-  readonly canonicalSpecBytes: Buffer;
+  readonly canonicalSpecBytes: Uint8Array;
   readonly requestId: string;
   readonly deploymentRevision: string;
 }
@@ -57,6 +57,13 @@ export interface LoadedDashboard {
   readonly dashboardId: string;
   readonly title: string;
   readonly versionId: string;
+  /**
+   * What `pg` hands back for a `bytea`, which is a `Buffer`. The input side
+   * takes `Uint8Array` instead, so `@dasher/dashboard-schema` can produce the
+   * bytes without acquiring Node types; the asymmetry is real rather than an
+   * oversight, and narrowing this to `Uint8Array` would only make callers
+   * re-wrap what they already have.
+   */
   readonly canonicalSpecBytes: Buffer;
   readonly lifecycleState: string;
   readonly lifecycleRevision: number;

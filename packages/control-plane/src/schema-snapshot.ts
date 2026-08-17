@@ -1,4 +1,4 @@
-import type { MigrationClient } from "./migrator.js";
+import type { MigrationClient } from "./migrator";
 
 /**
  * Renders the live schema as deterministic text.

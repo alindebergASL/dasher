@@ -18,3 +18,5 @@ export {
   type Evidence,
   type Page,
 } from "./schema";
+
+export { canonicalSpecBytes } from "./canonical";

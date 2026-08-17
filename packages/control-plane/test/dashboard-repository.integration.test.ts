@@ -11,7 +11,7 @@ import {
   withDashboardRepository,
   type DashboardRepository,
   type DevPrincipalSeed,
-} from "../src/index.js";
+} from "../src/index";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
@@ -19,7 +19,7 @@ import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
   ignoreTeardownShutdown,
-} from "./postgres-harness.js";
+} from "./postgres-harness";
 
 /**
  * The repository, and the boundary it inherits.
@@ -48,7 +48,7 @@ let appPool: Pool;
 let alice: DevPrincipalSeed;
 let carol: DevPrincipalSeed;
 
-const SPEC = Buffer.from(
+const SPEC: Uint8Array = Buffer.from(
   JSON.stringify({ schemaVersion: "1.1", pages: [] }),
   "utf8",
 );
@@ -162,7 +162,12 @@ it("persists a dashboard and returns it in a later request", async () => {
 
   expect(loaded?.title).toBe("Sacramento conditions");
   expect(loaded?.versionId).toBe(saved.versionId);
-  expect(loaded?.canonicalSpecBytes.equals(SPEC)).toBe(true);
+  // `loadById` returns what pg gives back, which is a Buffer; the input side
+  // is Uint8Array so the schema package needs no Node types. Comparing by
+  // content keeps the test honest about both.
+  expect(
+    Buffer.from(loaded!.canonicalSpecBytes).equals(Buffer.from(SPEC)),
+  ).toBe(true);
   // `finalize_run` promotes the head and bumps the revision in the same
   // statement, so an active dashboard at revision 2 is the proof the promotion
   // happened rather than the version merely being inserted.

@@ -1410,3 +1410,8 @@ footer {
     padding-bottom: 4.5rem;
   }
 }
+
+.request-permalink {
+  color: var(--accent, inherit);
+  text-decoration: underline;
+}

@@ -4,7 +4,7 @@ import {
   VerifiedPrincipal,
   VerifiedPrincipalError,
   createVerifiedPrincipalFromServerVerification,
-} from "./verified-principal.js";
+} from "./verified-principal";
 
 function captureError(input: unknown): VerifiedPrincipalError {
   try {

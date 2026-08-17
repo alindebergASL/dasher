@@ -1,5 +1,7 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
+
 import {
   DashboardPlanSchema,
   FakePlanningProvider,
@@ -10,9 +12,17 @@ import {
   type DashboardPlan,
   type PlannerRunOptions,
 } from "@dasher/planner";
+import { withDashboardRepository } from "@dasher/control-plane";
+import {
+  canonicalSpecBytes,
+  type DashboardSpec,
+} from "@dasher/dashboard-schema";
 import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
+
+import { getPool, isPersistenceConfigured } from "./database";
+import { readSessionCredential } from "./session";
 
 import {
   DEMO_THRESHOLDS,
@@ -37,6 +47,94 @@ import {
 
 function tooLong(text: string, limit: number, label: string): string {
   return `${label} are limited to ${limit} characters. Yours is ${text.length}.`;
+}
+
+/**
+ * Persist a generated dashboard, when there is somewhere and someone to persist
+ * it for.
+ *
+ * WHY IT IS CONDITIONAL, AND WHY THAT IS NOT A SILENT FALLBACK. Two states are
+ * ordinary and neither is a failure: the app configured without a database at
+ * all — the fixture demo predates the control plane and still runs — and a
+ * browser with no session, which is every browser until the development
+ * bootstrap has been called. In both, a dashboard is generated and rendered and
+ * simply has no durable identity.
+ *
+ * What is NOT tolerated is a database and a session that are present and a save
+ * that fails. That is reported, because a persistence slice whose failure mode
+ * is "the page looked fine" would be indistinguishable from not having built it.
+ */
+async function persist(
+  requestText: string,
+  dashboard: DashboardSpec,
+  title: string,
+): Promise<string | undefined> {
+  if (!isPersistenceConfigured()) return undefined;
+
+  const credential = await readSessionCredential();
+  if (credential === undefined) return undefined;
+
+  const saved = await withDashboardRepository(
+    getPool(),
+    credential,
+    async (repository) =>
+      repository.save({
+        title,
+        requestText,
+        // The fake provider is what actually composed this, and the run row is
+        // provenance. Recording "fake" is the honest entry; a real provider
+        // name here would be a claim about how the dashboard was made.
+        provider: "fake",
+        model: "fake-planner",
+        canonicalSpecBytes: canonicalSpecBytes(dashboard),
+        requestId: randomUUID(),
+        deploymentRevision: process.env["DASHER_DEPLOYMENT_REVISION"] ?? "dev",
+      }),
+  );
+
+  return saved.dashboardId;
+}
+
+/**
+ * Plan, then persist — in that order, and in separate failure domains.
+ *
+ * They were briefly one `try`, which was wrong in a way worth recording: a
+ * failure to save came back as "Something went wrong building that dashboard",
+ * so a database problem read as a planning problem. It also broke the build,
+ * because `/` was still statically generated and `cookies()` throws there — a
+ * error that arrived disguised as the planner refusing a request.
+ *
+ * The dashboard is real whether or not it was saved, so a persistence failure
+ * must not discard it, and must not be silent either.
+ */
+async function planAndPersist(
+  requestText: string,
+  refine?: PlannerRunOptions["refine"],
+): Promise<PlanResult> {
+  const planned = await plan(requestText, refine);
+  if (!planned.ok || planned.dashboard === undefined || refine !== undefined) {
+    // Only fresh generations get a durable identity in this slice. A refinement
+    // produces a new version of a dashboard already on screen, and versioning
+    // on refine needs the head revision it saw — the update path, not this one.
+    return planned;
+  }
+
+  try {
+    const dashboardId = await persist(
+      requestText,
+      planned.dashboard,
+      planned.plan?.title ?? requestText,
+    );
+    return dashboardId === undefined ? planned : { ...planned, dashboardId };
+  } catch {
+    // The dashboard stands; only its durability failed. Saying so is the point
+    // — a persistence slice whose failure mode is "the page looked fine" would
+    // be indistinguishable from not having built it.
+    return {
+      ...planned,
+      error: "This dashboard was built but could not be saved.",
+    };
+  }
 }
 
 async function plan(
@@ -112,7 +210,7 @@ export async function planDashboard(requestText: string): Promise<PlanResult> {
       error: tooLong(trimmed, REQUEST_MAX_LENGTH, "Requests"),
     };
   }
-  return plan(trimmed);
+  return planAndPersist(trimmed);
 }
 
 export async function refineDashboard(
@@ -143,7 +241,7 @@ export async function refineDashboard(
   }
   const base: DashboardPlan = parsed.data;
 
-  return plan(requestText.trim().slice(0, REQUEST_MAX_LENGTH), {
+  return planAndPersist(requestText.trim().slice(0, REQUEST_MAX_LENGTH), {
     previousPlan: base,
     instruction: trimmedInstruction,
   });

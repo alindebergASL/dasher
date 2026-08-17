@@ -6,7 +6,7 @@ import {
   type MigrationClient,
   type MigrationContractError,
   type MigrationPool,
-} from "../src/index.js";
+} from "../src/index";
 
 export const fixtureMigrationDirectory = fileURLToPath(
   new URL("./fixtures/migrations", import.meta.url),

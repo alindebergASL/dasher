@@ -7,11 +7,11 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
+} from "../src/index";
 import {
   RequestContextError,
   withRequestContext,
-} from "../src/request-context.js";
+} from "../src/request-context";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
@@ -19,7 +19,7 @@ import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
   ignoreTeardownShutdown,
-} from "./postgres-harness.js";
+} from "./postgres-harness";
 
 /**
  * The request context, exercised from TypeScript for the first time.

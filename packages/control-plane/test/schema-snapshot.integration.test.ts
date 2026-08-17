@@ -8,13 +8,13 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
-import { renderSchemaSnapshot } from "../src/schema-snapshot.js";
+} from "../src/index";
+import { renderSchemaSnapshot } from "../src/schema-snapshot";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
   ignoreTeardownShutdown,
-} from "./postgres-harness.js";
+} from "./postgres-harness";
 
 /**
  * Proves the committed schema snapshot is what the migrations actually
