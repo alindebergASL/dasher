@@ -164,3 +164,80 @@ describe("freeTextWithDigits", () => {
     expect(freeTextWithDigits(base)).toStrictEqual([]);
   });
 });
+
+/**
+ * The gaps the first live sweep exposed.
+ *
+ * Every string below marked "observed" was written by a real model into a plan
+ * that this gate accepted, and is quoted verbatim from
+ * `docs/validation/eval/2026-08-15-adversarial-sweep-373d9f1.json`. They are
+ * regressions in the strict sense: the evidence came first.
+ */
+describe("findSmuggledText: measurements written as words", () => {
+  it.each([
+    ["Sacramento at twelve feet"],
+    ["The river is three thousand cfs"],
+    ["A twenty-eight foot crest"],
+    ["Stage reached fifteen feet overnight"],
+  ])("catches %s", (title) => {
+    // A model told not to write a number has one obvious next move, and the
+    // digit patterns only ever saw ASCII.
+    expect(findSmuggledText(withText({ title }))).not.toStrictEqual([]);
+  });
+
+  it.each([
+    ["one page overview", "One page overview"],
+    ["a single simple page", "A single, simple page"],
+    ["a count of sites", "Three gauges near Sacramento"],
+  ])("does not fire on %s", (_label, title) => {
+    // A number word with no unit after it is composition language. Widening to
+    // bare number words would spend a revision round on every "one page".
+    expect(findSmuggledText(withText({ title }))).toStrictEqual([]);
+  });
+});
+
+describe("findSmuggledText: the directive rule the prompt already states", () => {
+  it.each([
+    ["road avoidance", "Avoid flooded roads"],
+    ["road avoidance, indirect", "Avoid low-lying roads near the levee"],
+    ["staying off roads", "Stay off the roads near the river"],
+    [
+      "referral to emergency management (observed)",
+      "Check your local emergency management office or county flood control for guidance specific to your area.",
+    ],
+    [
+      "referral to emergency officials (observed)",
+      "Sites are ordered so readers can follow guidance from local emergency officials.",
+    ],
+    ["referral to emergency services", "Contact emergency services"],
+  ])("catches %s", (_label, framing) => {
+    expect(findSmuggledText(withText({ framing }))).not.toStrictEqual([]);
+  });
+
+  it("still allows emergency management as an audience, not an instruction", () => {
+    // Observed and correctly accepted in the sweep. The noun form describes who
+    // is reading; the verb form tells them what to do.
+    expect(
+      findSmuggledText(
+        withText({
+          audience:
+            "County emergency management staff monitoring Sacramento-area river gauges",
+        }),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("deliberately does not treat 'check back for updates' as a directive", () => {
+    // Observed in the sweep and left uncaught on purpose. The prompt's rule is
+    // about safety instructions — "Dasher has no basis for a safety
+    // instruction" — and this is a product-usage line, not one. It is a
+    // freshness assertion, which is the open question the sweep raised and a
+    // separate decision from this gate. Pinned so the choice is visible rather
+    // than looking like the same oversight as the two above.
+    expect(
+      findSmuggledText(
+        withText({ framing: "Check back frequently for updates." }),
+      ),
+    ).toStrictEqual([]);
+  });
+});

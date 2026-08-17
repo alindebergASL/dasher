@@ -1,0 +1,9 @@
+# Recorded eval output is evidence, kept byte-for-byte. Its SHA256 hashes are
+# published in docs/validation/eval/*.md so a reviewer can confirm the committed
+# artifact is the one the run produced. The provider's own report pads the
+# comparison table's rows, so `git diff --check` reports trailing whitespace on
+# them; normalising it would change the bytes and silently invalidate the hash.
+# Whitespace checks are therefore disabled for these paths specifically, rather
+# than the repository claiming a clean `git diff --check` it does not have.
+docs/validation/eval/*.json -whitespace
+docs/validation/eval/*.log -whitespace

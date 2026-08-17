@@ -25,6 +25,17 @@ import type { MigrationClient } from "./migrator.js";
 const managedSchemas = ["dasher", "dasher_private"] as const;
 const schemaList = managedSchemas.map((name) => `'${name}'`).join(", ");
 
+/**
+ * Routines are captured across a wider set than tables are, because
+ * `dasher_api` is where the callable surface lives and it holds no tables at
+ * all. Leaving it out meant the signature, `SECURITY DEFINER` flag, and
+ * `search_path` of every entry point — `record_evidence` among them — could
+ * change without the snapshot noticing. A gate's scope is part of the gate, and
+ * this one's scope silently excluded the schema most worth watching.
+ */
+const routineSchemas = [...managedSchemas, "dasher_api"] as const;
+const routineSchemaList = routineSchemas.map((name) => `'${name}'`).join(", ");
+
 interface TextRow {
   readonly line: string;
 }
@@ -193,7 +204,37 @@ export async function renderSchemaSnapshot(
     FROM pg_catalog.pg_proc AS routine
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = routine.pronamespace
-    WHERE namespace.nspname IN (${schemaList})
+    WHERE namespace.nspname IN (${routineSchemaList})
+  `,
+  );
+
+  /**
+   * Execute privileges on those routines, including the absence of a PUBLIC
+   * grant. `role_table_grants` below covers tables only, so a `SECURITY
+   * DEFINER` entry point could have been granted to PUBLIC — turning it into an
+   * unauthenticated write path — with nothing here to see it.
+   *
+   * `proacl` is null when a routine has never been granted or revoked, which in
+   * PostgreSQL means the default: EXECUTE to PUBLIC. That case is rendered
+   * explicitly rather than omitted, because an empty line and a wide-open
+   * default would otherwise look identical.
+   */
+  const routineGrants = await lines(
+    client,
+    `
+    SELECT pg_catalog.format(
+      '%s.%s(%s) %s',
+      namespace.nspname, routine.proname,
+      pg_catalog.pg_get_function_identity_arguments(routine.oid),
+      CASE
+        WHEN routine.proacl IS NULL THEN 'default (EXECUTE to PUBLIC)'
+        ELSE pg_catalog.array_to_string(routine.proacl::text[], ' ')
+      END
+    ) AS line
+    FROM pg_catalog.pg_proc AS routine
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = routine.pronamespace
+    WHERE namespace.nspname IN (${routineSchemaList})
   `,
   );
 
@@ -232,6 +273,7 @@ export async function renderSchemaSnapshot(
       ...section("policies", policies),
       ...section("triggers", triggers),
       ...section("functions", functions),
+      ...section("routine grants", routineGrants),
       ...section("grants", grants),
       ...section("managed roles", roleAttributes),
     ]

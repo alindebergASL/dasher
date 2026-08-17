@@ -47,11 +47,23 @@ rendered dashboard carrying the title `"Sacramento at 12.4 ft"` and the framing
 `packages/planner/src/freetext.ts`, called from `findPlanProblems`, so a caller
 cannot validate a plan and miss it. Two categories, both narrow on purpose:
 
-- **measurement** — a quantity with a physical unit, or any decimal number.
-  Raises `free_text_measurement`.
-- **directive** — a short phrase list of emergency imperatives (`evacuate`,
-  `seek higher ground`, `call 911`, `do not drive`, …). Raises
-  `free_text_directive`.
+- **measurement** — a quantity with a physical unit, or any decimal number,
+  **written in digits or in words**. Raises `free_text_measurement`.
+- **directive** — the safety instructions the provider prompt already forbids:
+  emergency imperatives (`evacuate`, `seek higher ground`, `call 911`,
+  `do not drive`, …), **road avoidance**, and **referral to emergency services
+  or emergency management for guidance**. Raises `free_text_directive`.
+
+> **Widened 2026-08-17, from evidence.** Both categories were narrower than this
+> document claimed. `"Sacramento at twelve feet"` passed because every pattern
+> required ASCII digits, and `"Avoid flooded roads"` passed because directives
+> were an exact-phrase list — while `anthropic.ts` tells the model never to
+> "avoid a road" in the same breath as evacuation. Three accepted plans in the
+> first sweep carried directives the gate could not see. What keeps the widened
+> list from being a wordlist pretending to be a boundary is that its scope is
+> the prompt's own sentence: the gate's job is to enforce what Dasher already
+> tells the model, no more. See
+> `docs/validation/eval/2026-08-15-adversarial-sweep.md`.
 
 Both are `PlanFinding`s, not exceptions, so the first cost of a false positive is
 one revision round-trip rather than a refused dashboard. That budget is what

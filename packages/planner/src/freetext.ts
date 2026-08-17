@@ -80,16 +80,67 @@ const MEASUREMENT_UNITS = [
 const NUMBER = String.raw`\d{1,3}(?:,\d{3})+|\d+`;
 
 /**
+ * Spelled-out numbers, because the digit patterns below only ever saw ASCII.
+ * "Sacramento at twelve feet" asserted a reading exactly as "12 ft" does, in the
+ * same field, and passed the first eval sweep untouched. A model that has been
+ * told not to write a number has an obvious next move, and the gate has to be
+ * closed against the sentence rather than against the character class.
+ *
+ * Scale words are included so "three thousand cfs" reads as one quantity, and
+ * `a`/`an` are excluded: "a foot of freeboard" is a unit of composition
+ * language far more often than it is a claim about this river.
+ */
+const NUMBER_WORDS = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+  "eleven",
+  "twelve",
+  "thirteen",
+  "fourteen",
+  "fifteen",
+  "sixteen",
+  "seventeen",
+  "eighteen",
+  "nineteen",
+  "twenty",
+  "thirty",
+  "forty",
+  "fifty",
+  "sixty",
+  "seventy",
+  "eighty",
+  "ninety",
+  "hundred",
+  "thousand",
+] as const;
+
+const NUMBER_WORD = `(?:${NUMBER_WORDS.join("|")})`;
+
+/**
  * A quantity: digits, then an optional space or hyphen, then a unit. Word units
  * are followed by a boundary, so "3 minutes" cannot read as three metres; `%`
  * needs no boundary because it is not a word character.
  */
+const WORD_UNITS = MEASUREMENT_UNITS.filter((unit) => unit !== "%")
+  .map(escape)
+  .join("|");
+
 const QUANTITY = new RegExp(
-  String.raw`(?:${NUMBER})(?:\.\d+)?\s?[-–]?\s?(?:` +
-    MEASUREMENT_UNITS.filter((unit) => unit !== "%")
-      .map(escape)
-      .join("|") +
-    String.raw`)\b|(?:${NUMBER})(?:\.\d+)?\s?%`,
+  String.raw`(?:${NUMBER})(?:\.\d+)?\s?[-–]?\s?(?:${WORD_UNITS})\b` +
+    String.raw`|(?:${NUMBER})(?:\.\d+)?\s?%` +
+    // Spelled out: one or more number words, hyphen- or space-joined, then a
+    // unit. "twenty-eight and a half feet" is not covered and is not pretended
+    // to be; what is covered is the plain form a model actually reaches for.
+    String.raw`|\b${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*\s?[-–]?\s?(?:${WORD_UNITS})\b`,
   "giu",
 );
 
@@ -105,6 +156,18 @@ const DECIMAL = new RegExp(String.raw`\b(?:${NUMBER})\.\d+\b`, "gu");
  * purpose: "Emergency management leads coordinating evacuations" is a fair
  * description of an audience, while "Evacuate now" is an instruction Dasher
  * cannot stand behind.
+ *
+ * THE SCOPE OF THIS LIST IS NOT ARBITRARY, which is what keeps it from being a
+ * wordlist pretending to be a boundary. `anthropic.ts` tells the model:
+ *
+ *   > Never tell the reader to evacuate, seek higher ground, take shelter,
+ *   > call emergency services, or avoid a road.
+ *
+ * The gate's job is to enforce exactly that sentence. The first eval sweep found
+ * it enforcing only part of it: "Do not drive through flooded roads" was caught
+ * while "Avoid flooded roads" passed, and the referral forms below passed
+ * outright. A rule the prompt states and the gate does not check is the same
+ * defect this whole change exists to remove, one layer down.
  */
 const DIRECTIVE_PHRASES = [
   "evacuate",
@@ -123,8 +186,35 @@ const DIRECTIVE_PHRASES = [
   "stay away from",
 ] as const;
 
+/**
+ * The two forms the phrase list could not express, both drawn from what the
+ * prompt forbids rather than from imagination.
+ *
+ * `ROAD_AVOIDANCE` — "avoid a road" in the shapes it actually gets written:
+ * "avoid flooded roads", "avoid low-lying roads", "stay off the roads".
+ *
+ * `AUTHORITY_REFERRAL` — "call emergency services" generalised past the literal
+ * 911. Sending a reader to emergency management for guidance is a safety
+ * instruction with a redirect in front of it; Dasher has no more basis for it
+ * than for the direct form. Observed verbatim in the first sweep: "Check your
+ * local emergency management office or county flood control for guidance
+ * specific to your area."
+ */
+// The intervening words allow hyphens: "avoid low-lying roads" is the same
+// instruction as "avoid flooded roads", and `\w` does not span a hyphen.
+const ROAD_AVOIDANCE = String.raw`\b(?:avoid|stay off)\b(?:\s+[\w-]+){0,3}\s+roads?\b`;
+
+const AUTHORITY_REFERRAL =
+  String.raw`\b(?:call|contact|check\s+with|check|consult|notify|follow)\b` +
+  String.raw`(?:\s+[\w-]+){0,3}\s+` +
+  String.raw`(?:emergency\s+(?:services|management|officials?)|` +
+  String.raw`local\s+(?:authorities|officials)|` +
+  String.raw`county\s+flood\s+control)\b`;
+
 const DIRECTIVES = new RegExp(
-  `\\b(?:${DIRECTIVE_PHRASES.map(escape).join("|")})\\b`,
+  `\\b(?:${DIRECTIVE_PHRASES.map(escape).join("|")})\\b` +
+    `|${ROAD_AVOIDANCE}` +
+    `|${AUTHORITY_REFERRAL}`,
   "giu",
 );
 

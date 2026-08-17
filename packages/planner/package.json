@@ -10,7 +10,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "eval:adversarial": "vite-node eval/adversarial.ts"
+    "eval:adversarial": "vite-node eval/adversarial.ts",
+    "eval:freshness": "vite-node eval/freshness.ts"
   },
   "dependencies": {
     "@dasher/dashboard-schema": "workspace:*",
