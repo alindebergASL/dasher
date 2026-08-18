@@ -54,6 +54,17 @@ const dashboard = compilePlan(plan, gauges, {
   planner: { id: "fake", usesModel: false },
 });
 
+const initialPlan: DashboardPlan = {
+  ...plan,
+  title: "Initial dashboard that must be replaced",
+  framing: "This dashboard exists only before the submitted request resolves.",
+};
+
+const initialDashboard = compilePlan(initialPlan, gauges, {
+  asOf: "2026-07-29T12:02:00.000Z",
+  planner: { id: "fake", usesModel: false },
+});
+
 const SAVE_FAILED = "This dashboard was built but could not be saved.";
 
 // Statically imported: `vi.mock` is hoisted above imports, so the dynamic
@@ -62,8 +73,8 @@ const SAVE_FAILED = "This dashboard was built but could not be saved.";
 function renderWorkspace() {
   return render(
     <RequestWorkspace
-      initialDashboard={dashboard}
-      initialPlan={plan}
+      initialDashboard={initialDashboard}
+      initialPlan={initialPlan}
       initialRequest="Show me river conditions near Sacramento"
     />,
   );
@@ -114,6 +125,9 @@ describe("a dashboard that was built but not saved", () => {
     expect(
       screen.getAllByText(plan.title, { exact: false }).length,
     ).toBeGreaterThan(0);
+    expect(
+      screen.queryAllByText(initialPlan.title, { exact: false }),
+    ).toHaveLength(0);
   });
 
   it("clears a previous error when a later result carries none", async () => {

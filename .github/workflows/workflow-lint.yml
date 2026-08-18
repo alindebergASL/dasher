@@ -25,15 +25,21 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # actionlint knows what GitHub accepts — duplicate keys, unknown fields,
-      # bad `runs-on`, shell errors inside `run:`. Pinned by version and
-      # checksum-free by design: it is fetched from the vendor's own release
-      # page and used to read files, never to write them.
+      # bad `runs-on`, shell errors inside `run:`. The release label is mutable,
+      # so the executable is pinned by content as well as by version. Reading
+      # workflows does not make an unverified executable safe: it still runs
+      # with every authority available to this job.
       - name: Install actionlint
         run: |
-          curl -sSLo actionlint.tar.gz \
+          curl -fsSLo actionlint.tar.gz \
             https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' \
+            actionlint.tar.gz | sha256sum --check --strict -
           tar -xzf actionlint.tar.gz actionlint
           ./actionlint -version
 

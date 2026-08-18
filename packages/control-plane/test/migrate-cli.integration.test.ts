@@ -7,7 +7,7 @@ import {
   MigrationContractError,
   parsePostgresIntegrationEnv,
 } from "../src/index";
-import { migrate } from "../src/migrate-cli";
+import { migrate } from "../src/migrate";
 import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
@@ -43,6 +43,19 @@ async function managedRoleExists(): Promise<boolean> {
   return result.rows[0]?.present === true;
 }
 
+async function expectOwnerRefusal(operation: Promise<unknown>): Promise<void> {
+  let refusal: unknown;
+  try {
+    await operation;
+  } catch (error) {
+    refusal = error;
+  }
+  expect(refusal).toBeInstanceOf(MigrationContractError);
+  expect((refusal as MigrationContractError).code).toBe(
+    "executor_not_database_owner",
+  );
+}
+
 beforeAll(async () => {
   operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
   ignoreTeardownShutdown(operatorPool);
@@ -67,9 +80,7 @@ it("refuses a non-owner with the migrator's own typed error", async () => {
   const notOwner = new URL(config.appDsn);
   notOwner.pathname = `/${databaseName}`;
 
-  await expect(migrate(notOwner.toString())).rejects.toBeInstanceOf(
-    MigrationContractError,
-  );
+  await expectOwnerRefusal(migrate(notOwner.toString(), []));
 });
 
 it("changes nothing when it refuses", async () => {
@@ -81,9 +92,7 @@ it("changes nothing when it refuses", async () => {
 
   const notOwner = new URL(config.appDsn);
   notOwner.pathname = `/${databaseName}`;
-  await expect(migrate(notOwner.toString())).rejects.toBeInstanceOf(
-    MigrationContractError,
-  );
+  await expectOwnerRefusal(migrate(notOwner.toString(), []));
 
   expect(await managedRoleExists()).toBe(roleBefore);
 
@@ -109,7 +118,7 @@ it("applies the schema for the owner, on a database that has never seen it", asy
   // A database that has never been migrated is the arrangement that exposed
   // the first, wrong fix: it reported "applied 1" from a pass that was
   // supposed to create nothing.
-  await migrate(ownerDsn);
+  await migrate(ownerDsn, []);
 
   expect(await managedRoleExists()).toBe(true);
 
@@ -126,6 +135,8 @@ it("applies the schema for the owner, on a database that has never seen it", asy
 });
 
 it("is idempotent", async () => {
-  await migrate(ownerDsn);
-  await expect(migrate(ownerDsn)).resolves.toBeUndefined();
+  await migrate(ownerDsn, []);
+  await expect(migrate(ownerDsn, [])).resolves.toMatchObject({
+    appliedCount: 0,
+  });
 });
