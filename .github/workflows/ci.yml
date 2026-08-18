@@ -174,8 +174,9 @@ jobs:
   #
   #   * schema-owner credentials stay out of the environment of the unit, build,
   #     and browser steps that do not need them;
-  #   * `verify` keeps proving the app runs with NO database, including the two
-  #     deliberate skips — that is a supported mode and it needs its own run;
+  #   * `verify` keeps proving the app runs with NO database, including the
+  #     five deliberate skips — that is a supported mode and it needs its own
+  #     run;
   #   * "a saved dashboard survives a reload" becomes a nameable check that
   #     branch protection can require, instead of a few assertions inside a job
   #     named after something else.
@@ -187,8 +188,12 @@ jobs:
     timeout-minutes: 30
     env:
       NEXT_TELEMETRY_DISABLED: "1"
+      # The application credential is job-wide because the build and the test
+      # run both need it. The OWNER credential is not: it is attached to the
+      # single step that runs the browser suite, so checkout, install, build,
+      # and browser installation never see it. Least privilege is worth little
+      # if it is only argued for in a comment.
       DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
-      DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
       DASHER_DEV_BOOTSTRAP: "1"
     services:
       postgres:
@@ -221,7 +226,7 @@ jobs:
       # nothing — the exact failure this job exists to prevent.
       - name: Require the persistence environment
         run: |
-          for name in DASHER_DATABASE_URL DASHER_DEV_SEED_DSN DASHER_DEV_BOOTSTRAP; do
+          for name in DASHER_DATABASE_URL DASHER_DEV_BOOTSTRAP; do
             if [ -z "${!name}" ]; then
               echo "::error::${name} is not set; the persistence tests would skip and this job would prove nothing"
               exit 1
@@ -259,17 +264,31 @@ jobs:
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
 
-      - run: pnpm test:e2e | tee /tmp/e2e.log
+      # Named explicitly rather than run through `pnpm test:e2e`. Invoking the
+      # whole suite and then grepping for skips passes just as happily if
+      # `persisted-dashboard.spec.ts` is deleted, renamed, or stops being
+      # discovered — the other nine specs go green and nothing says the subject
+      # of this job never ran. Playwright fails when a named file does not
+      # exist, which turns that into an error instead of a silence.
+      - name: Run the persistence suite
+        env:
+          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+        run: |
+          pnpm --filter @dasher/web exec playwright test \
+            e2e/persisted-dashboard.spec.ts | tee /tmp/e2e.log
 
-      # Skip-proof. The preflight above catches a missing variable; this catches
-      # every other way a persistence test could quietly stop running — renamed
-      # describe, changed guard, moved file. A green job with skipped
-      # persistence tests is the failure mode, not a passing one.
-      - name: Assert no persistence test skipped
+      # Positive proof, not absence of a symptom. The preflight catches a
+      # missing variable and the explicit path catches a missing file; this
+      # catches a guard that quietly turned the tests off in place.
+      - name: Assert the persistence tests actually ran
         run: |
           if grep -qE '[0-9]+ skipped' /tmp/e2e.log; then
-            echo "::error::a test skipped in the persistence job; it must run with a database"
+            echo "::error::a persistence test skipped; it must run with a database"
             grep -E 'skipped' /tmp/e2e.log
+            exit 1
+          fi
+          if ! grep -qE '[0-9]+ passed' /tmp/e2e.log; then
+            echo "::error::no persistence test reported as passed"
             exit 1
           fi
 

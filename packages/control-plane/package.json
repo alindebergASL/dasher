@@ -16,7 +16,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude 'test/*.integration.test.ts'",
-    "test:postgres": "vitest run test/postgres.integration.test.ts test/schema-snapshot.integration.test.ts test/accepted-invalid-states.integration.test.ts test/unprivileged-owner.integration.test.ts test/request-context.integration.test.ts test/dashboard-repository.integration.test.ts --no-file-parallelism",
+    "test:postgres": "vitest run test/postgres.integration.test.ts test/schema-snapshot.integration.test.ts test/accepted-invalid-states.integration.test.ts test/unprivileged-owner.integration.test.ts test/request-context.integration.test.ts test/dashboard-repository.integration.test.ts test/migrate-cli.integration.test.ts --no-file-parallelism",
     "migrate": "vite-node src/migrate-cli.ts"
   },
   "dependencies": {

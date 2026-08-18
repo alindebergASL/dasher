@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { Pool } from "pg";
 
 /**
  * The slice: a generated dashboard survives a reload.
@@ -15,6 +16,10 @@ import { expect, test } from "@playwright/test";
  * suite must pass without PostgreSQL. CI's e2e job sets `DASHER_DATABASE_URL`,
  * so the skip is a local affordance and not a hole in the gate.
  */
+
+// The owner connection, so a database assertion cannot be satisfied by row
+// security hiding rows that do exist.
+const seedDsn = process.env["DASHER_DEV_SEED_DSN"] ?? "";
 
 const persistenceConfigured =
   process.env["DASHER_DATABASE_URL"] !== undefined &&
@@ -123,15 +128,67 @@ test.describe("a saved dashboard", () => {
     // `/` renders a default dashboard on every visit. Once the page became
     // dynamic that meant a row per authenticated load, unreachable because the
     // default render threads no id into the workspace.
-    await page.context().request.post("/dev/bootstrap");
+    //
+    // ASSERTED AGAINST THE DATABASE, not against the absence of a permalink.
+    // The first version of this test only checked that no link appeared, and
+    // would have passed against the unfixed code for the wrong reason: that
+    // code persisted the dashboard and then never showed its id either. The
+    // rows are the property; the missing link was only ever a symptom.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    expect(bootstrap.ok()).toBe(true);
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
 
     await page.goto("/");
     await page.goto("/");
     await page.goto("/");
 
-    // No permalink until a reader actually submits something.
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      // As the owner, so row-level security cannot be what makes this zero.
+      const rows = await owner.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dasher.dashboards WHERE organization_id = $1",
+        [organizationId],
+      );
+      expect(Number(rows.rows[0]?.count)).toBe(0);
+    } finally {
+      await owner.end();
+    }
+
+    // And the symptom, kept because it is what a reader would notice.
     await expect(
       page.getByRole("link", { name: "Open this dashboard by link" }),
     ).toHaveCount(0);
+  });
+  test("but does persist one the reader actually asked for", async ({
+    page,
+  }) => {
+    // The counterweight. Without it, "zero rows after visiting /" would pass
+    // just as well against an app that had stopped persisting entirely.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
+
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "What do you want to monitor?" })
+      .fill("Show me river conditions near Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toBeVisible();
+
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      const rows = await owner.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dasher.dashboards WHERE organization_id = $1",
+        [organizationId],
+      );
+      expect(Number(rows.rows[0]?.count)).toBe(1);
+    } finally {
+      await owner.end();
+    }
   });
 });

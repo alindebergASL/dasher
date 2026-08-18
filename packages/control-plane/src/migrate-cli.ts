@@ -2,7 +2,11 @@ import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
 
-import { bootstrapManagedRoles, runMigrations } from "./migrator";
+import {
+  assertDatabaseOwner,
+  bootstrapManagedRoles,
+  runMigrations,
+} from "./migrator";
 
 /**
  * Apply the baseline schema to a database.
@@ -21,10 +25,13 @@ import { bootstrapManagedRoles, runMigrations } from "./migrator";
  *   DASHER_MIGRATE_DSN=postgresql://owner:...@host/db \
  *     pnpm --filter @dasher/control-plane migrate
  *
- * The DSN must be the schema OWNER, not the application login. Running this as
- * the application role fails in the migrator's own preflight rather than here,
- * which is the right place for it: this file does not get to decide who may
- * change a schema.
+ * The DSN must be the schema OWNER, not the application login. That is checked
+ * here, before anything is created, using the migrator's own exported
+ * assertion — so the refusal carries `MigrationContractError` with
+ * `executor_not_database_owner` exactly as it would if `runMigrations` had
+ * raised it. Checking it here rather than leaving it to `runMigrations` is not
+ * this file deciding who may change a schema; it is refusing early enough that
+ * a rejected run leaves no cluster-wide roles behind.
  */
 
 const migrationDirectory = fileURLToPath(
@@ -59,9 +66,14 @@ export async function migrate(dsn: string): Promise<void> {
       //
       // Running migrations first as a "proof" is not the fix either. Tried, and
       // it applied the whole schema before the roles existed; it only appeared
-      // to work because a previous run had already created them. This asks the
-      // catalog the question directly, and creates nothing to ask it.
-      await assertOwnsDatabase(client);
+      // to work because a previous run had already created them.
+      //
+      // `assertDatabaseOwner` is the migrator's own check, exported rather than
+      // reimplemented: a local copy threw a generic `Error` where the migrator
+      // raises `MigrationContractError` with `executor_not_database_owner`, so
+      // the same condition had two contracts depending on which door you came
+      // through.
+      await assertDatabaseOwner(client);
       await bootstrapManagedRoles(client, loginRoleNames());
     } finally {
       client.release();
@@ -90,33 +102,4 @@ if (dsn !== undefined && dsn.trim() !== "") {
       "  Set it to the schema owner's connection string and re-run.\n\n",
   );
   process.exitCode = 2;
-}
-
-/**
- * Refuse a connection that does not own the database it is pointed at.
- *
- * Side-effect free on purpose: it runs before anything is created, so a
- * rejected run leaves the cluster exactly as it found it.
- */
-async function assertOwnsDatabase(client: {
-  query: (
-    sql: string,
-  ) => Promise<{ rows: Array<{ owns: boolean; owner: string }> }>;
-}): Promise<void> {
-  const result = await client.query(
-    `SELECT pg_catalog.pg_get_userbyid(datdba) = current_user AS owns,
-            pg_catalog.pg_get_userbyid(datdba) AS owner
-       FROM pg_catalog.pg_database
-      WHERE datname = current_database()`,
-  );
-  const row = result.rows[0];
-  if (row === undefined || !row.owns) {
-    process.stdout.write(
-      "\nDASHER_MIGRATE_DSN does not own this database.\n" +
-        `  It is owned by ${row?.owner ?? "an unknown role"}.\n` +
-        "  Migrations must run as the schema owner; nothing was changed.\n\n",
-    );
-    process.exitCode = 2;
-    throw new Error("migrate: connection does not own the database");
-  }
 }
