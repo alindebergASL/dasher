@@ -79,6 +79,21 @@ export async function POST(): Promise<NextResponse> {
     );
   }
   const client = await pool.connect();
+  let released = false;
+  const release = (destroyBecause?: unknown): void => {
+    if (released) return;
+    released = true;
+    if (destroyBecause === undefined) {
+      client.release();
+      return;
+    }
+    client.release(
+      destroyBecause instanceof Error
+        ? destroyBecause
+        : new Error(String(destroyBecause)),
+    );
+  };
+
   let seeded;
   try {
     // One transaction: a half-seeded principal — an organization with no
@@ -93,10 +108,22 @@ export async function POST(): Promise<NextResponse> {
     });
     await client.query("COMMIT");
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      // Same rule as `request-context.ts`, and it matters more here: this is a
+      // SCHEMA OWNER connection. A backend whose rollback failed may still be
+      // in a transaction or be dead, and returning it to the pool hands the
+      // next bootstrap an unknown-state connection with owner authority.
+      // `release(error)` makes pg-pool destroy it; the caller still sees their
+      // own failure rather than the rollback's.
+      release(rollbackError);
+      throw error;
+    }
+    release();
     throw error;
   } finally {
-    client.release();
+    release();
   }
 
   const now = Date.now();
@@ -124,8 +151,18 @@ export async function POST(): Promise<NextResponse> {
   return response;
 }
 
-/** The cookie is a state change, so GET is not an alias for it. */
+/**
+ * GET is not an alias for a state change — and it checks the switch first.
+ *
+ * It did not, and answered 405 with an identifying message even where the
+ * bootstrap was switched off. That made "this route does not exist when off"
+ * true of POST only: a 405 naming a development session is a positive answer to
+ * "is this build carrying a bootstrap?"
+ */
 export function GET(): NextResponse {
+  if (process.env["DASHER_DEV_BOOTSTRAP"] !== "1") {
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
   return NextResponse.json(
     { error: "use POST to start a development session" },
     { status: 405 },

@@ -28,7 +28,18 @@ import { readSessionCredential } from "../../session";
  * valid are three different problems for us and must be one answer to a caller.
  * Distinguishing them tells someone which dashboard ids exist in another
  * organization.
+ *
+ * That was the documented contract before it was the actual behaviour. Probing
+ * found two ways through it, both returning 500 and both distinguishable from a
+ * 404: an id that is not a UUID reached PostgreSQL and came back as `22P02`,
+ * and a well-formed but unissued session token let `RequestContextError` escape.
+ * A caller could tell "no such dashboard" from "malformed id" and from "bad
+ * credential" — which is exactly the discrimination this paragraph promised
+ * nobody could make. Both are normalised below, before and around the query.
  */
+
+/** Rejects anything the id column cannot hold, without asking the database. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 export default async function SavedDashboard({
   params,
 }: {
@@ -38,14 +49,28 @@ export default async function SavedDashboard({
 
   if (!isPersistenceConfigured()) notFound();
 
+  // Before the query, not after: a malformed id is a 22P02 from PostgreSQL,
+  // which is a 500 and therefore a different answer from a real miss.
+  if (!UUID.test(id)) notFound();
+
   const credential = await readSessionCredential();
   if (credential === undefined) notFound();
 
-  const loaded = await withDashboardRepository(
-    getPool(),
-    credential,
-    async (repository) => repository.loadById(id),
-  );
+  let loaded;
+  try {
+    loaded = await withDashboardRepository(
+      getPool(),
+      credential,
+      async (repository) => repository.loadById(id),
+    );
+  } catch (error) {
+    // A cookie that is well formed but names no live session raises `denied`.
+    // Letting it escape returns 500, which tells the holder of a forged token
+    // that their token is the problem rather than the dashboard. Anything else
+    // is a real fault and still surfaces as one.
+    if (isDenied(error)) notFound();
+    throw error;
+  }
   if (loaded === undefined) notFound();
 
   // Both steps throw rather than returning a result, and both are reachable:
@@ -61,4 +86,12 @@ export default async function SavedDashboard({
   }
 
   return <DashboardShell dashboard={spec} />;
+}
+
+function isDenied(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "denied"
+  );
 }

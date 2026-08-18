@@ -15,7 +15,8 @@ import { DEFAULT_REQUEST } from "./planning";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const result = await planDashboard(DEFAULT_REQUEST);
+  // Not persisted: nobody asked for this one, and its id is never shown.
+  const result = await planDashboard(DEFAULT_REQUEST, { persist: false });
 
   if (!result.ok || !result.dashboard || !result.plan) {
     throw new Error(result.error ?? "Could not plan the default dashboard");

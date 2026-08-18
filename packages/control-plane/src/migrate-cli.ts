@@ -52,6 +52,16 @@ export async function migrate(dsn: string): Promise<void> {
   try {
     const client = await pool.connect();
     try {
+      // Ownership BEFORE roles. `runMigrations` refuses a connection that does
+      // not own the database, but it refuses too late to help: roles are
+      // cluster-wide, so bootstrapping first left `dasher_app` behind on a
+      // rejected run — a failed migration that still changed the cluster.
+      //
+      // Running migrations first as a "proof" is not the fix either. Tried, and
+      // it applied the whole schema before the roles existed; it only appeared
+      // to work because a previous run had already created them. This asks the
+      // catalog the question directly, and creates nothing to ask it.
+      await assertOwnsDatabase(client);
       await bootstrapManagedRoles(client, loginRoleNames());
     } finally {
       client.release();
@@ -80,4 +90,33 @@ if (dsn !== undefined && dsn.trim() !== "") {
       "  Set it to the schema owner's connection string and re-run.\n\n",
   );
   process.exitCode = 2;
+}
+
+/**
+ * Refuse a connection that does not own the database it is pointed at.
+ *
+ * Side-effect free on purpose: it runs before anything is created, so a
+ * rejected run leaves the cluster exactly as it found it.
+ */
+async function assertOwnsDatabase(client: {
+  query: (
+    sql: string,
+  ) => Promise<{ rows: Array<{ owns: boolean; owner: string }> }>;
+}): Promise<void> {
+  const result = await client.query(
+    `SELECT pg_catalog.pg_get_userbyid(datdba) = current_user AS owns,
+            pg_catalog.pg_get_userbyid(datdba) AS owner
+       FROM pg_catalog.pg_database
+      WHERE datname = current_database()`,
+  );
+  const row = result.rows[0];
+  if (row === undefined || !row.owns) {
+    process.stdout.write(
+      "\nDASHER_MIGRATE_DSN does not own this database.\n" +
+        `  It is owned by ${row?.owner ?? "an unknown role"}.\n` +
+        "  Migrations must run as the schema owner; nothing was changed.\n\n",
+    );
+    process.exitCode = 2;
+    throw new Error("migrate: connection does not own the database");
+  }
 }

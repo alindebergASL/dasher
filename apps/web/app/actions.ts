@@ -110,9 +110,15 @@ async function persist(
 async function planAndPersist(
   requestText: string,
   refine?: PlannerRunOptions["refine"],
+  persistThis = true,
 ): Promise<PlanResult> {
   const planned = await plan(requestText, refine);
-  if (!planned.ok || planned.dashboard === undefined || refine !== undefined) {
+  if (
+    !persistThis ||
+    !planned.ok ||
+    planned.dashboard === undefined ||
+    refine !== undefined
+  ) {
     // Only fresh generations get a durable identity in this slice. A refinement
     // produces a new version of a dashboard already on screen, and versioning
     // on refine needs the head revision it saw — the update path, not this one.
@@ -196,7 +202,23 @@ async function plan(
   }
 }
 
-export async function planDashboard(requestText: string): Promise<PlanResult> {
+/**
+ * `persist: false` for the page's own default render.
+ *
+ * `/` builds a dashboard on every visit, and once it became dynamic that meant
+ * a row per authenticated page load — none of them reachable, because the
+ * default render does not thread an id into the workspace. Probing left five
+ * behind before this was noticed, and the end-to-end suite adds one per
+ * `goto("/")`.
+ *
+ * Persisting is what a reader asks for by submitting a request, so that is when
+ * it happens. An implicit save of something nobody typed is not durability, it
+ * is litter with a primary key.
+ */
+export async function planDashboard(
+  requestText: string,
+  options: { persist?: boolean } = {},
+): Promise<PlanResult> {
   const trimmed = requestText.trim();
   if (trimmed.length === 0) {
     return {
@@ -210,7 +232,7 @@ export async function planDashboard(requestText: string): Promise<PlanResult> {
       error: tooLong(trimmed, REQUEST_MAX_LENGTH, "Requests"),
     };
   }
-  return planAndPersist(trimmed);
+  return planAndPersist(trimmed, undefined, options.persist ?? true);
 }
 
 export async function refineDashboard(

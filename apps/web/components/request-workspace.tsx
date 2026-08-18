@@ -59,7 +59,12 @@ export function RequestWorkspace({
     setDashboard(result.dashboard);
     setPlan(result.plan);
     setActiveRequest(nextRequest);
-    setError(undefined);
+    // NOT unconditionally cleared. A dashboard can be built and still fail to
+    // save, and `actions.ts` deliberately returns it with `ok: true` and an
+    // error saying so. Clearing here discarded that message before render — the
+    // "the page looked fine" failure the two domains were split to prevent, put
+    // back by the component that displays them.
+    setError(result.error);
     setRevised((result.attempts ?? 1) > 1);
     setRefinement(result.refinement);
     // A refinement returns no id: it produces a new version of a dashboard

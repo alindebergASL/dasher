@@ -79,4 +79,59 @@ test.describe("a saved dashboard", () => {
     const response = await page.goto(href!);
     expect(response?.status()).toBe(404);
   });
+
+  test.describe("the 404 contract holds for every failure", () => {
+    // Documented before it was true. Probing found two ways to get a 500 —
+    // both distinguishable from a real miss, which is the discrimination the
+    // contract promised nobody could make.
+    test("an id that is not a UUID is a miss, not a server error", async ({
+      page,
+    }) => {
+      await page.context().request.post("/dev/bootstrap");
+
+      // Reached PostgreSQL and came back 22P02 before the id was checked first.
+      const response = await page.goto("/d/not-a-uuid");
+      expect(response?.status()).toBe(404);
+    });
+
+    test("a well-formed but unissued token is a miss, not a server error", async ({
+      request,
+    }) => {
+      // Sent as a header rather than planted with `addCookies`: the `__Host-`
+      // prefix forbids a Domain attribute, and Playwright's cookie API always
+      // sets one, so the browser refuses it. What is under test is the server's
+      // answer to a credential it never issued, and a raw request asks that
+      // question directly.
+      const response = await request.get(
+        "/d/00000000-0000-4000-8000-000000000000",
+        {
+          headers: {
+            cookie: `__Host-dasher_session=${Buffer.alloc(32, 7).toString("base64url")}`,
+          },
+          failOnStatusCode: false,
+        },
+      );
+
+      // `RequestContextError: denied` escaped as a 500 before this, telling the
+      // holder of a forged token that their token was the problem rather than
+      // the dashboard.
+      expect(response.status()).toBe(404);
+    });
+  });
+
+  test("does not persist the dashboard nobody asked for", async ({ page }) => {
+    // `/` renders a default dashboard on every visit. Once the page became
+    // dynamic that meant a row per authenticated load, unreachable because the
+    // default render threads no id into the workspace.
+    await page.context().request.post("/dev/bootstrap");
+
+    await page.goto("/");
+    await page.goto("/");
+    await page.goto("/");
+
+    // No permalink until a reader actually submits something.
+    await expect(
+      page.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toHaveCount(0);
+  });
 });
