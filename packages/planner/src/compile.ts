@@ -85,6 +85,22 @@ function deriveFacts(metrics: GaugeMetrics[], options: CompileOptions): Facts {
   });
 }
 
+/**
+ * The unit a gauge's stage series actually reports in.
+ *
+ * Six call sites wrote `"ft"` as a literal while two others read it from the
+ * series, so the same reading could be labelled two ways in one dashboard. It
+ * was not reachable through the USGS parser, which rejects a stage series that
+ * is not in feet — but `compilePlan` takes `RiverGauge[]`, not USGS output, so
+ * "the parser would have caught it" is a fact about a different function.
+ *
+ * The fallback stays for a gauge with no stage series at all, where there is no
+ * unit to read and the sections using it are about stage by definition.
+ */
+function stageUnit(metrics: GaugeMetrics): string {
+  return metrics.gauge.stage?.unit ?? "ft";
+}
+
 function buildSection(
   section: PlanSectionKind,
   plan: DashboardPlan,
@@ -117,7 +133,7 @@ function buildSection(
           },
           {
             text: fastest
-              ? `${fastest.gauge.river} is the fastest-rising complete gauge over the last hour at ${signed(fastest.stageChange1h, "ft")}.`
+              ? `${fastest.gauge.river} is the fastest-rising complete gauge over the last hour at ${signed(fastest.stageChange1h, stageUnit(fastest))}.`
               : "No fresh, complete gauge is rising fast enough to rank over the last hour.",
             evidenceIds: fastest
               ? [gaugeEvidenceId(fastest.gauge.siteId), CALCULATION_EVIDENCE_ID]
@@ -200,8 +216,8 @@ function buildSection(
         items: ranked.map((item) => ({
           id: item.gauge.siteId,
           label: item.gauge.river,
-          value: signed(item.stageChange1h, "ft"),
-          note: `${item.direction}; 6h ${signed(item.stageChange6h, "ft")}`,
+          value: signed(item.stageChange1h, stageUnit(item)),
+          note: `${item.direction}; 6h ${signed(item.stageChange6h, stageUnit(item))}`,
           evidenceIds: [
             gaugeEvidenceId(item.gauge.siteId),
             CALCULATION_EVIDENCE_ID,
@@ -218,8 +234,8 @@ function buildSection(
         items: metrics.map((item) => ({
           id: item.gauge.siteId,
           label: item.gauge.river,
-          value: `1h ${signed(item.stageChange1h, "ft")}`,
-          note: `6h ${signed(item.stageChange6h, "ft")} · 24h ${signed(item.stageChange24h, "ft")}`,
+          value: `1h ${signed(item.stageChange1h, stageUnit(item))}`,
+          note: `6h ${signed(item.stageChange6h, stageUnit(item))} · 24h ${signed(item.stageChange24h, stageUnit(item))}`,
           evidenceIds: [
             gaugeEvidenceId(item.gauge.siteId),
             CALCULATION_EVIDENCE_ID,
@@ -234,7 +250,7 @@ function buildSection(
         .map((item) => ({
           id: item.gauge.siteId,
           label: item.gauge.river,
-          unit: item.gauge.stage?.unit ?? "ft",
+          unit: stageUnit(item),
           evidenceIds: [gaugeEvidenceId(item.gauge.siteId)],
           points: item.stagePoints,
         }));
@@ -334,7 +350,7 @@ export function compilePlan(
         ? {
             statementTypes: ["calculated"],
             headline: `${fastest.gauge.river} rose fastest`,
-            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.stageChange1h, "ft")} at ${fastest.gauge.name}.`,
+            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.stageChange1h, stageUnit(fastest))} at ${fastest.gauge.name}.`,
             evidenceIds: [
               gaugeEvidenceId(fastest.gauge.siteId),
               CALCULATION_EVIDENCE_ID,
