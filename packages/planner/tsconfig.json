@@ -5,5 +5,5 @@
     "noEmit": true,
     "types": ["vitest/globals"]
   },
-  "include": ["src/**/*.ts", "../../fixtures/**/*.json"]
+  "include": ["src/**/*.ts", "eval/**/*.ts", "../../fixtures/**/*.json"]
 }

@@ -4,7 +4,7 @@ import {
   SessionCookieMetadataError,
   createSessionCookieMetadata,
   type SessionCookieMetadata,
-} from "./session-cookie.js";
+} from "./session-cookie";
 
 const intrinsicDefineProperty = Object.defineProperty;
 const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;

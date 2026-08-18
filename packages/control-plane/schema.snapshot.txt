@@ -359,6 +359,17 @@ CREATE TRIGGER memberships_guard BEFORE UPDATE ON dasher.memberships FOR EACH RO
 CREATE TRIGGER source_snapshots_immutable BEFORE DELETE OR UPDATE ON dasher.source_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 
 -- functions
+dasher_api.accept_invitation(p_token_key_version smallint, p_token bytea, p_issuer text, p_subject text, p_verified_email text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.acting_principal(p_required_role text) -> record volatility=s security_definer=true search_path=search_path=pg_catalog
+dasher_api.begin_request(p_token_key_version smallint, p_token bytea) -> record volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.create_dashboard(p_title text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.fail_run(p_run_id uuid, p_failure_reason text, p_request_id uuid, p_deployment_revision text) -> void volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.record_evidence(p_snapshot_id uuid, p_evidence_kind text, p_coordinates text, p_transformation text, p_content_sha256 bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.record_source_snapshot(p_source_kind text, p_source_ref text, p_canonical_bytes bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.resolve_external_identity(p_issuer text, p_subject text) -> uuid volatility=s security_definer=true search_path=search_path=pg_catalog
+dasher_api.set_dashboard_archived(p_dashboard_id uuid, p_expected_revision bigint, p_archived boolean, p_request_id uuid, p_deployment_revision text) -> bigint volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.start_run(p_dashboard_id uuid, p_request_text text, p_provider text, p_model text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_allows(p_organization_id uuid, p_required_role text) -> boolean volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_digest(p_user_id uuid, p_organization_id uuid, p_session_id uuid, p_authority_revision bigint, p_transaction_id text) -> bytea volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_organization_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
@@ -370,6 +381,30 @@ dasher_private.guard_dashboard_update() -> trigger volatility=v security_definer
 dasher_private.guard_membership_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.reject_immutable_mutation() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.verified_context() -> record volatility=s security_definer=true search_path=search_path=pg_catalog
+
+-- routine grants
+dasher_api.accept_invitation(p_token_key_version smallint, p_token bytea, p_issuer text, p_subject text, p_verified_email text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.acting_principal(p_required_role text) dasher_ci_owner=X/dasher_ci_owner
+dasher_api.begin_request(p_token_key_version smallint, p_token bytea) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.create_dashboard(p_title text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.fail_run(p_run_id uuid, p_failure_reason text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.record_evidence(p_snapshot_id uuid, p_evidence_kind text, p_coordinates text, p_transformation text, p_content_sha256 bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.record_source_snapshot(p_source_kind text, p_source_ref text, p_canonical_bytes bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.resolve_external_identity(p_issuer text, p_subject text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.set_dashboard_archived(p_dashboard_id uuid, p_expected_revision bigint, p_archived boolean, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.start_run(p_dashboard_id uuid, p_request_text text, p_provider text, p_model text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_private.context_allows(p_organization_id uuid, p_required_role text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_private.context_digest(p_user_id uuid, p_organization_id uuid, p_session_id uuid, p_authority_revision bigint, p_transaction_id text) dasher_ci_owner=X/dasher_ci_owner
+dasher_private.context_organization_id() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_private.context_user_id() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_private.guard_agent_run_update() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.guard_claim_insert() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.guard_claim_support() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.guard_dashboard_update() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.guard_membership_update() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.reject_immutable_mutation() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.verified_context() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 
 -- grants
 dasher.agent_runs dasher_app SELECT

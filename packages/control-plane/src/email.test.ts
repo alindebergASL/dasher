@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EmailNormalizationError, normalizeEmailAddress } from "./email.js";
+import { EmailNormalizationError, normalizeEmailAddress } from "./email";
 
 const intrinsicDefineProperty = Object.defineProperty;
 const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;

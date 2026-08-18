@@ -91,6 +91,8 @@ its own connection, including SQL it was never intended to issue.
 - **I18** Every operation named in `audit_events_action_check` that the seam
   performs writes its audit event in the same transaction as the state change,
   such that neither can occur without the other.
+  _(Stated here before it was true: `record_evidence` wrote none, though
+  `evidence_record.created` is in the allowlist. Closed 2026-08-15.)_
 
 ### Completeness of the seam
 

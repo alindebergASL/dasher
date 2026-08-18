@@ -1,0 +1,85 @@
+name: workflow-lint
+
+# A separate workflow whose only job is to validate the others.
+#
+# This exists because of how the failure it guards actually presents. A
+# duplicate `env:` key made `ci.yml` unschedulable, and GitHub responded by
+# completing the run with ZERO jobs — not a red build, an empty one. Every gate
+# in that file was silently absent, and a commit passed through as though it had
+# cleared them.
+#
+# A check living inside `ci.yml` cannot catch that: if the file will not
+# schedule, nothing in it runs, including the check. So this is its own file,
+# with its own trigger, doing one thing.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # actionlint knows what GitHub accepts — duplicate keys, unknown fields,
+      # bad `runs-on`, shell errors inside `run:`. The release label is mutable,
+      # so the executable is pinned by content as well as by version. Reading
+      # workflows does not make an unverified executable safe: it still runs
+      # with every authority available to this job.
+      - name: Install actionlint
+        run: |
+          curl -fsSLo actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' \
+            actionlint.tar.gz | sha256sum --check --strict -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -version
+
+      - name: Lint every workflow
+        run: ./actionlint -color
+
+      # Belt and braces: actionlint is the authority on GitHub's rules, and this
+      # is the narrow property that actually broke, asserted directly so a
+      # regression names itself.
+      - name: Reject duplicate keys
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def no_duplicates(loader, node, deep=False):
+              seen = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in seen:
+                      raise yaml.constructor.ConstructorError(
+                          None, None, f"duplicate key {key!r}", key_node.start_mark
+                      )
+                  seen[key] = loader.construct_object(value_node, deep=deep)
+              return seen
+
+          Strict.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates
+          )
+
+          failed = False
+          for path in sorted(glob.glob(".github/workflows/*.yml")):
+              try:
+                  with open(path) as handle:
+                      yaml.load(handle, Strict)
+                  print(f"ok   {path}")
+              except Exception as error:
+                  print(f"FAIL {path}: {error}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY

@@ -324,7 +324,17 @@ async function assertManagedRolesUnprivileged(
   }
 }
 
-async function assertDatabaseOwner(client: MigrationClient): Promise<void> {
+/**
+ * Refuses a connection that does not own the database it is pointed at.
+ *
+ * Exported because the migrate CLI needs the same refusal BEFORE it creates
+ * managed roles: roles are cluster-wide, so bootstrapping first left them
+ * behind on a run this would have rejected. A second implementation there threw
+ * a generic `Error`, which quietly gave the same condition two error contracts.
+ */
+export async function assertDatabaseOwner(
+  client: MigrationClient,
+): Promise<void> {
   const result = await client.query<{ readonly is_owner: boolean }>(`
     SELECT owner.rolname = CURRENT_USER AS is_owner
     FROM pg_catalog.pg_database AS database

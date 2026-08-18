@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -51,6 +53,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -80,6 +84,8 @@ jobs:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -157,6 +163,8 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -168,3 +176,234 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm --filter @dasher/control-plane test:postgres
+
+  # The persistence slice runs in its own job rather than inside `verify`, for
+  # three reasons that are all about keeping evidence honest:
+  #
+  #   * schema-owner credentials stay out of the environment of the unit, build,
+  #     and browser steps that do not need them;
+  #   * `verify` keeps proving the app runs with NO database, including the
+  #     five deliberate skips — that is a supported mode and it needs its own
+  #     run;
+  #   * "a saved dashboard survives a reload" becomes a nameable check that
+  #     branch protection can require, instead of a few assertions inside a job
+  #     named after something else.
+  #
+  # Service containers are job-local, so this binding 5432 does not collide with
+  # the `postgres` job doing the same.
+  persistence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      # The application credential is job-wide because the build and the test
+      # run both need it. The OWNER credential is not: it is attached to the
+      # single step that runs the browser suite, so checkout, install, build,
+      # and browser installation never see it. Least privilege is worth little
+      # if it is only argued for in a comment.
+      DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
+      DASHER_DEV_BOOTSTRAP: "1"
+    services:
+      postgres:
+        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+        env:
+          POSTGRES_DB: dasher_e2e
+          POSTGRES_PASSWORD: dasher_ci_owner_password
+          POSTGRES_USER: dasher_ci_owner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=dasher_ci_owner --dbname=dasher_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Preflight. Without it, a variable dropped from the job above turns the
+      # persistence tests into skips and this job stays green while proving
+      # nothing — the exact failure this job exists to prevent.
+      - name: Require the persistence environment
+        run: |
+          for name in DASHER_DATABASE_URL DASHER_DEV_BOOTSTRAP; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is not set; the persistence tests would skip and this job would prove nothing"
+              exit 1
+            fi
+          done
+
+      # The migrator grants `dasher_app` to a login role but does not invent
+      # one. Without this the app would connect as the owner and every
+      # row-security assertion below would be meaningless.
+      - name: Create the application login
+        run: |
+          PGPASSWORD=dasher_ci_owner_password psql -h localhost -U dasher_ci_owner -d dasher_e2e -v ON_ERROR_STOP=1 -c \
+            "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='dasher_web_app') THEN CREATE ROLE dasher_web_app LOGIN PASSWORD 'dasher_ci_app_password'; END IF; END \$\$;"
+
+      - run: pnpm --filter @dasher/control-plane migrate
+        env:
+          DASHER_MIGRATE_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+          DASHER_APP_LOGIN_ROLES: dasher_web_app
+
+      - run: pnpm build
+
+      - id: playwright-version
+        run: |
+          version="$(node -p "require('./apps/web/package.json').devDependencies['@playwright/test']")"
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+
+      - id: playwright-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - run: pnpm --filter @dasher/web exec playwright install-deps chromium
+
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @dasher/web exec playwright install chromium
+
+      # Named explicitly rather than run through `pnpm test:e2e`. Invoking the
+      # whole suite and then grepping for skips passes just as happily if
+      # `persisted-dashboard.spec.ts` is deleted, renamed, or stops being
+      # discovered — the other nine specs go green and nothing says the subject
+      # of this job never ran. Playwright fails when a named file does not
+      # exist, which turns that into an error instead of a silence.
+      - name: Run the persistence suite
+        env:
+          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+          PLAYWRIGHT_JSON_OUTPUT_FILE: /tmp/persistence-results.json
+        run: |
+          pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
+            e2e/persisted-dashboard.spec.ts
+
+      # Positive proof, not absence of a symptom. The preflight catches a
+      # missing variable and the explicit path catches a missing file; this
+      # catches a guard that quietly turned the tests off in place.
+      - name: Assert the persistence tests actually ran
+        run: |
+          node <<'NODE'
+          const { readFileSync } = require("node:fs");
+
+          const fail = (message) => {
+            process.stderr.write(`::error::${message}\n`);
+            process.exit(1);
+          };
+          const report = JSON.parse(
+            readFileSync("/tmp/persistence-results.json", "utf8"),
+          );
+          if (
+            report === null ||
+            typeof report !== "object" ||
+            Array.isArray(report)
+          ) {
+            fail("persistence report root is not an object");
+          }
+          const stats = report.stats;
+          if (
+            stats === null ||
+            typeof stats !== "object" ||
+            Array.isArray(stats)
+          ) {
+            fail("persistence report stats are malformed");
+          }
+          const expectedStats = {
+            expected: 6,
+            skipped: 0,
+            unexpected: 0,
+            flaky: 0,
+          };
+          for (const [name, expected] of Object.entries(expectedStats)) {
+            if (stats[name] !== expected) {
+              fail(
+                `persistence report ${name}=${String(stats[name])}; expected ${String(expected)}`,
+              );
+            }
+          }
+          if (!Array.isArray(report.errors) || report.errors.length !== 0) {
+            fail("persistence report contains runner errors");
+          }
+
+          const specs = [];
+          const collect = (suites) => {
+            if (!Array.isArray(suites)) {
+              fail("persistence report suites are malformed");
+            }
+            for (const suite of suites) {
+              if (
+                suite === null ||
+                typeof suite !== "object" ||
+                !Array.isArray(suite.specs)
+              ) {
+                fail("persistence report contains a malformed suite");
+              }
+              const childSuites = Object.hasOwn(suite, "suites")
+                ? suite.suites
+                : [];
+              if (!Array.isArray(childSuites)) {
+                fail("persistence report contains malformed child suites");
+              }
+              specs.push(...suite.specs);
+              collect(childSuites);
+            }
+          };
+          collect(report.suites);
+          if (specs.length !== 6) {
+            fail(`persistence report discovered ${String(specs.length)} specs; expected 6`);
+          }
+          if (
+            specs.some(
+              (spec) =>
+                spec === null ||
+                typeof spec !== "object" ||
+                spec.file !== "persisted-dashboard.spec.ts" ||
+                spec.ok !== true ||
+                !Array.isArray(spec.tests) ||
+                spec.tests.length !== 1,
+            )
+          ) {
+            fail("persistence report contains an unexpected or unsuccessful spec");
+          }
+
+          const tests = specs.flatMap((spec) => spec.tests);
+          if (tests.length !== 6) {
+            fail(`persistence report executed ${String(tests.length)} tests; expected 6`);
+          }
+          if (
+            tests.some(
+              (test) =>
+                test === null ||
+                typeof test !== "object" ||
+                test.expectedStatus !== "passed" ||
+                !Array.isArray(test.results) ||
+                test.results.length !== 1 ||
+                test.results[0] === null ||
+                typeof test.results[0] !== "object" ||
+                test.results[0].status !== "passed",
+            )
+          ) {
+            fail("persistence report contains a non-passing test result");
+          }
+          process.stdout.write("Persistence report proves 6 passed, 0 skipped.\n");
+          NODE
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: persistence-playwright-artifacts
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

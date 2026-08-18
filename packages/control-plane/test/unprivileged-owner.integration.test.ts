@@ -7,14 +7,15 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
+} from "../src/index";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
   createTemporaryAppLogin,
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
-} from "./postgres-harness.js";
+  ignoreTeardownShutdown,
+} from "./postgres-harness";
 
 /**
  * The deployment contract: everything after provisioning works when the schema
@@ -49,6 +50,7 @@ let ownerDsn: string;
 
 beforeAll(async () => {
   operatorPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  ignoreTeardownShutdown(operatorPool);
   ownerDsn = await createUnprivilegedSchemaOwner(
     operatorPool,
     config.ownerDsn,
@@ -56,6 +58,7 @@ beforeAll(async () => {
     databaseName,
   );
   ownerPool = new Pool({ connectionString: ownerDsn, max: 4 });
+  ignoreTeardownShutdown(ownerPool);
 });
 
 afterAll(async () => {
@@ -129,6 +132,7 @@ it("bootstraps roles, migrates, and serves a request as an ordinary owner", asyn
   const appUrl = new URL(appDsn);
   appUrl.username = appUsername;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 2 });
+  ignoreTeardownShutdown(appPool);
 
   const app = await appPool.connect();
   try {

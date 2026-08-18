@@ -5,7 +5,7 @@ export {
   type IntegrationPreflightErrorCode,
   type PostgresIntegrationConfig,
   type PostgresIntegrationEnvironment,
-} from "./preflight.js";
+} from "./preflight";
 
 export {
   MigrationContractError,
@@ -17,7 +17,7 @@ export {
   type MigrationContractErrorCode,
   type MigrationPool,
   type MigrationRunResult,
-} from "./migrator.js";
+} from "./migrator";
 
 export {
   SecretKeyRing,
@@ -28,20 +28,20 @@ export {
   type SecretKind,
   type SecretPersistenceMaterial,
   type SecretPrimitiveErrorCode,
-} from "./secrets.js";
+} from "./secrets";
 
 export {
   EmailNormalizationError,
   normalizeEmailAddress,
   type EmailNormalizationErrorCode,
-} from "./email.js";
+} from "./email";
 
 export {
   SessionCookieMetadataError,
   createSessionCookieMetadata,
   type SessionCookieMetadata,
   type SessionCookieMetadataErrorCode,
-} from "./session-cookie.js";
+} from "./session-cookie";
 
 export {
   VerifiedPrincipal,
@@ -49,6 +49,29 @@ export {
   createVerifiedPrincipalFromServerVerification,
   type ServerVerifiedPrincipalInput,
   type VerifiedPrincipalErrorCode,
-} from "./verified-principal.js";
+} from "./verified-principal";
 
-export { renderSchemaSnapshot } from "./schema-snapshot.js";
+export { renderSchemaSnapshot } from "./schema-snapshot";
+
+// `request-context.ts` is deliberately NOT exported. Its handle still accepts
+// SQL, and a generic data-access capability in the public API is one import
+// away from becoming an application's data layer. The public surface will be a
+// repository facade that closes over a handle and exposes named domain
+// operations; it cannot be designed until something persists. Until then this
+// module is internal to the package and reachable only by its own tests.
+
+export {
+  DashboardRepositoryError,
+  withDashboardRepository,
+  type DashboardRepository,
+  type DashboardRepositoryErrorCode,
+  type LoadedDashboard,
+  type SaveDashboardInput,
+  type SavedDashboard,
+} from "./dashboard-repository";
+
+export {
+  seedDevPrincipal,
+  type DevPrincipalSeed,
+  type DevSeedOptions,
+} from "./dev-seed";

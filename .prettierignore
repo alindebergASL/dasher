@@ -1,1 +1,8 @@
 packages/control-plane/migrations/*.sql
+
+# Recorded eval output, kept byte-for-byte. These files are evidence: their
+# SHA256 hashes are published in docs/validation/eval/*.md so a reviewer can
+# confirm the committed artifact is the one the run produced. Reformatting them
+# would change the bytes and silently invalidate that check.
+docs/validation/eval/*.json
+docs/validation/eval/*.log

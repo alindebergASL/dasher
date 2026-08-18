@@ -10,6 +10,7 @@ import * as verifiedPrincipalExports from "@dasher/control-plane/verified-princi
 describe("control-plane public exports", () => {
   it("exposes exactly the expected root symbols", () => {
     expect(Object.keys(packageRoot).sort()).toEqual([
+      "DashboardRepositoryError",
       "EmailNormalizationError",
       "IntegrationPreflightError",
       "MigrationContractError",
@@ -28,16 +29,52 @@ describe("control-plane public exports", () => {
       "parsePostgresIntegrationEnv",
       "renderSchemaSnapshot",
       "runMigrations",
+      "seedDevPrincipal",
+      "withDashboardRepository",
     ]);
   });
 
+  it("does not expose the generic transaction capability", () => {
+    // `withRequestContext` hands its callback a handle whose `query` takes SQL.
+    // Exported, that is a generic data-access capability any caller can reach,
+    // and the repository facade that should own it never gets written. It stays
+    // internal until named domain operations exist to expose instead.
+    const names = Object.keys(packageRoot);
+    expect(names).not.toContain("withRequestContext");
+    expect(names).not.toContain("RequestContextError");
+    expect(names.filter((name) => name.startsWith("Request"))).toEqual([]);
+  });
+
   it("does not re-export anything from the removed agent-run or lifecycle surfaces", () => {
-    const removed = Object.keys(packageRoot).filter(
-      (name) =>
-        name.startsWith("AgentRun") ||
-        name.startsWith("agentRun") ||
-        name.startsWith("AGENT_RUN") ||
-        name.startsWith("Dashboard"),
+    // This guarded `Dashboard*` wholesale, which was right while every such
+    // name belonged to the deleted lifecycle repository — a surface of roughly
+    // twenty exports (`DashboardLifecycleRepository`, `DashboardAdminProjection`,
+    // `CompareAndSwapDashboardHead*`, `CreateDashboardVersion*`, …).
+    //
+    // A legitimate `Dashboard`-prefixed export now exists, so the prefix alone
+    // no longer separates the two. Narrowed to the removed surface itself
+    // rather than relaxed: the point was never the letters, it was that a
+    // deleted repository must not quietly return.
+    const removedSurface = [
+      "AgentRun",
+      "agentRun",
+      "AGENT_RUN",
+      "DashboardLifecycle",
+      "DashboardAdmin",
+      "DashboardLineage",
+      "DashboardPromotion",
+      "DashboardEvidence",
+      "DashboardArtifact",
+      "DashboardCleanup",
+      "DashboardDisposable",
+      "DashboardSummary",
+      "DashboardKind",
+      "DashboardValidationState",
+      "CompareAndSwapDashboard",
+      "CreateDashboard",
+    ];
+    const removed = Object.keys(packageRoot).filter((name) =>
+      removedSurface.some((prefix) => name.startsWith(prefix)),
     );
     expect(removed).toEqual([]);
   });

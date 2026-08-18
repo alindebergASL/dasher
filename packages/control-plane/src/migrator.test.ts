@@ -12,7 +12,7 @@ import {
   runMigrations,
   type MigrationClient,
   type MigrationPool,
-} from "./migrator.js";
+} from "./migrator";
 
 const fixtureMigrationDirectory = fileURLToPath(
   new URL("../test/fixtures/migrations", import.meta.url),

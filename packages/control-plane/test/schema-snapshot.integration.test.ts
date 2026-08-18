@@ -8,12 +8,13 @@ import {
   bootstrapManagedRoles,
   parsePostgresIntegrationEnv,
   runMigrations,
-} from "../src/index.js";
-import { renderSchemaSnapshot } from "../src/schema-snapshot.js";
+} from "../src/index";
+import { renderSchemaSnapshot } from "../src/schema-snapshot";
 import {
   baselineMigrationDirectory,
   borrowedClientPool,
-} from "./postgres-harness.js";
+  ignoreTeardownShutdown,
+} from "./postgres-harness";
 
 /**
  * Proves the committed schema snapshot is what the migrations actually
@@ -34,11 +35,13 @@ let targetPool: Pool;
 
 beforeAll(async () => {
   adminPool = new Pool({ connectionString: config.ownerDsn, max: 2 });
+  ignoreTeardownShutdown(adminPool);
   await adminPool.query(`CREATE DATABASE ${databaseName}`);
 
   const target = new URL(config.ownerDsn);
   target.pathname = `/${databaseName}`;
   targetPool = new Pool({ connectionString: target.toString(), max: 2 });
+  ignoreTeardownShutdown(targetPool);
 
   const client = await targetPool.connect();
   try {
@@ -142,4 +145,45 @@ it("orders every section by bytes, so the render does not depend on the server c
     );
     expect(body).toEqual(byteSorted);
   }
+});
+
+it("every callable entry point is execute-restricted, never PUBLIC", async () => {
+  const committed = await readFile(snapshotPath, "utf8");
+
+  // `dasher_api` holds the callable surface and no tables at all, so before the
+  // routine sections existed it was invisible to this gate entirely: a
+  // SECURITY DEFINER entry point could have been granted to PUBLIC — an
+  // unauthenticated write path — with the snapshot still matching.
+  //
+  // A null `proacl` renders as the PostgreSQL default, which is EXECUTE to
+  // PUBLIC. That is the string this asserts against, because the dangerous case
+  // is a routine nobody ever granted rather than one granted wrongly.
+  const routineGrants = committed
+    .split("\n")
+    .filter((line) => line.startsWith("dasher_api."));
+
+  expect(routineGrants.length).toBeGreaterThan(0);
+  expect(
+    routineGrants.filter((line) => line.includes("EXECUTE to PUBLIC")),
+  ).toEqual([]);
+});
+
+it("records the evidence seam's exact signature, definer flag, and search path", async () => {
+  const committed = await readFile(snapshotPath, "utf8");
+
+  // `record_evidence` gained two arguments in this branch. Without the routine
+  // sections, that signature change — and the SECURITY DEFINER and search_path
+  // that make it safe — passed the schema gate without being looked at.
+  const signature = committed
+    .split("\n")
+    .find(
+      (line) =>
+        line.startsWith("dasher_api.record_evidence(") && line.includes("->"),
+    );
+
+  expect(signature).toBeDefined();
+  expect(signature).toContain("p_request_id uuid");
+  expect(signature).toContain("p_deployment_revision text");
+  expect(signature).toContain("security_definer=true");
+  expect(signature).toContain("search_path=pg_catalog");
 });

@@ -1,4 +1,4 @@
-import { normalizeEmailAddress } from "./email.js";
+import { normalizeEmailAddress } from "./email";
 
 const objectFreeze = Object.freeze;
 const reflectApply = Reflect.apply;

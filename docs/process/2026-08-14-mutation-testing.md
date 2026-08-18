@@ -28,15 +28,38 @@ equivalent discipline is applied per fix by hand.
 pnpm test:mutation
 ```
 
-Roughly 100 seconds for 692 mutants. It has its own CI job so it runs in
+Roughly three minutes for 1,043 mutants. It has its own CI job so it runs in
 parallel rather than in front of the static gates.
 
 ## What is mutated, and why it runs from the root
 
-`@dasher/planner`'s compiler, plan contract, and run loop, plus
-`@dasher/river-domain`'s `facts.ts` — the composition rules the two share.
+`@dasher/planner`'s compiler, plan contract, free-text gate, run loop, and
+provider, plus `@dasher/river-domain`'s `facts.ts` — the composition rules the
+two share.
 
-That is four files, not everything a browser request touches: `river-domain`'s
+`freetext.ts` joined the run on 2026-08-14 with the gate it implements. It is
+pattern-matching over strings, which is the shape of code where a passing suite
+proves least: a regex can be weakened in a dozen ways that no example in the
+test file happens to exercise. It scored 100% — 36 mutants, none survived — and
+that is the number to defend rather than a licence to stop.
+
+`provider.ts` joined with the refinement pass, and adding it turned the gate red
+at 67.21: it arrived with 53 mutants that no test covered at all. That was not
+noise. The fake provider's own docstring claims it "makes different composition
+choices for different requests", and two of its five branches — the homeowner one
+and the rate-of-change one — had never been exercised by anything. Its
+selection-by-site-id and selection-by-station-name paths were untested too.
+
+`provider.test.ts` closed those, taking the file from 60.30% to 73.73% and the
+total to 71.81%. One of the new tests then failed on its first run for a reason
+worth keeping: asserting that the five branches produce five distinct plans
+returned four, because "I own a house near the river" — close to the most natural
+way a homeowner would ask — falls through to the generic overview. The branch
+wants the literal words "my house" or "property". That is pinned as a limitation
+rather than patched, because widening the keyword list moves the silent failure
+one phrase outward instead of removing it.
+
+That is six files, not everything a browser request touches: `river-domain`'s
 `metrics.ts` and `usgs.ts` and all of `dashboard-schema` are outside the run.
 They are covered by their own suites but not held to this gate, so read the
 score as being about the planning path rather than about the whole product.
@@ -84,18 +107,29 @@ So it fails on regression today, and is raised deliberately as coverage
 improves. Raising it is a one-line change and should accompany the tests that
 earn it.
 
-| Measured 2026-08-14 | Score  | Killed | Survived | No coverage |
-| ------------------- | ------ | ------ | -------- | ----------- |
-| `plan.ts`           | 80.95% | 51     | 12       | 0           |
-| `compile.ts`        | 69.60% | 261    | 107      | 7           |
-| `run.ts`            | 68.33% | 40     | 9        | 10          |
-| `facts.ts`          | 63.80% | 104    | 52       | 7           |
-| **total**           | 69.14% | 456    | 180      | 24          |
+| Measured 2026-08-14 | Score   | Killed | Survived | No coverage |
+| ------------------- | ------- | ------ | -------- | ----------- |
+| `freetext.ts`       | 100.00% | 36     | 0        | 0           |
+| `plan.ts`           | 77.03%  | 57     | 14       | 3           |
+| `provider.ts`       | 73.73%  | 247    | 74       | 14          |
+| `compile.ts`        | 70.40%  | 264    | 105      | 6           |
+| `run.ts`            | 68.33%  | 40     | 9        | 10          |
+| `facts.ts`          | 63.80%  | 104    | 52       | 7           |
+| **total**           | 71.81%  | 748    | 254      | 40          |
+
+`plan.ts` moved from 80.95% to 77.03% in the same change, and the drop is real
+rather than a regression: the free-text gate added a branch and two finding
+messages to `findPlanProblems`, and the three new uncovered mutants are the
+`StringLiteral` bodies of those messages — provider-facing revision text, where
+the code and the path carry the meaning. The total rose because `freetext.ts`
+brought 36 killed mutants with it.
 
 The floor has been raised as coverage earned it: 58, then 61 when the shared
 composition rules came under the run, then 62, then 67 when `plan.ts` went from
 31.75% to 80.95%, then 69 when review found a display string that had silently
-changed meaning.
+changed meaning. It stayed at 69 through the free-text gate, then rose to 71
+when `provider.ts` came under the run and the tests that cover it landed
+alongside.
 
 ## What survived, and which of it is worth attacking
 

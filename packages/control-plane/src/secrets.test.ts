@@ -10,7 +10,7 @@ import {
   type SecretKeyRingConfig,
   type SecretKind,
   type SecretPersistenceMaterial,
-} from "./secrets.js";
+} from "./secrets";
 
 const intrinsicDefineProperty = Object.defineProperty;
 const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;

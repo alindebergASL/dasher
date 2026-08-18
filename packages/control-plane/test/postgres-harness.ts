@@ -6,7 +6,7 @@ import {
   type MigrationClient,
   type MigrationContractError,
   type MigrationPool,
-} from "../src/index.js";
+} from "../src/index";
 
 export const fixtureMigrationDirectory = fileURLToPath(
   new URL("./fixtures/migrations", import.meta.url),
@@ -19,6 +19,41 @@ export const baselineMigrationDirectory = fileURLToPath(
 export const checksumDriftMigrationDirectory = fileURLToPath(
   new URL("./fixtures/migrations-checksum-drift", import.meta.url),
 );
+
+/**
+ * PostgreSQL's code for "terminating connection due to administrator command".
+ * Teardown issues exactly that, deliberately.
+ */
+const ADMIN_SHUTDOWN = "57P01";
+
+/**
+ * Make a pool's idle-client errors survivable during teardown, without making
+ * them invisible during the run.
+ *
+ * `pg` emits `error` on the pool for a client that fails while idle, and Node
+ * crashes the process if nothing is listening. Teardown produces one almost
+ * unavoidably: `pool.end()` resolves once the pool has released its clients,
+ * not once every backend socket is closed, so the `pg_terminate_backend` and
+ * `DROP DATABASE` that follow can deliver 57P01 to a connection the pool
+ * believed it had finished with. The result was a run where all 246 assertions
+ * passed and the process still exited 1 — roughly one run in three here.
+ *
+ * `postgres-harness.ts` already tried to close that window by terminating
+ * backends as a separate statement before the drop. That was the wrong window:
+ * the race is between `end()` resolving and the socket actually closing, not
+ * between `WITH (FORCE)` and the drop.
+ *
+ * Swallowing every pool error would hide real ones, so this narrows to the one
+ * error teardown is entitled to cause. Anything else is rethrown, which crashes
+ * the process exactly as it did before — a connection dying mid-run for any
+ * other reason is still a failure.
+ */
+export function ignoreTeardownShutdown(pool: Pool): void {
+  pool.on("error", (error: Error & { code?: string }) => {
+    if (error.code === ADMIN_SHUTDOWN) return;
+    throw error;
+  });
+}
 
 export async function executeServerFormattedSql(
   client: PoolClient,

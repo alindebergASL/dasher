@@ -1,4 +1,9 @@
-import type { DashboardPlan, PlanFinding, PlanSectionKind } from "./plan";
+import {
+  PLAN_MAX_SECTIONS_PER_PAGE,
+  type DashboardPlan,
+  type PlanFinding,
+  type PlanSectionKind,
+} from "./plan";
 
 /**
  * Context a provider may see about the available data. These are identifiers
@@ -19,11 +24,37 @@ export interface PlanningRevision {
   findings: readonly PlanFinding[];
 }
 
+/**
+ * A change the reader asked for to a dashboard they are looking at.
+ *
+ * Deliberately a separate channel from `PlanningRevision`, because the two are
+ * different events wearing similar shapes. A revision is Dasher correcting the
+ * planner: it is machine-generated, structured, and the planner is obliged to
+ * comply. A refinement is a person correcting the dashboard: it is free text of
+ * exactly the same trust level as the original request, and the planner is free
+ * to interpret it.
+ *
+ * Collapsing them would have made the loop's audit trail lie. "Attempt 2 after
+ * findings" and "attempt 1 of a change the user asked for" are the same shape
+ * and opposite claims about who was wrong.
+ *
+ * They can also co-occur: a refinement whose first plan is rejected arrives
+ * carrying both.
+ */
+export interface PlanningRefinement {
+  /** The plan behind the dashboard the reader is looking at. */
+  previousPlan: DashboardPlan;
+  /** What the reader asked to change, verbatim. Untrusted, like any request. */
+  instruction: string;
+}
+
 export interface PlanningRequest {
   requestText: string;
   availableSites: readonly AvailableSite[];
-  /** Present only when a prior plan was rejected. */
+  /** Present only when a prior plan was rejected by validation. */
   revision?: PlanningRevision;
+  /** Present when the reader asked to change a dashboard they can see. */
+  refinement?: PlanningRefinement;
 }
 
 /**
@@ -74,12 +105,17 @@ export class FakePlanningProvider implements PlanningProvider {
   readonly usesModel = false;
 
   async plan(request: PlanningRequest): Promise<unknown> {
-    const draft = this.draft(request);
-
-    if (request.revision === undefined) {
-      return draft;
+    // Order matters. A rejected plan has to be repaired against the findings
+    // before anything else happens, whether or not a refinement is in flight —
+    // otherwise a refinement would keep re-proposing the plan that was just
+    // refused and burn the whole attempt budget on it.
+    if (request.revision !== undefined) {
+      return repair(request.revision, request.availableSites);
     }
-    return repair(request.revision, request.availableSites);
+    if (request.refinement !== undefined) {
+      return refine(request.refinement, request.availableSites);
+    }
+    return this.draft(request);
   }
 
   private draft(request: PlanningRequest): DashboardPlan {
@@ -246,6 +282,219 @@ function selectSites(text: string, sites: readonly AvailableSite[]): string[] {
 
   const base = named.length > 0 ? named : sites;
   return [...base.map((site) => site.siteId), ...speculative];
+}
+
+/**
+ * Words a reader is likely to use for each section, for the fake's refinement
+ * pass. This is keyword matching, not language understanding, and it is only
+ * ever a stand-in — a real provider reads the instruction. What it has to be is
+ * deterministic, so the refinement loop can be tested without a model.
+ */
+const SECTION_WORDS: ReadonlyArray<[PlanSectionKind, readonly string[]]> = [
+  ["gauge-map", ["map", "locations", "where"]],
+  ["gauge-table", ["table", "readings", "list"]],
+  ["stage-trends", ["trend", "history", "chart", "graph"]],
+  ["fastest-rising", ["fastest", "ranking", "rising", "ranked"]],
+  ["attention", ["alert", "attention", "warning", "concern"]],
+  ["conditions-summary", ["summary", "overview"]],
+  ["headline-metrics", ["metric", "at a glance", "headline", "numbers"]],
+  ["change-windows", ["window", "change"]],
+];
+
+const REMOVE_WORDS = [
+  "remove",
+  "drop",
+  "hide",
+  "without",
+  "take off",
+  "no ",
+] as const;
+const ADD_WORDS = ["add", "include", "show", "put back", "bring back"] as const;
+const COLLAPSE_WORDS = [
+  "shorter",
+  "simpler",
+  "one page",
+  "single page",
+  "condense",
+] as const;
+const NARROW_WORDS = ["just", "only", "focus"] as const;
+
+/**
+ * What an instruction asks for, read once so the loop and the caller cannot
+ * disagree about whether it was understood.
+ */
+export interface RefinementIntent {
+  readonly remove: readonly PlanSectionKind[];
+  readonly add: readonly PlanSectionKind[];
+  readonly collapse: boolean;
+  readonly narrowToSiteIds: readonly string[];
+}
+
+function firstIndexOfAny(text: string, words: readonly string[]): number {
+  let earliest = -1;
+  for (const word of words) {
+    const at = text.indexOf(word);
+    if (at !== -1 && (earliest === -1 || at < earliest)) earliest = at;
+  }
+  return earliest;
+}
+
+/**
+ * The verb governing a named section is the nearest one in front of it.
+ *
+ * "Remove the map and add the history chart" names two sections under opposite
+ * verbs. Deciding remove-or-add once for the whole sentence deleted the section
+ * the reader asked to add and still reported success, so each named section is
+ * attributed to the verb it actually sits behind.
+ */
+function verbBefore(text: string, at: number): "remove" | "add" | undefined {
+  let best: { at: number; kind: "remove" | "add" } | undefined;
+  const scan = (words: readonly string[], kind: "remove" | "add"): void => {
+    for (const word of words) {
+      for (let from = 0; ;) {
+        const found = text.indexOf(word, from);
+        if (found === -1 || found >= at) break;
+        if (best === undefined || found > best.at) best = { at: found, kind };
+        from = found + 1;
+      }
+    }
+  };
+  scan(REMOVE_WORDS, "remove");
+  scan(ADD_WORDS, "add");
+  return best?.kind;
+}
+
+export function readRefinementIntent(
+  instruction: string,
+  sites: readonly AvailableSite[],
+): RefinementIntent {
+  const text = instruction.toLowerCase();
+  const has = (words: readonly string[]): boolean =>
+    words.some((word) => text.includes(word));
+
+  const remove: PlanSectionKind[] = [];
+  const add: PlanSectionKind[] = [];
+  const anyRemove = has(REMOVE_WORDS);
+  const anyAdd = has(ADD_WORDS);
+
+  for (const [section, words] of SECTION_WORDS) {
+    const at = firstIndexOfAny(text, words);
+    if (at === -1) continue;
+    const verb = verbBefore(text, at);
+    if (verb === "remove") remove.push(section);
+    else if (verb === "add") add.push(section);
+    // Named with no verb in front of it: fall back to the instruction's own
+    // single verb, so "the map — drop it" still reads as a removal.
+    else if (anyRemove && !anyAdd) remove.push(section);
+    else if (anyAdd && !anyRemove) add.push(section);
+  }
+
+  return {
+    remove,
+    add,
+    collapse: has(COLLAPSE_WORDS),
+    narrowToSiteIds: has(NARROW_WORDS)
+      ? sites
+          .filter((site) => text.includes(site.river.toLowerCase()))
+          .map((site) => site.siteId)
+      : [],
+  };
+}
+
+/**
+ * True when nothing in the instruction was recognised.
+ *
+ * This is what separates "Dasher did not understand that" from "the dashboard
+ * already looks like that". Both leave the plan identical, and reporting the
+ * second as the first tells a reader their working request failed.
+ */
+export function isUninterpretable(intent: RefinementIntent): boolean {
+  return (
+    intent.remove.length === 0 &&
+    intent.add.length === 0 &&
+    !intent.collapse &&
+    intent.narrowToSiteIds.length === 0
+  );
+}
+
+/**
+ * The refinement pass: a change the reader asked for, applied to the plan they
+ * are looking at.
+ *
+ * It edits the previous plan rather than composing a new one, which is the
+ * point of refinement — "drop the map" should not silently reorganise
+ * everything else. Anything it cannot interpret leaves the plan unchanged, and
+ * the caller reports that honestly rather than pretending something happened.
+ */
+function refine(
+  refinement: PlanningRefinement,
+  sites: readonly AvailableSite[],
+): DashboardPlan {
+  const plan = refinement.previousPlan;
+  const intent = readRefinementIntent(refinement.instruction, sites);
+
+  let pages = plan.pages.map((page) => ({ ...page }));
+
+  // Removals first, then additions. Both run: a compound instruction asks for
+  // two things and letting the first verb claim the whole sentence dropped the
+  // other one silently.
+  if (intent.remove.length > 0) {
+    const doomed = new Set(intent.remove);
+    pages = pages
+      .map((page) => ({
+        ...page,
+        sections: page.sections.filter((section) => !doomed.has(section)),
+      }))
+      .filter((page) => page.sections.length > 0);
+  }
+
+  if (intent.add.length > 0) {
+    const present = new Set(pages.flatMap((page) => page.sections));
+    const missing = intent.add.filter((section) => !present.has(section));
+    // Onto the first page with room. A section appended to a full page would be
+    // dropped by the contract's own limit, which looks like the request was
+    // ignored rather than refused.
+    for (const section of missing) {
+      const target = pages.find(
+        (page) => page.sections.length < PLAN_MAX_SECTIONS_PER_PAGE,
+      );
+      if (target !== undefined) {
+        target.sections = [...target.sections, section];
+      }
+    }
+  }
+
+  // "Make it shorter" collapses to a single page, keeping order.
+  if (intent.collapse) {
+    const flattened = [...new Set(pages.flatMap((page) => page.sections))];
+    pages = [
+      {
+        ...(pages[0] ?? plan.pages[0]!),
+        sections: flattened.slice(0, PLAN_MAX_SECTIONS_PER_PAGE),
+      },
+    ];
+  }
+
+  if (pages.length === 0) {
+    // Refusing to render nothing. Emptying every page is a plan the contract
+    // would reject, and a finding the reader cannot act on is worse than a
+    // dashboard that kept its summary.
+    pages = [
+      {
+        ...plan.pages[0]!,
+        sections: ["conditions-summary"],
+      },
+    ];
+  }
+
+  return {
+    ...plan,
+    siteIds:
+      intent.narrowToSiteIds.length > 0
+        ? [...intent.narrowToSiteIds]
+        : plan.siteIds,
+    pages,
+  };
 }
 
 /**

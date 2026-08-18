@@ -11,10 +11,12 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@dasher/control-plane": "workspace:*",
     "@dasher/dashboard-schema": "workspace:*",
     "@dasher/planner": "workspace:*",
     "@dasher/river-domain": "workspace:*",
     "next": "16.2.12",
+    "pg": "^8.22.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "sharp": "0.35.3"
@@ -23,6 +25,7 @@
     "@playwright/test": "1.62.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "jsdom": "^27.4.0",

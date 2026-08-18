@@ -63,8 +63,7 @@
 -- token with the error a wrong one produces. FORCE is gone, and the migrator
 -- refuses a series that reintroduces it.
 --
--- Still open, each with a reproduced case: `record_evidence` writes no audit
--- event though the action is in the allowlist; evidence and claim digests are
+-- Still open, each with a reproduced case: evidence and claim digests are
 -- length-checked but never tied to content; `finalize_run` stamps `valid`
 -- without validating anything; audit events hardcode authority revision 1;
 -- archive transitions accept the state they are already in; and REPEATABLE
@@ -2019,7 +2018,9 @@ CREATE FUNCTION dasher_api.record_evidence(
   p_coordinates text,
   p_transformation text,
   p_content_sha256 bytea,
-  p_observed_at timestamptz
+  p_observed_at timestamptz,
+  p_request_id uuid,
+  p_deployment_revision text
 )
 RETURNS uuid
 LANGUAGE plpgsql
@@ -2042,9 +2043,26 @@ BEGIN
     p_coordinates, p_transformation, p_content_sha256, p_observed_at
   );
 
+  -- `evidence_record.created` is in `audit_events_action_check`, and this
+  -- function wrote no audit event for it. An evidence record could exist with
+  -- nothing recording who put it there, which is the one thing an evidence
+  -- table cannot afford. Written in the same statement sequence as the insert
+  -- above and inside the caller's transaction, so neither can occur alone.
+  INSERT INTO dasher.audit_events (
+    audit_event_id, organization_id, actor_kind, actor_user_id,
+    authority_revision, request_id, action, target_type, target_id,
+    outcome, content_sha256, deployment_revision
+  )
+  VALUES (
+    pg_catalog.gen_random_uuid(), actor.organization_id, 'user', actor.user_id,
+    1, p_request_id, 'evidence_record.created', 'evidence_record', new_evidence,
+    'succeeded', p_content_sha256, p_deployment_revision
+  );
+
   RETURN new_evidence;
 END
 $function$;
+
 
 CREATE FUNCTION dasher_api.start_run(
   p_dashboard_id uuid,
@@ -2282,7 +2300,7 @@ GRANT EXECUTE ON FUNCTION
   dasher_api.record_source_snapshot(text, text, bytea, timestamptz, uuid, text)
   TO dasher_app;
 GRANT EXECUTE ON FUNCTION
-  dasher_api.record_evidence(uuid, text, text, text, bytea, timestamptz)
+  dasher_api.record_evidence(uuid, text, text, text, bytea, timestamptz, uuid, text)
   TO dasher_app;
 GRANT EXECUTE ON FUNCTION
   dasher_api.start_run(uuid, text, text, text, uuid, text) TO dasher_app;
