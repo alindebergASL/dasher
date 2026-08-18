@@ -8,5 +8,6 @@ export {
   deriveRiverFacts,
   gaugeEvidenceId,
   RIVER_COMPUTATION,
+  RIVER_WORDS,
   type DeriveRiverFactsOptions,
 } from "./facts";

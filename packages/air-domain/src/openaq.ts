@@ -4,6 +4,7 @@ import type {
   Series,
   Station,
   StationComputation,
+  StationWords,
 } from "@dasher/station-domain";
 
 /**
@@ -253,5 +254,26 @@ export const AIR_COMPUTATION: StationComputation = {
     label: "Dasher air-quality calculations",
     detail:
       "One-, six-, and 24-hour changes are calculated from the nearest qualifying OpenAQ hourly measurements. Improving/worsening uses a 2 µg/m³ tolerance.",
+  },
+};
+
+/**
+ * The air domain's words, sibling to the river's. Same grammar slots,
+ * different nouns: the compiler writes "3 monitors are rising" and "one-hour
+ * PM2.5 rise" from these without knowing what air is.
+ */
+export const AIR_WORDS: StationWords = {
+  slug: "air-quality",
+  noun: "monitor",
+  nounPlural: "monitors",
+  reading: "PM2.5",
+  columns: { station: "Monitor", primary: "PM2.5", secondary: "Ozone" },
+  notice:
+    "OpenAQ measurements may be provisional and subject to revision. Planning view only; use AirNow and local air-district sources for official conditions and advisories.",
+  source: {
+    label: "Air-quality monitor readings",
+    detail:
+      "PM2.5, ozone, location, and timestamps from OpenAQ-format measurements.",
+    format: "OpenAQ-format",
   },
 };

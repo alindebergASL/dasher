@@ -7,6 +7,7 @@ import {
   buildStationMetrics,
   CALCULATION_EVIDENCE_ID,
   deriveStationFacts,
+  headingCase,
   signed,
   stationEvidenceId,
   stationView,
@@ -15,9 +16,10 @@ import {
   type StationComputation,
   type StationFacts,
   type StationMetrics,
+  type StationWords,
   type ThresholdRule,
 } from "@dasher/station-domain";
-import { RIVER_COMPUTATION } from "@dasher/river-domain";
+import { RIVER_COMPUTATION, RIVER_WORDS } from "@dasher/river-domain";
 
 import type { DashboardPlan, PlanSectionKind } from "./plan";
 
@@ -55,6 +57,13 @@ export interface CompileOptions {
    * meant for feet of water.
    */
   computation?: StationComputation;
+  /**
+   * The domain's vocabulary for everything the compiler says in prose.
+   * Defaults to the river's, like `computation`, and the two travel
+   * together: passing one domain's stations with another domain's words
+   * would produce sentences about the wrong instruments.
+   */
+  words?: StationWords;
 }
 
 type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.2" }>;
@@ -71,16 +80,20 @@ type Facts = StationFacts;
  * to know. Saying "model" when none ran overstates Dasher's role; saying
  * nothing leaves the layout unattributed.
  */
-function composerSentence(planner: CompileOptions["planner"]): string {
+function composerSentence(
+  planner: CompileOptions["planner"],
+  words: StationWords,
+): string {
   return planner.usesModel
-    ? "A planning model chose this dashboard's title, audience, framing, gauge selection, and page layout."
-    : "A deterministic planner chose this dashboard's title, audience, framing, gauge selection, and page layout; no model was called.";
+    ? `A planning model chose this dashboard's title, audience, framing, ${words.noun} selection, and page layout.`
+    : `A deterministic planner chose this dashboard's title, audience, framing, ${words.noun} selection, and page layout; no model was called.`;
 }
 
 function deriveFacts(
   metrics: StationMetrics[],
   options: CompileOptions,
   computation: StationComputation,
+  words: StationWords,
 ): Facts {
   // Every judgement below the layout — rising, falling, stale, ranked,
   // thresholds, evidence — belongs to the domain rather than to the planner,
@@ -98,7 +111,7 @@ function deriveFacts(
         label: "Dashboard composition",
         sourceName: `Dasher planner (${options.planner.id})`,
         retrievedAt: options.asOf,
-        detail: `${composerSentence(options.planner)} It did not produce any reading, calculation, or claim: every value shown here is computed by Dasher from the source observations and validated against the dashboard contract before display.`,
+        detail: `${composerSentence(options.planner, words)} It did not produce any reading, calculation, or claim: every value shown here is computed by Dasher from the source observations and validated against the dashboard contract before display.`,
         confidence: "medium",
       },
     ],
@@ -106,18 +119,18 @@ function deriveFacts(
 }
 
 /**
- * The unit a gauge's stage series actually reports in.
+ * The unit a station's primary series actually reports in.
  *
  * Six call sites wrote `"ft"` as a literal while two others read it from the
  * series, so the same reading could be labelled two ways in one dashboard. It
  * was not reachable through the USGS parser, which rejects a stage series that
- * is not in feet — but `compilePlan` takes `RiverGauge[]`, not USGS output, so
+ * is not in feet — but `compilePlan` takes `Station[]`, not USGS output, so
  * "the parser would have caught it" is a fact about a different function.
  *
  * The fallback stays for a gauge with no stage series at all, where there is no
  * unit to read and the sections using it are about stage by definition.
  */
-function stageUnit(metrics: StationMetrics): string {
+function primaryUnit(metrics: StationMetrics): string {
   return metrics.station.primary?.unit ?? "ft";
 }
 
@@ -125,6 +138,7 @@ function buildSection(
   section: PlanSectionKind,
   plan: DashboardPlan,
   facts: Facts,
+  words: StationWords,
 ): DashboardComponent | undefined {
   const {
     metrics,
@@ -148,13 +162,13 @@ function buildSection(
         tone: staleOrMissing.length > 0 ? "attention" : "normal",
         claims: [
           {
-            text: `${rising.length} gauge${rising.length === 1 ? " is" : "s are"} rising and ${falling.length} ${falling.length === 1 ? "is" : "are"} falling.`,
+            text: `${rising.length} ${words.noun}${rising.length === 1 ? " is" : "s are"} rising and ${falling.length} ${falling.length === 1 ? "is" : "are"} falling.`,
             evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
           {
             text: fastest
-              ? `${fastest.station.group} is the fastest-rising complete gauge over the last hour at ${signed(fastest.primaryChange1h, stageUnit(fastest))}.`
-              : "No fresh, complete gauge is rising fast enough to rank over the last hour.",
+              ? `${fastest.station.group} is the fastest-rising complete ${words.noun} over the last hour at ${signed(fastest.primaryChange1h, primaryUnit(fastest))}.`
+              : `No fresh, complete ${words.noun} is rising fast enough to rank over the last hour.`,
             evidenceIds: fastest
               ? [stationEvidenceId(fastest.station), CALCULATION_EVIDENCE_ID]
               : [CALCULATION_EVIDENCE_ID],
@@ -162,8 +176,8 @@ function buildSection(
           {
             text:
               staleOrMissing.length > 0
-                ? `${staleOrMissing.length} gauge${staleOrMissing.length === 1 ? " needs" : "s need"} a freshness or completeness check.`
-                : "All selected gauges are fresh and complete.",
+                ? `${staleOrMissing.length} ${words.noun}${staleOrMissing.length === 1 ? " needs" : "s need"} a freshness or completeness check.`
+                : `All selected ${words.nounPlural} are fresh and complete.`,
             evidenceIds:
               staleOrMissing.length > 0
                 ? staleOrMissing.map((item) => stationEvidenceId(item.station))
@@ -180,7 +194,7 @@ function buildSection(
         title: "At a glance",
         metrics: [
           {
-            label: "Gauges monitored",
+            label: `${headingCase(words.nounPlural)} monitored`,
             value: String(metrics.length),
             evidenceIds: stationEvidenceIds,
           },
@@ -212,7 +226,7 @@ function buildSection(
       return {
         id: "gauge-map",
         kind: "station-map",
-        title: "Gauge map",
+        title: `${headingCase(words.noun)} map`,
         subtitle: "Select a point for current conditions",
         stations: metrics.map(stationView),
         evidenceIds: stationEvidenceIds,
@@ -225,11 +239,7 @@ function buildSection(
         title: "Current readings",
         stations: metrics.map(stationView),
         // The domain's words for the generic columns; the renderer has none.
-        columns: {
-          station: "Gauge",
-          primary: "Water level",
-          secondary: "Streamflow",
-        },
+        columns: words.columns,
         evidenceIds: stationEvidenceIds,
       };
 
@@ -237,13 +247,13 @@ function buildSection(
       return {
         id: "fastest-rising",
         kind: "ranking",
-        title: "Fastest-rising gauges",
-        subtitle: "Fresh, complete gauges ranked by one-hour water-level rise",
+        title: `Fastest-rising ${words.nounPlural}`,
+        subtitle: `Fresh, complete ${words.nounPlural} ranked by one-hour ${words.reading} rise`,
         items: ranked.map((item) => ({
           id: item.station.siteId,
           label: item.station.group,
-          value: signed(item.primaryChange1h, stageUnit(item)),
-          note: `${item.direction}; 6h ${signed(item.primaryChange6h, stageUnit(item))}`,
+          value: signed(item.primaryChange1h, primaryUnit(item)),
+          note: `${item.direction}; 6h ${signed(item.primaryChange6h, primaryUnit(item))}`,
           evidenceIds: [
             stationEvidenceId(item.station),
             CALCULATION_EVIDENCE_ID,
@@ -260,8 +270,8 @@ function buildSection(
         items: metrics.map((item) => ({
           id: item.station.siteId,
           label: item.station.group,
-          value: `1h ${signed(item.primaryChange1h, stageUnit(item))}`,
-          note: `6h ${signed(item.primaryChange6h, stageUnit(item))} · 24h ${signed(item.primaryChange24h, stageUnit(item))}`,
+          value: `1h ${signed(item.primaryChange1h, primaryUnit(item))}`,
+          note: `6h ${signed(item.primaryChange6h, primaryUnit(item))} · 24h ${signed(item.primaryChange24h, primaryUnit(item))}`,
           evidenceIds: [
             stationEvidenceId(item.station),
             CALCULATION_EVIDENCE_ID,
@@ -276,7 +286,7 @@ function buildSection(
         .map((item) => ({
           id: item.station.siteId,
           label: item.station.group,
-          unit: stageUnit(item),
+          unit: primaryUnit(item),
           evidenceIds: [stationEvidenceId(item.station)],
           points: item.primaryPoints,
         }));
@@ -286,7 +296,7 @@ function buildSection(
       return {
         id: "stage-trends",
         kind: "trend-list",
-        title: "Recent water-level trends",
+        title: `Recent ${words.reading} trends`,
         series,
         evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
       };
@@ -320,12 +330,13 @@ export function compilePlan(
     .filter((gauge): gauge is Station => gauge !== undefined);
 
   const computation = options.computation ?? RIVER_COMPUTATION;
+  const words = options.words ?? RIVER_WORDS;
   const metrics = selected.map((gauge) =>
     buildStationMetrics(gauge, options.asOf, {
       directionTolerance: computation.directionTolerance,
     }),
   );
-  const facts = deriveFacts(metrics, options, computation);
+  const facts = deriveFacts(metrics, options, computation, words);
 
   const pages = plan.pages
     .map((page) => ({
@@ -333,7 +344,7 @@ export function compilePlan(
       title: page.title,
       description: page.description,
       components: page.sections
-        .map((section) => buildSection(section, plan, facts))
+        .map((section) => buildSection(section, plan, facts, words))
         .filter(
           (component): component is DashboardComponent =>
             component !== undefined,
@@ -355,7 +366,7 @@ export function compilePlan(
 
   const spec = parseDashboardSpec({
     schemaVersion: "1.2",
-    id: "planned-river-conditions",
+    id: `planned-${words.slug}-conditions`,
     title: plan.title,
     audience: plan.audience,
     generatedAt: options.asOf,
@@ -364,15 +375,15 @@ export function compilePlan(
       status: facts.staleOrMissing.length > 0 ? "partial" : "fresh",
       label:
         facts.staleOrMissing.length > 0
-          ? `${facts.staleOrMissing.length} gauge${facts.staleOrMissing.length === 1 ? "" : "s"} need${facts.staleOrMissing.length === 1 ? "s" : ""} attention`
-          : "All gauges fresh",
+          ? `${facts.staleOrMissing.length} ${words.noun}${facts.staleOrMissing.length === 1 ? "" : "s"} need${facts.staleOrMissing.length === 1 ? "s" : ""} attention`
+          : `All ${words.nounPlural} fresh`,
       latestObservationAt: facts.latestObservationAt,
     },
     executiveBrief: {
       known: {
         statementTypes: ["observed", "calculated"],
-        headline: `${facts.metrics.length} gauge${facts.metrics.length === 1 ? "" : "s"} monitored`,
-        detail: `${facts.rising.length} gauge${facts.rising.length === 1 ? " is" : "s are"} rising and ${facts.falling.length} gauge${facts.falling.length === 1 ? " is" : "s are"} falling based on fresh water-level readings.`,
+        headline: `${facts.metrics.length} ${words.noun}${facts.metrics.length === 1 ? "" : "s"} monitored`,
+        detail: `${facts.rising.length} ${words.noun}${facts.rising.length === 1 ? " is" : "s are"} rising and ${facts.falling.length} ${words.noun}${facts.falling.length === 1 ? " is" : "s are"} falling based on fresh ${words.reading} readings.`,
         evidenceIds: unique(facts.stationEvidenceIds, [
           CALCULATION_EVIDENCE_ID,
         ]),
@@ -381,7 +392,7 @@ export function compilePlan(
         ? {
             statementTypes: ["calculated"],
             headline: `${fastest.station.group} rose fastest`,
-            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.primaryChange1h, stageUnit(fastest))} at ${fastest.station.name}.`,
+            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.primaryChange1h, primaryUnit(fastest))} at ${fastest.station.name}.`,
             evidenceIds: [
               stationEvidenceId(fastest.station),
               CALCULATION_EVIDENCE_ID,
@@ -393,7 +404,7 @@ export function compilePlan(
             // The tolerance is the computation policy's, so this sentence
             // states the bar that was actually applied — under the air
             // profile it reads "5 µg/m³", not a river number.
-            detail: `No fresh, complete gauge rose more than ${computation.materialRiseTolerance} ${computation.toleranceUnit} over the last hour.`,
+            detail: `No fresh, complete ${words.noun} rose more than ${computation.materialRiseTolerance} ${computation.toleranceUnit} over the last hour.`,
             evidenceIds: unique(facts.stationEvidenceIds, [
               CALCULATION_EVIDENCE_ID,
             ]),
@@ -419,7 +430,7 @@ export function compilePlan(
     },
     nextAction: firstAttention
       ? {
-          title: `Review ${firstAttention.station.group} gauge`,
+          title: `Review ${firstAttention.station.group} ${words.noun}`,
           detail: `${firstAttention.station.name}: ${firstAttention.dataIssues[0]}`,
           evidenceIds: [stationEvidenceId(firstAttention.station)],
         }
@@ -429,13 +440,12 @@ export function compilePlan(
             "Confirm the calculated conditions match the source readings and the intended audience.",
           evidenceIds: [CALCULATION_EVIDENCE_ID],
         },
-    notice:
-      "USGS readings may be provisional and subject to revision. Planning view only; use USGS and local emergency-management sources for official conditions and warnings.",
+    notice: words.notice,
     pages,
     evidence: facts.evidence,
     architecture: {
       title: "How this dashboard works",
-      summary: `${composerSentence(options.planner)} Dasher computed every number from USGS-format readings and validated the result against the dashboard contract before rendering.`,
+      summary: `${composerSentence(options.planner, words)} Dasher computed every number from ${words.source.format} readings and validated the result against the dashboard contract before rendering.`,
       nodes: [
         {
           id: "request",
@@ -446,9 +456,8 @@ export function compilePlan(
         },
         {
           id: "usgs",
-          label: "River gauge readings",
-          detail:
-            "Water level, streamflow, location, and timestamps from USGS-format observations.",
+          label: words.source.label,
+          detail: words.source.detail,
           kind: "input",
         },
         {
@@ -470,8 +479,7 @@ export function compilePlan(
           label: options.planner.usesModel
             ? "AI dashboard planner"
             : "Dashboard planner (no model)",
-          detail:
-            "The planner chose this dashboard's title, audience, framing, gauge selection, and page layout. It never sees a reading and cannot state a fact, run code, or reach a credential; anything it proposes that Dasher cannot support is rejected and sent back for revision.",
+          detail: `The planner chose this dashboard's title, audience, framing, ${words.noun} selection, and page layout. It never sees a reading and cannot state a fact, run code, or reach a credential; anything it proposes that Dasher cannot support is rejected and sent back for revision.`,
           // The diagram has to agree with the summary beside it. Drawing an AI
           // node for a keyword matcher told the reader a model was involved in
           // the same panel that said none was called.
@@ -480,8 +488,7 @@ export function compilePlan(
         {
           id: "validate",
           label: "Check the plan",
-          detail:
-            "Dasher rejects any plan naming an unavailable gauge or an unsupported section, and asks the planner to correct it.",
+          detail: `Dasher rejects any plan naming an unavailable ${words.noun} or an unsupported section, and asks the planner to correct it.`,
           kind: "process",
         },
         {
@@ -503,7 +510,7 @@ export function compilePlan(
         { from: "request", to: "planner", label: "what you asked for" },
         { from: "usgs", to: "normalize", label: "read" },
         { from: "normalize", to: "calculate", label: "clean data" },
-        { from: "normalize", to: "planner", label: "gauge names only" },
+        { from: "normalize", to: "planner", label: `${words.noun} names only` },
         { from: "planner", to: "validate", label: "proposed layout" },
         { from: "validate", to: "planner", label: "corrections" },
         { from: "validate", to: "pages", label: "approved layout" },
