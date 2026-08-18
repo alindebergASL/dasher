@@ -11,6 +11,7 @@ import { migrate } from "../src/migrate";
 import {
   createUnprivilegedSchemaOwner,
   dropUnprivilegedSchemaOwner,
+  executeServerFormattedSql,
   ignoreTeardownShutdown,
 } from "./postgres-harness";
 
@@ -32,9 +33,11 @@ import {
 const config = parsePostgresIntegrationEnv(process.env);
 const databaseName = `dasher_test_db_${randomUUID().replaceAll("-", "")}`;
 const ownerRole = `dasher_test_owner_${randomUUID().replaceAll("-", "")}`;
+const notOwnerRole = `dasher_test_${randomUUID().replaceAll("-", "")}`;
 
 let operatorPool: Pool;
 let ownerDsn: string;
+let notOwnerDsn: string;
 
 async function managedRoleExists(): Promise<boolean> {
   const result = await operatorPool.query<{ present: boolean }>(
@@ -65,22 +68,42 @@ beforeAll(async () => {
     ownerRole,
     databaseName,
   );
+
+  const notOwnerUrl = new URL(config.appDsn);
+  notOwnerUrl.pathname = `/${databaseName}`;
+  const client = await operatorPool.connect();
+  try {
+    await executeServerFormattedSql(
+      client,
+      "CREATE ROLE %I WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L",
+      [notOwnerRole, decodeURIComponent(notOwnerUrl.password)],
+    );
+    await executeServerFormattedSql(
+      client,
+      "GRANT CONNECT ON DATABASE %I TO %I",
+      [databaseName, notOwnerRole],
+    );
+  } finally {
+    client.release();
+  }
+  notOwnerUrl.username = notOwnerRole;
+  notOwnerDsn = notOwnerUrl.toString();
 }, 60_000);
 
 afterAll(async () => {
   if (operatorPool !== undefined) {
-    await dropUnprivilegedSchemaOwner(operatorPool, ownerRole, databaseName);
+    await dropUnprivilegedSchemaOwner(operatorPool, ownerRole, databaseName, [
+      notOwnerRole,
+    ]);
     await operatorPool.end();
   }
 });
 
 it("refuses a non-owner with the migrator's own typed error", async () => {
-  // The application login owns nothing. It is exactly who would run this by
-  // mistake, having the only connection string most people have to hand.
-  const notOwner = new URL(config.appDsn);
-  notOwner.pathname = `/${databaseName}`;
-
-  await expectOwnerRefusal(migrate(notOwner.toString(), []));
+  // This isolated application-shaped login owns nothing. It is exactly who
+  // would run this by mistake, without relying on an ambient shared-cluster
+  // role that a fresh PostgreSQL service does not provision.
+  await expectOwnerRefusal(migrate(notOwnerDsn, []));
 });
 
 it("changes nothing when it refuses", async () => {
@@ -90,9 +113,7 @@ it("changes nothing when it refuses", async () => {
   // existence exactly as it found it.
   const roleBefore = await managedRoleExists();
 
-  const notOwner = new URL(config.appDsn);
-  notOwner.pathname = `/${databaseName}`;
-  await expectOwnerRefusal(migrate(notOwner.toString(), []));
+  await expectOwnerRefusal(migrate(notOwnerDsn, []));
 
   expect(await managedRoleExists()).toBe(roleBefore);
 
