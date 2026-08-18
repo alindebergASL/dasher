@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { classifyRequest, DOMAIN_CATALOG } from "./domains";
+import { loadDomainSnapshot } from "./source-runtime";
 
 /**
  * The router's whole contract: deterministic, and closed on failure. The
@@ -62,33 +63,36 @@ describe("requests that do not", () => {
 });
 
 describe("the catalog entries are complete and their own", () => {
-  it("pairs each domain's stations with its computation, words, and planner phrasing", () => {
+  it("pairs each domain's computation, words, phrasing, and refusal label", () => {
     const { river, air } = DOMAIN_CATALOG;
 
-    expect(river.stations.length).toBeGreaterThan(0);
-    expect(air.stations.length).toBeGreaterThan(0);
     expect(river.words.noun).toBe("gauge");
     expect(air.words.noun).toBe("monitor");
     expect(river.computation.toleranceUnit).toBe("ft");
     expect(air.computation.toleranceUnit).toBe("µg/m³");
-    // A threshold names a station that exists in its own domain — a rule
-    // referencing the other catalog's site id would silently never fire.
-    for (const entry of [river, air]) {
+    expect(river.label).toBe("river");
+    expect(air.label).toBe("air-quality");
+  });
+
+  it("names thresholds that exist in the domain's own snapshot", async () => {
+    // A rule referencing the other domain's site id would silently never
+    // fire. The snapshot comes from the source runtime now rather than the
+    // catalog, so this checks the pairing across that seam.
+    for (const entry of [DOMAIN_CATALOG.river, DOMAIN_CATALOG.air]) {
+      const snapshot = await loadDomainSnapshot(entry.key);
+      expect(snapshot.stations.length).toBeGreaterThan(0);
       for (const threshold of entry.thresholds) {
-        expect(entry.stations.map((station) => station.siteId)).toContain(
+        expect(snapshot.stations.map((station) => station.siteId)).toContain(
           threshold.siteId,
         );
       }
-    }
-    // The fixture's asOf matches its stations' retrieval time, which is what
-    // keeps freshness judgements meaningful in fixture mode.
-    for (const entry of [river, air]) {
-      expect(
-        entry.stations.every(
-          (station) =>
-            Date.parse(station.retrievedAt) <= Date.parse(entry.asOf),
-        ),
-      ).toBe(true);
+      // Every station's retrieval time is at or before the snapshot's asOf,
+      // which is what keeps freshness judgements meaningful.
+      for (const station of snapshot.stations) {
+        expect(Date.parse(station.retrievedAt)).toBeLessThanOrEqual(
+          Date.parse(snapshot.asOf),
+        );
+      }
     }
   });
 });

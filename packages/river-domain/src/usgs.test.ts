@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
+import liveCapture from "../../../fixtures/usgs/live-capture-2026-08-18.json";
 import {
   USGS_MAX_TOTAL_OBSERVATIONS,
   USGS_PAYLOAD_MAX_BYTES,
@@ -240,5 +241,45 @@ describe("parseUsgsInstantaneousValues", () => {
         streamflowObservations: 4,
       },
     ]);
+  });
+});
+
+describe("a real response from the live service", () => {
+  /**
+   * A bounded verbatim capture from waterservices.usgs.gov, trimmed to the
+   * last four observations per series and otherwise untouched.
+   *
+   * It exists because the parser could not read one. The development fixture
+   * is hand-authored and carries `queryInfo.creationTime`; the real service
+   * carries no such field and reports when it answered in a `requestDT`
+   * note. Every live request would have failed at the schema, and nothing
+   * caught it because nothing had ever handed this function a real payload.
+   */
+  it("parses the shape the service actually sends", () => {
+    const stations = parseUsgsInstantaneousValues(liveCapture);
+
+    expect(stations.length).toBeGreaterThan(0);
+    for (const station of stations) {
+      // The retrieval time came from the requestDT note, which is the only
+      // place the live payload carries it.
+      expect(station.retrievedAt).toBe("2026-08-18T22:29:20.423Z");
+      expect(station.primary?.unit).toBe("ft");
+      expect(station.kindLabel).toBe("gauge");
+    }
+    expect(stations.map((station) => station.siteId)).toContain("11447650");
+  });
+
+  it("refuses a payload carrying no retrieval time at all", () => {
+    // Neither shape present. Defaulting it would invent provenance: this
+    // timestamp becomes every station's retrievedAt and bounds the
+    // future-observation check.
+    const undated = structuredClone(liveCapture) as {
+      value: { queryInfo: { note?: unknown } };
+    };
+    undated.value.queryInfo.note = [{ title: "server", value: "vaas01" }];
+
+    expect(() => parseUsgsInstantaneousValues(undated)).toThrow(
+      /must carry a retrieval time/,
+    );
   });
 });
