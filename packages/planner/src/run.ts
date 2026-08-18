@@ -1,5 +1,5 @@
 import type { DashboardSpec } from "@dasher/dashboard-schema";
-import type { RiverGauge, ThresholdRule } from "@dasher/river-domain";
+import type { Station, ThresholdRule } from "@dasher/station-domain";
 
 import { compilePlan, type CompileOptions } from "./compile";
 import {
@@ -19,7 +19,7 @@ export const PLANNER_MAX_ATTEMPTS = 3;
 
 export interface PlannerRunOptions {
   requestText: string;
-  gauges: readonly RiverGauge[];
+  gauges: readonly Station[];
   provider: PlanningProvider;
   asOf: string;
   /** User-configured threshold alerts. Never exposed to the provider. */
@@ -71,7 +71,9 @@ export async function runPlanner(
   const availableSites: AvailableSite[] = options.gauges.map((gauge) => ({
     siteId: gauge.siteId,
     name: gauge.name,
-    river: gauge.river,
+    // The plan contract's word (ADR-007 keeps the plan vocabulary); the
+    // station's grouping is what fills it.
+    river: gauge.group,
   }));
   const knownSiteIds = availableSites.map((site) => site.siteId);
   const compileOptions: CompileOptions = {

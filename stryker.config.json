@@ -14,7 +14,8 @@
     "packages/planner/src/plan.ts",
     "packages/planner/src/provider.ts",
     "packages/planner/src/run.ts",
-    "packages/river-domain/src/facts.ts"
+    "packages/station-domain/src/facts.ts",
+    "packages/station-domain/src/metrics.ts"
   ],
   "vitest": {
     "related": false,

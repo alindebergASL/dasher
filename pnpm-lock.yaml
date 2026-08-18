@@ -95,6 +95,22 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@22.20.1)(jsdom@27.4.0)(vite@8.1.5(@types/node@22.20.1)(yaml@2.9.0))
 
+  packages/air-domain:
+    dependencies:
+      "@dasher/station-domain":
+        specifier: workspace:*
+        version: link:../station-domain
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@22.20.1)(jsdom@27.4.0)(vite@8.1.5(@types/node@22.20.1)(yaml@2.9.0))
+
   packages/calculation-engine:
     devDependencies:
       typescript:
@@ -147,6 +163,9 @@ importers:
       "@dasher/river-domain":
         specifier: workspace:*
         version: link:../river-domain
+      "@dasher/station-domain":
+        specifier: workspace:*
+        version: link:../station-domain
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -154,6 +173,9 @@ importers:
       "@anthropic-ai/sdk":
         specifier: ^0.117.1
         version: 0.117.1(zod@4.4.3)
+      "@dasher/air-domain":
+        specifier: workspace:*
+        version: link:../air-domain
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -187,9 +209,25 @@ importers:
       "@dasher/dashboard-schema":
         specifier: workspace:*
         version: link:../dashboard-schema
+      "@dasher/station-domain":
+        specifier: workspace:*
+        version: link:../station-domain
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@22.20.1)(jsdom@27.4.0)(vite@8.1.5(@types/node@22.20.1)(yaml@2.9.0))
+
+  packages/station-domain:
+    dependencies:
+      "@dasher/dashboard-schema":
+        specifier: workspace:*
+        version: link:../dashboard-schema
     devDependencies:
       typescript:
         specifier: ^5.9.2

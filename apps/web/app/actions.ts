@@ -178,7 +178,7 @@ async function plan(
                 gauges.map((gauge) => ({
                   siteId: gauge.siteId,
                   name: gauge.name,
-                  river: gauge.river,
+                  river: gauge.group,
                 })),
               ),
             )

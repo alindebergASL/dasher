@@ -122,10 +122,17 @@ const MetricGridComponentSchema = ComponentBaseSchema.extend({
  * this station measures feet, micrograms, or degrees, so the number alone
  * would be unrenderable.
  */
-const ReadingSchema = z.strictObject({
-  value: z.number().nullable(),
-  unit: ShortTextSchema,
-});
+const ReadingSchema = z
+  .strictObject({
+    value: z.number().nullable(),
+    // Empty means the station has no such sensor at all — there is no unit to
+    // name for a reading that cannot exist. A present sensor whose latest
+    // observation is merely missing still knows its unit.
+    unit: z.string().max(DASHBOARD_STRING_LIMITS.shortText),
+  })
+  .refine((reading) => !(reading.unit === "" && reading.value !== null), {
+    message: "A reading with a value must name its unit",
+  });
 
 /**
  * One monitored point in some sensor network — a river gauge, an air-quality
