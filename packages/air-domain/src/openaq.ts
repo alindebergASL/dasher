@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import type { Series, Station } from "@dasher/station-domain";
+import type {
+  Series,
+  Station,
+  StationComputation,
+} from "@dasher/station-domain";
 
 /**
  * The second domain: air-quality monitors, from OpenAQ v3 payloads.
@@ -234,16 +238,20 @@ export function parseOpenAqHourlySnapshot(input: unknown): Station[] {
 }
 
 /**
- * The air domain's numbers, sibling to the river's 0.05 ft. PM2.5 hovers by
- * fractions of a µg/m³; a change smaller than 2 µg/m³ in an hour is noise,
- * and a rise has to clear 5 µg/m³ before this domain calls it material.
+ * The air domain's computation policy, sibling to the river's 0.05 ft. PM2.5
+ * hovers by fractions of a µg/m³: a change smaller than 2 µg/m³ in an hour is
+ * noise, and a rise has to clear 5 µg/m³ before this domain calls it
+ * material. Passed to `compilePlan` alongside this parser's stations — the
+ * stations carry the words, this carries the numbers and the sentence for
+ * Dasher's own arithmetic.
  */
-export const AIR_DIRECTION_TOLERANCE = 2;
-export const AIR_MATERIAL_RISE_TOLERANCE = 5;
-
-/** How the air domain describes Dasher's own arithmetic, as evidence. */
-export const AIR_CALCULATIONS = {
-  label: "Dasher air-quality calculations",
-  detail:
-    "One-, six-, and 24-hour changes are calculated from the nearest qualifying OpenAQ hourly measurements. Improving/worsening uses a 2 µg/m³ tolerance.",
-} as const;
+export const AIR_COMPUTATION: StationComputation = {
+  directionTolerance: 2,
+  materialRiseTolerance: 5,
+  toleranceUnit: "µg/m³",
+  calculations: {
+    label: "Dasher air-quality calculations",
+    detail:
+      "One-, six-, and 24-hour changes are calculated from the nearest qualifying OpenAQ hourly measurements. Improving/worsening uses a 2 µg/m³ tolerance.",
+  },
+};

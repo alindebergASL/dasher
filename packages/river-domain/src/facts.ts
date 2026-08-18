@@ -1,6 +1,7 @@
 import {
   deriveStationFacts,
   type DeriveStationFactsOptions,
+  type StationComputation,
   type StationFacts,
   type StationMetrics,
 } from "@dasher/station-domain";
@@ -13,15 +14,21 @@ import {
  * file.
  */
 
-/** How the river domain describes Dasher's own arithmetic, as evidence. */
-const RIVER_CALCULATIONS = {
-  label: "Dasher river calculations",
-  detail:
-    "One-, six-, and 24-hour changes are calculated from the nearest qualifying USGS observations. Rising/falling uses a 0.05-foot tolerance.",
-} as const;
-
-/** A material rise for a river gauge: 0.05 ft over an hour. */
-const RIVER_MATERIAL_RISE_TOLERANCE = 0.05;
+/**
+ * The river's computation policy: its tolerances and its words for Dasher's
+ * arithmetic. This is what `compilePlan` applies when no other domain's
+ * policy is passed — the river is the default domain, stated as data.
+ */
+export const RIVER_COMPUTATION: StationComputation = {
+  directionTolerance: 0.05,
+  materialRiseTolerance: 0.05,
+  toleranceUnit: "ft",
+  calculations: {
+    label: "Dasher river calculations",
+    detail:
+      "One-, six-, and 24-hour changes are calculated from the nearest qualifying USGS observations. Rising/falling uses a 0.05-foot tolerance.",
+  },
+};
 
 export type DeriveRiverFactsOptions = Omit<
   DeriveStationFactsOptions,
@@ -34,8 +41,8 @@ export function deriveRiverFacts(
 ): StationFacts {
   return deriveStationFacts(metrics, {
     ...options,
-    calculations: RIVER_CALCULATIONS,
-    materialRiseTolerance: RIVER_MATERIAL_RISE_TOLERANCE,
+    calculations: RIVER_COMPUTATION.calculations,
+    materialRiseTolerance: RIVER_COMPUTATION.materialRiseTolerance,
   });
 }
 

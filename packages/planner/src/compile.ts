@@ -6,16 +6,18 @@ import {
 import {
   buildStationMetrics,
   CALCULATION_EVIDENCE_ID,
+  deriveStationFacts,
   signed,
   stationEvidenceId,
   stationView,
   uniqueEvidenceIds as unique,
   type Station,
+  type StationComputation,
   type StationFacts,
   type StationMetrics,
   type ThresholdRule,
 } from "@dasher/station-domain";
-import { deriveRiverFacts } from "@dasher/river-domain";
+import { RIVER_COMPUTATION } from "@dasher/river-domain";
 
 import type { DashboardPlan, PlanSectionKind } from "./plan";
 
@@ -42,6 +44,17 @@ export interface CompileOptions {
    * composition choice, so a planner can neither add, remove, nor retune one.
    */
   thresholds?: readonly ThresholdRule[];
+  /**
+   * The domain's computation policy: direction and material-rise tolerances
+   * and the words for the calculated-trends evidence record. Defaults to the
+   * river's, because the river is the product's current intake — but the
+   * default is the ONLY river-specific thing here. A caller compiling another
+   * domain's stations passes that domain's policy, and the first version of
+   * the air test that did not was compiling air readings under river rules:
+   * a monitor easing by 0.8 µg/m³ showed as "falling" through a tolerance
+   * meant for feet of water.
+   */
+  computation?: StationComputation;
 }
 
 type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.2" }>;
@@ -67,13 +80,16 @@ function composerSentence(planner: CompileOptions["planner"]): string {
 function deriveFacts(
   metrics: StationMetrics[],
   options: CompileOptions,
+  computation: StationComputation,
 ): Facts {
   // Every judgement below the layout — rising, falling, stale, ranked,
-  // thresholds, evidence — belongs to the river domain rather than to the
-  // planner, so that composing a dashboard cannot change what is true about a
-  // gauge. What the planner adds is a record of its own part in the work.
-  return deriveRiverFacts(metrics, {
+  // thresholds, evidence — belongs to the domain rather than to the planner,
+  // so that composing a dashboard cannot change what is true about a station.
+  // What the planner adds is a record of its own part in the work.
+  return deriveStationFacts(metrics, {
     asOf: options.asOf,
+    calculations: computation.calculations,
+    materialRiseTolerance: computation.materialRiseTolerance,
     thresholds: options.thresholds,
     additionalEvidence: [
       {
@@ -303,10 +319,13 @@ export function compilePlan(
     .map((siteId) => gauges.find((gauge) => gauge.siteId === siteId))
     .filter((gauge): gauge is Station => gauge !== undefined);
 
+  const computation = options.computation ?? RIVER_COMPUTATION;
   const metrics = selected.map((gauge) =>
-    buildStationMetrics(gauge, options.asOf),
+    buildStationMetrics(gauge, options.asOf, {
+      directionTolerance: computation.directionTolerance,
+    }),
   );
-  const facts = deriveFacts(metrics, options);
+  const facts = deriveFacts(metrics, options, computation);
 
   const pages = plan.pages
     .map((page) => ({
@@ -371,8 +390,10 @@ export function compilePlan(
         : {
             statementTypes: ["calculated"],
             headline: "No material one-hour rise available",
-            detail:
-              "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
+            // The tolerance is the computation policy's, so this sentence
+            // states the bar that was actually applied — under the air
+            // profile it reads "5 µg/m³", not a river number.
+            detail: `No fresh, complete gauge rose more than ${computation.materialRiseTolerance} ${computation.toleranceUnit} over the last hour.`,
             evidenceIds: unique(facts.stationEvidenceIds, [
               CALCULATION_EVIDENCE_ID,
             ]),

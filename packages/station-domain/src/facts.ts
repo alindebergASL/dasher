@@ -14,6 +14,25 @@ import type { StationMetrics } from "./metrics";
 
 export const CALCULATION_EVIDENCE_ID = "calculated-trends";
 
+/**
+ * A domain's computation policy, complete: how big a change must be before it
+ * is a direction, before a rise is material, and what the domain calls
+ * Dasher's own arithmetic. One value per domain, defined next to its parser,
+ * so a caller cannot take a domain's stations without also being handed its
+ * numbers and words.
+ */
+export interface StationComputation {
+  directionTolerance: number;
+  materialRiseTolerance: number;
+  /**
+   * The unit both tolerances are measured in — "ft", "µg/m³". A tolerance is
+   * a quantity, and prose that states it ("rose more than 0.05 ft") needs
+   * the unit or it silently borrows another domain's.
+   */
+  toleranceUnit: string;
+  calculations: { label: string; detail: string };
+}
+
 /** A user's standing instruction to watch a station, not a composition choice. */
 export interface ThresholdRule {
   id: string;

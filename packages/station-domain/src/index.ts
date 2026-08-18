@@ -13,6 +13,7 @@ export {
   uniqueEvidenceIds,
   type DeriveStationFactsOptions,
   type StationAlert,
+  type StationComputation,
   type StationFacts,
   type ThresholdRule,
 } from "./facts";

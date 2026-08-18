@@ -1,16 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  AIR_CALCULATIONS,
-  AIR_DIRECTION_TOLERANCE,
-  AIR_MATERIAL_RISE_TOLERANCE,
-  parseOpenAqHourlySnapshot,
-} from "@dasher/air-domain";
+import { AIR_COMPUTATION, parseOpenAqHourlySnapshot } from "@dasher/air-domain";
 import { parseDashboardSpec } from "@dasher/dashboard-schema";
-import {
-  buildStationMetrics,
-  deriveStationFacts,
-} from "@dasher/station-domain";
 
 import fixture from "../../../fixtures/openaq/sacramento-hourly.json";
 import { compilePlan } from "./compile";
@@ -19,15 +10,22 @@ import type { DashboardPlan } from "./plan";
 /**
  * The generality claim, made checkable: a dashboard for a domain the compiler
  * was not written for, from a REAL parser — not the hand-built objects the
- * spike used — through the same `compilePlan` and the same contract.
+ * spike used — through the shared `compilePlan` entrypoint, under the air
+ * domain's own computation policy. One generic code path; no air branch.
  *
- * What this pins is structure: the components exist, the readings carry the
- * air domain's units and labels, the evidence cites OpenAQ, the freshness
- * warning fires for the degraded monitor. What it deliberately does NOT pin
- * is the compiler's own prose, which still says "gauges" — threading the
- * domain's words through those ~40 sentences is the recorded next step
- * (ADR-007, "What deliberately does not change"), and asserting the current
- * river wording here would freeze the defect instead of tracking the work.
+ * The policy is asserted on the COMPILED output, not on the domain functions
+ * called directly, because the first version of this file did the latter and
+ * a reviewer caught what that hid: `compilePlan` was still applying river
+ * tolerances and river calculation evidence to air readings, and a monitor
+ * easing by 0.8 µg/m³ compiled as "falling" through a tolerance meant for
+ * feet of water. A proof that bypasses the thing it is proving is how that
+ * survives.
+ *
+ * What this still deliberately does NOT pin is the compiler's own prose,
+ * which says "gauges" — threading the domain's words through those ~40
+ * sentences is the recorded next step (ADR-007, "What deliberately does not
+ * change"), and asserting the current river wording here would freeze the
+ * defect instead of tracking the work.
  */
 
 const AS_OF = "2026-08-18T12:02:00.000Z";
@@ -63,6 +61,7 @@ function compiled() {
   return compilePlan(PLAN, stations, {
     asOf: AS_OF,
     planner: { id: "air-test-planner", usesModel: false },
+    computation: AIR_COMPUTATION,
     thresholds: [
       {
         id: "unhealthy-sensitive",
@@ -74,7 +73,7 @@ function compiled() {
   });
 }
 
-describe("an air-quality dashboard through the unmodified compiler", () => {
+describe("an air-quality dashboard through the shared compiler", () => {
   it("compiles and passes the dashboard contract", () => {
     const spec = compiled();
 
@@ -113,12 +112,15 @@ describe("an air-quality dashboard through the unmodified compiler", () => {
       "Sacramento",
       "Woodland",
     ]);
-    // The worsening monitor reads as rising; the improving one as falling.
+    // Directions under the AIR tolerance, in the compiled output: +2.5 µg/m³
+    // in the last hour clears the 2 µg/m³ bar, so Del Paso is rising; the
+    // improving monitor's -0.8 does not, so it is steady — under the river's
+    // 0.05 it compiled as "falling", which is the defect the review caught.
     const byId = new Map(
       table.stations.map((station) => [station.id, station.direction]),
     );
     expect(byId.get("2178")).toBe("rising");
-    expect(byId.get("2183")).toBe("falling");
+    expect(byId.get("2183")).toBe("steady");
 
     const trend = spec.pages
       .flatMap((page) => page.components)
@@ -168,32 +170,51 @@ describe("an air-quality dashboard through the unmodified compiler", () => {
     ).toBe(true);
   });
 
-  it("computes direction and ranking under the air domain's tolerances, not the river's", () => {
-    // The generic layer is what the compiler calls today, with river numbers.
-    // This pins that the air numbers exist and change the verdict, so wiring
-    // them through `compilePlan` is a visible decision rather than a silent
-    // default. +2.5 µg/m³ in the last hour: rising under the river's 0.05,
-    // steady under the air domain's 2... is false — it is above 2. The
-    // fixture's Del Paso rise is +2.5/h and +10.8/6h: material either way.
-    // Woodland's last hour is -0.2: steady under both. The discriminating
-    // case is ranking: under the river tolerance every rising monitor ranks;
-    // under the air tolerance a rise must clear 5 µg/m³ in the hour.
-    const metrics = stations.map((station) =>
-      buildStationMetrics(station, AS_OF, {
-        directionTolerance: AIR_DIRECTION_TOLERANCE,
-      }),
+  it("applies the air domain's computation policy in the compiled dashboard itself", () => {
+    // Asserted on `compilePlan`'s output — not on the domain functions called
+    // directly, which is the bypass the first version of this test made. The
+    // discriminating cases: Del Paso's +2.5 µg/m³ hour is a direction (above
+    // 2) but not a material rise (below 5), so the compiled ranking is empty
+    // where the river's 0.05 bar would have ranked it; and the calculated
+    // evidence record carries the air domain's words, not the river's.
+    const spec = compiled();
+
+    const ranking = spec.pages
+      .flatMap((page) => page.components)
+      .find((component) => component.kind === "ranking");
+    if (ranking?.kind !== "ranking") throw new Error("expected ranking");
+    expect(ranking.items).toEqual([]);
+
+    const calculated = spec.evidence.find(
+      (item) => item.id === "calculated-trends",
     );
-    const facts = deriveStationFacts(metrics, {
+    expect(calculated?.label).toBe("Dasher air-quality calculations");
+    expect(calculated?.detail).toContain("OpenAQ hourly measurements");
+    expect(calculated?.detail).not.toContain("USGS");
+  });
+
+  it("still compiles the river under river policy when no profile is passed", () => {
+    // The other half of the reviewer's criterion: the default must remain
+    // the river's, so every existing caller is untouched. Compiling the SAME
+    // air stations with no computation profile reproduces the defect — which
+    // is exactly what proves the profile is what fixed it.
+    const riverRuled = compilePlan(PLAN, stations, {
       asOf: AS_OF,
-      calculations: AIR_CALCULATIONS,
-      materialRiseTolerance: AIR_MATERIAL_RISE_TOLERANCE,
+      planner: { id: "air-test-planner", usesModel: false },
     });
 
-    expect(facts.rising.map((item) => item.station.siteId)).toEqual(["2178"]);
-    // +2.5 in the hour does not clear the 5 µg/m³ material-rise bar.
-    expect(facts.ranked).toEqual([]);
+    const table = riverRuled.pages
+      .flatMap((page) => page.components)
+      .find((component) => component.kind === "station-table");
+    if (table?.kind !== "station-table") {
+      throw new Error("expected station-table");
+    }
     expect(
-      facts.evidence.find((item) => item.id === "calculated-trends")?.label,
-    ).toBe("Dasher air-quality calculations");
+      table.stations.find((station) => station.id === "2183")?.direction,
+    ).toBe("falling");
+    expect(
+      riverRuled.evidence.find((item) => item.id === "calculated-trends")
+        ?.label,
+    ).toBe("Dasher river calculations");
   });
 });

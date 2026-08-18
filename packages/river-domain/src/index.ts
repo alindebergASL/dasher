@@ -7,5 +7,6 @@ export {
 export {
   deriveRiverFacts,
   gaugeEvidenceId,
+  RIVER_COMPUTATION,
   type DeriveRiverFactsOptions,
 } from "./facts";
