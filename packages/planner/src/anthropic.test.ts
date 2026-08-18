@@ -172,7 +172,7 @@ describe("the request the provider actually sends", () => {
 
     const sent = JSON.stringify(stub.requests[0]!.messages);
     expect(sent).toContain(gauges[0]!.siteId);
-    expect(sent).toContain(gauges[0]!.river);
+    expect(sent).toContain(gauges[0]!.group);
     // The observations exist in this process; none of them may be in the body.
     // `AvailableSite` carries identifiers and labels, and the interface is
     // shaped that way because a planner which never sees a reading cannot echo

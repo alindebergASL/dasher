@@ -4,17 +4,20 @@ import {
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
 import {
-  buildGaugeMetrics,
+  buildStationMetrics,
   CALCULATION_EVIDENCE_ID,
-  deriveRiverFacts,
-  gaugeEvidenceId,
-  gaugeView,
+  deriveStationFacts,
   signed,
+  stationEvidenceId,
+  stationView,
   uniqueEvidenceIds as unique,
-  type GaugeMetrics,
-  type RiverFacts,
-} from "@dasher/river-domain";
-import type { RiverGauge, ThresholdRule } from "@dasher/river-domain";
+  type Station,
+  type StationComputation,
+  type StationFacts,
+  type StationMetrics,
+  type ThresholdRule,
+} from "@dasher/station-domain";
+import { RIVER_COMPUTATION } from "@dasher/river-domain";
 
 import type { DashboardPlan, PlanSectionKind } from "./plan";
 
@@ -41,13 +44,24 @@ export interface CompileOptions {
    * composition choice, so a planner can neither add, remove, nor retune one.
    */
   thresholds?: readonly ThresholdRule[];
+  /**
+   * The domain's computation policy: direction and material-rise tolerances
+   * and the words for the calculated-trends evidence record. Defaults to the
+   * river's, because the river is the product's current intake — but the
+   * default is the ONLY river-specific thing here. A caller compiling another
+   * domain's stations passes that domain's policy, and the first version of
+   * the air test that did not was compiling air readings under river rules:
+   * a monitor easing by 0.8 µg/m³ showed as "falling" through a tolerance
+   * meant for feet of water.
+   */
+  computation?: StationComputation;
 }
 
-type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.1" }>;
+type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.2" }>;
 
 const PLANNER_EVIDENCE_ID = "planner-composition";
 
-type Facts = RiverFacts;
+type Facts = StationFacts;
 
 /**
  * Names what chose the composition, in the reader's terms.
@@ -63,13 +77,19 @@ function composerSentence(planner: CompileOptions["planner"]): string {
     : "A deterministic planner chose this dashboard's title, audience, framing, gauge selection, and page layout; no model was called.";
 }
 
-function deriveFacts(metrics: GaugeMetrics[], options: CompileOptions): Facts {
+function deriveFacts(
+  metrics: StationMetrics[],
+  options: CompileOptions,
+  computation: StationComputation,
+): Facts {
   // Every judgement below the layout — rising, falling, stale, ranked,
-  // thresholds, evidence — belongs to the river domain rather than to the
-  // planner, so that composing a dashboard cannot change what is true about a
-  // gauge. What the planner adds is a record of its own part in the work.
-  return deriveRiverFacts(metrics, {
+  // thresholds, evidence — belongs to the domain rather than to the planner,
+  // so that composing a dashboard cannot change what is true about a station.
+  // What the planner adds is a record of its own part in the work.
+  return deriveStationFacts(metrics, {
     asOf: options.asOf,
+    calculations: computation.calculations,
+    materialRiseTolerance: computation.materialRiseTolerance,
     thresholds: options.thresholds,
     additionalEvidence: [
       {
@@ -97,8 +117,8 @@ function deriveFacts(metrics: GaugeMetrics[], options: CompileOptions): Facts {
  * The fallback stays for a gauge with no stage series at all, where there is no
  * unit to read and the sections using it are about stage by definition.
  */
-function stageUnit(metrics: GaugeMetrics): string {
-  return metrics.gauge.stage?.unit ?? "ft";
+function stageUnit(metrics: StationMetrics): string {
+  return metrics.station.primary?.unit ?? "ft";
 }
 
 function buildSection(
@@ -112,7 +132,7 @@ function buildSection(
     falling,
     staleOrMissing,
     ranked,
-    gaugeEvidenceIds,
+    stationEvidenceIds,
     allEvidenceIds,
     alerts,
   } = facts;
@@ -129,14 +149,14 @@ function buildSection(
         claims: [
           {
             text: `${rising.length} gauge${rising.length === 1 ? " is" : "s are"} rising and ${falling.length} ${falling.length === 1 ? "is" : "are"} falling.`,
-            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+            evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
           {
             text: fastest
-              ? `${fastest.gauge.river} is the fastest-rising complete gauge over the last hour at ${signed(fastest.stageChange1h, stageUnit(fastest))}.`
+              ? `${fastest.station.group} is the fastest-rising complete gauge over the last hour at ${signed(fastest.primaryChange1h, stageUnit(fastest))}.`
               : "No fresh, complete gauge is rising fast enough to rank over the last hour.",
             evidenceIds: fastest
-              ? [gaugeEvidenceId(fastest.gauge.siteId), CALCULATION_EVIDENCE_ID]
+              ? [stationEvidenceId(fastest.station), CALCULATION_EVIDENCE_ID]
               : [CALCULATION_EVIDENCE_ID],
           },
           {
@@ -146,10 +166,8 @@ function buildSection(
                 : "All selected gauges are fresh and complete.",
             evidenceIds:
               staleOrMissing.length > 0
-                ? staleOrMissing.map((item) =>
-                    gaugeEvidenceId(item.gauge.siteId),
-                  )
-                : gaugeEvidenceIds,
+                ? staleOrMissing.map((item) => stationEvidenceId(item.station))
+                : stationEvidenceIds,
           },
         ],
         evidenceIds: allEvidenceIds,
@@ -164,47 +182,55 @@ function buildSection(
           {
             label: "Gauges monitored",
             value: String(metrics.length),
-            evidenceIds: gaugeEvidenceIds,
+            evidenceIds: stationEvidenceIds,
           },
           {
             label: "Rising",
             value: String(rising.length),
             direction: "up",
-            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+            evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
           {
             label: "Falling",
             value: String(falling.length),
             direction: "down",
-            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+            evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
           {
             label: "Freshness checks",
             value: String(staleOrMissing.length),
             direction: staleOrMissing.length ? "unknown" : "steady",
-            evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+            evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
           },
         ],
         evidenceIds: allEvidenceIds,
       };
 
     case "gauge-map":
+      // Plan vocabulary keeps the 1.1 name (see ADR-007); the compiler is the
+      // mapping between the plan's words and the contract's.
       return {
         id: "gauge-map",
-        kind: "gauge-map",
+        kind: "station-map",
         title: "Gauge map",
         subtitle: "Select a point for current conditions",
-        gauges: metrics.map(gaugeView),
-        evidenceIds: gaugeEvidenceIds,
+        stations: metrics.map(stationView),
+        evidenceIds: stationEvidenceIds,
       };
 
     case "gauge-table":
       return {
         id: "gauge-table",
-        kind: "gauge-table",
+        kind: "station-table",
         title: "Current readings",
-        gauges: metrics.map(gaugeView),
-        evidenceIds: gaugeEvidenceIds,
+        stations: metrics.map(stationView),
+        // The domain's words for the generic columns; the renderer has none.
+        columns: {
+          station: "Gauge",
+          primary: "Water level",
+          secondary: "Streamflow",
+        },
+        evidenceIds: stationEvidenceIds,
       };
 
     case "fastest-rising":
@@ -214,16 +240,16 @@ function buildSection(
         title: "Fastest-rising gauges",
         subtitle: "Fresh, complete gauges ranked by one-hour water-level rise",
         items: ranked.map((item) => ({
-          id: item.gauge.siteId,
-          label: item.gauge.river,
-          value: signed(item.stageChange1h, stageUnit(item)),
-          note: `${item.direction}; 6h ${signed(item.stageChange6h, stageUnit(item))}`,
+          id: item.station.siteId,
+          label: item.station.group,
+          value: signed(item.primaryChange1h, stageUnit(item)),
+          note: `${item.direction}; 6h ${signed(item.primaryChange6h, stageUnit(item))}`,
           evidenceIds: [
-            gaugeEvidenceId(item.gauge.siteId),
+            stationEvidenceId(item.station),
             CALCULATION_EVIDENCE_ID,
           ],
         })),
-        evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+        evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
       };
 
     case "change-windows":
@@ -232,27 +258,27 @@ function buildSection(
         kind: "ranking",
         title: "Change windows",
         items: metrics.map((item) => ({
-          id: item.gauge.siteId,
-          label: item.gauge.river,
-          value: `1h ${signed(item.stageChange1h, stageUnit(item))}`,
-          note: `6h ${signed(item.stageChange6h, stageUnit(item))} · 24h ${signed(item.stageChange24h, stageUnit(item))}`,
+          id: item.station.siteId,
+          label: item.station.group,
+          value: `1h ${signed(item.primaryChange1h, stageUnit(item))}`,
+          note: `6h ${signed(item.primaryChange6h, stageUnit(item))} · 24h ${signed(item.primaryChange24h, stageUnit(item))}`,
           evidenceIds: [
-            gaugeEvidenceId(item.gauge.siteId),
+            stationEvidenceId(item.station),
             CALCULATION_EVIDENCE_ID,
           ],
         })),
-        evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+        evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
       };
 
     case "stage-trends": {
       const series = metrics
-        .filter((item) => item.stagePoints.length >= 2)
+        .filter((item) => item.primaryPoints.length >= 2)
         .map((item) => ({
-          id: item.gauge.siteId,
-          label: item.gauge.river,
+          id: item.station.siteId,
+          label: item.station.group,
           unit: stageUnit(item),
-          evidenceIds: [gaugeEvidenceId(item.gauge.siteId)],
-          points: item.stagePoints,
+          evidenceIds: [stationEvidenceId(item.station)],
+          points: item.primaryPoints,
         }));
       // A trend list with no qualifying series would render as an empty panel;
       // omitting it is honest, and the plan's other sections still stand.
@@ -262,7 +288,7 @@ function buildSection(
         kind: "trend-list",
         title: "Recent water-level trends",
         series,
-        evidenceIds: [...gaugeEvidenceIds, CALCULATION_EVIDENCE_ID],
+        evidenceIds: [...stationEvidenceIds, CALCULATION_EVIDENCE_ID],
       };
     }
 
@@ -286,17 +312,20 @@ function buildSection(
  */
 export function compilePlan(
   plan: DashboardPlan,
-  gauges: readonly RiverGauge[],
+  gauges: readonly Station[],
   options: CompileOptions,
 ): CompiledSpec {
   const selected = plan.siteIds
     .map((siteId) => gauges.find((gauge) => gauge.siteId === siteId))
-    .filter((gauge): gauge is RiverGauge => gauge !== undefined);
+    .filter((gauge): gauge is Station => gauge !== undefined);
 
+  const computation = options.computation ?? RIVER_COMPUTATION;
   const metrics = selected.map((gauge) =>
-    buildGaugeMetrics(gauge, options.asOf),
+    buildStationMetrics(gauge, options.asOf, {
+      directionTolerance: computation.directionTolerance,
+    }),
   );
-  const facts = deriveFacts(metrics, options);
+  const facts = deriveFacts(metrics, options, computation);
 
   const pages = plan.pages
     .map((page) => ({
@@ -325,7 +354,7 @@ export function compilePlan(
   const fastest = facts.ranked[0];
 
   const spec = parseDashboardSpec({
-    schemaVersion: "1.1",
+    schemaVersion: "1.2",
     id: "planned-river-conditions",
     title: plan.title,
     audience: plan.audience,
@@ -344,24 +373,28 @@ export function compilePlan(
         statementTypes: ["observed", "calculated"],
         headline: `${facts.metrics.length} gauge${facts.metrics.length === 1 ? "" : "s"} monitored`,
         detail: `${facts.rising.length} gauge${facts.rising.length === 1 ? " is" : "s are"} rising and ${facts.falling.length} gauge${facts.falling.length === 1 ? " is" : "s are"} falling based on fresh water-level readings.`,
-        evidenceIds: unique(facts.gaugeEvidenceIds, [CALCULATION_EVIDENCE_ID]),
+        evidenceIds: unique(facts.stationEvidenceIds, [
+          CALCULATION_EVIDENCE_ID,
+        ]),
       },
       changed: fastest
         ? {
             statementTypes: ["calculated"],
-            headline: `${fastest.gauge.river} rose fastest`,
-            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.stageChange1h, stageUnit(fastest))} at ${fastest.gauge.name}.`,
+            headline: `${fastest.station.group} rose fastest`,
+            detail: `The fastest fresh, complete material one-hour rise is ${signed(fastest.primaryChange1h, stageUnit(fastest))} at ${fastest.station.name}.`,
             evidenceIds: [
-              gaugeEvidenceId(fastest.gauge.siteId),
+              stationEvidenceId(fastest.station),
               CALCULATION_EVIDENCE_ID,
             ],
           }
         : {
             statementTypes: ["calculated"],
             headline: "No material one-hour rise available",
-            detail:
-              "No fresh, complete gauge rose more than 0.05 ft over the last hour.",
-            evidenceIds: unique(facts.gaugeEvidenceIds, [
+            // The tolerance is the computation policy's, so this sentence
+            // states the bar that was actually applied — under the air
+            // profile it reads "5 µg/m³", not a river number.
+            detail: `No fresh, complete gauge rose more than ${computation.materialRiseTolerance} ${computation.toleranceUnit} over the last hour.`,
+            evidenceIds: unique(facts.stationEvidenceIds, [
               CALCULATION_EVIDENCE_ID,
             ]),
           },
@@ -386,9 +419,9 @@ export function compilePlan(
     },
     nextAction: firstAttention
       ? {
-          title: `Review ${firstAttention.gauge.river} gauge`,
-          detail: `${firstAttention.gauge.name}: ${firstAttention.dataIssues[0]}`,
-          evidenceIds: [gaugeEvidenceId(firstAttention.gauge.siteId)],
+          title: `Review ${firstAttention.station.group} gauge`,
+          detail: `${firstAttention.station.name}: ${firstAttention.dataIssues[0]}`,
+          evidenceIds: [stationEvidenceId(firstAttention.station)],
         }
       : {
           title: "Review the dashboard before sharing",
@@ -480,8 +513,8 @@ export function compilePlan(
     },
   });
 
-  if (spec.schemaVersion !== "1.1") {
-    throw new Error("Planned dashboard must use DashboardSpec 1.1");
+  if (spec.schemaVersion !== "1.2") {
+    throw new Error("Planned dashboard must use DashboardSpec 1.2");
   }
   return spec;
 }

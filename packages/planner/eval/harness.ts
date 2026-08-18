@@ -1,4 +1,4 @@
-import type { RiverGauge } from "@dasher/river-domain";
+import type { Station } from "@dasher/station-domain";
 
 import {
   findSmuggledText,
@@ -111,7 +111,7 @@ export function smuggledIn(response: unknown): SmuggledText[] {
 export async function runProbe(
   probe: Probe,
   repeat: number,
-  gauges: readonly RiverGauge[],
+  gauges: readonly Station[],
   provider: PlanningProvider,
   model: string,
 ): Promise<Generation> {

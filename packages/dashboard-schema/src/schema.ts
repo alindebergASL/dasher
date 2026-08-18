@@ -116,29 +116,61 @@ const MetricGridComponentSchema = ComponentBaseSchema.extend({
   metrics: z.array(MetricSchema).min(1).max(24),
 });
 
-const GaugeSchema = z.strictObject({
+/**
+ * A reading with the unit it was reported in. The unit rides with the value
+ * because the contract has no domain: nothing else in the spec knows whether
+ * this station measures feet, micrograms, or degrees, so the number alone
+ * would be unrenderable.
+ */
+const ReadingSchema = z
+  .strictObject({
+    value: z.number().nullable(),
+    // Empty means the station has no such sensor at all — there is no unit to
+    // name for a reading that cannot exist. A present sensor whose latest
+    // observation is merely missing still knows its unit.
+    unit: z.string().max(DASHBOARD_STRING_LIMITS.shortText),
+  })
+  .refine((reading) => !(reading.unit === "" && reading.value !== null), {
+    message: "A reading with a value must name its unit",
+  });
+
+/**
+ * One monitored point in some sensor network — a river gauge, an air-quality
+ * monitor, whatever the domain supplies. ADR-007: the contract caps the shape
+ * (location, two readings, direction, freshness) and deliberately owns none
+ * of the words. `group` is the domain's grouping label — a river, an air
+ * basin — chosen by the layer that computed the station view.
+ */
+const StationSchema = z.strictObject({
   id: IdentifierSchema,
   name: ShortTextSchema,
-  river: ShortTextSchema,
+  group: ShortTextSchema,
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
-  stage: z.number().nullable(),
-  stageUnit: ShortTextSchema,
-  streamflow: z.number().nullable(),
-  streamflowUnit: ShortTextSchema,
+  primary: ReadingSchema,
+  secondary: ReadingSchema,
   direction: z.enum(["rising", "falling", "steady", "unknown"]),
   freshness: z.enum(["fresh", "stale", "missing"]),
   evidenceIds: RequiredEvidenceIdsSchema,
 });
 
-const GaugeMapComponentSchema = ComponentBaseSchema.extend({
-  kind: z.literal("gauge-map"),
-  gauges: z.array(GaugeSchema).min(1).max(200),
+const StationMapComponentSchema = ComponentBaseSchema.extend({
+  kind: z.literal("station-map"),
+  stations: z.array(StationSchema).min(1).max(200),
 });
 
-const GaugeTableComponentSchema = ComponentBaseSchema.extend({
-  kind: z.literal("gauge-table"),
-  gauges: z.array(GaugeSchema).min(1).max(200),
+const StationTableComponentSchema = ComponentBaseSchema.extend({
+  kind: z.literal("station-table"),
+  stations: z.array(StationSchema).min(1).max(200),
+  // The renderer owns no domain words (ADR-007), so the table's column
+  // headings ride in the data, written by the layer that knows what the
+  // readings are. Free text — but from the trusted compiler, and behind the
+  // same free-text gate as every other computed string.
+  columns: z.strictObject({
+    station: ShortTextSchema,
+    primary: ShortTextSchema,
+    secondary: ShortTextSchema,
+  }),
 });
 
 const RankingComponentSchema = ComponentBaseSchema.extend({
@@ -192,8 +224,8 @@ const AlertComponentSchema = ComponentBaseSchema.extend({
 const DashboardComponentSchema = z.discriminatedUnion("kind", [
   SummaryComponentSchema,
   MetricGridComponentSchema,
-  GaugeMapComponentSchema,
-  GaugeTableComponentSchema,
+  StationMapComponentSchema,
+  StationTableComponentSchema,
   RankingComponentSchema,
   TrendComponentSchema,
   AlertComponentSchema,
@@ -273,12 +305,12 @@ const DashboardSpecShape = {
 
 export const DashboardSpecSchema = z
   .discriminatedUnion("schemaVersion", [
+    // One accepted version, on purpose. 1.0 and 1.1 were dropped by ADR-007
+    // while zero dashboards were persisted outside tests; sealed bytes in an
+    // old version take /d/[id]'s documented 404 path rather than a forever
+    // branch in every consumer.
     z.strictObject({
-      schemaVersion: z.literal("1.0"),
-      ...DashboardSpecShape,
-    }),
-    z.strictObject({
-      schemaVersion: z.literal("1.1"),
+      schemaVersion: z.literal("1.2"),
       ...DashboardSpecShape,
       executiveBrief: ExecutiveBriefSchema,
     }),
@@ -369,13 +401,11 @@ function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
     spec.architecture.nodes.length +
     spec.architecture.edges.length;
   let totalTrendPoints = 0;
-  let totalEvidenceReferences = spec.nextAction.evidenceIds.length;
-  if (spec.schemaVersion === "1.1") {
-    totalEvidenceReferences +=
-      spec.executiveBrief.known.evidenceIds.length +
-      spec.executiveBrief.changed.evidenceIds.length +
-      spec.executiveBrief.important.evidenceIds.length;
-  }
+  let totalEvidenceReferences =
+    spec.nextAction.evidenceIds.length +
+    spec.executiveBrief.known.evidenceIds.length +
+    spec.executiveBrief.changed.evidenceIds.length +
+    spec.executiveBrief.important.evidenceIds.length;
 
   for (const page of spec.pages) {
     totalItems += page.components.length;
@@ -387,8 +417,9 @@ function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
           ? component.claims
           : component.kind === "metric-grid"
             ? component.metrics
-            : component.kind === "gauge-map" || component.kind === "gauge-table"
-              ? component.gauges
+            : component.kind === "station-map" ||
+                component.kind === "station-table"
+              ? component.stations
               : component.kind === "ranking"
                 ? component.items
                 : component.kind === "trend-list"
@@ -449,10 +480,13 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
   for (const page of spec.pages) {
     for (const component of page.components) {
       componentIds.push(component.id);
-      if (component.kind === "gauge-map" || component.kind === "gauge-table") {
+      if (
+        component.kind === "station-map" ||
+        component.kind === "station-table"
+      ) {
         assertUnique(
-          component.gauges.map((gauge) => gauge.id),
-          `Gauge IDs in component ${component.id}`,
+          component.stations.map((station) => station.id),
+          `Station IDs in component ${component.id}`,
         );
       } else if (component.kind === "ranking") {
         assertUnique(
@@ -494,8 +528,9 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
       const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
         component.kind === "metric-grid"
           ? component.metrics
-          : component.kind === "gauge-map" || component.kind === "gauge-table"
-            ? component.gauges
+          : component.kind === "station-map" ||
+              component.kind === "station-table"
+            ? component.stations
             : component.kind === "ranking"
               ? component.items
               : component.kind === "trend-list"
@@ -529,17 +564,13 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
     }
   }
 
-  if (spec.schemaVersion === "1.1") {
-    for (const [label, claim] of [
-      ["Known", spec.executiveBrief.known],
-      ["Changed", spec.executiveBrief.changed],
-      ["Important", spec.executiveBrief.important],
-    ] as const) {
-      if (
-        claim.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId))
-      ) {
-        throw new Error(`Executive brief ${label} references missing evidence`);
-      }
+  for (const [label, claim] of [
+    ["Known", spec.executiveBrief.known],
+    ["Changed", spec.executiveBrief.changed],
+    ["Important", spec.executiveBrief.important],
+  ] as const) {
+    if (claim.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId))) {
+      throw new Error(`Executive brief ${label} references missing evidence`);
     }
   }
 

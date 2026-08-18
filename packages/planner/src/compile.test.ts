@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  parseUsgsInstantaneousValues,
-  type RiverGauge,
-} from "@dasher/river-domain";
+import type { Station } from "@dasher/station-domain";
+
+import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 import { compilePlan } from "./compile";
@@ -66,8 +65,8 @@ function planFor(
 }
 
 /** The stage reading a gauge most recently reported, as the fixture has it. */
-function latestStage(gauge: RiverGauge): number {
-  const observations = gauge.stage?.observations ?? [];
+function latestStage(gauge: Station): number {
+  const observations = gauge.primary?.observations ?? [];
   const last = observations[observations.length - 1];
   if (last?.value === undefined || last.value === null) {
     throw new Error("fixture gauge has no stage reading to anchor a threshold");
@@ -99,7 +98,7 @@ describe("user-defined threshold alerts", () => {
   const gauge = gauges.find((candidate) => candidate.siteId === site)!;
   const reading = latestStage(gauge);
 
-  function compileWithThreshold(stageAbove: number) {
+  function compileWithThreshold(above: number) {
     return compilePlan(planFor([site], ["attention"]), [gauge], {
       asOf: AS_OF,
       planner: { id: "test-planner", usesModel: true },
@@ -108,7 +107,7 @@ describe("user-defined threshold alerts", () => {
           id: "flood-watch",
           siteId: site,
           label: "Flood watch",
-          stageAbove,
+          above,
         },
       ],
     });
@@ -120,7 +119,7 @@ describe("user-defined threshold alerts", () => {
   });
 
   it("does not raise the alert when the reading sits exactly on the threshold", () => {
-    // `stageAbove` names the level a reading must exceed, so equality is not a
+    // `above` names the level a reading must exceed, so equality is not a
     // breach. This is the boundary a reader is entitled to: a gauge holding
     // steady at the level they set is not the same as one that has passed it,
     // and telling them otherwise makes every threshold cry wolf at its own
@@ -185,7 +184,7 @@ describe("missing or stale sensor warnings", () => {
           id: "stale-threshold",
           siteId: site,
           label: "Stale threshold",
-          stageAbove: latestStage(freshGauge) - 1,
+          above: latestStage(freshGauge) - 1,
         },
       ],
     });
@@ -268,7 +267,7 @@ describe("what the dashboard says about who composed it", () => {
  * rejects a stage series that is not in feet, so every gauge the fixture path
  * produces makes the literal accidentally correct.
  *
- * `compilePlan` does not take USGS output though — it takes `RiverGauge[]`,
+ * `compilePlan` does not take USGS output though — it takes `Station[]`,
  * and a gauge in metres satisfies that type. "The parser would have caught it"
  * is a statement about a function that is not in this call path. These tests
  * enter through the signature the compiler actually publishes.
@@ -276,14 +275,14 @@ describe("what the dashboard says about who composed it", () => {
 describe("the unit of a change", () => {
   const source = gauges.find((candidate) => candidate.siteId === site)!;
 
-  /** The same gauge, reporting in metres. Legal for `RiverGauge`. */
-  const metric: RiverGauge = {
+  /** The same gauge, reporting in metres. Legal for `Station`. */
+  const metric: Station = {
     ...source,
-    stage: { ...source.stage!, unit: "m" },
+    primary: { ...source.primary!, unit: "m" },
   };
 
   function rankingValues(
-    gauge: RiverGauge,
+    gauge: Station,
     section: "fastest-rising" | "change-windows",
   ) {
     const spec = compilePlan(planFor([site], [section]), [gauge], {

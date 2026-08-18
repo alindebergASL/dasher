@@ -1,22 +1,23 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import { buildGaugeMetrics } from "./metrics";
+import { buildStationMetrics } from "@dasher/station-domain";
+
 import { parseUsgsInstantaneousValues } from "./usgs";
 
 const asOf = "2026-07-29T12:02:00.000Z";
 
-describe("buildGaugeMetrics", () => {
+describe("buildStationMetrics", () => {
   const gauges = parseUsgsInstantaneousValues(fixture);
 
   it("calculates one-, six-, and 24-hour stage changes", () => {
     const freeport = gauges.find((gauge) => gauge.siteId === "11447650")!;
-    expect(buildGaugeMetrics(freeport, asOf)).toMatchObject({
-      latestStage: 14.8,
-      latestStreamflow: 26300,
-      stageChange1h: 0.3,
-      stageChange6h: 0.6,
-      stageChange24h: 0.8,
+    expect(buildStationMetrics(freeport, asOf)).toMatchObject({
+      latestPrimary: 14.8,
+      latestSecondary: 26300,
+      primaryChange1h: 0.3,
+      primaryChange6h: 0.6,
+      primaryChange24h: 0.8,
       direction: "rising",
       freshness: "fresh",
     });
@@ -24,16 +25,16 @@ describe("buildGaugeMetrics", () => {
 
   it("classifies falling gauges", () => {
     const verona = gauges.find((gauge) => gauge.siteId === "11370500")!;
-    expect(buildGaugeMetrics(verona, asOf).direction).toBe("falling");
+    expect(buildStationMetrics(verona, asOf).direction).toBe("falling");
   });
 
   it("surfaces stale and missing sensor data", () => {
     const american = gauges.find((gauge) => gauge.siteId === "11446500")!;
-    const result = buildGaugeMetrics(american, asOf);
+    const result = buildStationMetrics(american, asOf);
     expect(result.freshness).toBe("missing");
     expect(result.direction).toBe("unknown");
-    expect(result.stageFreshness).toBe("stale");
-    expect(result.streamflowFreshness).toBe("missing");
+    expect(result.primaryFreshness).toBe("stale");
+    expect(result.secondaryFreshness).toBe("missing");
     expect(result.dataIssues).toEqual(
       expect.arrayContaining([
         "Streamflow readings are missing",
@@ -46,10 +47,10 @@ describe("buildGaugeMetrics", () => {
     const freeport = structuredClone(
       gauges.find((gauge) => gauge.siteId === "11447650")!,
     );
-    freeport.streamflow!.observations = [
+    freeport.secondary!.observations = [
       { at: "2026-07-29T08:00:00.000Z", value: 26000 },
     ];
-    const result = buildGaugeMetrics(freeport, asOf);
+    const result = buildStationMetrics(freeport, asOf);
     expect(result.latestAt).toBe("2026-07-29T12:00:00.000Z");
     expect(result.freshness).toBe("stale");
     expect(result.dataIssues).toContain(

@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import { CALCULATION_EVIDENCE_ID, deriveRiverFacts, signed } from "./facts";
-import { buildGaugeMetrics } from "./metrics";
-import { parseUsgsInstantaneousValues, type RiverGauge } from "./usgs";
+import {
+  buildStationMetrics,
+  CALCULATION_EVIDENCE_ID,
+  signed,
+  type Station,
+} from "@dasher/station-domain";
+
+import { deriveRiverFacts } from "./facts";
+import { parseUsgsInstantaneousValues } from "./usgs";
 
 /**
  * The judgements themselves, tested apart from any layout.
@@ -22,8 +28,8 @@ const AS_OF = "2026-07-29T12:02:00.000Z";
 const gauges = parseUsgsInstantaneousValues(fixture);
 const site = "11447650";
 
-function metricsFor(input: readonly RiverGauge[], asOf = AS_OF) {
-  return input.map((gauge) => buildGaugeMetrics(gauge, asOf));
+function metricsFor(input: readonly Station[], asOf = AS_OF) {
+  return input.map((gauge) => buildStationMetrics(gauge, asOf));
 }
 
 /**
@@ -32,15 +38,15 @@ function metricsFor(input: readonly RiverGauge[], asOf = AS_OF) {
  * rather than naming the site, so the set stays right if the fixture changes.
  */
 const cleanGauges = gauges.filter((gauge) => {
-  const item = buildGaugeMetrics(gauge, AS_OF);
+  const item = buildStationMetrics(gauge, AS_OF);
   return item.freshness === "fresh" && item.dataIssues.length === 0;
 });
 
 /** The same gauges, rewritten so every stage series falls steadily. */
-function falling(): RiverGauge[] {
+function falling(): Station[] {
   return gauges.slice(0, 2).map((gauge) => {
     const copy = structuredClone(gauge);
-    copy.stage!.observations = copy.stage!.observations.map(
+    copy.primary!.observations = copy.primary!.observations.map(
       (observation, index) => ({ ...observation, value: 20 - index }),
     );
     return copy;
@@ -50,9 +56,11 @@ function falling(): RiverGauge[] {
 describe("which gauges rank as fastest rising", () => {
   it("ranks fresh rising gauges fastest first", () => {
     const { ranked } = deriveRiverFacts(metricsFor(gauges), { asOf: AS_OF });
-    const changes = ranked.map((item) => item.stageChange1h ?? 0);
+    const changes = ranked.map((item) => item.primaryChange1h ?? 0);
     expect(changes).toEqual([...changes].sort((a, b) => b - a));
-    expect(ranked.every((item) => (item.stageChange1h ?? 0) > 0.05)).toBe(true);
+    expect(ranked.every((item) => (item.primaryChange1h ?? 0) > 0.05)).toBe(
+      true,
+    );
   });
 
   it("ranks no falling gauge, however gently it falls", () => {
@@ -81,7 +89,7 @@ describe("which gauges need a freshness or completeness check", () => {
     const { staleOrMissing } = deriveRiverFacts(metricsFor(cleanGauges), {
       asOf: AS_OF,
     });
-    expect(staleOrMissing.map((item) => item.gauge.siteId)).toEqual([]);
+    expect(staleOrMissing.map((item) => item.station.siteId)).toEqual([]);
   });
 
   it("reports every gauge once its readings are stale", () => {
@@ -98,14 +106,12 @@ describe("which gauges need a freshness or completeness check", () => {
 
 describe("user-defined thresholds", () => {
   const gauge = gauges.find((candidate) => candidate.siteId === site)!;
-  const reading = buildGaugeMetrics(gauge, AS_OF).latestStage!;
+  const reading = buildStationMetrics(gauge, AS_OF).latestPrimary!;
 
-  function alertsAt(stageAbove: number, asOf = AS_OF) {
+  function alertsAt(above: number, asOf = AS_OF) {
     return deriveRiverFacts(metricsFor([gauge], asOf), {
       asOf: AS_OF,
-      thresholds: [
-        { id: "watch", siteId: site, label: "Watch level", stageAbove },
-      ],
+      thresholds: [{ id: "watch", siteId: site, label: "Watch level", above }],
     }).alerts.map((alert) => alert.id);
   }
 
@@ -132,7 +138,7 @@ describe("user-defined thresholds", () => {
 
 describe("the all-clear", () => {
   it("stands in when nothing else needs saying, citing every gauge it covers", () => {
-    const { alerts, gaugeEvidenceIds } = deriveRiverFacts(
+    const { alerts, stationEvidenceIds } = deriveRiverFacts(
       metricsFor(cleanGauges),
       { asOf: AS_OF },
     );
@@ -141,7 +147,7 @@ describe("the all-clear", () => {
     // An all-clear with no evidence behind it is an unsupported claim, and the
     // gauges it covers are exactly what makes it checkable.
     expect(alerts[0]?.evidenceIds).toEqual([
-      ...gaugeEvidenceIds,
+      ...stationEvidenceIds,
       CALCULATION_EVIDENCE_ID,
     ]);
   });
@@ -158,13 +164,13 @@ describe("the all-clear", () => {
 
 describe("evidence", () => {
   it("records every gauge, then Dasher's own arithmetic", () => {
-    const { evidence, gaugeEvidenceIds, allEvidenceIds } = deriveRiverFacts(
+    const { evidence, stationEvidenceIds, allEvidenceIds } = deriveRiverFacts(
       metricsFor(gauges),
       { asOf: AS_OF },
     );
     expect(evidence).toHaveLength(gauges.length + 1);
     expect(allEvidenceIds).toEqual([
-      ...gaugeEvidenceIds,
+      ...stationEvidenceIds,
       CALCULATION_EVIDENCE_ID,
     ]);
     expect(evidence.at(-1)?.kind).toBe("calculated");

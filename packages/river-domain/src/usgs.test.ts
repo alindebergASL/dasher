@@ -15,14 +15,14 @@ describe("parseUsgsInstantaneousValues", () => {
 
     const freeport = gauges.find((gauge) => gauge.siteId === "11447650");
     expect(freeport).toMatchObject({
-      river: "Sacramento River",
+      group: "Sacramento River",
       latitude: 38.45657,
       longitude: -121.5019,
       retrievedAt: "2026-07-29T12:02:00.000Z",
     });
-    expect(freeport?.stage?.unit).toBe("ft");
-    expect(freeport?.streamflow?.unit).toBe("ft3/s");
-    expect(freeport?.stage?.observations.at(-1)?.value).toBe(14.8);
+    expect(freeport?.primary?.unit).toBe("ft");
+    expect(freeport?.secondary?.unit).toBe("ft3/s");
+    expect(freeport?.primary?.observations.at(-1)?.value).toBe(14.8);
   });
 
   it("reads an accessor exactly once and normalizes its JSON snapshot", () => {
@@ -84,7 +84,7 @@ describe("parseUsgsInstantaneousValues", () => {
   it("removes the USGS no-data sentinel rather than treating it as a reading", () => {
     const gauges = parseUsgsInstantaneousValues(fixture);
     const american = gauges.find((gauge) => gauge.siteId === "11446500");
-    expect(american?.streamflow?.observations).toEqual([]);
+    expect(american?.secondary?.observations).toEqual([]);
   });
 
   it("rejects malformed source data", () => {
@@ -111,7 +111,9 @@ describe("parseUsgsInstantaneousValues", () => {
     const input = structuredClone(fixture);
     input.value.timeSeries[0]!.values[0]!.value[0]!.value = "   ";
     const gauges = parseUsgsInstantaneousValues(input);
-    const series = gauges.find((gauge) => gauge.siteId === "11447650")!.stage!;
+    const series = gauges.find(
+      (gauge) => gauge.siteId === "11447650",
+    )!.primary!;
     expect(series.observations.some((item) => item.value === 0)).toBe(false);
   });
 
@@ -216,10 +218,10 @@ describe("parseUsgsInstantaneousValues", () => {
 
     expect(gauges).toHaveLength(3);
     expect(
-      gauges.map(({ siteId, stage, streamflow }) => ({
+      gauges.map(({ siteId, primary, secondary }) => ({
         siteId,
-        stageObservations: stage?.observations.length ?? 0,
-        streamflowObservations: streamflow?.observations.length ?? 0,
+        stageObservations: primary?.observations.length ?? 0,
+        streamflowObservations: secondary?.observations.length ?? 0,
       })),
     ).toEqual([
       {

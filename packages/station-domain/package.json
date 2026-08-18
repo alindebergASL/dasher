@@ -1,5 +1,5 @@
 {
-  "name": "@dasher/river-domain",
+  "name": "@dasher/station-domain",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,13 +10,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@dasher/dashboard-schema": "workspace:*",
-    "@dasher/station-domain": "workspace:*",
-    "zod": "^4.4.3"
-  },
   "devDependencies": {
     "typescript": "^5.9.2",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@dasher/dashboard-schema": "workspace:*"
   }
 }

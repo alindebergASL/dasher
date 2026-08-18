@@ -305,7 +305,7 @@ function ExecutiveBrief({
   dashboard,
   onEvidence,
 }: {
-  dashboard: Extract<DashboardSpec, { schemaVersion: "1.1" }>;
+  dashboard: Extract<DashboardSpec, { schemaVersion: "1.2" }>;
   onEvidence: (
     ids: string[],
     recordsNextAction?: boolean,
@@ -558,7 +558,7 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
                   : "Unknown"}
               </span>
             </div>
-            {page.id === "overview" && dashboard.schemaVersion === "1.1" ? (
+            {page.id === "overview" && dashboard.schemaVersion === "1.2" ? (
               <ExecutiveBrief dashboard={dashboard} onEvidence={openEvidence} />
             ) : null}
             <div className="dashboard-grid">

@@ -100,43 +100,47 @@ function MiniTrend({
   );
 }
 
-function GaugeMap({
-  gauges,
+function StationMap({
+  label,
+  stations,
   onEvidence,
 }: {
-  gauges: Extract<DashboardComponent, { kind: "gauge-map" }>["gauges"];
+  label: string;
+  stations: Extract<DashboardComponent, { kind: "station-map" }>["stations"];
   onEvidence: (ids: string[]) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = gauges.find((gauge) => gauge.id === selectedId) ?? null;
-  const latitudes = gauges.map((gauge) => gauge.latitude);
-  const longitudes = gauges.map((gauge) => gauge.longitude);
+  const selected =
+    stations.find((station) => station.id === selectedId) ?? null;
+  const latitudes = stations.map((station) => station.latitude);
+  const longitudes = stations.map((station) => station.longitude);
   const minLat = Math.min(...latitudes);
   const maxLat = Math.max(...latitudes);
   const minLon = Math.min(...longitudes);
   const maxLon = Math.max(...longitudes);
   return (
-    <div className="map-panel" aria-label="Gauge locations near Sacramento">
+    <div className="map-panel" aria-label={label}>
       <div className="map-river river-one" />
       <div className="map-river river-two" />
       <span className="map-city">Sacramento</span>
-      {gauges.map((gauge) => {
+      {stations.map((station) => {
         const left =
-          12 + ((gauge.longitude - minLon) / (maxLon - minLon || 1)) * 76;
+          12 + ((station.longitude - minLon) / (maxLon - minLon || 1)) * 76;
         const top =
-          12 + (1 - (gauge.latitude - minLat) / (maxLat - minLat || 1)) * 70;
+          12 + (1 - (station.latitude - minLat) / (maxLat - minLat || 1)) * 70;
+        const reading = `${station.primary.value ?? "missing"} ${station.primary.unit}`;
         return (
           <button
-            aria-label={`${gauge.name}, station ${gauge.id}: ${gauge.stage ?? "missing"} ${gauge.stageUnit}, ${gauge.direction}`}
-            aria-pressed={selectedId === gauge.id}
-            className={`map-marker marker-${gauge.direction}${selectedId === gauge.id ? " selected" : ""}`}
-            key={gauge.id}
-            onClick={() => setSelectedId(gauge.id)}
+            aria-label={`${station.name}, station ${station.id}: ${reading}, ${station.direction}`}
+            aria-pressed={selectedId === station.id}
+            className={`map-marker marker-${station.direction}${selectedId === station.id ? " selected" : ""}`}
+            key={station.id}
+            onClick={() => setSelectedId(station.id)}
             style={{ left: `${left}%`, top: `${top}%` }}
-            title={`${gauge.name}: ${gauge.stage ?? "missing"} ${gauge.stageUnit}, ${gauge.direction}`}
+            title={`${station.name}: ${reading}, ${station.direction}`}
             type="button"
           >
-            <span className="sr-only">{gauge.name}</span>
+            <span className="sr-only">{station.name}</span>
           </button>
         );
       })}
@@ -156,9 +160,9 @@ function GaugeMap({
           <strong>{selected.name}</strong>
           <span>Station {selected.id}</span>
           <span>
-            {selected.stage === null
-              ? "Water level missing"
-              : `${selected.stage.toLocaleString()} ${selected.stageUnit}`}{" "}
+            {selected.primary.value === null
+              ? "Reading missing"
+              : `${selected.primary.value.toLocaleString()} ${selected.primary.unit}`}{" "}
             · {selected.direction}
           </span>
           <span>
@@ -224,11 +228,15 @@ export function ComponentRenderer({
           </div>
         </section>
       );
-    case "gauge-map":
+    case "station-map":
       return (
         <section className="panel map-card span-two">
           <ComponentHeader component={component} onEvidence={onEvidence} />
-          <GaugeMap gauges={component.gauges} onEvidence={onEvidence} />
+          <StationMap
+            label={component.title}
+            onEvidence={onEvidence}
+            stations={component.stations}
+          />
         </section>
       );
     case "ranking":
@@ -281,7 +289,7 @@ export function ComponentRenderer({
           </div>
         </section>
       );
-    case "gauge-table":
+    case "station-table":
       return (
         <section className="panel span-full">
           <ComponentHeader component={component} onEvidence={onEvidence} />
@@ -289,45 +297,45 @@ export function ComponentRenderer({
             <table>
               <thead>
                 <tr>
-                  <th>Gauge</th>
-                  <th>Water level</th>
-                  <th>Streamflow</th>
+                  <th>{component.columns.station}</th>
+                  <th>{component.columns.primary}</th>
+                  <th>{component.columns.secondary}</th>
                   <th>Direction</th>
                   <th>Data</th>
                 </tr>
               </thead>
               <tbody>
-                {component.gauges.map((gauge) => (
-                  <tr key={gauge.id}>
+                {component.stations.map((station) => (
+                  <tr key={station.id}>
                     <td>
-                      <strong>{gauge.river}</strong>
-                      <small>{gauge.id}</small>
+                      <strong>{station.group}</strong>
+                      <small>{station.id}</small>
                       <ItemEvidenceButton
-                        ids={gauge.evidenceIds}
-                        label={`${gauge.name} row`}
+                        ids={station.evidenceIds}
+                        label={`${station.name} row`}
                         onEvidence={onEvidence}
                       />
                     </td>
                     <td>
-                      {gauge.stage === null
+                      {station.primary.value === null
                         ? "Missing"
-                        : `${gauge.stage.toLocaleString()} ${gauge.stageUnit}`}
+                        : `${station.primary.value.toLocaleString()} ${station.primary.unit}`}
                     </td>
                     <td>
-                      {gauge.streamflow === null
+                      {station.secondary.value === null
                         ? "Missing"
-                        : `${gauge.streamflow.toLocaleString()} ${gauge.streamflowUnit}`}
+                        : `${station.secondary.value.toLocaleString()} ${station.secondary.unit}`}
                     </td>
                     <td>
-                      <span className={`status status-${gauge.direction}`}>
-                        {gauge.direction}
+                      <span className={`status status-${station.direction}`}>
+                        {station.direction}
                       </span>
                     </td>
                     <td>
                       <span
-                        className={`freshness freshness-${gauge.freshness}`}
+                        className={`freshness freshness-${station.freshness}`}
                       >
-                        {gauge.freshness}
+                        {station.freshness}
                       </span>
                     </td>
                   </tr>

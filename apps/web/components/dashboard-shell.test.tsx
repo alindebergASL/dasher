@@ -55,7 +55,7 @@ const dashboard = compilePlan(plan, gauges, {
       id: "freeport-demo-threshold",
       siteId: "11447650",
       label: "Freeport watch level",
-      stageAbove: 14.5,
+      above: 14.5,
     },
   ],
 });

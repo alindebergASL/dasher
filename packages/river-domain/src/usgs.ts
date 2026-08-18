@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { Series, Station } from "@dasher/station-domain";
+
 export const USGS_PAYLOAD_MAX_BYTES = 5 * 1_024 * 1_024;
 export const USGS_MAX_TOTAL_OBSERVATIONS = 20_000;
 
@@ -110,29 +112,18 @@ const ResponseSchema = z
     }
   });
 
-export interface Observation {
-  at: string;
-  value: number;
-}
-
-export interface GaugeSeries {
-  parameterCode: "00065" | "00060";
-  description: string;
-  unit: string;
-  observations: Observation[];
-}
-
-export interface RiverGauge {
-  siteId: string;
-  name: string;
-  river: string;
-  latitude: number;
-  longitude: number;
-  stage?: GaugeSeries;
-  streamflow?: GaugeSeries;
-  sourceUrl: string;
-  retrievedAt: string;
-}
+/**
+ * The river vocabulary, stamped onto every station this parser emits. The
+ * generic layer (`@dasher/station-domain`) computes with these words; it
+ * never chooses them.
+ */
+const RIVER_STATION_WORDS = {
+  kindLabel: "gauge",
+  primaryLabel: "Water-level",
+  secondaryLabel: "Streamflow",
+  sourceName: "U.S. Geological Survey",
+  evidencePrefix: "usgs",
+} as const;
 
 function createUsgsPayloadSnapshot(input: unknown): unknown {
   let serialized: string | undefined;
@@ -183,11 +174,11 @@ function friendlyRiverName(siteName: string): string {
   return siteName.replace(/\s+R\s+.*/i, " River");
 }
 
-export function parseUsgsInstantaneousValues(input: unknown): RiverGauge[] {
+export function parseUsgsInstantaneousValues(input: unknown): Station[] {
   const snapshot = createUsgsPayloadSnapshot(input);
   const response = ResponseSchema.parse(snapshot);
   assertTotalObservationBudget(response);
-  const gauges = new Map<string, RiverGauge>();
+  const gauges = new Map<string, Station>();
 
   for (const timeSeries of response.value.timeSeries) {
     const siteId = timeSeries.sourceInfo.siteCode[0]!.value;
@@ -220,7 +211,8 @@ export function parseUsgsInstantaneousValues(input: unknown): RiverGauge[] {
     const existing = gauges.get(siteId) ?? {
       siteId,
       name: timeSeries.sourceInfo.siteName,
-      river: friendlyRiverName(timeSeries.sourceInfo.siteName),
+      group: friendlyRiverName(timeSeries.sourceInfo.siteName),
+      ...RIVER_STATION_WORDS,
       latitude: timeSeries.sourceInfo.geoLocation.geogLocation.latitude,
       longitude: timeSeries.sourceInfo.geoLocation.geogLocation.longitude,
       sourceUrl: `https://waterdata.usgs.gov/monitoring-location/${siteId}/`,
@@ -229,15 +221,10 @@ export function parseUsgsInstantaneousValues(input: unknown): RiverGauge[] {
       ).toISOString(),
     };
 
-    const series: GaugeSeries = {
-      parameterCode,
-      description: timeSeries.variable.variableDescription,
-      unit,
-      observations,
-    };
+    const series: Series = { unit, observations };
 
-    if (parameterCode === "00065") existing.stage = series;
-    if (parameterCode === "00060") existing.streamflow = series;
+    if (parameterCode === "00065") existing.primary = series;
+    if (parameterCode === "00060") existing.secondary = series;
     gauges.set(siteId, existing);
   }
 
