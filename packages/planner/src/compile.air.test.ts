@@ -71,7 +71,7 @@ function compiled() {
     thresholds: [
       {
         id: "unhealthy-sensitive",
-        siteId: "2178",
+        siteId: "678",
         label: "Unhealthy for sensitive groups",
         above: 15,
       },
@@ -114,7 +114,7 @@ describe("an air-quality dashboard through the shared compiler", () => {
       "µg/m³",
     ]);
     expect(table.stations.map((station) => station.group)).toEqual([
-      "Roseville",
+      "Arden Arcade",
       "Sacramento",
       "Woodland",
     ]);
@@ -125,8 +125,8 @@ describe("an air-quality dashboard through the shared compiler", () => {
     const byId = new Map(
       table.stations.map((station) => [station.id, station.direction]),
     );
-    expect(byId.get("2178")).toBe("rising");
-    expect(byId.get("2183")).toBe("steady");
+    expect(byId.get("678")).toBe("rising");
+    expect(byId.get("1289")).toBe("steady");
 
     const trend = spec.pages
       .flatMap((page) => page.components)
@@ -139,15 +139,15 @@ describe("an air-quality dashboard through the shared compiler", () => {
 
   it("cites OpenAQ in the evidence, with the domain's own vocabulary", () => {
     const spec = compiled();
-    const observed = spec.evidence.find((item) => item.id === "openaq-2178");
+    const observed = spec.evidence.find((item) => item.id === "openaq-678");
 
     expect(observed?.sourceName).toBe("OpenAQ");
-    expect(observed?.label).toBe("Sacramento monitor 2178");
+    expect(observed?.label).toBe("Sacramento monitor 678");
     expect(observed?.detail).toBe(
-      "PM2.5 and Ozone observations for Sacramento — Del Paso Manor.",
+      "PM2.5 and Ozone observations for Sacramento — Downtown.",
     );
     expect(observed?.sourceUrl).toBe(
-      "https://explore.openaq.org/locations/2178",
+      "https://explore.openaq.org/locations/678",
     );
   });
 
@@ -267,7 +267,7 @@ describe("an air-quality dashboard through the shared compiler", () => {
       throw new Error("expected station-table");
     }
     expect(
-      table.stations.find((station) => station.id === "2183")?.direction,
+      table.stations.find((station) => station.id === "1289")?.direction,
     ).toBe("falling");
     expect(
       riverRuled.evidence.find((item) => item.id === "calculated-trends")

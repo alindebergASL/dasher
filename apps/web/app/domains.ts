@@ -148,7 +148,7 @@ const AIR_ENTRY: DomainEntry = {
   thresholds: [
     {
       id: "elevated-pm25-demo-threshold",
-      siteId: "2178",
+      siteId: "678",
       label: "Elevated PM2.5 watch",
       above: 15,
     },

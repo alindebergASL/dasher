@@ -45,9 +45,20 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 const USGS_SITE_IDS = ["11446500", "11447650", "11446220"] as const;
 const USGS_PARAMETER_CODES = ["00065", "00060"] as const;
-/** Fixed OpenAQ locations and their PM2.5/ozone sensors for this slice. */
-const OPENAQ_LOCATION_IDS = [2178, 2183, 2190] as const;
-const OPENAQ_SENSOR_IDS = [3917, 3918, 3931, 3932, 3947] as const;
+/**
+ * Fixed Sacramento-area OpenAQ locations and their sensors, VERIFIED LIVE.
+ *
+ * The first version of this list was assembled from the fixture and was
+ * wrong in every entry: 2178 is Del Norte, 2183 is Denver, 2190 is an
+ * Osceola County fire station, and their sensor ids did not match the
+ * PM2.5/ozone pairs this domain reads. A live check against the real API
+ * replaced them with these.
+ */
+const OPENAQ_LOCATIONS = [
+  { id: 678, pm25: 1556, ozone: 1548 },
+  { id: 1289, pm25: 2309, ozone: 2305 },
+  { id: 627, pm25: 1100, ozone: 1101 },
+] as const;
 
 export interface DomainSnapshot {
   readonly stations: readonly Station[];
@@ -177,26 +188,72 @@ async function fetchAirSnapshot(): Promise<DomainSnapshot> {
     throw new SourceUnavailableError("air", "OPENAQ_API_KEY is not configured");
   }
 
-  const locations = new URL("https://api.openaq.org/v3/locations");
-  locations.searchParams.set("id", OPENAQ_LOCATION_IDS.join(","));
-  const locationsPayload = await fetchJson(locations, "air", apiKey);
-
+  // ONE REQUEST PER LOCATION, not a comma-list filter.
+  //
+  // `/v3/locations?id=678,1289,627` answers 200 and ignores the filter: it
+  // returns the first page of every location OpenAQ knows about. Asking for
+  // three Sacramento monitors and receiving a hundred arbitrary ones, with a
+  // success status, is worse than an error — an error refuses, and this
+  // would have built a confident dashboard about the wrong continent.
+  const results: unknown[] = [];
   const hours: Record<string, unknown> = {};
-  for (const sensorId of OPENAQ_SENSOR_IDS) {
+
+  for (const location of OPENAQ_LOCATIONS) {
     const url = new URL(
-      `https://api.openaq.org/v3/sensors/${String(sensorId)}/hours`,
+      `https://api.openaq.org/v3/locations/${String(location.id)}`,
     );
-    url.searchParams.set("limit", "6");
-    hours[String(sensorId)] = await fetchJson(url, "air", apiKey);
+    const payload = await fetchJson(url, "air", apiKey);
+    results.push(onlyLocation(payload, location.id));
+
+    for (const sensorId of [location.pm25, location.ozone]) {
+      const hoursUrl = new URL(
+        `https://api.openaq.org/v3/sensors/${String(sensorId)}/hours`,
+      );
+      hoursUrl.searchParams.set("limit", "6");
+      hours[String(sensorId)] = await fetchJson(hoursUrl, "air", apiKey);
+    }
   }
 
   const retrievedAt = new Date().toISOString();
   const stations = parseOpenAqHourlySnapshot({
     retrievedAt,
-    locations: locationsPayload,
+    locations: { results },
     hours,
   });
   return { stations, asOf: retrievedAt };
+}
+
+/**
+ * The location this request asked for, or a refusal.
+ *
+ * The durable half of the comma-list fix. Correct ids are not enough: a
+ * response is only usable if it contains what was requested, and a 200 is
+ * not that promise. This checks the identity rather than trusting the
+ * status, so a filter the API decides to ignore — this one, or the next one
+ * — fails closed instead of quietly substituting other stations.
+ */
+function onlyLocation(payload: unknown, expectedId: number): unknown {
+  const results =
+    typeof payload === "object" && payload !== null
+      ? (payload as { results?: unknown }).results
+      : undefined;
+  if (!Array.isArray(results)) {
+    throw new SourceUnavailableError("air", "location response had no results");
+  }
+
+  const match = results.find(
+    (entry) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      (entry as { id?: unknown }).id === expectedId,
+  );
+  if (match === undefined) {
+    throw new SourceUnavailableError(
+      "air",
+      `location ${String(expectedId)} was not in its own response`,
+    );
+  }
+  return match;
 }
 
 /** The source's own retrieval time, which every station carries. */

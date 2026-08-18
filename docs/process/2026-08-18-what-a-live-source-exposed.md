@@ -36,20 +36,71 @@ deliberately degraded gauge that the freshness tests depend on, which a
 verbatim capture cannot provide — a real response is whatever the river was
 doing that minute.
 
-## The OpenAQ capture did not happen, and this note is the reason
+## The OpenAQ loader asked the wrong question and would have been told "200"
 
-The slice called for capturing one bounded real OpenAQ v3 response. **It was
-not captured.** `api.openaq.org` answers `401` without an API key, and no
-`OPENAQ_API_KEY` is available in this environment.
+A live check after review found the air path broken in a worse way than the
+river path had been. The river defect was loud: a schema rejection on the
+first fetch. This one was silent.
+
+**The query form does not filter.** `/v3/locations?id=678,1289,627` returns
+HTTP 200 and ignores the `id` parameter, answering with the first page of
+every location OpenAQ knows about. Asking for three Sacramento monitors and
+receiving a hundred arbitrary ones, with a success status, is worse than an
+error: an error refuses, and this would have compiled a confident dashboard
+about monitors on another continent.
+
+**The identifiers were also wrong.** They had been carried over from the
+hand-authored fixture, where they were invented. In the real API:
+
+| Fixture claimed                    | Actually is                     |
+| ---------------------------------- | ------------------------------- |
+| `2178` Sacramento — Del Paso Manor | Del Norte (sensors: ozone, SO2) |
+| `2183` Roseville — N Sunrise       | Denver                          |
+| `2190` Woodland — Gibson Road      | Osceola County Fire Station     |
+
+So the fixture did not merely invent readings — it asserted a false mapping
+between an identifier and a place, and the loader inherited it.
+
+**Both are fixed, and the second fix is the durable one.** The loader now
+requests each location on its own endpoint (`/v3/locations/{id}`) and then
+verifies that the response actually contains the location it asked for,
+refusing otherwise. Correct identifiers are not enough: a 200 is not a
+promise that a filter was honoured, so the check is on identity rather than
+status, and the next filter this API decides to ignore fails closed too.
+
+The verified Sacramento-area set, and the identities the fixture now carries:
+
+| Location                       | PM2.5 sensor | Ozone sensor |
+| ------------------------------ | ------------ | ------------ |
+| `678` Sacramento — Downtown    | `1556`       | `1548`       |
+| `1289` Arden Arcade — Del Paso | `2309`       | `2305`       |
+| `627` Woodland — Gibson Road   | `1100`       | `1101`       |
+
+The fixture's readings remain hand-authored — a real capture is whatever the
+air was doing that minute, and the tests need a worsening monitor, an
+improving one, and a degraded one — but its identities are no longer
+invented.
+
+## The bounded real capture is still not committed here
+
+The slice called for committing one bounded real OpenAQ v3 response. **This
+environment still cannot produce one.** `api.openaq.org` answers `401`
+without an API key, and no `OPENAQ_API_KEY` is available here. The live
+evidence above came from a reviewer running the check elsewhere; the
+corrections are made from that evidence, and the capture itself remains to be
+committed by whoever holds a credential.
 
 What that means, precisely:
 
 - The **river** live path is proven against a real payload from the real
   service.
-- The **air** live path is proven against the hand-authored fixture's shape
-  and against stubbed responses. Its request construction — endpoints, the
-  `X-API-Key` header, the bundle assembly — is written from the documented v3
-  API and is **unverified against the live service.**
+- The **air** live path's request construction has now been corrected against
+  live evidence — endpoints, identifiers, and the response-identity check —
+  and the reviewer confirmed the real payloads parse through
+  `parseOpenAqHourlySnapshot` into three stations with six PM2.5 and six
+  ozone observations each. What is **still not proven from this repository**
+  is the whole loop end to end under a real credential, because no credential
+  exists here to run it with.
 
 That is a real gap and it is worth being blunt about: the same class of defect
 this note opens with — a parser written against an idealised fixture, wrong

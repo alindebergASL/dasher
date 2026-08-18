@@ -201,6 +201,103 @@ describe("live mode, when the source does not", () => {
   });
 });
 
+describe("the air loader's identity check", () => {
+  /**
+   * The defect a live check found, and the general fix for it.
+   *
+   * `/v3/locations?id=678,1289,627` answers 200 and ignores the filter,
+   * returning the first page of every location OpenAQ knows about. The
+   * original loader used that form with ids taken from the fixture — which
+   * were themselves wrong entities (Del Norte, Denver, an Osceola County
+   * fire station) — so a live air request would have built a confident
+   * dashboard about arbitrary monitors on another continent. No status code
+   * would have objected.
+   */
+  it("refuses a 200 that does not contain the location it asked for", async () => {
+    process.env["OPENAQ_API_KEY"] = "test-key";
+
+    // The substituted locations are COMPLETE AND PARSEABLE — real-looking
+    // monitors with real-looking sensors, whose hours resolve. A loader that
+    // took whatever came back would succeed here and build a dashboard about
+    // the wrong places. Only checking the identity refuses, which is what
+    // makes this test discriminating: an earlier version served malformed
+    // substitutes, so the parser rejected them and the test passed without
+    // the identity check existing at all.
+    const substitute = (id: number, pm: number, o3: number) => ({
+      id,
+      name: `Somewhere Else ${String(id)}`,
+      locality: "Elsewhere",
+      timezone: "America/Los_Angeles",
+      coordinates: { latitude: 10, longitude: 10 },
+      isMobile: false,
+      isMonitor: true,
+      sensors: [
+        {
+          id: pm,
+          name: "pm25 µg/m³",
+          parameter: {
+            id: 2,
+            name: "pm25",
+            units: "µg/m³",
+            displayName: "PM2.5",
+          },
+        },
+        {
+          id: o3,
+          name: "o3 ppm",
+          parameter: { id: 10, name: "o3", units: "ppm", displayName: "Ozone" },
+        },
+      ],
+    });
+    const hoursBody = {
+      results: [
+        {
+          value: 5,
+          period: { datetimeTo: { utc: "2026-08-18T10:00:00Z" } },
+        },
+        {
+          value: 6,
+          period: { datetimeTo: { utc: "2026-08-18T11:00:00Z" } },
+        },
+      ],
+    };
+
+    globalThis.fetch = vi.fn(async (input: unknown) =>
+      String(input).includes("/hours")
+        ? jsonResponse(hoursBody)
+        : jsonResponse({
+            results: [
+              substitute(9001, 1556, 1548),
+              substitute(9002, 2309, 2305),
+            ],
+          }),
+    ) as unknown as typeof fetch;
+
+    await expect(loadDomainSnapshot("air")).rejects.toBeInstanceOf(
+      SourceUnavailableError,
+    );
+  });
+
+  it("asks for each location on its own endpoint, never a comma-list filter", async () => {
+    process.env["OPENAQ_API_KEY"] = "test-key";
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      urls.push(url);
+      return jsonResponse({ results: [] });
+    }) as unknown as typeof fetch;
+
+    await loadDomainSnapshot("air").catch(() => undefined);
+
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      expect(url).not.toMatch(/[?&]id=/u);
+    }
+    // The verified Sacramento-area locations, each addressed directly.
+    expect(urls[0]).toContain("/v3/locations/678");
+  });
+});
+
 describe("the air credential", () => {
   it("fails air explicitly when absent, without touching the network", async () => {
     delete process.env["OPENAQ_API_KEY"];
