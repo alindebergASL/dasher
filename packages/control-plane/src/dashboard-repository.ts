@@ -85,6 +85,13 @@ export class DashboardRepositoryError extends Error {
   }
 }
 
+/** One row of the recent-dashboards listing: identity, not content. */
+export interface DashboardListEntry {
+  readonly dashboardId: string;
+  readonly title: string;
+  readonly createdAt: string;
+}
+
 export interface DashboardRepository {
   /**
    * Create a dashboard and its first version, through the seam.
@@ -104,6 +111,17 @@ export interface DashboardRepository {
    * would leak the existence of another tenant's row.
    */
   loadById(dashboardId: string): Promise<LoadedDashboard | undefined>;
+
+  /**
+   * The organization's dashboards, newest first, bounded.
+   *
+   * Identity only — id, title, creation time — because a listing is a way to
+   * find a dashboard, not a way to render one. Row-level security is the
+   * entire isolation story here, exactly as it is for `loadById`; note that
+   * this read touches `dashboards` UNJOINED, so it runs directly against the
+   * policy the joined read only exercises in depth.
+   */
+  listRecent(limit: number): Promise<readonly DashboardListEntry[]>;
 }
 
 const FIRST_REVISION = 1;
@@ -185,6 +203,38 @@ export function createDashboardRepository(
       }
 
       return { dashboardId, versionId, runId };
+    },
+
+    async listRecent(limit: number): Promise<readonly DashboardListEntry[]> {
+      // Bounded here, not by the caller's good manners: a listing that can be
+      // asked for everything is a full-table read wearing a UI.
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        throw new DashboardRepositoryError(
+          "unexpected_shape",
+          "listRecent limit must be an integer between 1 and 100",
+        );
+      }
+      void principal;
+
+      const result = await handle.query<{
+        dashboard_id: string;
+        title: string;
+        created_at: string;
+      }>(
+        `SELECT dashboard_id,
+                title,
+                created_at::text AS created_at
+           FROM dasher.dashboards
+          ORDER BY created_at DESC, dashboard_id DESC
+          LIMIT $1`,
+        [limit],
+      );
+
+      return result.rows.map((row) => ({
+        dashboardId: row.dashboard_id,
+        title: row.title,
+        createdAt: new Date(row.created_at).toISOString(),
+      }));
     },
 
     async loadById(dashboardId: string): Promise<LoadedDashboard | undefined> {

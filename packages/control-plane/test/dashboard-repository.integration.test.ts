@@ -344,3 +344,106 @@ it("keeps each organization's dashboards to itself when both have saved", async 
   expect(alicesView.own?.title).toBe("alice list entry");
   expect(alicesView.other).toBeUndefined();
 });
+
+it("lists an organization's dashboards newest first, its own and nothing else", async () => {
+  // A fresh tenant, so the listing is deterministic regardless of what the
+  // tests above have accumulated for alice and carol.
+  const seeder = await ownerPool.connect();
+  let dave: DevPrincipalSeed;
+  try {
+    await seeder.query("BEGIN");
+    dave = await seedDevPrincipal(seeder, { organizationName: "dave org" });
+    await seeder.query("COMMIT");
+  } catch (error) {
+    await seeder.query("ROLLBACK");
+    throw error;
+  } finally {
+    seeder.release();
+  }
+
+  const saved: string[] = [];
+  for (const title of ["first saved", "second saved", "third saved"]) {
+    const result = await withDashboardRepository(
+      appPool,
+      credential(dave),
+      async (repository) => repository.save(saveInput(title)),
+    );
+    saved.push(result.dashboardId);
+  }
+
+  const listed = await withDashboardRepository(
+    appPool,
+    credential(dave),
+    async (repository) => repository.listRecent(10),
+  );
+
+  expect(listed.map((entry) => entry.title)).toEqual([
+    "third saved",
+    "second saved",
+    "first saved",
+  ]);
+  expect(listed.map((entry) => entry.dashboardId)).toEqual(
+    [...saved].reverse(),
+  );
+  for (const entry of listed) {
+    expect(Number.isNaN(Date.parse(entry.createdAt))).toBe(false);
+  }
+
+  // The other half: carol's listing must not gain dave's rows. Row-level
+  // security is the entire mechanism — this read is unjoined, so it runs
+  // directly against the dashboards policy rather than through the join
+  // that `loadById` gets its depth from.
+  const carolsView = await withDashboardRepository(
+    appPool,
+    credential(carol),
+    async (repository) => repository.listRecent(100),
+  );
+  for (const entry of carolsView) {
+    expect(saved).not.toContain(entry.dashboardId);
+  }
+
+  const bounded = await withDashboardRepository(
+    appPool,
+    credential(dave),
+    async (repository) => repository.listRecent(2),
+  );
+  expect(bounded.map((entry) => entry.title)).toEqual([
+    "third saved",
+    "second saved",
+  ]);
+});
+
+it("returns an empty listing for an organization that has saved nothing", async () => {
+  const seeder = await ownerPool.connect();
+  let erin: DevPrincipalSeed;
+  try {
+    await seeder.query("BEGIN");
+    erin = await seedDevPrincipal(seeder, { organizationName: "erin org" });
+    await seeder.query("COMMIT");
+  } catch (error) {
+    await seeder.query("ROLLBACK");
+    throw error;
+  } finally {
+    seeder.release();
+  }
+
+  const listed = await withDashboardRepository(
+    appPool,
+    credential(erin),
+    async (repository) => repository.listRecent(10),
+  );
+
+  expect(listed).toEqual([]);
+});
+
+it("refuses an unbounded or malformed listing limit", async () => {
+  // Bounded in the repository, not by caller manners: a listing that can be
+  // asked for everything is a full-table read wearing a UI.
+  for (const limit of [0, -1, 101, 2.5, Number.NaN]) {
+    await expect(
+      withDashboardRepository(appPool, credential(alice), async (repository) =>
+        repository.listRecent(limit),
+      ),
+    ).rejects.toMatchObject({ code: "unexpected_shape" });
+  }
+});

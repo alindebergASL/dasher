@@ -151,7 +151,10 @@ export function RequestWorkspace({
           Dasher from the source readings.
           {revised
             ? " Its first plan was rejected by Dasher and corrected before anything rendered."
-            : ""}
+            : ""}{" "}
+          <a className="request-permalink" href="/dashboards">
+            Your dashboards
+          </a>
         </p>
       </form>
 
