@@ -8,6 +8,7 @@ import {
 import { parseDashboardSpec } from "@dasher/dashboard-schema";
 
 import fixture from "../../../fixtures/openaq/sacramento-hourly.json";
+import liveCapture from "../../../fixtures/openaq/live-capture-2026-08-18.json";
 import { compilePlan } from "./compile";
 import type { DashboardPlan } from "./plan";
 
@@ -276,5 +277,51 @@ describe("an air-quality dashboard through the shared compiler", () => {
     // Words default with the numbers: no profile means river vocabulary.
     expect(riverRuled.id).toBe("planned-river-conditions");
     expect(riverRuled.notice).toContain("USGS readings may be provisional");
+  });
+});
+
+describe("the real captured payload, all the way to a dashboard", () => {
+  /**
+   * The end of the chain the HOLD asked for: real bytes from OpenAQ, through
+   * the real parser, through the shared compiler under AIR_COMPUTATION and
+   * AIR_WORDS, to a spec the contract accepts.
+   */
+  it("compiles into a contract-valid air dashboard", () => {
+    const stations = parseOpenAqHourlySnapshot(liveCapture);
+    const asOf = (liveCapture as { retrievedAt: string }).retrievedAt;
+
+    const spec = compilePlan(
+      { ...PLAN, siteIds: stations.map((station) => station.siteId) },
+      stations,
+      {
+        asOf,
+        planner: { id: "live-capture-test", usesModel: false },
+        computation: AIR_COMPUTATION,
+        words: AIR_WORDS,
+      },
+    );
+
+    expect(() => parseDashboardSpec(spec)).not.toThrow();
+    expect(
+      spec.pages.flatMap((page) =>
+        page.components.map((component) => component.kind),
+      ),
+    ).toEqual([
+      "summary",
+      "metric-grid",
+      "station-map",
+      "station-table",
+      "ranking",
+      "trend-list",
+      "alert-list",
+    ]);
+    expect(JSON.stringify(spec)).not.toMatch(/\bft\b/u);
+    expect(spec.executiveBrief.known.headline).toBe("3 monitors monitored");
+
+    // Ten-year-old observations are stale, not invalid: the dashboard builds
+    // and says so, which is the honest answer and exactly the split this
+    // slice drew between a source outage and stale-but-valid data.
+    expect(spec.freshness.status).toBe("partial");
+    expect(spec.freshness.label).toContain("need");
   });
 });

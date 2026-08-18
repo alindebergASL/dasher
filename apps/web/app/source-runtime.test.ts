@@ -296,6 +296,36 @@ describe("the air loader's identity check", () => {
     // The verified Sacramento-area locations, each addressed directly.
     expect(urls[0]).toContain("/v3/locations/678");
   });
+
+  it("asks the hours endpoint for recent records, not the oldest ones", async () => {
+    // The captured live response returned six hourly values from MARCH 2016
+    // for `limit=6` alone — the endpoint paginates ascending from the start
+    // of the sensor's history, and `found` was ">6". A dashboard built from
+    // that would have shown ten-year-old readings.
+    process.env["OPENAQ_API_KEY"] = "test-key";
+    const hourUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/hours")) {
+        hourUrls.push(url);
+        return jsonResponse({ results: [] });
+      }
+      // Echo back the location that was asked for, so the identity check
+      // passes and the loop reaches the hours endpoints this test is about.
+      const id = Number(/\/locations\/(\d+)/u.exec(url)?.[1] ?? 0);
+      return jsonResponse({
+        results: [{ id, name: "x", isMonitor: true, sensors: [] }],
+      });
+    }) as unknown as typeof fetch;
+
+    await loadDomainSnapshot("air").catch(() => undefined);
+
+    expect(hourUrls.length).toBeGreaterThan(0);
+    for (const url of hourUrls) {
+      expect(url).toContain("sort_order=desc");
+      expect(url).toContain("datetime_from=");
+    }
+  });
 });
 
 describe("the air credential", () => {

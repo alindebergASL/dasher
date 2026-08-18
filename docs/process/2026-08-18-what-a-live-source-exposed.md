@@ -81,26 +81,71 @@ air was doing that minute, and the tests need a worsening monitor, an
 improving one, and a degraded one — but its identities are no longer
 invented.
 
-## The bounded real capture is still not committed here
+## `limit=6` returns the OLDEST six records
 
-The slice called for committing one bounded real OpenAQ v3 response. **This
-environment still cannot produce one.** `api.openaq.org` answers `401`
-without an API key, and no `OPENAQ_API_KEY` is available here. The live
-evidence above came from a reviewer running the check elsewhere; the
-corrections are made from that evidence, and the capture itself remains to be
-committed by whoever holds a credential.
+The third defect, found by parsing the capture rather than by reading it.
+
+`/v3/sensors/{id}/hours?limit=6` answers with six hourly values **from March
+2016**, and reports `found: ">6"`. The endpoint paginates ascending from the
+start of a sensor's history, so a "give me the latest six hours" query
+written the obvious way returns the first six hours the sensor ever
+recorded. A live air dashboard would have shown ten-year-old readings under
+a heading about current conditions.
+
+Nothing in the pipeline was wrong: the parser parsed, the compiler compiled,
+and the freshness machinery correctly marked all three monitors as needing
+attention. That is the system being honest about bad input — and it is also
+why this was worth catching, because "3 monitors need attention" is a much
+quieter symptom than a decade-old timestamp deserves.
+
+The loader now sends `datetime_from` (a 24-hour window) **and**
+`sort_order=desc`. Both, deliberately: the window says which hours are
+wanted and the order says which end to take, so neither parameter being
+honoured alone leaves the query silently ascending. **This fix is not
+verified live** — it is written from the documented v3 API, and this
+environment still has no credential to test it with.
+
+## What the capture also showed about grouping
+
+`locality` is the CBSA metro name, not the city: all three monitors report
+`Sacramento--Arden-Arcade--Roseville`. So every monitor in one metro shares
+a `group`, and a ranking labelled by group repeats one string three times.
+The hand-authored fixture invented per-city localities and hid this.
+
+It is not a parser defect — the parser reports what the source says — and it
+is not fixed here, because the HOLD asked for the demonstrated mismatch and
+nothing wider. It is a product question: what should label a station when
+its domain's natural grouping is not distinctive?
+
+## The bounded real capture, and what it is committed for
+
+`fixtures/openaq/live-capture-2026-08-18.json` is now committed: the three
+verified Sacramento-area monitors and their six sensor histories, assembled
+from the per-location and per-sensor endpoints, credential-free — response
+bodies and a retrieval time, no header, no key, no request metadata.
+Scanned before committing.
+
+It is kept **as captured, defect included**: the observations in it are the
+2016 ones, because that is what the pre-fix query returned. Replacing them
+with something tidier would erase the evidence. `openaq.test.ts` parses it
+and pins both findings; `compile.air.test.ts` takes it through the shared
+compiler under `AIR_COMPUTATION`/`AIR_WORDS` to a contract-valid dashboard.
+
+**Still unproven from this repository:** the corrected query against the
+live service. No `OPENAQ_API_KEY` exists here — `api.openaq.org` answers 401
+— so `datetime_from` + `sort_order=desc` returning recent data is documented
+behaviour, not observed behaviour. That is the one remaining item, and it
+needs a credential rather than more code.
 
 What that means, precisely:
 
 - The **river** live path is proven against a real payload from the real
   service.
-- The **air** live path's request construction has now been corrected against
-  live evidence — endpoints, identifiers, and the response-identity check —
-  and the reviewer confirmed the real payloads parse through
-  `parseOpenAqHourlySnapshot` into three stations with six PM2.5 and six
-  ozone observations each. What is **still not proven from this repository**
-  is the whole loop end to end under a real credential, because no credential
-  exists here to run it with.
+- The **air** live path has been corrected against real bytes at three
+  points — endpoints, identifiers, and record ordering — plus a
+  response-identity check that fails closed on the general case. The capture
+  parses and compiles here. What remains unverified is the corrected query
+  itself, which needs a credential this environment does not have.
 
 That is a real gap and it is worth being blunt about: the same class of defect
 this note opens with — a parser written against an idealised fixture, wrong

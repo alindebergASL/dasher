@@ -209,6 +209,19 @@ async function fetchAirSnapshot(): Promise<DomainSnapshot> {
       const hoursUrl = new URL(
         `https://api.openaq.org/v3/sensors/${String(sensorId)}/hours`,
       );
+      // `limit=6` ALONE RETURNS THE OLDEST SIX RECORDS. The captured
+      // response proves it: six hourly values from March 2016, with
+      // `found: ">6"` — the endpoint paginates ascending from the start of
+      // the sensor's history. A dashboard built from that would have
+      // presented ten-year-old readings, and only the freshness machinery
+      // would have hinted at it.
+      //
+      // Both parameters, deliberately: the window says which hours are
+      // wanted and the order says which end of them to take, so neither one
+      // being honoured on its own leaves the query silently ascending.
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      hoursUrl.searchParams.set("datetime_from", since);
+      hoursUrl.searchParams.set("sort_order", "desc");
       hoursUrl.searchParams.set("limit", "6");
       hours[String(sensorId)] = await fetchJson(hoursUrl, "air", apiKey);
     }

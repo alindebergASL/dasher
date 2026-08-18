@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/openaq/sacramento-hourly.json";
+import liveCapture from "../../../fixtures/openaq/live-capture-2026-08-18.json";
 import {
   OPENAQ_MAX_TOTAL_MEASUREMENTS,
   parseOpenAqHourlySnapshot,
@@ -160,5 +161,58 @@ describe("what the parser skips rather than invents", () => {
 
     expect(delPaso.secondary).toBeUndefined();
     expect(delPaso.primary?.observations).toHaveLength(6);
+  });
+});
+
+describe("a real response from the live service", () => {
+  /**
+   * A bounded credential-free capture of the three verified Sacramento-area
+   * monitors, assembled from the per-location and per-sensor endpoints and
+   * otherwise untouched. It carries no header, no key, and no request
+   * metadata — only the response bodies and the retrieval time.
+   *
+   * It exists because the loader that produced it was wrong three ways, and
+   * only real data showed any of them.
+   */
+  it("parses the shape the service actually sends", () => {
+    const stations = parseOpenAqHourlySnapshot(liveCapture);
+
+    expect(stations).toHaveLength(3);
+    expect(stations.map((station) => station.siteId).sort()).toEqual([
+      "1289",
+      "627",
+      "678",
+    ]);
+    for (const station of stations) {
+      expect(station.primary?.unit).toBe("µg/m³");
+      expect(station.secondary?.unit).toBe("ppm");
+      expect(station.primary?.observations).toHaveLength(6);
+      expect(station.secondary?.observations).toHaveLength(6);
+      expect(station.kindLabel).toBe("monitor");
+      expect(station.evidencePrefix).toBe("openaq");
+    }
+  });
+
+  it("shows the two things about real air data the fixture could not", () => {
+    const stations = parseOpenAqHourlySnapshot(liveCapture);
+
+    // ONE: `locality` is the metro area, not the city, so every monitor in
+    // one CBSA groups identically. The hand-authored fixture invented
+    // per-city localities and hid this. It is not a parser defect — the
+    // parser reports what the source says — but a ranking labelled by group
+    // repeats one string three times, which is a product question this
+    // capture raises and does not answer.
+    expect(new Set(stations.map((station) => station.group)).size).toBe(1);
+    expect(stations[0]?.group).toContain("Sacramento");
+
+    // TWO: the observations this capture holds are from 2016, because
+    // `limit=6` alone returns the OLDEST records. The loader now asks for a
+    // recent window in descending order; this capture is what it returned
+    // before that fix, kept deliberately so the defect stays legible.
+    const newest = stations
+      .flatMap((station) => station.primary?.observations ?? [])
+      .map((observation) => Date.parse(observation.at))
+      .sort((a, b) => b - a)[0];
+    expect(new Date(newest ?? 0).getUTCFullYear()).toBe(2016);
   });
 });
