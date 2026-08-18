@@ -59,7 +59,7 @@ describe("runPlanner", () => {
       "Create a live dashboard monitoring river gauges near Sacramento.",
     );
 
-    expect(result.dashboard.schemaVersion).toBe("1.1");
+    expect(result.dashboard.schemaVersion).toBe("1.2");
     expect(result.dashboard.pages.length).toBeGreaterThan(0);
     expect(result.attempts).toHaveLength(1);
     expect(result.attempts[0]?.accepted).toBe(true);
@@ -87,12 +87,14 @@ describe("runPlanner", () => {
 
     const table = result.dashboard.pages
       .flatMap((page) => page.components)
-      .find((component) => component.kind === "gauge-table");
+      .find((component) => component.kind === "station-table");
 
-    expect(table?.kind).toBe("gauge-table");
-    if (table?.kind !== "gauge-table") throw new Error("expected gauge-table");
-    expect(table.gauges).toHaveLength(1);
-    expect(table.gauges[0]?.river.toLowerCase()).toContain("american");
+    expect(table?.kind).toBe("station-table");
+    if (table?.kind !== "station-table") {
+      throw new Error("expected station-table");
+    }
+    expect(table.stations).toHaveLength(1);
+    expect(table.stations[0]?.group.toLowerCase()).toContain("american");
   });
 
   it("rejects a plan naming an unavailable gauge, then accepts the revision", async () => {
@@ -227,11 +229,15 @@ describe("the plan contract cannot carry a fact", () => {
     const readings = (spec: (typeof first)["dashboard"]) =>
       spec.pages
         .flatMap((page) => page.components)
-        .filter((component) => component.kind === "gauge-table")
+        .filter((component) => component.kind === "station-table")
         .flatMap((component) =>
-          component.kind === "gauge-table" ? component.gauges : [],
+          component.kind === "station-table" ? component.stations : [],
         )
-        .map((gauge) => [gauge.id, gauge.stage, gauge.direction]);
+        .map((station) => [
+          station.id,
+          station.primary.value,
+          station.direction,
+        ]);
 
     expect(readings(second.dashboard)).toStrictEqual(readings(first.dashboard));
     expect(second.dashboard.title).toBe("Everything Is Fine");

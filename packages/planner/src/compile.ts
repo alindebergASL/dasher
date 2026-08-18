@@ -43,7 +43,7 @@ export interface CompileOptions {
   thresholds?: readonly ThresholdRule[];
 }
 
-type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.1" }>;
+type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.2" }>;
 
 const PLANNER_EVIDENCE_ID = "planner-composition";
 
@@ -189,21 +189,29 @@ function buildSection(
       };
 
     case "gauge-map":
+      // Plan vocabulary keeps the 1.1 name (see ADR-007); the compiler is the
+      // mapping between the plan's words and the contract's.
       return {
         id: "gauge-map",
-        kind: "gauge-map",
+        kind: "station-map",
         title: "Gauge map",
         subtitle: "Select a point for current conditions",
-        gauges: metrics.map(gaugeView),
+        stations: metrics.map(gaugeView),
         evidenceIds: gaugeEvidenceIds,
       };
 
     case "gauge-table":
       return {
         id: "gauge-table",
-        kind: "gauge-table",
+        kind: "station-table",
         title: "Current readings",
-        gauges: metrics.map(gaugeView),
+        stations: metrics.map(gaugeView),
+        // The domain's words for the generic columns; the renderer has none.
+        columns: {
+          station: "Gauge",
+          primary: "Water level",
+          secondary: "Streamflow",
+        },
         evidenceIds: gaugeEvidenceIds,
       };
 
@@ -325,7 +333,7 @@ export function compilePlan(
   const fastest = facts.ranked[0];
 
   const spec = parseDashboardSpec({
-    schemaVersion: "1.1",
+    schemaVersion: "1.2",
     id: "planned-river-conditions",
     title: plan.title,
     audience: plan.audience,
@@ -480,8 +488,8 @@ export function compilePlan(
     },
   });
 
-  if (spec.schemaVersion !== "1.1") {
-    throw new Error("Planned dashboard must use DashboardSpec 1.1");
+  if (spec.schemaVersion !== "1.2") {
+    throw new Error("Planned dashboard must use DashboardSpec 1.2");
   }
   return spec;
 }

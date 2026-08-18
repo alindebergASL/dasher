@@ -130,9 +130,11 @@ describe("refining a dashboard the reader can see", () => {
     expect(second.plan.siteIds).toHaveLength(1);
     const table = second.dashboard.pages
       .flatMap((page) => page.components)
-      .find((component) => component.kind === "gauge-table");
-    if (table?.kind !== "gauge-table") throw new Error("expected gauge-table");
-    expect(table.gauges).toHaveLength(1);
+      .find((component) => component.kind === "station-table");
+    if (table?.kind !== "station-table") {
+      throw new Error("expected station-table");
+    }
+    expect(table.stations).toHaveLength(1);
   });
 
   it("leaves the plan alone when it cannot interpret the instruction", async () => {
@@ -166,11 +168,15 @@ describe("what refinement does not let through", () => {
     const readings = (run: typeof first) =>
       run.dashboard.pages
         .flatMap((page) => page.components)
-        .filter((component) => component.kind === "gauge-table")
+        .filter((component) => component.kind === "station-table")
         .flatMap((component) =>
-          component.kind === "gauge-table" ? component.gauges : [],
+          component.kind === "station-table" ? component.stations : [],
         )
-        .map((gauge) => [gauge.id, gauge.stage, gauge.direction]);
+        .map((station) => [
+          station.id,
+          station.primary.value,
+          station.direction,
+        ]);
 
     expect(readings(second)).toStrictEqual(readings(first));
   });

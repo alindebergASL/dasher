@@ -87,18 +87,28 @@ export function uniqueEvidenceIds(...groups: string[][]): string[] {
   return [...new Set(groups.flat())];
 }
 
-/** One gauge as a dashboard shows it: computed values, never plan-supplied. */
+/**
+ * One gauge as a dashboard shows it: computed values, never plan-supplied.
+ *
+ * The shape is the contract's 1.2 `station` (ADR-007): the domain supplies
+ * the words — a gauge's group is its river, its primary reading is stage —
+ * and the contract supplies only the slots.
+ */
 export function gaugeView(item: GaugeMetrics) {
   return {
     id: item.gauge.siteId,
     name: item.gauge.name,
-    river: item.gauge.river,
+    group: item.gauge.river,
     latitude: item.gauge.latitude,
     longitude: item.gauge.longitude,
-    stage: item.latestStage,
-    streamflow: item.latestStreamflow,
-    stageUnit: item.gauge.stage?.unit ?? "ft",
-    streamflowUnit: item.gauge.streamflow?.unit ?? "ft3/s",
+    primary: {
+      value: item.latestStage,
+      unit: item.gauge.stage?.unit ?? "ft",
+    },
+    secondary: {
+      value: item.latestStreamflow,
+      unit: item.gauge.streamflow?.unit ?? "ft3/s",
+    },
     direction: item.direction,
     freshness: item.freshness,
     evidenceIds: [gaugeEvidenceId(item.gauge.siteId), CALCULATION_EVIDENCE_ID],

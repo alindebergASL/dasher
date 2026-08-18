@@ -10,7 +10,7 @@ import {
 } from "./schema";
 
 const validSpec = {
-  schemaVersion: "1.0",
+  schemaVersion: "1.2",
   id: "river-demo",
   title: "River conditions",
   audience: "Leaders",
@@ -85,83 +85,93 @@ const validSpec = {
     ],
     edges: [{ from: "source", to: "page", label: "updates" }],
   },
+  executiveBrief: {
+    known: {
+      statementTypes: ["observed", "calculated"],
+      headline: "One condition is known",
+      detail: "The current source reading is available.",
+      evidenceIds: ["e1"],
+    },
+    changed: {
+      statementTypes: ["calculated"],
+      headline: "Conditions remain stable",
+      detail: "The calculated change is within the stable range.",
+      evidenceIds: ["e1"],
+    },
+    important: {
+      statementTypes: ["interpreted"],
+      headline: "Review before publishing",
+      detail: "The source should be confirmed before this view is shared.",
+      evidenceIds: ["e1"],
+    },
+  },
 } as const;
 
-function asVersion11(input: typeof validSpec = validSpec) {
-  return {
-    ...structuredClone(input),
-    schemaVersion: "1.1",
+interface MutableBriefClaim {
+  statementTypes: string[];
+  headline: string;
+  detail: string;
+  evidenceIds: string[];
+}
+
+/** A mutable deep copy, since the fixture itself is `as const`. */
+function specCopy(input: typeof validSpec = validSpec) {
+  return structuredClone(input) as unknown as Omit<
+    typeof validSpec,
+    "executiveBrief"
+  > & {
     executiveBrief: {
-      known: {
-        statementTypes: ["observed", "calculated"],
-        headline: "One condition is known",
-        detail: "The current source reading is available.",
-        evidenceIds: ["e1"],
-      },
-      changed: {
-        statementTypes: ["calculated"],
-        headline: "Conditions remain stable",
-        detail: "The calculated change is within the stable range.",
-        evidenceIds: ["e1"],
-      },
-      important: {
-        statementTypes: ["interpreted"],
-        headline: "Review before publishing",
-        detail: "The source should be confirmed before this view is shared.",
-        evidenceIds: ["e1"],
-      },
-    },
+      known: MutableBriefClaim;
+      changed: MutableBriefClaim;
+      important: MutableBriefClaim;
+    };
   };
 }
 
 describe("parseDashboardSpec", () => {
-  it("accepts a historical 1.0 multi-page dashboard without a brief", () => {
+  it("accepts a 1.2 multi-page dashboard", () => {
     expect(parseDashboardSpec(validSpec).pages).toHaveLength(2);
   });
 
-  it("rejects a 1.0 dashboard with an executive brief", () => {
-    const input = {
-      ...structuredClone(validSpec),
-      executiveBrief: asVersion11().executiveBrief,
-    };
-
-    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
-  });
-
-  it("requires an executive brief on a 1.1 dashboard", () => {
-    const input = {
-      ...structuredClone(validSpec),
-      schemaVersion: "1.1",
-    };
-
-    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
-  });
-
-  it("accepts a strict evidence-linked executive brief on a 1.1 dashboard", () => {
-    const parsed = parseDashboardSpec(asVersion11());
-    expect(parsed.schemaVersion).toBe("1.1");
-    if (parsed.schemaVersion !== "1.1") {
-      expect.unreachable("The parsed dashboard should remain version 1.1");
+  it("rejects the retired 1.0 and 1.1 versions", () => {
+    // ADR-007 dropped them while zero dashboards were persisted outside
+    // tests. Sealed bytes in an old version must refuse to parse, so /d/[id]
+    // answers 404 rather than rendering under a contract that no longer
+    // exists.
+    for (const schemaVersion of ["1.0", "1.1"]) {
+      const input = { ...structuredClone(validSpec), schemaVersion };
+      expect(() => parseDashboardSpec(input)).toThrow(ZodError);
     }
-    expect(parsed.executiveBrief).toEqual(asVersion11().executiveBrief);
   });
 
-  it("requires bounded unique statement-type labels on every 1.1 claim", () => {
+  it("requires an executive brief", () => {
+    const input = structuredClone(validSpec) as Record<string, unknown>;
+    delete input["executiveBrief"];
+
+    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+  });
+
+  it("accepts a strict evidence-linked executive brief", () => {
+    const parsed = parseDashboardSpec(validSpec);
+    expect(parsed.executiveBrief).toEqual(validSpec.executiveBrief);
+  });
+
+  it("requires bounded unique statement-type labels on every brief claim", () => {
     for (const statementTypes of [
       [],
       ["observed", "observed"],
       ["observed", "calculated", "interpreted"],
       ["recommended"],
     ]) {
-      const input = asVersion11();
+      const input = specCopy();
       input.executiveBrief.known.statementTypes = statementTypes;
       expect(() => parseDashboardSpec(input)).toThrow(ZodError);
     }
   });
 
   it("rejects unknown executive brief keys", () => {
-    const input = asVersion11() as ReturnType<typeof asVersion11> & {
-      executiveBrief: ReturnType<typeof asVersion11>["executiveBrief"] & {
+    const input = specCopy() as ReturnType<typeof specCopy> & {
+      executiveBrief: ReturnType<typeof specCopy>["executiveBrief"] & {
         urgent: unknown;
       };
     };
@@ -175,7 +185,7 @@ describe("parseDashboardSpec", () => {
   });
 
   it("fails closed with a fixed error when brief evidence is missing", () => {
-    const input = asVersion11();
+    const input = specCopy();
     input.executiveBrief.changed.evidenceIds = ["attacker-secret-evidence"];
 
     expect(() => parseDashboardSpec(input)).toThrow(
@@ -192,7 +202,7 @@ describe("parseDashboardSpec", () => {
   });
 
   it("counts executive brief references toward the global budget", () => {
-    const input = asVersion11() as Record<string, unknown>;
+    const input = specCopy() as Record<string, unknown>;
     const pages = input.pages as Array<{ components: unknown[] }>;
     pages[0]!.components.push(
       ...Array.from({ length: 13 }, (_, componentIndex) => ({
@@ -578,20 +588,18 @@ describe("parseDashboardSpec", () => {
     const itemPages = tooManyItems.pages as Array<{ components: unknown[] }>;
     itemPages[0]!.components.push(
       ...Array.from({ length: 10 }, (_, componentIndex) => ({
-        id: `gauge-map-${componentIndex}`,
-        kind: "gauge-map",
-        title: `Gauge map ${componentIndex}`,
+        id: `station-map-${componentIndex}`,
+        kind: "station-map",
+        title: `Station map ${componentIndex}`,
         evidenceIds: ["e1"],
-        gauges: Array.from({ length: 200 }, (_, gaugeIndex) => ({
-          id: `gauge-${componentIndex}-${gaugeIndex}`,
-          name: `Gauge ${gaugeIndex}`,
-          river: "River",
+        stations: Array.from({ length: 200 }, (_, stationIndex) => ({
+          id: `station-${componentIndex}-${stationIndex}`,
+          name: `Station ${stationIndex}`,
+          group: "River",
           latitude: 0,
           longitude: 0,
-          stage: 1,
-          stageUnit: "ft",
-          streamflow: 1,
-          streamflowUnit: "ft3/s",
+          primary: { value: 1, unit: "ft" },
+          secondary: { value: 1, unit: "ft3/s" },
           direction: "steady",
           freshness: "fresh",
           evidenceIds: ["e1"],

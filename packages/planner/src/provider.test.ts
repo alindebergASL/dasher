@@ -68,7 +68,7 @@ describe("composition choices differ by request", () => {
     const run = await planFor("Where are the gauges?");
 
     expect(sectionsOf(run.plan)[0]).toBe("gauge-map");
-    expect(run.dashboard.pages[0]?.components[0]?.kind).toBe("gauge-map");
+    expect(run.dashboard.pages[0]?.components[0]?.kind).toBe("station-map");
   });
 
   it("gives emergency response the attention list first", async () => {

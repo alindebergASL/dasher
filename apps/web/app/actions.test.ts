@@ -30,7 +30,7 @@ describe("planDashboard", () => {
 
     expect(result.ok).toBe(true);
     expect(result.plan?.planVersion).toBe("plan-v1");
-    expect(result.dashboard?.schemaVersion).toBe("1.1");
+    expect(result.dashboard?.schemaVersion).toBe("1.2");
   });
 
   it.each([
@@ -56,7 +56,7 @@ describe("refineDashboard", () => {
     );
     expect(
       result.dashboard?.pages.flatMap((page) => page.components),
-    ).not.toContainEqual(expect.objectContaining({ kind: "gauge-map" }));
+    ).not.toContainEqual(expect.objectContaining({ kind: "station-map" }));
   });
 
   it("says so when it could not interpret the change", async () => {
@@ -187,11 +187,15 @@ describe("the previous plan is parsed, not trusted", () => {
     const readings = (result: typeof untouched) =>
       result.dashboard?.pages
         .flatMap((page) => page.components)
-        .filter((component) => component.kind === "gauge-table")
+        .filter((component) => component.kind === "station-table")
         .flatMap((component) =>
-          component.kind === "gauge-table" ? component.gauges : [],
+          component.kind === "station-table" ? component.stations : [],
         )
-        .map((gauge) => [gauge.id, gauge.stage, gauge.direction]);
+        .map((station) => [
+          station.id,
+          station.primary.value,
+          station.direction,
+        ]);
 
     expect(readings(relabelled)).toStrictEqual(readings(untouched));
     expect(relabelled.dashboard?.title).toBe("Everything Is Fine");
