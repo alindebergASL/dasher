@@ -15,7 +15,7 @@ import { DashboardShell } from "./dashboard-shell";
 
 const EXAMPLES = [
   "Create a live dashboard monitoring river gauges near Sacramento",
-  "I need a flood watch view for emergency response",
+  "Air quality across Sacramento",
   "Which gauges are rising fastest?",
   "How is the American river doing?",
 ] as const;
@@ -147,7 +147,7 @@ export function RequestWorkspace({
 
         <p className="request-note">
           Fixture mode. A planning stand-in chose this layout, framing, and
-          gauge selection from your words. Every number below is calculated by
+          station selection from your words. Every number below is calculated by
           Dasher from the source readings.
           {revised
             ? " Its first plan was rejected by Dasher and corrected before anything rendered."

@@ -88,6 +88,102 @@ export interface PlanningProvider {
  * Fake provider
  * ------------------------------------------------------------------ */
 
+/** The free text one of the fake's draft compositions carries. */
+export interface FakeDraftText {
+  title: string;
+  audience: string;
+  framing: string;
+  /** One entry per page the branch composes, in order. */
+  pages: ReadonlyArray<{ title: string; description: string }>;
+}
+
+/**
+ * Everything the fake planner SAYS, separated from what it DOES.
+ *
+ * The five branches — which sections, on which pages, for which request
+ * keywords — are composition logic and stay in code. The words are a domain's,
+ * so they arrive as configuration: the river default below reproduces the
+ * shipped dashboards byte for byte, and an air catalog entry supplies air
+ * phrasing to the same branches. This is what keeps a second domain from
+ * becoming a second pile of hardcoded behaviour.
+ */
+export interface FakePlannerPhrasing {
+  emergency: FakeDraftText;
+  movement: FakeDraftText;
+  resident: FakeDraftText;
+  map: FakeDraftText;
+  overview: FakeDraftText;
+}
+
+export const RIVER_FAKE_PHRASING: FakePlannerPhrasing = {
+  emergency: {
+    title: "Sacramento Flood Watch",
+    audience: "Emergency management leads",
+    framing:
+      "Conditions ordered for incident response: what needs attention first, then where it is, then how fast it is moving.",
+    pages: [
+      { title: "Watch", description: "Active concerns and where they are." },
+      {
+        title: "Movement",
+        description: "How fast levels are changing and over which windows.",
+      },
+    ],
+  },
+  movement: {
+    title: "Sacramento River Movement",
+    audience: "Operations managers",
+    framing:
+      "Ordered by rate of change: the fastest movers first, then the windows behind those numbers.",
+    pages: [
+      {
+        title: "What is moving",
+        description: "Gauges ranked by recent water-level change.",
+      },
+      {
+        title: "Context",
+        description: "Where the moving gauges are and what needs a look.",
+      },
+    ],
+  },
+  resident: {
+    title: "River Levels Near You",
+    audience: "Homeowners and residents",
+    framing:
+      "A short read: whether anything needs attention right now, and the current level at each nearby gauge.",
+    pages: [
+      {
+        title: "Right now",
+        description: "Current conditions in plain language.",
+      },
+    ],
+  },
+  map: {
+    title: "Sacramento Gauge Map",
+    audience: "Managers and community leaders",
+    framing: "Location first, with current readings beside each gauge.",
+    pages: [
+      { title: "Map", description: "Gauge locations and their current state." },
+    ],
+  },
+  overview: {
+    title: "Sacramento River Conditions",
+    audience: "Managers and community leaders",
+    framing:
+      "What is happening now, what changed, and what deserves attention.",
+    pages: [
+      {
+        title: "Overview",
+        description: "What is happening now and what deserves attention.",
+      },
+      {
+        title: "Gauge details",
+        description:
+          "Current readings, changes, and recent water-level history.",
+      },
+    ],
+  },
+};
+
 /**
  * A deterministic, zero-network stand-in for a planning model.
  *
@@ -103,6 +199,11 @@ export class FakePlanningProvider implements PlanningProvider {
   readonly id = "fake-keyword-planner-v1";
   /** Keyword matching over the request text. No model, no network. */
   readonly usesModel = false;
+  readonly phrasing: FakePlannerPhrasing;
+
+  constructor(phrasing: FakePlannerPhrasing = RIVER_FAKE_PHRASING) {
+    this.phrasing = phrasing;
+  }
 
   async plan(request: PlanningRequest): Promise<unknown> {
     // Order matters. A rejected plan has to be repaired against the findings
@@ -125,133 +226,90 @@ export class FakePlanningProvider implements PlanningProvider {
       needles.some((needle) => text.includes(needle));
 
     const siteIds = selectSites(text, sites);
+    const compose = (
+      words: FakeDraftText,
+      pages: ReadonlyArray<{ id: string; sections: PlanSectionKind[] }>,
+    ): DashboardPlan => ({
+      planVersion: "plan-v1",
+      title: words.title,
+      audience: words.audience,
+      framing: words.framing,
+      siteIds,
+      pages: pages.map((page, index) => ({
+        id: page.id,
+        title: words.pages[index]?.title ?? page.id,
+        description: words.pages[index]?.description ?? page.id,
+        sections: page.sections,
+      })),
+    });
 
     if (has("emergency", "flood", "evacuat", "warning", "public safety")) {
-      return {
-        planVersion: "plan-v1",
-        title: "Sacramento Flood Watch",
-        audience: "Emergency management leads",
-        framing:
-          "Conditions ordered for incident response: what needs attention first, then where it is, then how fast it is moving.",
-        siteIds,
-        pages: [
-          {
-            id: "watch",
-            title: "Watch",
-            description: "Active concerns and where they are.",
-            sections: ["attention", "conditions-summary", "gauge-map"],
-          },
-          {
-            id: "movement",
-            title: "Movement",
-            description: "How fast levels are changing and over which windows.",
-            sections: ["fastest-rising", "change-windows", "stage-trends"],
-          },
-        ],
-      };
+      return compose(this.phrasing.emergency, [
+        {
+          id: "watch",
+          sections: ["attention", "conditions-summary", "gauge-map"],
+        },
+        {
+          id: "movement",
+          sections: ["fastest-rising", "change-windows", "stage-trends"],
+        },
+      ]);
     }
 
     if (has("rising", "fastest", "changing", "change", "trend")) {
-      return {
-        planVersion: "plan-v1",
-        title: "Sacramento River Movement",
-        audience: "Operations managers",
-        framing:
-          "Ordered by rate of change: the fastest movers first, then the windows behind those numbers.",
-        siteIds,
-        pages: [
-          {
-            id: "movement",
-            title: "What is moving",
-            description: "Gauges ranked by recent water-level change.",
-            sections: [
-              "fastest-rising",
-              "headline-metrics",
-              "change-windows",
-              "stage-trends",
-            ],
-          },
-          {
-            id: "context",
-            title: "Context",
-            description: "Where the moving gauges are and what needs a look.",
-            sections: ["gauge-map", "attention"],
-          },
-        ],
-      };
+      return compose(this.phrasing.movement, [
+        {
+          id: "movement",
+          sections: [
+            "fastest-rising",
+            "headline-metrics",
+            "change-windows",
+            "stage-trends",
+          ],
+        },
+        { id: "context", sections: ["gauge-map", "attention"] },
+      ]);
     }
 
     if (has("homeowner", "my house", "my home", "property", "neighborhood")) {
-      return {
-        planVersion: "plan-v1",
-        title: "River Levels Near You",
-        audience: "Homeowners and residents",
-        framing:
-          "A short read: whether anything needs attention right now, and the current level at each nearby gauge.",
-        siteIds,
-        pages: [
-          {
-            id: "now",
-            title: "Right now",
-            description: "Current conditions in plain language.",
-            sections: [
-              "conditions-summary",
-              "attention",
-              "gauge-map",
-              "gauge-table",
-            ],
-          },
-        ],
-      };
+      return compose(this.phrasing.resident, [
+        {
+          id: "now",
+          sections: [
+            "conditions-summary",
+            "attention",
+            "gauge-map",
+            "gauge-table",
+          ],
+        },
+      ]);
     }
 
     if (has("map", "where", "location", "which gauges")) {
-      return {
-        planVersion: "plan-v1",
-        title: "Sacramento Gauge Map",
-        audience: "Managers and community leaders",
-        framing: "Location first, with current readings beside each gauge.",
-        siteIds,
-        pages: [
-          {
-            id: "map",
-            title: "Map",
-            description: "Gauge locations and their current state.",
-            sections: ["gauge-map", "gauge-table", "conditions-summary"],
-          },
-        ],
-      };
+      return compose(this.phrasing.map, [
+        {
+          id: "map",
+          sections: ["gauge-map", "gauge-table", "conditions-summary"],
+        },
+      ]);
     }
 
-    return {
-      planVersion: "plan-v1",
-      title: "Sacramento River Conditions",
-      audience: "Managers and community leaders",
-      framing:
-        "What is happening now, what changed, and what deserves attention.",
-      siteIds,
-      pages: [
-        {
-          id: "overview",
-          title: "Overview",
-          description: "What is happening now and what deserves attention.",
-          sections: [
-            "conditions-summary",
-            "headline-metrics",
-            "gauge-map",
-            "fastest-rising",
-            "attention",
-          ],
-        },
-        {
-          id: "gauge-details",
-          title: "Gauge details",
-          description:
-            "Current readings, changes, and recent water-level history.",
-          sections: ["gauge-table", "stage-trends", "change-windows"],
-        },
-      ],
-    };
+    return compose(this.phrasing.overview, [
+      {
+        id: "overview",
+        sections: [
+          "conditions-summary",
+          "headline-metrics",
+          "gauge-map",
+          "fastest-rising",
+          "attention",
+        ],
+      },
+      {
+        id: "gauge-details",
+        sections: ["gauge-table", "stage-trends", "change-windows"],
+      },
+    ]);
   }
 }
 

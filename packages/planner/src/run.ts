@@ -1,5 +1,10 @@
 import type { DashboardSpec } from "@dasher/dashboard-schema";
-import type { Station, ThresholdRule } from "@dasher/station-domain";
+import type {
+  Station,
+  StationComputation,
+  StationWords,
+  ThresholdRule,
+} from "@dasher/station-domain";
 
 import { compilePlan, type CompileOptions } from "./compile";
 import {
@@ -24,6 +29,13 @@ export interface PlannerRunOptions {
   asOf: string;
   /** User-configured threshold alerts. Never exposed to the provider. */
   thresholds?: readonly ThresholdRule[];
+  /**
+   * The stations' domain policy and vocabulary, passed straight through to
+   * the compiler. Defaults to the river's there, like everywhere else; a
+   * caller planning another domain's stations supplies both.
+   */
+  computation?: StationComputation;
+  words?: StationWords;
   /** Total plan attempts, including the first. Defaults to 3. */
   maxAttempts?: number;
   /**
@@ -83,6 +95,10 @@ export async function runPlanner(
       usesModel: options.provider.usesModel,
     },
     thresholds: options.thresholds,
+    ...(options.computation === undefined
+      ? {}
+      : { computation: options.computation }),
+    ...(options.words === undefined ? {} : { words: options.words }),
   };
 
   const attempts: PlannerAttempt[] = [];

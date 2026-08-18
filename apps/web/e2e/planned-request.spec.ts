@@ -131,3 +131,51 @@ test("a change survives a fresh request replacing the dashboard", async ({
   );
   await expect(page.getByRole("heading", { name: "Gauge map" })).toBeVisible();
 });
+
+test("an air-quality request produces an air dashboard in air vocabulary", async ({
+  page,
+}) => {
+  // No database needed: this is the intake seam — router, catalog, planner,
+  // compiler — visible in the page. The air chip is the product's own
+  // suggestion, so the journey starts where a reader would.
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Air quality across Sacramento" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "Sacramento Air Quality" }),
+  ).toBeVisible();
+  await expect(page.getByText("Monitor map")).toBeVisible();
+  // "Across Sacramento" narrows selection to the monitor whose locality the
+  // request names, so the count is the fake planner's choice, not a constant.
+  await expect(page.getByText(/\d+ monitors? monitored/u)).toBeVisible();
+  // The whole visible dashboard, swept for the other domain's words. The
+  // strict version of this lives in the compiler's prose-sweep unit test;
+  // this is the same claim about what a reader actually sees.
+  await expect(page.locator("main")).not.toContainText(/gauge|USGS/iu);
+});
+
+test("a request naming neither domain is refused, not guessed at", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const requestBox = page.getByRole("textbox", {
+    name: "What do you want to monitor?",
+  });
+
+  // "Riverside" contains r-i-v-e-r. A substring router would build a
+  // Sacramento river dashboard for a question about university enrollment,
+  // which is the confident wrongness the router exists to refuse.
+  await requestBox.fill("UC Riverside enrollment");
+  await page.getByRole("button", { name: "Build dashboard" }).click();
+  await expect(page.locator("p.request-error")).toContainText(
+    "river conditions and air quality",
+  );
+
+  await requestBox.fill("compare river conditions and air quality");
+  await page.getByRole("button", { name: "Build dashboard" }).click();
+  await expect(page.locator("p.request-error")).toContainText(
+    "one dashboard at a time",
+  );
+});

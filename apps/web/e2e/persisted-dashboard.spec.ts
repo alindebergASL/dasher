@@ -191,4 +191,78 @@ test.describe("a saved dashboard", () => {
       await owner.end();
     }
   });
+
+  test("an air-quality dashboard saves and reopens through the same journey", async ({
+    page,
+  }) => {
+    // The second domain, through the REAL flow — request box, server action,
+    // repository, permalink, reload — not through the compiler tests that
+    // already prove the pipeline. What only this can show is that the intake
+    // router, the domain catalog, and persistence agree end to end.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    expect(bootstrap.ok()).toBe(true);
+
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "What do you want to monitor?" })
+      .fill("Air quality across Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Sacramento Air Quality" }),
+    ).toBeVisible();
+
+    const permalink = page.getByRole("link", {
+      name: "Open this dashboard by link",
+    });
+    await expect(permalink).toBeVisible();
+    const href = await permalink.getAttribute("href");
+    expect(href).toMatch(/^\/d\/[0-9a-f-]{36}$/u);
+
+    // Reload from stored bytes: still the air dashboard, in air vocabulary.
+    await page.goto(href!);
+    await expect(
+      page.getByRole("heading", { name: "Sacramento Air Quality" }),
+    ).toBeVisible();
+    await expect(page.getByText("Monitor map")).toBeVisible();
+    await expect(page.locator("main")).not.toContainText(/gauge/iu);
+  });
+
+  test("refused requests persist nothing", async ({ page }) => {
+    // Fail closed, all the way down: a request the router cannot place — or
+    // places in both domains — must not leave a row behind. Counted as the
+    // owner, so row security cannot be what makes this zero.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
+
+    await page.goto("/");
+    const requestBox = page.getByRole("textbox", {
+      name: "What do you want to monitor?",
+    });
+
+    await requestBox.fill("UC Riverside enrollment");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(page.locator("p.request-error")).toContainText(
+      "river conditions and air quality",
+    );
+
+    await requestBox.fill("compare river conditions and air quality");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(page.locator("p.request-error")).toContainText(
+      "one dashboard at a time",
+    );
+
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      const rows = await owner.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dasher.dashboards WHERE organization_id = $1",
+        [organizationId],
+      );
+      expect(Number(rows.rows[0]?.count)).toBe(0);
+    } finally {
+      await owner.end();
+    }
+  });
 });

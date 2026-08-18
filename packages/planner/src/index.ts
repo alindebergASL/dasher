@@ -38,9 +38,12 @@ export {
 
 export {
   FakePlanningProvider,
+  RIVER_FAKE_PHRASING,
   isUninterpretable,
   readRefinementIntent,
   type AvailableSite,
+  type FakeDraftText,
+  type FakePlannerPhrasing,
   type PlanningProvider,
   type PlanningRefinement,
   type PlanningRequest,

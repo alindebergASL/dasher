@@ -7,13 +7,6 @@ import type { DashboardPlan } from "@dasher/planner";
  * constants and types live here.
  */
 
-/**
- * Fixture mode. The observations are the committed USGS-format fixture and
- * `asOf` is pinned to its creation time, so a request is reproducible and no
- * live source is contacted.
- */
-export const PLANNED_DASHBOARD_AS_OF = "2026-07-29T12:02:00.000Z";
-
 export const REQUEST_MAX_LENGTH = 500;
 
 /**
@@ -22,19 +15,6 @@ export const REQUEST_MAX_LENGTH = 500;
  * brief, and a box sized for an essay invites one.
  */
 export const REFINEMENT_MAX_LENGTH = 200;
-
-/**
- * Demo threshold, standing in for a user-configured alert. It is applied by
- * trusted code, never offered to the planner.
- */
-export const DEMO_THRESHOLDS = [
-  {
-    id: "freeport-demo-threshold",
-    siteId: "11447650",
-    label: "Freeport watch level",
-    above: 14.5,
-  },
-] as const;
 
 export const DEFAULT_REQUEST =
   "Create a live dashboard monitoring river gauges near Sacramento";
