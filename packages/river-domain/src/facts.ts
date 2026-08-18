@@ -4,6 +4,7 @@ import {
   type StationComputation,
   type StationFacts,
   type StationMetrics,
+  type StationWords,
 } from "@dasher/station-domain";
 
 /**
@@ -50,3 +51,29 @@ export function deriveRiverFacts(
 export function gaugeEvidenceId(siteId: string): string {
   return `usgs-${siteId}`;
 }
+
+/**
+ * The river's words, byte-for-byte the sentences the product has always
+ * shown. `compilePlan` applies these when no other domain's words are
+ * passed; the e2e suite pins the visible result, which is what keeps this
+ * object honest.
+ */
+export const RIVER_WORDS: StationWords = {
+  slug: "river",
+  noun: "gauge",
+  nounPlural: "gauges",
+  reading: "water-level",
+  columns: {
+    station: "Gauge",
+    primary: "Water level",
+    secondary: "Streamflow",
+  },
+  notice:
+    "USGS readings may be provisional and subject to revision. Planning view only; use USGS and local emergency-management sources for official conditions and warnings.",
+  source: {
+    label: "River gauge readings",
+    detail:
+      "Water level, streamflow, location, and timestamps from USGS-format observations.",
+    format: "USGS-format",
+  },
+};

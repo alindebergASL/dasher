@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { AIR_COMPUTATION, parseOpenAqHourlySnapshot } from "@dasher/air-domain";
+import {
+  AIR_COMPUTATION,
+  AIR_WORDS,
+  parseOpenAqHourlySnapshot,
+} from "@dasher/air-domain";
 import { parseDashboardSpec } from "@dasher/dashboard-schema";
 
 import fixture from "../../../fixtures/openaq/sacramento-hourly.json";
@@ -21,11 +25,12 @@ import type { DashboardPlan } from "./plan";
  * feet of water. A proof that bypasses the thing it is proving is how that
  * survives.
  *
- * What this still deliberately does NOT pin is the compiler's own prose,
- * which says "gauges" — threading the domain's words through those ~40
- * sentences is the recorded next step (ADR-007, "What deliberately does not
- * change"), and asserting the current river wording here would freeze the
- * defect instead of tracking the work.
+ * With `StationWords` threaded through the compiler, the prose is now held
+ * to the same bar as the structure: the sweep below walks every prose string
+ * in the compiled spec and rejects river vocabulary anywhere in it. The only
+ * "gauge" tokens left in the output are plan-vocabulary identifiers
+ * (`gauge-map` as a component id), which ADR-007 defers on purpose — so the
+ * sweep skips identifier fields and nothing else.
  */
 
 const AS_OF = "2026-08-18T12:02:00.000Z";
@@ -62,6 +67,7 @@ function compiled() {
     asOf: AS_OF,
     planner: { id: "air-test-planner", usesModel: false },
     computation: AIR_COMPUTATION,
+    words: AIR_WORDS,
     thresholds: [
       {
         id: "unhealthy-sensitive",
@@ -193,6 +199,57 @@ describe("an air-quality dashboard through the shared compiler", () => {
     expect(calculated?.detail).not.toContain("USGS");
   });
 
+  it("says monitor everywhere the river dashboard says gauge", () => {
+    const spec = compiled();
+
+    // Every prose string in the compiled spec, with identifier fields
+    // excluded: ids mirror the plan vocabulary, which ADR-007 keeps.
+    const IDENTIFIER_KEYS = new Set([
+      "id",
+      "kind",
+      "from",
+      "to",
+      "schemaVersion",
+      "evidenceIds",
+      "statementTypes",
+    ]);
+    const prose: Array<[string, string]> = [];
+    const walk = (node: unknown, path: string) => {
+      if (Array.isArray(node)) {
+        for (const item of node) walk(item, path);
+        return;
+      }
+      if (typeof node === "object" && node !== null) {
+        for (const [key, value] of Object.entries(node)) {
+          if (IDENTIFIER_KEYS.has(key)) continue;
+          walk(value, `${path}.${key}`);
+        }
+        return;
+      }
+      if (typeof node === "string") prose.push([path, node]);
+    };
+    walk(spec, "spec");
+
+    expect(prose.length).toBeGreaterThan(50);
+    const riverWorded = prose.filter(([, text]) =>
+      /gauge|river|usgs|water[\s-]level|streamflow/iu.test(text),
+    );
+    expect(riverWorded).toEqual([]);
+
+    // And the right words, not just the absence of wrong ones.
+    const titles = spec.pages.flatMap((page) =>
+      page.components.map((component) => component.title),
+    );
+    expect(titles).toContain("Monitor map");
+    expect(titles).toContain("Fastest-rising monitors");
+    expect(titles).toContain("Recent PM2.5 trends");
+    expect(spec.id).toBe("planned-air-quality-conditions");
+    expect(spec.freshness.label).toBe("1 monitor needs attention");
+    expect(spec.nextAction.title).toBe("Review Woodland monitor");
+    expect(spec.executiveBrief.known.headline).toBe("3 monitors monitored");
+    expect(spec.notice).toContain("OpenAQ measurements may be provisional");
+  });
+
   it("still compiles the river under river policy when no profile is passed", () => {
     // The other half of the reviewer's criterion: the default must remain
     // the river's, so every existing caller is untouched. Compiling the SAME
@@ -216,5 +273,8 @@ describe("an air-quality dashboard through the shared compiler", () => {
       riverRuled.evidence.find((item) => item.id === "calculated-trends")
         ?.label,
     ).toBe("Dasher river calculations");
+    // Words default with the numbers: no profile means river vocabulary.
+    expect(riverRuled.id).toBe("planned-river-conditions");
+    expect(riverRuled.notice).toContain("USGS readings may be provisional");
   });
 });

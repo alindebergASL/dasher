@@ -18,3 +18,4 @@ export {
   type ThresholdRule,
 } from "./facts";
 export type { Observation, Series, Station } from "./station";
+export { headingCase, type StationWords } from "./words";
