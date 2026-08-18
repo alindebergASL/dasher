@@ -228,6 +228,72 @@ test.describe("a saved dashboard", () => {
     await expect(page.locator("main")).not.toContainText(/gauge/iu);
   });
 
+  test("the listing finds saved dashboards again without their permalinks", async ({
+    page,
+  }) => {
+    // The browse journey, end to end: build one dashboard per domain, walk to
+    // the listing with no link retained, and reopen both from it. This is the
+    // slice's whole question — can an organization get back to what it built.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    expect(bootstrap.ok()).toBe(true);
+
+    const requestBox = () =>
+      page.getByRole("textbox", { name: "What do you want to monitor?" });
+
+    await page.goto("/");
+    await requestBox().fill("Show me river conditions near Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toBeVisible();
+
+    await requestBox().fill("Air quality across Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toBeVisible();
+
+    // The walk a reader would take: the standing link, not a typed URL.
+    await page.getByRole("link", { name: "Your dashboards" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Your dashboards" }),
+    ).toBeVisible();
+
+    const items = page.locator(".dashboard-list-item");
+    await expect(items).toHaveCount(2);
+    // Newest first: the air dashboard was saved second.
+    await expect(items.nth(0)).toContainText("Sacramento Air Quality");
+    await expect(items.nth(1)).toContainText("Sacramento River Conditions");
+
+    // Reopen each from the listing alone.
+    await items.nth(0).getByRole("link").first().click();
+    await expect(
+      page.getByRole("heading", { name: "Sacramento Air Quality" }),
+    ).toBeVisible();
+
+    await page.goto("/dashboards");
+    await items.nth(1).getByRole("link").first().click();
+    await expect(
+      page.getByRole("heading", { name: "Sacramento River Conditions" }),
+    ).toBeVisible();
+  });
+
+  test("the listing is empty for an organization that has saved nothing", async ({
+    page,
+  }) => {
+    // A fresh bootstrap is a different organization. Row-level security is
+    // the entire isolation mechanism on this page, and this is it working:
+    // the previous test's two dashboards exist and are invisible here.
+    await page.context().request.post("/dev/bootstrap");
+    await page.goto("/dashboards");
+
+    await expect(
+      page.getByRole("heading", { name: "Your dashboards" }),
+    ).toBeVisible();
+    await expect(page.locator(".dashboard-list-item")).toHaveCount(0);
+    await expect(page.getByText("Nothing saved yet")).toBeVisible();
+  });
+
   test("refused requests persist nothing", async ({ page }) => {
     // Fail closed, all the way down: a request the router cannot place — or
     // places in both domains — must not leave a row behind. Counted as the

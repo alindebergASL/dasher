@@ -63,6 +63,7 @@ export { renderSchemaSnapshot } from "./schema-snapshot";
 export {
   DashboardRepositoryError,
   withDashboardRepository,
+  type DashboardListEntry,
   type DashboardRepository,
   type DashboardRepositoryErrorCode,
   type LoadedDashboard,
