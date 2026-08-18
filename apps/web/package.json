@@ -11,10 +11,12 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@dasher/air-domain": "workspace:*",
     "@dasher/control-plane": "workspace:*",
     "@dasher/dashboard-schema": "workspace:*",
     "@dasher/planner": "workspace:*",
     "@dasher/river-domain": "workspace:*",
+    "@dasher/station-domain": "workspace:*",
     "next": "16.2.12",
     "pg": "^8.22.0",
     "react": "19.2.8",

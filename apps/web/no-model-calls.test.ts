@@ -72,11 +72,17 @@ describe("the product cannot reach a model", () => {
     expect(offenders).toStrictEqual([]);
   });
 
-  it("constructs the deterministic planner in the server action", async () => {
+  it("constructs the deterministic planner in the domain catalog", async () => {
     // The positive half. Asserting only the absence of the live provider would
-    // still pass if the planner were removed altogether.
-    const source = await readFile(join(webRoot, "app", "actions.ts"), "utf8");
+    // still pass if the planner were removed altogether. Construction moved
+    // from the server action into the domain catalog when intake became
+    // multi-domain; the property is the same — the only planner this app
+    // instantiates is the deterministic fake — so the assertion follows it.
+    const catalog = await readFile(join(webRoot, "app", "domains.ts"), "utf8");
+    expect(catalog).toContain("FakePlanningProvider");
 
-    expect(source).toContain("FakePlanningProvider");
+    // And the action reaches planning only through that catalog.
+    const action = await readFile(join(webRoot, "app", "actions.ts"), "utf8");
+    expect(action).toContain('from "./domains"');
   });
 });

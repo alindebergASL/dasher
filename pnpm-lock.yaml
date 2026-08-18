@@ -39,6 +39,9 @@ importers:
 
   apps/web:
     dependencies:
+      "@dasher/air-domain":
+        specifier: workspace:*
+        version: link:../../packages/air-domain
       "@dasher/control-plane":
         specifier: workspace:*
         version: link:../../packages/control-plane
@@ -51,6 +54,9 @@ importers:
       "@dasher/river-domain":
         specifier: workspace:*
         version: link:../../packages/river-domain
+      "@dasher/station-domain":
+        specifier: workspace:*
+        version: link:../../packages/station-domain
       next:
         specifier: 16.2.12
         version: 16.2.12(@babel/core@8.0.1)(@playwright/test@1.62.0)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

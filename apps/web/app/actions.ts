@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 
 import {
   DashboardPlanSchema,
-  FakePlanningProvider,
   isUninterpretable,
   PlanRejected,
   readRefinementIntent,
@@ -17,16 +16,11 @@ import {
   canonicalSpecBytes,
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
-
-import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-
 import { getPool, isPersistenceConfigured } from "./database";
+import { classifyRequest, type DomainEntry } from "./domains";
 import { readSessionCredential } from "./session";
 
 import {
-  DEMO_THRESHOLDS,
-  PLANNED_DASHBOARD_AS_OF,
   REFINEMENT_MAX_LENGTH,
   REQUEST_MAX_LENGTH,
   type PlanResult,
@@ -147,15 +141,37 @@ async function plan(
   requestText: string,
   refine?: PlannerRunOptions["refine"],
 ): Promise<PlanResult> {
-  const gauges = parseUsgsInstantaneousValues(fixture);
+  // Deterministic routing, closed on failure. The product supports two
+  // domains; a request that names neither gets an explanation, a request
+  // that names both gets a choice — and NOTHING falls back to the river.
+  // "UC Riverside enrollment" must not produce a Sacramento river dashboard.
+  const decision = classifyRequest(requestText);
+  if (decision.kind === "unsupported") {
+    return {
+      ok: false,
+      error:
+        "Dasher currently builds dashboards for river conditions and air quality. Try \u201criver conditions near Sacramento\u201d or \u201cair quality across Sacramento\u201d.",
+    };
+  }
+  if (decision.kind === "ambiguous") {
+    return {
+      ok: false,
+      error:
+        "That asks about both river conditions and air quality. Ask for one dashboard at a time, and you can build the other one next.",
+    };
+  }
+  const domain: DomainEntry = decision.domain;
+  const gauges = domain.stations;
 
   try {
     const run = await runPlanner({
       requestText,
       gauges,
-      provider: new FakePlanningProvider(),
-      asOf: PLANNED_DASHBOARD_AS_OF,
-      thresholds: DEMO_THRESHOLDS,
+      provider: domain.provider,
+      asOf: domain.asOf,
+      thresholds: domain.thresholds,
+      computation: domain.computation,
+      words: domain.words,
       ...(refine === undefined ? {} : { refine }),
     });
     const same =
