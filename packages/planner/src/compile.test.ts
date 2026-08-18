@@ -257,3 +257,90 @@ describe("what the dashboard says about who composed it", () => {
     }
   });
 });
+
+/**
+ * The unit a reading is labelled with comes from the reading, not from a
+ * literal.
+ *
+ * Six sites in the compiler wrote `"ft"` directly while two read it from the
+ * series, so one dashboard could label the same gauge's change two different
+ * ways. Nothing caught it, and nothing could: `parseUsgsInstantaneousValues`
+ * rejects a stage series that is not in feet, so every gauge the fixture path
+ * produces makes the literal accidentally correct.
+ *
+ * `compilePlan` does not take USGS output though — it takes `RiverGauge[]`,
+ * and a gauge in metres satisfies that type. "The parser would have caught it"
+ * is a statement about a function that is not in this call path. These tests
+ * enter through the signature the compiler actually publishes.
+ */
+describe("the unit of a change", () => {
+  const source = gauges.find((candidate) => candidate.siteId === site)!;
+
+  /** The same gauge, reporting in metres. Legal for `RiverGauge`. */
+  const metric: RiverGauge = {
+    ...source,
+    stage: { ...source.stage!, unit: "m" },
+  };
+
+  function rankingValues(
+    gauge: RiverGauge,
+    section: "fastest-rising" | "change-windows",
+  ) {
+    const spec = compilePlan(planFor([site], [section]), [gauge], {
+      asOf: AS_OF,
+      planner: { id: "test-planner", usesModel: false },
+    });
+    const component = spec.pages
+      .flatMap((page) => page.components)
+      .find((candidate) => candidate.kind === "ranking");
+    if (component?.kind !== "ranking") {
+      throw new Error("compiled dashboard has no ranking component");
+    }
+    return component.items.map((item) => `${item.value} ${item.note ?? ""}`);
+  }
+
+  it("labels a fastest-rising change in the gauge's own unit", () => {
+    const rendered = rankingValues(metric, "fastest-rising").join(" ");
+
+    expect(rendered).toContain(" m");
+    expect(rendered).not.toContain("ft");
+  });
+
+  it("labels every change window in the gauge's own unit", () => {
+    const rendered = rankingValues(metric, "change-windows").join(" ");
+
+    expect(rendered).toContain(" m");
+    expect(rendered).not.toContain("ft");
+  });
+
+  it("still says ft for a gauge that reports in feet", () => {
+    // The other direction, so a change that simply dropped the unit everywhere
+    // could not pass. Both sections, because they were separate literals.
+    for (const section of ["fastest-rising", "change-windows"] as const) {
+      expect(rankingValues(source, section).join(" ")).toContain("ft");
+    }
+  });
+
+  it("carries the unit into the trend series and the summary alike", () => {
+    const spec = compilePlan(
+      planFor([site], ["conditions-summary", "stage-trends"]),
+      [metric],
+      { asOf: AS_OF, planner: { id: "test-planner", usesModel: false } },
+    );
+    const trend = spec.pages
+      .flatMap((page) => page.components)
+      .find((candidate) => candidate.kind === "trend-list");
+    if (trend?.kind !== "trend-list") {
+      throw new Error("compiled dashboard has no trend list");
+    }
+
+    expect(trend.series.map((item) => item.unit)).toEqual(["m"]);
+    // The summary's fastest-rising claim was its own literal, in a different
+    // branch from the ranking section's.
+    expect(
+      summaryOf(spec)
+        .claims.map((claim) => claim.text)
+        .join(" "),
+    ).not.toContain("ft");
+  });
+});

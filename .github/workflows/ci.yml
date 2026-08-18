@@ -291,112 +291,19 @@ jobs:
       # Positive proof, not absence of a symptom. The preflight catches a
       # missing variable and the explicit path catches a missing file; this
       # catches a guard that quietly turned the tests off in place.
+      #
+      # The check itself lives in `@dasher/repo-graph`, not in this file. It was
+      # a hundred lines of Node inlined here, which nothing could lint,
+      # typecheck, or run locally, and it pinned the test count at three
+      # separate sites, so adding a seventh persistence test broke CI three
+      # times over. `--min-tests` is a floor: the suite may grow freely, and a
+      # suite that shrinks below it still fails.
       - name: Assert the persistence tests actually ran
         run: |
-          node <<'NODE'
-          const { readFileSync } = require("node:fs");
-
-          const fail = (message) => {
-            process.stderr.write(`::error::${message}\n`);
-            process.exit(1);
-          };
-          const report = JSON.parse(
-            readFileSync("/tmp/persistence-results.json", "utf8"),
-          );
-          if (
-            report === null ||
-            typeof report !== "object" ||
-            Array.isArray(report)
-          ) {
-            fail("persistence report root is not an object");
-          }
-          const stats = report.stats;
-          if (
-            stats === null ||
-            typeof stats !== "object" ||
-            Array.isArray(stats)
-          ) {
-            fail("persistence report stats are malformed");
-          }
-          const expectedStats = {
-            expected: 6,
-            skipped: 0,
-            unexpected: 0,
-            flaky: 0,
-          };
-          for (const [name, expected] of Object.entries(expectedStats)) {
-            if (stats[name] !== expected) {
-              fail(
-                `persistence report ${name}=${String(stats[name])}; expected ${String(expected)}`,
-              );
-            }
-          }
-          if (!Array.isArray(report.errors) || report.errors.length !== 0) {
-            fail("persistence report contains runner errors");
-          }
-
-          const specs = [];
-          const collect = (suites) => {
-            if (!Array.isArray(suites)) {
-              fail("persistence report suites are malformed");
-            }
-            for (const suite of suites) {
-              if (
-                suite === null ||
-                typeof suite !== "object" ||
-                !Array.isArray(suite.specs)
-              ) {
-                fail("persistence report contains a malformed suite");
-              }
-              const childSuites = Object.hasOwn(suite, "suites")
-                ? suite.suites
-                : [];
-              if (!Array.isArray(childSuites)) {
-                fail("persistence report contains malformed child suites");
-              }
-              specs.push(...suite.specs);
-              collect(childSuites);
-            }
-          };
-          collect(report.suites);
-          if (specs.length !== 6) {
-            fail(`persistence report discovered ${String(specs.length)} specs; expected 6`);
-          }
-          if (
-            specs.some(
-              (spec) =>
-                spec === null ||
-                typeof spec !== "object" ||
-                spec.file !== "persisted-dashboard.spec.ts" ||
-                spec.ok !== true ||
-                !Array.isArray(spec.tests) ||
-                spec.tests.length !== 1,
-            )
-          ) {
-            fail("persistence report contains an unexpected or unsuccessful spec");
-          }
-
-          const tests = specs.flatMap((spec) => spec.tests);
-          if (tests.length !== 6) {
-            fail(`persistence report executed ${String(tests.length)} tests; expected 6`);
-          }
-          if (
-            tests.some(
-              (test) =>
-                test === null ||
-                typeof test !== "object" ||
-                test.expectedStatus !== "passed" ||
-                !Array.isArray(test.results) ||
-                test.results.length !== 1 ||
-                test.results[0] === null ||
-                typeof test.results[0] !== "object" ||
-                test.results[0].status !== "passed",
-            )
-          ) {
-            fail("persistence report contains a non-passing test result");
-          }
-          process.stdout.write("Persistence report proves 6 passed, 0 skipped.\n");
-          NODE
+          pnpm --filter @dasher/repo-graph assert:playwright-report -- \
+            --report=/tmp/persistence-results.json \
+            --spec-file=persisted-dashboard.spec.ts \
+            --min-tests=6
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
