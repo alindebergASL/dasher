@@ -80,6 +80,7 @@ describe("the corpus is not hollow", () => {
     const allReasons: readonly RefusalReason[] = [
       "malformed-candidate",
       "unknown-snapshot",
+      "snapshot-identity-mismatch",
       "hash-mismatch",
       "locator-out-of-range",
       "coordinate-text-mismatch",
@@ -93,6 +94,51 @@ describe("the corpus is not hollow", () => {
         !reachedByCorpus.has(reason) && !coveredElsewhere.includes(reason),
     );
     expect(unexercised, "a refusal reason is never produced").toEqual([]);
+  });
+
+  it("labels every case's ground truth consistently with its intent", () => {
+    // Without this the finding can drift silently. Review demonstrated it:
+    // flipping `false-acceptance/wrong-subject` to `factuallyCorrect: true`
+    // dropped the accepted-but-wrong count from seven to six while all tests
+    // stayed green — the measurement changed and nothing objected. The labels
+    // are hand-authored data, so they need a guard exactly like the code does.
+    const mislabelled: string[] = [];
+    for (const item of CORPUS) {
+      if (item.intent === "false-acceptance-probe") {
+        if (item.factuallyCorrect) {
+          mislabelled.push(
+            `${item.id}: a false-acceptance probe must be factually wrong`,
+          );
+        }
+        if (item.wrongness === undefined) {
+          mislabelled.push(
+            `${item.id}: a false-acceptance probe must name its wrongness category`,
+          );
+        }
+      }
+      if (item.intent === "positive") {
+        if (!item.factuallyCorrect) {
+          mislabelled.push(`${item.id}: a positive must be factually correct`);
+        }
+        if (item.wrongness !== undefined) {
+          mislabelled.push(
+            `${item.id}: a positive must not carry a wrongness category`,
+          );
+        }
+      }
+      if (item.note.trim().length === 0) {
+        mislabelled.push(
+          `${item.id}: every label needs its reviewable justification`,
+        );
+      }
+    }
+    expect(mislabelled).toEqual([]);
+  });
+
+  it("pins the accepted-but-wrong count, so the finding cannot drift quietly", () => {
+    const report = runSpike();
+    expect(report.totals["accepted-but-wrong"]).toBe(7);
+    expect(report.totals["accepted-and-correct"]).toBe(4);
   });
 
   it("probes every semantic-error category ADR-008 names, plus the one this spike found", () => {

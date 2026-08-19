@@ -58,6 +58,32 @@ describe("percentages", () => {
   });
 });
 
+describe("space is a separator, not ignorable whitespace", () => {
+  // These four were a deterministic lexical FALSE ACCEPTANCE in the first
+  // version, which stripped every internal space before validating grouping and
+  // so merged adjacent tokens into one valid number. Found in review.
+  it.each([
+    ["2 7,633", "two tokens, mixed separators"],
+    ["1 2 3", "three tokens, none grouped in thousands"],
+    ["4. 7%", "a space after the decimal point"],
+    ["27 63", "a group that is not three digits"],
+  ])("refuses %s (%s)", (text) => {
+    expect(isNormalizationFailure(normalize(text))).toBe(true);
+  });
+
+  it("still reads a correctly space-grouped number", () => {
+    expect(value("27 633")).toEqual({ value: 27633, unit: "count" });
+  });
+
+  it("refuses a token mixing comma and space separators", () => {
+    expect(failure("2 7,633")).toBe("unparseable-number");
+  });
+
+  it("allows the space between a number and its unit", () => {
+    expect(value("16.0 µg/m³")).toEqual({ value: 16, unit: "ug_per_m3" });
+  });
+});
+
 describe("whitespace normalisation", () => {
   // NO corpus candidate exercises these: neither real capture places one of
   // these characters inside a numeric token. They are supported because real

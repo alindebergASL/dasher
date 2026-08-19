@@ -162,11 +162,11 @@ export const CORPUS: readonly CorpusCase[] = [
 
   // ----------------------------------------------------------- refusal probes
   {
-    id: "refusal/wrong-hash",
-    what: "Correct claim, hash that does not match the document",
+    id: "refusal/wrong-snapshot-identity",
+    what: "Correct claim, hash that is not the one this snapshot is sealed at",
     intent: "refusal-probe",
     factuallyCorrect: true,
-    note: "Fail-closed on provenance even when the number is right.",
+    note: "Fail-closed on identity even when the number is right. A snapshot id names sealed bytes and a candidate cannot redefine it.",
     candidate: {
       ...ucrCandidate({
         locator: TOTAL_2025_PROSE,

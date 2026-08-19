@@ -41,8 +41,21 @@ const UNIT_SPELLINGS = new Map<string, string>([
   ["μg/m³", "ug_per_m3"],
 ]);
 
-/** Whitespace that may appear *inside* a numeric token and carries no meaning. */
-const INNER_WHITESPACE = /[    ]/gu;
+/**
+ * Space characters real documents use as a THOUSANDS SEPARATOR.
+ *
+ * They are not "whitespace to ignore". An earlier version of this module
+ * stripped every one of them before validating grouping, which merged separate
+ * tokens into a single valid number: `2 7,633` became 27633, `1 2 3` became
+ * 123, and `4. 7%` became 4.7. Each of those is a span that swallowed more than
+ * one number, accepted as though it were one — a deterministic lexical false
+ * acceptance, and the same boundary failure as a span that cuts a number in
+ * half. Found in review, not by this module's own tests.
+ *
+ * So a space is now a separator subject to exactly the grouping rule a comma
+ * is, and is legal nowhere else in the token.
+ */
+const GROUPING_SPACE = /[    ]/gu;
 
 /** Leading signs that mean "negative" in real documents but are not ASCII `-`. */
 const SIGN_SPELLINGS = new Map<string, string>([
@@ -82,33 +95,49 @@ function splitUnit(token: string): { number: string; unit: string } {
 }
 
 /**
- * Thousands separators must actually separate thousands.
+ * Thousands separators must actually separate thousands, whichever character
+ * spells them.
  *
- * `27,633` is a number; `2,7633` and `27,63` are not, and accepting them would
- * mean accepting a typo or a mis-sliced span as a value. Strictness here is
- * cheap to test and is the difference between a check and a formality.
+ * `27,633` and `27 633` are numbers. `2,7633`, `27,63`, `1 2 3` and `2 7,633`
+ * are not, and accepting any of them means accepting a typo, a mis-sliced span,
+ * or two adjacent numbers glued together. One separator kind per token: a value
+ * mixing commas and spaces is not a number a source wrote, it is two.
  */
 function stripGroupedThousands(digits: string): string | undefined {
-  if (!digits.includes(",")) {
-    return digits;
-  }
-  if (!/^\d{1,3}(,\d{3})+$/u.test(digits)) {
+  const hasComma = digits.includes(",");
+  const hasSpace = GROUPING_SPACE.test(digits);
+  GROUPING_SPACE.lastIndex = 0; // the regex is /g/, so `test` is stateful
+
+  if (hasComma && hasSpace) {
     return undefined;
   }
-  return digits.replaceAll(",", "");
+  if (!hasComma && !hasSpace) {
+    return /^\d+$/u.test(digits) ? digits : undefined;
+  }
+  // Space-separated groups are checked by the same rule as comma-separated
+  // ones rather than by a second regex that could drift away from it.
+  const canonical = hasSpace ? digits.replaceAll(GROUPING_SPACE, ",") : digits;
+  if (!/^\d{1,3}(,\d{3})+$/u.test(canonical)) {
+    return undefined;
+  }
+  return canonical.replaceAll(",", "");
 }
 
 export function normalize(text: string): NormalizationResult {
-  const trimmed = text.trim().replaceAll(INNER_WHITESPACE, "");
-
-  let signed = trimmed;
+  // Only the OUTER edges are trimmed. Interior space is meaningful — either a
+  // thousands separator in the right place or a token boundary that must be
+  // refused — so it is never removed before the number is validated.
+  let signed = text.trim();
   const firstCharacter = signed.slice(0, 1);
   const mappedSign = SIGN_SPELLINGS.get(firstCharacter);
   if (mappedSign !== undefined) {
     signed = mappedSign + signed.slice(1);
   }
 
-  const { number: numberPart, unit: unitSpelling } = splitUnit(signed);
+  const { number: rawNumber, unit: unitSpelling } = splitUnit(signed);
+  // `16.0 µg/m³` puts a space before the unit; that one is separation between
+  // the number and its unit, not part of either.
+  const numberPart = rawNumber.trim();
   const unit = UNIT_SPELLINGS.get(unitSpelling);
   if (unit === undefined) {
     return {
@@ -135,8 +164,8 @@ export function normalize(text: string): NormalizationResult {
     };
   }
   // A fraction is optional, but an empty one (`27.`) is a malformed number
-  // rather than an integer, and grouping separators are meaningless after the
-  // decimal point.
+  // rather than an integer, and neither grouping separators nor spaces mean
+  // anything after the decimal point — `4. 7%` is two tokens, not 4.7.
   if (fractionPart !== undefined && !/^\d+$/u.test(fractionPart)) {
     return {
       kind: "unparseable-number",

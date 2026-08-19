@@ -32,9 +32,20 @@ verifier look good measures the author.
 | `fixtures/ucr/campus-facts-2025.html`          | UC Riverside Institutional Research Campus Facts, 64,809 bytes, with a real provenance sidecar (source URL, retrieval time, sha256) that the loader reproduces                                      |
 | `fixtures/openaq/live-capture-2026-08-18.json` | The OpenAQ v3 capture taken during the live-source slice, 62,621 bytes, no sidecar — so the spike seals the bytes and records the hash it computed rather than claiming a provenance it cannot show |
 
-Ground truth comes from the captures' own snapshot sidecar: Fall 2025
-undergraduate 24,034, graduate 3,599, total 27,633; Fall 2024 22,599 / 3,785 /
-26,384.
+Ground truth has three distinct authorities, and saying "the snapshot sidecars"
+flattened them:
+
+- `fixtures/ucr/campus-facts-2025.meta.json` proves the **bytes** — source URL,
+  retrieval time, and a sha256 the loader reproduces.
+- `fixtures/ucr/campus-facts-2025.snapshot.json` corroborates the enrollment
+  **values** (Fall 2025 24,034 / 3,599 / 27,633; Fall 2024 22,599 / 3,785 /
+  26,384). It is derived from the same capture, so it is a consistency check
+  rather than an independent source.
+- Subject, section, denominator and fragment semantics are **hand-labelled**
+  from the retained HTML context. No sidecar asserts them; each label carries
+  its justification in the corpus, and a test now requires that.
+
+The OpenAQ capture has no sidecar at all.
 
 Every coordinate in the corpus was computed from the actual bytes. Coordinates
 are **byte** offsets, not string indices: the hash is over bytes, so the
@@ -119,6 +130,34 @@ It says nothing about how often a model commits them. Measuring frequency needs
 model-produced candidates over a labelled document set, which this slice does
 not attempt and which is the obvious next question.
 
+## A second deterministic class, found in review rather than by the corpus
+
+The first version of this write-up said the fragment class was the only
+deterministically fixable one. **That was false when written.** Version 1 of the
+normaliser stripped every internal space before validating grouping, so adjacent
+tokens merged into a single accepted number:
+
+| Input     | Read as |
+| --------- | ------- |
+| `2 7,633` | 27633   |
+| `1 2 3`   | 123     |
+| `4. 7%`   | 4.7     |
+
+Each is a span that swallowed more than one number and was accepted as though it
+were one — the same boundary failure as the fragment class, in the opposite
+direction, and equally deterministic.
+
+No corpus candidate could have caught it, because neither capture contains a
+space-grouped number; the path existed only in unit tests, and those tests
+asserted the permissive behaviour was correct. It took review to find. Space is
+now a thousands separator subject to the same grouping rule as a comma, illegal
+after a decimal point, and illegal mixed with commas in one token. `27 633`
+still reads; the three above now refuse.
+
+The lesson generalises past this bug: **an unexercised path is where a defect
+hides, and describing it as "supported and unit-tested" is not the same as
+knowing it is right.** The gap statement below is the honest version.
+
 ## The strictness cost is one case, and it points somewhere
 
 Six candidates were refused despite being factually true. Split by cause,
@@ -143,10 +182,11 @@ loosening what characters a number may contain.
 
 ## What the corpus does not exercise, stated rather than implied
 
-- **Whitespace and dash normalisation.** Neither capture contains one of these
-  characters inside a numeric token. The UCR document's eight `&nbsp;` entities
-  are all layout — table headers and spacer list items — and none is adjacent to
-  a number. Supported and unit-tested; claimed by no corpus candidate.
+- **Space-grouped numbers and dash-as-minus.** Neither capture contains one of
+  these characters inside a numeric token. The UCR document's eight `&nbsp;`
+  entities are all layout — table headers and spacer list items — and none is
+  adjacent to a number. Supported and unit-tested; claimed by no corpus
+  candidate. This is the gap that hid the merge defect above.
 - **The `ug_per_m3` unit identity.** The OpenAQ capture never places a number
   and its unit in one contiguous span (`"value": 16.0` and `"units": "µg/m³"`
   are different JSON members), so no real candidate can quote both at once.
@@ -171,8 +211,10 @@ the frequency measurement above, not this one. What this slice does establish is
 that no _deterministic lexical_ boundary will control the semantic classes. If a
 control exists it will be a different mechanism: an independent second
 extraction, a structural cross-check against the label abutting the value, or a
-human acceptance step. Only the fragment class is deterministically fixable, and
-fixing it does not touch the other six.
+human acceptance step. Only the fragment class among the seven is deterministically fixable, and fixing
+it does not touch the other six. The merge class above is deterministic too, but
+it is a defect in the normaliser rather than one of the seven semantic classes —
+the distinction matters, and conflating them was the error review caught.
 
 ## Running it
 

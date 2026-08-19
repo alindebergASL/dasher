@@ -56,9 +56,11 @@ describe("deterministic refusals", () => {
     );
   });
 
-  it("refuses a hash that does not match the document", () => {
+  it("refuses a hash that is not the snapshot's registered hash", () => {
     const wrong = `${ucrHash().startsWith("0") ? "1" : "0"}${ucrHash().slice(1)}`;
-    expect(refusalFor({ contentSha256: wrong })).toBe("hash-mismatch");
+    expect(refusalFor({ contentSha256: wrong })).toBe(
+      "snapshot-identity-mismatch",
+    );
   });
 
   it("refuses when the source bytes changed after retrieval", () => {
@@ -74,9 +76,13 @@ describe("deterministic refusals", () => {
     expect(verdict).toMatchObject({ accepted: false, reason: "hash-mismatch" });
   });
 
-  it("recomputes the hash rather than trusting the candidate's copy", () => {
-    // The failure this guards is subtle: a verifier that compared the
-    // candidate's hash to itself would accept any document at all.
+  it("refuses a candidate that redefines the snapshot to match altered bytes", () => {
+    // The failure this now guards is the one the first version shipped: the
+    // recomputed hash was compared only to the candidate's own copy, so a
+    // candidate that altered the bytes AND claimed the altered hash was
+    // self-consistent and therefore accepted. A snapshot id names immutable
+    // sealed bytes; being consistent about some document is not being about
+    // the retained one.
     const original = DOCUMENTS_BY_ID.get(UCR);
     if (original === undefined) {
       throw new Error("UCR capture missing");
@@ -93,9 +99,26 @@ describe("deterministic refusals", () => {
       },
       { documentOverrides: new Map([[UCR, mutated]]) },
     );
-    // Self-consistent against the mutated document, so it verifies — which is
-    // correct. The point is that the hash was checked against real bytes.
-    expect(verdict).toEqual({ accepted: true });
+    expect(verdict).toMatchObject({
+      accepted: false,
+      reason: "snapshot-identity-mismatch",
+    });
+  });
+
+  it("measures the bytes against the registered hash, not the candidate's", () => {
+    // Complementary direction: candidate honest about the sealed identity,
+    // bytes altered underneath it. Must still refuse, and for the other reason.
+    const original = DOCUMENTS_BY_ID.get(UCR);
+    if (original === undefined) {
+      throw new Error("UCR capture missing");
+    }
+    const mutated = Buffer.from(original.bytes);
+    mutated[18023] = "4".charCodeAt(0);
+    expect(
+      verifyCandidate(baseline(), {
+        documentOverrides: new Map([[UCR, mutated]]),
+      }),
+    ).toMatchObject({ accepted: false, reason: "hash-mismatch" });
   });
 
   it("refuses coordinates past the end of the document", () => {

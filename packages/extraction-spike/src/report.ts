@@ -39,6 +39,7 @@ export type RefusalFamily = "provenance" | "coordinates" | "contract" | "lexis";
 
 const REFUSAL_FAMILY: Readonly<Record<RefusalReason, RefusalFamily>> = {
   "unknown-snapshot": "provenance",
+  "snapshot-identity-mismatch": "provenance",
   "hash-mismatch": "provenance",
   "locator-out-of-range": "coordinates",
   "coordinate-text-mismatch": "coordinates",
@@ -185,10 +186,23 @@ export function formatReport(report: SpikeReport): string {
   push(
     "Every candidate below quotes a real capture already in this repository.",
   );
+  push("Coordinates are byte offsets into the sealed bytes.");
+  push();
+  push("GROUND-TRUTH CUSTODY - three authorities, not one:");
+  push("  * fixtures/ucr/campus-facts-2025.meta.json proves the BYTES: source");
+  push("    URL, retrieval time, and a sha256 this loader reproduces.");
+  push("  * fixtures/ucr/campus-facts-2025.snapshot.json corroborates the");
   push(
-    "Coordinates are byte offsets into the sealed bytes; ground truth comes",
+    "    enrollment VALUES. It is derived from the same capture, so it is a",
   );
-  push("from the captures' own snapshot sidecars.");
+  push("    consistency check rather than an independent source.");
+  push("  * subject, section, denominator and fragment semantics are HAND-");
+  push("    LABELLED from the retained HTML context. No sidecar asserts them;");
+  push("    each carries its justification in the corpus.");
+  push(
+    "  The OpenAQ capture has NO sidecar: the spike seals whatever bytes are",
+  );
+  push("  on disk and records the hash it computed.");
   push();
 
   push("PER CASE");
@@ -286,26 +300,33 @@ export function formatReport(report: SpikeReport): string {
 
   push("WHAT THIS CORPUS DOES NOT EXERCISE");
   push("-".repeat(74));
+  push("  Space-grouped numbers and dash-as-minus have no natural material in");
+  push("  either capture: the UCR document's eight `&nbsp;` entities are all");
+  push("  layout, none adjacent to a number, and neither capture contains a");
   push(
-    "  Whitespace and dash normalisation have no natural material in either",
+    "  dash inside a numeric token. Both are covered by unit tests over the",
   );
-  push("  capture: the UCR document's eight `&nbsp;` entities are all layout,");
-  push(
-    "  none adjacent to a number, and neither capture contains a dash inside",
-  );
-  push("  a numeric token. Those paths are covered by unit tests over the");
-  push(
-    "  normaliser and by NO corpus candidate, which is a narrower claim and",
-  );
-  push("  the honest one.");
+  push("  normaliser and by NO corpus candidate.");
   push();
+  push("  That gap hid a defect. Version 1 originally stripped every internal");
   push(
-    "  The `ug_per_m3` unit identity is likewise unit-tested only. The OpenAQ",
+    "  space before validating grouping, so `2 7,633` read as 27633, `1 2 3`",
   );
   push(
-    "  capture never places a number and its unit in one contiguous span, so",
+    "  as 123, and `4. 7%` as 4.7 - adjacent tokens merged into one accepted",
   );
-  push("  no real candidate can quote both at once.");
+  push(
+    "  number. That is a SECOND deterministic lexical false-acceptance class,",
+  );
+  push(
+    "  living in the code rather than the corpus, and review found it because",
+  );
+  push("  no candidate over these captures could. Space is now a thousands");
+  push("  separator under the same grouping rule as a comma.");
+  push();
+  push("  The `ug_per_m3` unit identity is likewise unit-tested only: the");
+  push("  OpenAQ capture never places a number and its unit in one contiguous");
+  push("  span, so no real candidate can quote both at once.");
 
   return lines.join("\n");
 }

@@ -27,6 +27,7 @@ import {
 export type RefusalReason =
   | "malformed-candidate"
   | "unknown-snapshot"
+  | "snapshot-identity-mismatch"
   | "hash-mismatch"
   | "locator-out-of-range"
   | "coordinate-text-mismatch"
@@ -83,13 +84,30 @@ export function verifyCandidate(
     );
   }
 
+  // A snapshot id names immutable sealed bytes, so the REGISTERED hash is the
+  // authority and both checks below measure against it.
+  //
+  // The first version compared the recomputed hash only to the candidate's own
+  // copy, which let a candidate redefine the snapshot: alter the bytes, claim
+  // the altered hash, and a self-consistent lie about a known snapshot id was
+  // accepted. Worse, a test asserted that acceptance and called it correct.
+  // Being self-consistent about a document is not the same as being about the
+  // retained document; a genuinely different document needs a new registered
+  // identity, not the same id with new contents.
+  if (typed.contentSha256 !== sealed.contentSha256) {
+    return refuse(
+      "snapshot-identity-mismatch",
+      `snapshot ${typed.snapshotId} is sealed at ${sealed.contentSha256}, candidate claims ${typed.contentSha256}`,
+    );
+  }
+
   const bytes =
     options.documentOverrides?.get(typed.snapshotId) ?? sealed.bytes;
   const actualHash = sha256(bytes);
-  if (actualHash !== typed.contentSha256) {
+  if (actualHash !== sealed.contentSha256) {
     return refuse(
       "hash-mismatch",
-      `document hashes ${actualHash}, candidate claims ${typed.contentSha256}`,
+      `snapshot ${typed.snapshotId} is sealed at ${sealed.contentSha256} but the bytes now hash ${actualHash}`,
     );
   }
 
