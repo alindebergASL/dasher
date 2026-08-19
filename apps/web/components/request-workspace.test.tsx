@@ -85,6 +85,15 @@ beforeEach(() => {
   refineDashboard.mockReset();
 });
 
+describe("the planning disclosure", () => {
+  it("describes the deterministic planner without making a false source-mode claim", () => {
+    renderWorkspace();
+
+    expect(screen.getByText(/Deterministic planning\./u)).toBeVisible();
+    expect(screen.queryByText(/Fixture mode\./u)).toBeNull();
+  });
+});
+
 describe("a dashboard that was built but not saved", () => {
   it("shows the save failure instead of discarding it", async () => {
     const result: PlanResult = {
