@@ -12,6 +12,7 @@ export const USGS_STRING_LIMITS = {
   unitCode: 32,
   observationValue: 128,
   isoTimestamp: 64,
+  note: 512,
 } as const;
 
 const SiteIdSchema = z.string().regex(/^\d{8,15}$/, "Invalid USGS site ID");
@@ -69,12 +70,64 @@ const TimeSeriesSchema = z.object({
     .max(4, "Too many value groups in USGS time series"),
 });
 
+/**
+ * WHERE THE RETRIEVAL TIME LIVES, and why there are two answers.
+ *
+ * The live instantaneous-values service reports when it answered inside
+ * `queryInfo.note[]`, as an entry titled `requestDT`. It does NOT emit a
+ * `creationTime` field — which the first version of this parser required,
+ * so it could not parse a single real USGS response. That was invisible
+ * while the only payload it ever saw was a hand-authored fixture; wiring a
+ * live source is what surfaced it.
+ *
+ * Both shapes are accepted because both are real inputs to this function:
+ * `requestDT` is what the service sends, and `creationTime` is what the
+ * committed development fixture carries (deliberately degraded data that
+ * the freshness tests depend on, which a verbatim capture cannot provide).
+ * A payload with NEITHER is rejected rather than defaulted, because this
+ * timestamp is load-bearing twice over: it becomes every station's
+ * `retrievedAt`, and it is the bound the future-observation check uses. A
+ * parser that invented it would be inventing provenance.
+ */
+const QueryInfoSchema = z
+  .object({
+    creationTime: UsgsTimestampSchema.optional(),
+    note: z
+      .array(
+        z.object({
+          // Real notes carry filter descriptions, a request id, and a
+          // provisional-data disclaimer, not just the timestamp — sizing this
+          // to a timestamp rejected every live response.
+          value: z.string().max(USGS_STRING_LIMITS.note),
+          title: z.string().max(USGS_STRING_LIMITS.variableCode).optional(),
+        }),
+      )
+      .max(16, "Too many notes in USGS queryInfo")
+      .optional(),
+  })
+  .transform((queryInfo, context) => {
+    const requestDt = queryInfo.note?.find(
+      (entry) => entry.title === "requestDT",
+    )?.value;
+    const retrievedAt = queryInfo.creationTime ?? requestDt;
+
+    if (retrievedAt === undefined || Number.isNaN(Date.parse(retrievedAt))) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "USGS queryInfo must carry a retrieval time, as creationTime or a requestDT note",
+        path: ["creationTime"],
+      });
+      return z.NEVER;
+    }
+
+    return { retrievedAt };
+  });
+
 const ResponseSchema = z
   .object({
     value: z.object({
-      queryInfo: z.object({
-        creationTime: UsgsTimestampSchema,
-      }),
+      queryInfo: QueryInfoSchema,
       timeSeries: z
         .array(TimeSeriesSchema)
         .min(1)
@@ -82,7 +135,7 @@ const ResponseSchema = z
     }),
   })
   .superRefine((response, context) => {
-    const creationTime = Date.parse(response.value.queryInfo.creationTime);
+    const creationTime = Date.parse(response.value.queryInfo.retrievedAt);
 
     for (const [
       seriesIndex,
@@ -216,9 +269,7 @@ export function parseUsgsInstantaneousValues(input: unknown): Station[] {
       latitude: timeSeries.sourceInfo.geoLocation.geogLocation.latitude,
       longitude: timeSeries.sourceInfo.geoLocation.geogLocation.longitude,
       sourceUrl: `https://waterdata.usgs.gov/monitoring-location/${siteId}/`,
-      retrievedAt: new Date(
-        response.value.queryInfo.creationTime,
-      ).toISOString(),
+      retrievedAt: new Date(response.value.queryInfo.retrievedAt).toISOString(),
     };
 
     const series: Series = { unit, observations };

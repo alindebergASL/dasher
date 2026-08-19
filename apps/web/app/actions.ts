@@ -18,6 +18,7 @@ import {
 } from "@dasher/dashboard-schema";
 import { getPool, isPersistenceConfigured } from "./database";
 import { classifyRequest, type DomainEntry } from "./domains";
+import { loadDomainSnapshot, SourceUnavailableError } from "./source-runtime";
 import { readSessionCredential } from "./session";
 
 import {
@@ -161,14 +162,35 @@ async function plan(
     };
   }
   const domain: DomainEntry = decision.domain;
-  const gauges = domain.stations;
+
+  // Fetched only now: after routing has chosen exactly one domain, and only
+  // because a reader asked for a dashboard. No other path in this app —
+  // landing render, the listing, reopening a saved dashboard — reaches a
+  // network, and a request the router refused never gets this far.
+  let snapshot;
+  try {
+    snapshot = await loadDomainSnapshot(domain.key);
+  } catch (error) {
+    if (error instanceof SourceUnavailableError) {
+      // Refuse, and persist nothing. The alternative — serving the committed
+      // fixture when the live source is down — would present yesterday's
+      // sample as current conditions, which is the one failure this product
+      // cannot have.
+      return {
+        ok: false,
+        error: `Live ${domain.label} data is temporarily unavailable; try again.`,
+      };
+    }
+    throw error;
+  }
+  const gauges = snapshot.stations;
 
   try {
     const run = await runPlanner({
       requestText,
       gauges,
       provider: domain.provider,
-      asOf: domain.asOf,
+      asOf: snapshot.asOf,
       thresholds: domain.thresholds,
       computation: domain.computation,
       words: domain.words,

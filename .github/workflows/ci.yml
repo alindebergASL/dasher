@@ -203,6 +203,11 @@ jobs:
       # if it is only argued for in a comment.
       DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
       DASHER_DEV_BOOTSTRAP: "1"
+      # Explicit rather than relying on the default. CI must never depend on
+      # an upstream being reachable or on what it happens to be reporting
+      # today, and a run that silently went live would be nondeterministic in
+      # a way that looks like flakiness.
+      DASHER_SOURCE_MODE: fixture
     services:
       postgres:
         image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55

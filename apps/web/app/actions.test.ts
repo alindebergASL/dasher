@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { planDashboard, refineDashboard } from "./actions";
 import {
@@ -199,5 +199,64 @@ describe("the previous plan is parsed, not trusted", () => {
 
     expect(readings(relabelled)).toStrictEqual(readings(untouched));
     expect(relabelled.dashboard?.title).toBe("Everything Is Fine");
+  });
+});
+
+describe("when a request never reaches a domain", () => {
+  it("contacts no upstream source for unsupported or ambiguous requests", async () => {
+    // Routing decides before anything is fetched. A request the product
+    // cannot place must not cost an upstream call — and in live mode, must
+    // not be able to blame the source for its refusal either.
+    const previousMode = process.env["DASHER_SOURCE_MODE"];
+    process.env["DASHER_SOURCE_MODE"] = "live";
+    const fetchSpy = vi.fn();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    try {
+      const unsupported = await planDashboard("UC Riverside enrollment", {
+        persist: false,
+      });
+      const ambiguous = await planDashboard(
+        "compare river conditions and air quality",
+        { persist: false },
+      );
+
+      expect(unsupported.ok).toBe(false);
+      expect(ambiguous.ok).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousMode === undefined) delete process.env["DASHER_SOURCE_MODE"];
+      else process.env["DASHER_SOURCE_MODE"] = previousMode;
+    }
+  });
+
+  it("refuses and persists nothing when the live source is unavailable", async () => {
+    const previousMode = process.env["DASHER_SOURCE_MODE"];
+    process.env["DASHER_SOURCE_MODE"] = "live";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () => new Response("nope", { status: 503 }),
+    ) as unknown as typeof fetch;
+
+    try {
+      const result = await planDashboard(
+        "Show me river conditions near Sacramento",
+        { persist: false },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(
+        "Live river data is temporarily unavailable",
+      );
+      // No dashboard, so nothing downstream could persist one.
+      expect(result.dashboard).toBeUndefined();
+      expect(result.dashboardId).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousMode === undefined) delete process.env["DASHER_SOURCE_MODE"];
+      else process.env["DASHER_SOURCE_MODE"] = previousMode;
+    }
   });
 });

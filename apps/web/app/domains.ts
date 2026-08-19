@@ -1,28 +1,16 @@
-import {
-  AIR_COMPUTATION,
-  AIR_WORDS,
-  parseOpenAqHourlySnapshot,
-} from "@dasher/air-domain";
+import { AIR_COMPUTATION, AIR_WORDS } from "@dasher/air-domain";
 import {
   FakePlanningProvider,
   RIVER_FAKE_PHRASING,
   type FakePlannerPhrasing,
   type PlanningProvider,
 } from "@dasher/planner";
-import {
-  parseUsgsInstantaneousValues,
-  RIVER_COMPUTATION,
-  RIVER_WORDS,
-} from "@dasher/river-domain";
+import { RIVER_COMPUTATION, RIVER_WORDS } from "@dasher/river-domain";
 import type {
-  Station,
   StationComputation,
   StationWords,
   ThresholdRule,
 } from "@dasher/station-domain";
-
-import airFixture from "../../../fixtures/openaq/sacramento-hourly.json";
-import riverFixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 
 /**
  * The domain catalog and the deterministic request router.
@@ -30,10 +18,12 @@ import riverFixture from "../../../fixtures/usgs/sacramento-instantaneous-values
  * Two entries, on purpose. This is a catalog, not a plugin framework: adding a
  * third domain means adding a third literal entry, and the day that becomes
  * painful is the day a framework has earned its complexity. Everything a
- * domain needs to serve a request lives on its entry — stations, computation
- * policy, vocabulary, demo thresholds, the fixture's own asOf, and a planner
- * phrased in the domain's words — so nothing downstream ever mixes one
- * domain's stations with another's rules.
+ * domain needs to INTERPRET a request lives on its entry — computation
+ * policy, vocabulary, demo thresholds, and a planner phrased in the domain's
+ * words — so nothing downstream ever mixes one domain's readings with
+ * another's rules. The observations themselves do not live here: those come
+ * from `source-runtime.ts` at request time, because where readings come from
+ * is a deployment question and what they mean is a domain one.
  *
  * ROUTING IS DETERMINISTIC AND FAILS CLOSED. A request either names a domain
  * this product supports, names both, or names neither — and the router says
@@ -47,12 +37,11 @@ import riverFixture from "../../../fixtures/usgs/sacramento-instantaneous-values
 
 export interface DomainEntry {
   readonly key: DomainKey;
-  readonly stations: readonly Station[];
+  /** How a refusal names this domain to a reader: "river", "air-quality". */
+  readonly label: string;
   readonly computation: StationComputation;
   readonly words: StationWords;
   readonly thresholds: readonly ThresholdRule[];
-  /** Pinned to the fixture's retrieval time, so runs are reproducible. */
-  readonly asOf: string;
   readonly provider: PlanningProvider;
 }
 
@@ -137,7 +126,7 @@ const AIR_FAKE_PHRASING: FakePlannerPhrasing = {
 
 const RIVER_ENTRY: DomainEntry = {
   key: "river",
-  stations: parseUsgsInstantaneousValues(riverFixture),
+  label: "river",
   computation: RIVER_COMPUTATION,
   words: RIVER_WORDS,
   thresholds: [
@@ -148,24 +137,22 @@ const RIVER_ENTRY: DomainEntry = {
       above: 14.5,
     },
   ],
-  asOf: "2026-07-29T12:02:00.000Z",
   provider: new FakePlanningProvider(RIVER_FAKE_PHRASING),
 };
 
 const AIR_ENTRY: DomainEntry = {
   key: "air",
-  stations: parseOpenAqHourlySnapshot(airFixture),
+  label: "air-quality",
   computation: AIR_COMPUTATION,
   words: AIR_WORDS,
   thresholds: [
     {
       id: "elevated-pm25-demo-threshold",
-      siteId: "2178",
+      siteId: "678",
       label: "Elevated PM2.5 watch",
       above: 15,
     },
   ],
-  asOf: "2026-08-18T12:02:00.000Z",
   provider: new FakePlanningProvider(AIR_FAKE_PHRASING),
 };
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/openaq/sacramento-hourly.json";
+import liveCapture from "../../../fixtures/openaq/live-capture-2026-08-18.json";
 import {
   OPENAQ_MAX_TOTAL_MEASUREMENTS,
   parseOpenAqHourlySnapshot,
@@ -22,33 +23,33 @@ describe("parsing the checked-in Sacramento fixture", () => {
     const stations = parseOpenAqHourlySnapshot(fixture);
 
     expect(stations).toHaveLength(3);
-    const delPaso = stations.find((station) => station.siteId === "2178")!;
+    const delPaso = stations.find((station) => station.siteId === "678")!;
     expect(delPaso).toMatchObject({
-      name: "Sacramento — Del Paso Manor",
+      name: "Sacramento — Downtown",
       group: "Sacramento",
       kindLabel: "monitor",
       primaryLabel: "PM2.5",
       secondaryLabel: "Ozone",
       evidencePrefix: "openaq",
       sourceName: "OpenAQ",
-      latitude: 38.6136,
-      longitude: -121.3678,
+      latitude: 38.5946,
+      longitude: -121.493,
     });
     expect(delPaso.primary?.unit).toBe("µg/m³");
     expect(delPaso.primary?.observations).toHaveLength(6);
     expect(delPaso.secondary?.unit).toBe("ppm");
-    expect(delPaso.sourceUrl).toBe("https://explore.openaq.org/locations/2178");
+    expect(delPaso.sourceUrl).toBe("https://explore.openaq.org/locations/678");
   });
 
   it("sorts observations oldest first whatever order the wire used", () => {
     const input = bundle();
     const hours = (input.hours as Record<string, { results: unknown[] }>)[
-      "3917"
+      "1556"
     ]!;
     hours.results = [...hours.results].reverse();
 
     const stations = parseOpenAqHourlySnapshot(input);
-    const observations = stations.find((station) => station.siteId === "2178")!
+    const observations = stations.find((station) => station.siteId === "678")!
       .primary!.observations;
 
     expect(observations.map((observation) => observation.at)).toEqual(
@@ -60,7 +61,7 @@ describe("parsing the checked-in Sacramento fixture", () => {
     // Mirrors the river fixture's deliberately degraded gauge: a dashboard
     // with nothing to warn about proves the warning path never runs.
     const woodland = parseOpenAqHourlySnapshot(fixture).find(
-      (station) => station.siteId === "2190",
+      (station) => station.siteId === "627",
     )!;
 
     expect(woodland.secondary).toBeUndefined();
@@ -87,7 +88,7 @@ describe("what the parser refuses", () => {
       string,
       { results: Array<{ period: { datetimeTo: { utc: string } } }> }
     >;
-    hours["3917"]!.results[0]!.period.datetimeTo.utc = "2027-01-01T00:00:00Z";
+    hours["1556"]!.results[0]!.period.datetimeTo.utc = "2027-01-01T00:00:00Z";
 
     expect(() => parseOpenAqHourlySnapshot(input)).toThrow(
       /must not end after the bundle's retrievedAt/,
@@ -107,9 +108,9 @@ describe("what the parser refuses", () => {
       value: 1,
       period: { datetimeTo: { utc: "2026-08-18T00:00:00Z" } },
     };
-    hours["3917"]!.results = Array.from({ length: 10_000 }, () => template);
-    hours["3918"]!.results = Array.from({ length: 10_000 }, () => template);
-    hours["3931"]!.results = Array.from({ length: 1 }, () => template);
+    hours["1556"]!.results = Array.from({ length: 10_000 }, () => template);
+    hours["1548"]!.results = Array.from({ length: 10_000 }, () => template);
+    hours["2309"]!.results = Array.from({ length: 1 }, () => template);
 
     expect(() => parseOpenAqHourlySnapshot(input)).toThrow(
       new RegExp(`${OPENAQ_MAX_TOTAL_MEASUREMENTS}-measurement`),
@@ -131,7 +132,7 @@ describe("what the parser skips rather than invents", () => {
     locations.results[0]!.isMonitor = false;
 
     const stations = parseOpenAqHourlySnapshot(input);
-    expect(stations.map((station) => station.siteId)).not.toContain("2178");
+    expect(stations.map((station) => station.siteId)).not.toContain("678");
   });
 
   it("drops negative concentrations, which some instruments report near zero", () => {
@@ -140,25 +141,78 @@ describe("what the parser skips rather than invents", () => {
       string,
       { results: Array<{ value: number }> }
     >;
-    hours["3917"]!.results[0]!.value = -0.4;
+    hours["1556"]!.results[0]!.value = -0.4;
 
     const stations = parseOpenAqHourlySnapshot(input);
     expect(
       stations
-        .find((station) => station.siteId === "2178")!
+        .find((station) => station.siteId === "678")!
         .primary!.observations.every((observation) => observation.value >= 0),
     ).toBe(true);
   });
 
   it("emits a station whose sensor has no hours, so the missing reading is reported not hidden", () => {
     const input = bundle();
-    delete (input.hours as Record<string, unknown>)["3918"];
+    delete (input.hours as Record<string, unknown>)["1548"];
 
     const delPaso = parseOpenAqHourlySnapshot(input).find(
-      (station) => station.siteId === "2178",
+      (station) => station.siteId === "678",
     )!;
 
     expect(delPaso.secondary).toBeUndefined();
     expect(delPaso.primary?.observations).toHaveLength(6);
+  });
+});
+
+describe("a real response from the live service", () => {
+  /**
+   * A bounded credential-free capture of the three verified Sacramento-area
+   * monitors, assembled from the per-location and per-sensor endpoints and
+   * otherwise untouched. It carries no header, no key, and no request
+   * metadata — only the response bodies and the retrieval time.
+   *
+   * It exists because the loader that produced it was wrong three ways, and
+   * only real data showed any of them.
+   */
+  it("parses the shape the service actually sends", () => {
+    const stations = parseOpenAqHourlySnapshot(liveCapture);
+
+    expect(stations).toHaveLength(3);
+    expect(stations.map((station) => station.siteId).sort()).toEqual([
+      "1289",
+      "627",
+      "678",
+    ]);
+    for (const station of stations) {
+      expect(station.primary?.unit).toBe("µg/m³");
+      expect(station.secondary?.unit).toBe("ppm");
+      expect(station.primary?.observations).toHaveLength(6);
+      expect(station.secondary?.observations).toHaveLength(6);
+      expect(station.kindLabel).toBe("monitor");
+      expect(station.evidencePrefix).toBe("openaq");
+    }
+  });
+
+  it("shows the two things about real air data the fixture could not", () => {
+    const stations = parseOpenAqHourlySnapshot(liveCapture);
+
+    // ONE: `locality` is the metro area, not the city, so every monitor in
+    // one CBSA groups identically. The hand-authored fixture invented
+    // per-city localities and hid this. It is not a parser defect — the
+    // parser reports what the source says — but a ranking labelled by group
+    // repeats one string three times, which is a product question this
+    // capture raises and does not answer.
+    expect(new Set(stations.map((station) => station.group)).size).toBe(1);
+    expect(stations[0]?.group).toContain("Sacramento");
+
+    // TWO: the observations this capture holds are from 2016, because
+    // `limit=6` alone returns the OLDEST records. The loader now asks for a
+    // recent window in descending order; this capture is what it returned
+    // before that fix, kept deliberately so the defect stays legible.
+    const newest = stations
+      .flatMap((station) => station.primary?.observations ?? [])
+      .map((observation) => Date.parse(observation.at))
+      .sort((a, b) => b - a)[0];
+    expect(new Date(newest ?? 0).getUTCFullYear()).toBe(2016);
   });
 });

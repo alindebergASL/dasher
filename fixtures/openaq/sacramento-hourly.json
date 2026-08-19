@@ -10,9 +10,56 @@
     },
     "results": [
       {
-        "id": 2178,
-        "name": "Sacramento — Del Paso Manor",
+        "id": 678,
+        "name": "Sacramento — Downtown",
         "locality": "Sacramento",
+        "timezone": "America/Los_Angeles",
+        "country": {
+          "id": 13,
+          "code": "US",
+          "name": "United States"
+        },
+        "provider": {
+          "id": 119,
+          "name": "AirNow"
+        },
+        "isMobile": false,
+        "isMonitor": true,
+        "coordinates": {
+          "latitude": 38.5946,
+          "longitude": -121.493
+        },
+        "sensors": [
+          {
+            "id": 1556,
+            "name": "pm25 µg/m³",
+            "parameter": {
+              "id": 2,
+              "name": "pm25",
+              "units": "µg/m³",
+              "displayName": "PM2.5"
+            }
+          },
+          {
+            "id": 1548,
+            "name": "o3 ppm",
+            "parameter": {
+              "id": 10,
+              "name": "o3",
+              "units": "ppm",
+              "displayName": "Ozone"
+            }
+          }
+        ],
+        "datetimeLast": {
+          "utc": "2026-08-18T12:00:00Z",
+          "local": "2026-08-18T05:00:00-07:00"
+        }
+      },
+      {
+        "id": 1289,
+        "name": "Arden Arcade — Del Paso",
+        "locality": "Arden Arcade",
         "timezone": "America/Los_Angeles",
         "country": {
           "id": 13,
@@ -31,7 +78,7 @@
         },
         "sensors": [
           {
-            "id": 3917,
+            "id": 2309,
             "name": "pm25 µg/m³",
             "parameter": {
               "id": 2,
@@ -41,7 +88,7 @@
             }
           },
           {
-            "id": 3918,
+            "id": 2305,
             "name": "o3 ppm",
             "parameter": {
               "id": 10,
@@ -57,54 +104,7 @@
         }
       },
       {
-        "id": 2183,
-        "name": "Roseville — N Sunrise",
-        "locality": "Roseville",
-        "timezone": "America/Los_Angeles",
-        "country": {
-          "id": 13,
-          "code": "US",
-          "name": "United States"
-        },
-        "provider": {
-          "id": 119,
-          "name": "AirNow"
-        },
-        "isMobile": false,
-        "isMonitor": true,
-        "coordinates": {
-          "latitude": 38.7477,
-          "longitude": -121.2705
-        },
-        "sensors": [
-          {
-            "id": 3931,
-            "name": "pm25 µg/m³",
-            "parameter": {
-              "id": 2,
-              "name": "pm25",
-              "units": "µg/m³",
-              "displayName": "PM2.5"
-            }
-          },
-          {
-            "id": 3932,
-            "name": "o3 ppm",
-            "parameter": {
-              "id": 10,
-              "name": "o3",
-              "units": "ppm",
-              "displayName": "Ozone"
-            }
-          }
-        ],
-        "datetimeLast": {
-          "utc": "2026-08-18T12:00:00Z",
-          "local": "2026-08-18T05:00:00-07:00"
-        }
-      },
-      {
-        "id": 2190,
+        "id": 627,
         "name": "Woodland — Gibson Road",
         "locality": "Woodland",
         "timezone": "America/Los_Angeles",
@@ -125,7 +125,7 @@
         },
         "sensors": [
           {
-            "id": 3947,
+            "id": 1100,
             "name": "pm25 µg/m³",
             "parameter": {
               "id": 2,
@@ -137,13 +137,13 @@
         ],
         "datetimeLast": {
           "utc": "2026-08-18T09:00:00Z",
-          "local": "2026-08-18T02:00:00-07:00"
+          "local": "2026-08-18T05:00:00-07:00"
         }
       }
     ]
   },
   "hours": {
-    "3917": {
+    "1556": {
       "meta": {
         "found": 6
       },
@@ -270,7 +270,7 @@
         }
       ]
     },
-    "3918": {
+    "1548": {
       "meta": {
         "found": 6
       },
@@ -397,7 +397,7 @@
         }
       ]
     },
-    "3931": {
+    "2309": {
       "meta": {
         "found": 6
       },
@@ -524,7 +524,7 @@
         }
       ]
     },
-    "3932": {
+    "2305": {
       "meta": {
         "found": 6
       },
@@ -651,7 +651,7 @@
         }
       ]
     },
-    "3947": {
+    "1100": {
       "meta": {
         "found": 4
       },
