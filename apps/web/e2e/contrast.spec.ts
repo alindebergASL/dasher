@@ -16,76 +16,154 @@ import {
  *
  * The arithmetic lives in `test/contrast.ts` with unit tests against published
  * WCAG anchors. This file only drives the pages and collects what they painted.
+ *
+ * The first version of this collector had two holes that let real regressions
+ * through, both found by mutating the stylesheet and watching it still pass:
+ * form controls render their value and placeholder without owning a text node,
+ * and translucent backgrounds were walked past rather than composited, so text
+ * on a dark translucent band was judged against the pale page underneath. Both
+ * are covered now, and both have a discriminating regression below.
  */
 
 /**
- * Runs in the page. Walks every element holding its own text, resolves the
- * effective background through transparent ancestors, and reports what it
- * found — no verdicts, so the thresholds stay in one tested place.
+ * Runs in the page. Reports what was painted and makes no judgements, so every
+ * threshold stays in the one tested place.
  */
 const COLLECT = (where: string): RenderedText[] => {
-  const opaqueBackground = (start: Element): string => {
+  /**
+   * Background layers nearest-first, ending at the first opaque one. Every
+   * layer is kept, including translucent ones: text on `rgba(0, 0, 0, 0.85)`
+   * is painted on near-black regardless of what shows through.
+   */
+  const backgroundStack = (
+    start: Element,
+  ): { layers: string[]; unsupportedPaint?: string } => {
+    const layers: string[] = [];
     let node: Element | null = start;
     while (node !== null) {
-      const value = getComputedStyle(node).backgroundColor;
+      const style = getComputedStyle(node);
+      // A gradient or image cannot be reduced to one colour, and approximating
+      // it is how a guard starts lying. Report it instead.
+      if (style.backgroundImage !== "none") {
+        return {
+          layers,
+          unsupportedPaint: `${node.tagName.toLowerCase()} paints ${style.backgroundImage.slice(0, 60)}, which is not a single colour`,
+        };
+      }
+      const value = style.backgroundColor;
       const body = /^rgba?\(([^)]+)\)$/u.exec(value)?.[1];
-      if (body !== undefined) {
-        const parts = body
-          .split(/[,\s/]+/u)
-          .filter((part) => part.length > 0)
-          .map(Number);
-        const alpha = parts[3] ?? 1;
-        // Only a fully opaque ancestor settles the question. A translucent one
-        // sits over whatever is behind it, so keep walking.
+      if (body === undefined) {
+        return {
+          layers,
+          unsupportedPaint: `${node.tagName.toLowerCase()} has background ${value}, which is not a colour this can read`,
+        };
+      }
+      const parts = body
+        .split(/[,\s/]+/u)
+        .filter((part) => part.length > 0)
+        .map(Number);
+      const alpha = parts[3] ?? 1;
+      if (alpha > 0) {
+        layers.push(value);
         if (alpha === 1) {
-          return `rgb(${String(parts[0])}, ${String(parts[1])}, ${String(parts[2])})`;
+          return { layers };
         }
       }
       node = node.parentElement;
     }
-    return "rgb(255, 255, 255)";
+    // Nothing opaque was found. The canvas is white, and saying so explicitly
+    // keeps the stack resolvable rather than leaving it open-ended.
+    layers.push("rgb(255, 255, 255)");
+    return { layers };
   };
 
-  const samples: RenderedText[] = [];
-  for (const element of document.querySelectorAll("*")) {
-    // Only elements owning text directly. Walking every ancestor would report
-    // a container's inherited colour against text it does not actually paint.
-    const text = Array.from(element.childNodes)
-      .filter((node) => node.nodeType === 3 && node.textContent?.trim())
-      .map((node) => node.textContent?.trim() ?? "")
-      .join(" ");
-    if (text.length === 0) {
-      continue;
-    }
+  const visible = (element: Element): boolean => {
     const style = getComputedStyle(element);
     if (
       style.display === "none" ||
       style.visibility === "hidden" ||
       Number(style.opacity) === 0
     ) {
-      continue;
+      return false;
     }
     // `.sr-only` hides by clip rather than by display, so it survives the check
     // above while being invisible. Its contrast is not a user-facing fact.
     if (element.closest(".sr-only") !== null) {
-      continue;
+      return false;
     }
     const box = element.getBoundingClientRect();
-    if (box.width === 0 || box.height === 0) {
-      continue;
-    }
+    return box.width > 0 && box.height > 0;
+  };
+
+  const label = (element: Element): string =>
+    typeof element.className === "string" && element.className.length > 0
+      ? `.${element.className.split(/\s+/u).join(".")}`
+      : element.tagName.toLowerCase();
+
+  const samples: RenderedText[] = [];
+
+  const push = (
+    element: Element,
+    text: string,
+    colour: string,
+    source: RenderedText["source"],
+  ): void => {
+    const style = getComputedStyle(element);
+    const { layers, unsupportedPaint } = backgroundStack(element);
     samples.push({
       where,
-      label:
-        typeof element.className === "string" && element.className.length > 0
-          ? `.${element.className.split(/\s+/u).join(".")}`
-          : element.tagName.toLowerCase(),
+      label: label(element),
       text: text.slice(0, 60),
-      color: style.color,
-      background: opaqueBackground(element),
+      color: colour,
+      backgroundLayers: layers,
+      ...(unsupportedPaint === undefined ? {} : { unsupportedPaint }),
       fontSizePx: Number.parseFloat(style.fontSize),
       fontWeight: Number(style.fontWeight) || 400,
+      source,
     });
+  };
+
+  for (const element of document.querySelectorAll("*")) {
+    if (!visible(element)) {
+      continue;
+    }
+    const style = getComputedStyle(element);
+
+    // Form controls paint their value and placeholder without owning a text
+    // node, so the walk below cannot see them. They are the most interactive
+    // text on the page and were entirely unchecked before.
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLTextAreaElement
+    ) {
+      if (element.type !== "hidden") {
+        if (element.value.length > 0) {
+          push(element, element.value, style.color, "value");
+        } else if (element.placeholder.length > 0) {
+          const placeholderColour =
+            getComputedStyle(element, "::placeholder").color || style.color;
+          push(element, element.placeholder, placeholderColour, "placeholder");
+        }
+      }
+      continue;
+    }
+    if (element instanceof HTMLSelectElement) {
+      const chosen = element.selectedOptions[0]?.textContent?.trim();
+      if (chosen !== undefined && chosen.length > 0) {
+        push(element, chosen, style.color, "value");
+      }
+      continue;
+    }
+
+    // Only elements owning text directly. Walking every ancestor would report
+    // a container's inherited colour against text it does not actually paint.
+    const text = Array.from(element.childNodes)
+      .filter((node) => node.nodeType === 3 && node.textContent?.trim())
+      .map((node) => node.textContent?.trim() ?? "")
+      .join(" ");
+    if (text.length > 0) {
+      push(element, text, style.color, "text");
+    }
   }
   return samples;
 };
@@ -144,10 +222,27 @@ const JOURNEYS = [
   },
 ] as const;
 
+/**
+ * Per-state floors, not one global total. A single global floor lets one whole
+ * journey stop producing samples while the other five keep the sum above it —
+ * the guard would then be blind to an entire page and still report success.
+ * The numbers are well under what each state actually yields, so they catch a
+ * collapse rather than tracking incidental content changes.
+ */
+const MINIMUM_SAMPLES: Record<string, number> = {
+  "river/1440x1100": 60,
+  "river/390x844": 60,
+  "enrollment/1440x1100": 25,
+  "enrollment/390x844": 25,
+  "dashboard-list/1440x1100": 3,
+  "dashboard-list/390x844": 3,
+};
+
 test("every rendered pair on every journey clears its WCAG AA floor", async ({
   page,
 }) => {
   const samples: RenderedText[] = [];
+  const counts: Record<string, number> = {};
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize({
@@ -156,20 +251,43 @@ test("every rendered pair on every journey clears its WCAG AA floor", async ({
     });
     for (const journey of JOURNEYS) {
       await journey.open(page);
-      samples.push(
-        ...(await page.evaluate(COLLECT, `${journey.name}/${viewport.name}`)),
-      );
+      const state = `${journey.name}/${viewport.name}`;
+      const collected = await page.evaluate(COLLECT, state);
+      counts[state] = collected.length;
+      samples.push(...collected);
     }
   }
 
-  // A guard that measured nothing would pass silently forever. The suite has
-  // hundreds of text runs across six page-viewport combinations; a collapse to
-  // near-zero means the collector broke, not that the palette got better.
-  expect(samples.length).toBeGreaterThan(100);
+  // A guard that measured nothing would pass silently forever, and a guard that
+  // measured only five of its six states would be half blind while still
+  // reporting success.
+  const starved = Object.entries(MINIMUM_SAMPLES)
+    .filter(([state, floor]) => (counts[state] ?? 0) < floor)
+    .map(
+      ([state, floor]) =>
+        `${state} produced ${String(counts[state] ?? 0)} samples, below its floor of ${String(floor)}`,
+    );
+  expect(starved, "a journey/viewport stopped producing samples").toEqual([]);
+
+  // Both defects this guard shipped with were collection defects, not
+  // arithmetic ones: form-control text was never sampled, and translucent
+  // layers were walked past instead of composited. Neither showed up as a
+  // failure — the guard simply had less to look at. So the collector's own
+  // coverage is asserted, and breaking either path fails here rather than
+  // quietly shrinking what is checked.
+  const sources = new Set(samples.map((sample) => sample.source));
+  expect(
+    [...sources].sort(),
+    "the collector stopped sampling a kind of rendered text",
+  ).toEqual(["placeholder", "text", "value"]);
+  expect(
+    samples.filter((sample) => sample.backgroundLayers.length > 1).length,
+    "no translucent background was composited, so that path is unexercised",
+  ).toBeGreaterThan(0);
 
   const problems = findContrastProblems(samples);
   expect(
     problems.map(describeContrastProblem),
-    `${String(problems.length)} of ${String(samples.length)} rendered pairs are below their WCAG AA floor`,
+    `${String(problems.length)} of ${String(samples.length)} rendered pairs are below their WCAG AA floor or could not be read`,
   ).toEqual([]);
 });

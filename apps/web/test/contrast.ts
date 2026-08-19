@@ -15,7 +15,17 @@
  * Like that module, this reports *every* problem rather than the first. A
  * palette change breaks pairs in groups, and being told about one of eleven
  * turns one fix into eleven rounds.
+ *
+ * FAIL CLOSED. A guard that quietly ignores what it cannot read is worse than
+ * no guard, because it reports success either way. The first version of this
+ * module skipped samples whose colours would not parse and skipped translucent
+ * background layers instead of compositing them; both made it possible for a
+ * real, visible regression to pass. Anything this cannot decide is now reported
+ * as a problem, not dropped.
  */
+
+/** Where a run of text came from. Inputs render text without owning a text node. */
+export type SampleSource = "text" | "value" | "placeholder";
 
 /** A run of text as the browser actually painted it. */
 export interface RenderedText {
@@ -26,21 +36,41 @@ export interface RenderedText {
   readonly text: string;
   /** Computed `color`, which may carry alpha. */
   readonly color: string;
-  /** Effective background, resolved through transparent ancestors. Opaque. */
-  readonly background: string;
+  /**
+   * Background layers in paint order, nearest painter first, ending with the
+   * first fully opaque layer. Translucent layers are kept rather than skipped:
+   * text on `rgba(0, 0, 0, 0.85)` is painted on near-black, not on whatever
+   * shows through underneath.
+   */
+  readonly backgroundLayers: readonly string[];
+  /**
+   * Set when a layer paints something that cannot be reduced to one colour — a
+   * gradient, an image. Guessing the effective colour of a gradient is exactly
+   * the kind of approximation that makes a guard lie, so such a sample becomes
+   * a reported problem instead.
+   */
+  readonly unsupportedPaint?: string;
   readonly fontSizePx: number;
   readonly fontWeight: number;
+  readonly source: SampleSource;
 }
 
-export interface ContrastProblem {
-  readonly sample: RenderedText;
-  readonly ratio: number;
-  readonly required: number;
-}
+export type ContrastProblem =
+  | {
+      readonly kind: "insufficient";
+      readonly sample: RenderedText;
+      readonly ratio: number;
+      readonly required: number;
+    }
+  | {
+      readonly kind: "unreadable";
+      readonly sample: RenderedText;
+      readonly detail: string;
+    };
 
 export type Rgb = readonly [number, number, number];
 
-interface ParsedColor {
+export interface ParsedColor {
   readonly rgb: Rgb;
   readonly alpha: number;
 }
@@ -49,7 +79,8 @@ interface ParsedColor {
  * Parses the `rgb()` / `rgba()` forms `getComputedStyle` returns. Deliberately
  * not a general CSS colour parser: computed styles are already normalised, so
  * accepting more would mean accepting inputs this never sees and cannot be
- * tested against honestly.
+ * tested against honestly. Anything else returns undefined and becomes an
+ * `unreadable` problem upstream rather than a silent skip.
  */
 export function parseCssColor(value: string): ParsedColor | undefined {
   const match = /^rgba?\(([^)]+)\)$/u.exec(value.trim());
@@ -112,6 +143,41 @@ export function flatten(foreground: ParsedColor, background: Rgb): Rgb {
 }
 
 /**
+ * Flattens a background stack into the single colour the text was painted on.
+ *
+ * Layers arrive nearest-first, so they are applied bottom-up: the opaque base
+ * is painted first, then each nearer layer composited over the result. A stack
+ * whose last layer is not opaque cannot be resolved — there is nothing
+ * underneath it to composite onto — and says so rather than assuming white.
+ */
+export function resolveBackground(layers: readonly string[]): Rgb | string {
+  if (layers.length === 0) {
+    return "no background layer was captured";
+  }
+  const parsed: ParsedColor[] = [];
+  for (const layer of layers) {
+    const colour = parseCssColor(layer);
+    if (colour === undefined) {
+      return `background layer ${JSON.stringify(layer)} is not a colour this can read`;
+    }
+    parsed.push(colour);
+  }
+  const base = parsed[parsed.length - 1];
+  if (base === undefined || base.alpha !== 1) {
+    return "the furthest background layer is not opaque, so the painted colour is unknown";
+  }
+  let resolved: Rgb = base.rgb;
+  for (let index = parsed.length - 2; index >= 0; index -= 1) {
+    const layer = parsed[index];
+    if (layer === undefined) {
+      continue;
+    }
+    resolved = flatten(layer, resolved);
+  }
+  return resolved;
+}
+
+/**
  * WCAG AA: 3:1 for large text, 4.5:1 otherwise. Large is 18pt (24px), or 14pt
  * (18.66px) when bold. The weight threshold matters — the labels this product
  * sets at 600 are *not* bold enough to qualify at any size below 24px.
@@ -126,30 +192,50 @@ export function findContrastProblems(
 ): readonly ContrastProblem[] {
   const problems: ContrastProblem[] = [];
   for (const sample of samples) {
-    const foreground = parseCssColor(sample.color);
-    const background = parseCssColor(sample.background);
-    if (foreground === undefined || background === undefined) {
+    if (sample.unsupportedPaint !== undefined) {
+      problems.push({
+        kind: "unreadable",
+        sample,
+        detail: sample.unsupportedPaint,
+      });
       continue;
     }
-    const ratio = contrastRatio(
-      flatten(foreground, background.rgb),
-      background.rgb,
-    );
+    const foreground = parseCssColor(sample.color);
+    if (foreground === undefined) {
+      problems.push({
+        kind: "unreadable",
+        sample,
+        detail: `foreground ${JSON.stringify(sample.color)} is not a colour this can read`,
+      });
+      continue;
+    }
+    const background = resolveBackground(sample.backgroundLayers);
+    if (typeof background === "string") {
+      problems.push({ kind: "unreadable", sample, detail: background });
+      continue;
+    }
+    const ratio = contrastRatio(flatten(foreground, background), background);
     const required = requiredRatio(sample.fontSizePx, sample.fontWeight);
     if (ratio < required) {
-      problems.push({ sample, ratio, required });
+      problems.push({ kind: "insufficient", sample, ratio, required });
     }
   }
   return problems;
 }
 
 export function describeContrastProblem(problem: ContrastProblem): string {
-  const { sample, ratio, required } = problem;
-  return [
-    `${ratio.toFixed(2)}:1 (needs ${String(required)}:1)`,
+  const { sample } = problem;
+  const where = [
     `${String(sample.fontSizePx)}px/${String(sample.fontWeight)}`,
-    `${sample.color} on ${sample.background}`,
     `at ${sample.where}`,
-    `${sample.label} — ${JSON.stringify(sample.text)}`,
+    `${sample.label} [${sample.source}] — ${JSON.stringify(sample.text)}`,
+  ].join("  ");
+  if (problem.kind === "unreadable") {
+    return `UNREADABLE (${problem.detail})  ${where}`;
+  }
+  return [
+    `${problem.ratio.toFixed(2)}:1 (needs ${String(problem.required)}:1)`,
+    `${sample.color} on ${sample.backgroundLayers.join(" over ")}`,
+    where,
   ].join("  ");
 }

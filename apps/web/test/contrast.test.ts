@@ -8,17 +8,33 @@ import {
   parseCssColor,
   relativeLuminance,
   requiredRatio,
+  resolveBackground,
   type RenderedText,
 } from "./contrast";
+
+/**
+ * Composite arithmetic lands on values like 38.250000000000007, because
+ * `1 - 0.85` is not exactly 0.15 in binary floating point. The channel values
+ * matter to a fraction of a unit, not to the last bit.
+ */
+const expectRgb = (actual: unknown, expected: readonly number[]): void => {
+  expect(Array.isArray(actual)).toBe(true);
+  const channels = actual as number[];
+  expect(channels).toHaveLength(3);
+  for (const [index, value] of expected.entries()) {
+    expect(channels[index]).toBeCloseTo(value, 6);
+  }
+};
 
 const sample = (overrides: Partial<RenderedText> = {}): RenderedText => ({
   where: "river/1440x1100",
   label: ".eyebrow",
   text: "Overview",
   color: "rgb(97, 111, 106)",
-  background: "rgb(247, 245, 242)",
+  backgroundLayers: ["rgb(247, 245, 242)"],
   fontSizePx: 11,
   fontWeight: 600,
+  source: "text",
   ...overrides,
 });
 
@@ -114,6 +130,56 @@ describe("flatten", () => {
   });
 });
 
+describe("resolveBackground", () => {
+  it("returns a single opaque layer unchanged", () => {
+    expectRgb(resolveBackground(["rgb(247, 245, 242)"]), [247, 245, 242]);
+  });
+
+  // The defect this replaces: the collector used to walk past translucent
+  // layers and judge text against the opaque ancestor underneath, so text on a
+  // dark band was scored against the pale page it happened to sit over.
+  it("composites a translucent layer onto the opaque one beneath it", () => {
+    const resolved = resolveBackground([
+      "rgba(0, 0, 0, 0.85)",
+      "rgb(255, 255, 255)",
+    ]);
+    expectRgb(resolved, [38.25, 38.25, 38.25]);
+  });
+
+  it("applies layers bottom-up, so the nearest painter wins", () => {
+    // White at 80% over black at 100% is mostly white, not mostly black.
+    const resolved = resolveBackground([
+      "rgba(255, 255, 255, 0.8)",
+      "rgb(0, 0, 0)",
+    ]);
+    expectRgb(resolved, [204, 204, 204]);
+  });
+
+  it("composites more than two layers", () => {
+    const resolved = resolveBackground([
+      "rgba(255, 255, 255, 0.5)",
+      "rgba(0, 0, 0, 0.5)",
+      "rgb(255, 255, 255)",
+    ]);
+    // black@50% over white -> 127.5; white@50% over that -> 191.25
+    expectRgb(resolved, [191.25, 191.25, 191.25]);
+  });
+
+  it("refuses a stack whose furthest layer is still translucent", () => {
+    expect(resolveBackground(["rgba(0, 0, 0, 0.5)"])).toContain("not opaque");
+  });
+
+  it("refuses an empty stack rather than assuming white", () => {
+    expect(resolveBackground([])).toContain("no background layer");
+  });
+
+  it("refuses a layer it cannot read rather than skipping it", () => {
+    expect(
+      resolveBackground(["color(display-p3 0.1 0.2 0.3)", "rgb(255,255,255)"]),
+    ).toContain("not a colour this can read");
+  });
+});
+
 describe("requiredRatio", () => {
   it("requires 4.5 for normal text", () => {
     expect(requiredRatio(15, 400)).toBe(4.5);
@@ -149,8 +215,8 @@ describe("findContrastProblems", () => {
     ]);
     expect(problems).toHaveLength(1);
     const [problem] = problems;
-    expect(problem?.ratio).toBeLessThan(4.5);
-    expect(problem?.required).toBe(4.5);
+    expect(problem?.kind).toBe("insufficient");
+    expect(problem?.kind === "insufficient" && problem.ratio).toBeLessThan(4.5);
   });
 
   it("reports every problem, not the first", () => {
@@ -180,7 +246,6 @@ describe("findContrastProblems", () => {
   });
 
   it("accounts for foreground alpha rather than the declared colour", () => {
-    // Opaque ink that passes, then the same ink at 40% — which does not.
     expect(
       findContrastProblems([sample({ color: "rgb(20, 32, 28)" })]),
     ).toEqual([]);
@@ -189,18 +254,75 @@ describe("findContrastProblems", () => {
     ).toHaveLength(1);
   });
 
-  it("skips samples whose colours it cannot read rather than inventing a verdict", () => {
+  // Discriminating regression for defect 1: form-control text. The collector
+  // used to see only DOM text nodes, so an input's value and placeholder were
+  // never sampled and white-on-pale passed.
+  it("catches unreadable text rendered as a form-control value", () => {
+    const problems = findContrastProblems([
+      sample({
+        label: ".request-input",
+        source: "value",
+        color: "rgb(255, 255, 255)",
+        text: "Create a live dashboard monitoring river gauges",
+        fontSizePx: 15,
+        fontWeight: 400,
+      }),
+    ]);
+    expect(problems).toHaveLength(1);
+    const [problem] = problems;
+    expect(problem?.kind === "insufficient" && problem.ratio).toBeLessThan(1.2);
+  });
+
+  // Discriminating regression for defect 2: a translucent band. Judged against
+  // the composited dark layer, this fails; judged against the pale page
+  // underneath — the old behaviour — it passed.
+  it("catches text on a dark translucent band over a pale page", () => {
+    const onBand = sample({
+      label: ".request-label",
+      backgroundLayers: ["rgba(0, 0, 0, 0.85)", "rgb(247, 245, 242)"],
+    });
+    expect(findContrastProblems([onBand])).toHaveLength(1);
+    // The same ink over only the pale page is fine, which is why skipping the
+    // translucent layer hid the defect rather than producing a wrong number.
     expect(
       findContrastProblems([
-        sample({ color: "color(display-p3 0.1 0.2 0.3)" }),
-        sample({ background: "transparent" }),
+        sample({ backgroundLayers: ["rgb(247, 245, 242)"] }),
       ]),
     ).toEqual([]);
+  });
+
+  it("reports an unreadable foreground rather than skipping it", () => {
+    const problems = findContrastProblems([
+      sample({ color: "color(display-p3 0.1 0.2 0.3)" }),
+    ]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]?.kind).toBe("unreadable");
+  });
+
+  it("reports an unreadable background rather than skipping it", () => {
+    const problems = findContrastProblems([
+      sample({ backgroundLayers: ["transparent"] }),
+    ]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]?.kind).toBe("unreadable");
+  });
+
+  // A gradient has no single colour, and approximating one is how a guard
+  // starts lying. It becomes a reported problem instead.
+  it("reports an unsupported paint rather than guessing its colour", () => {
+    const problems = findContrastProblems([
+      sample({ unsupportedPaint: "div paints linear-gradient(...)" }),
+    ]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]?.kind).toBe("unreadable");
+    expect(problems[0]?.kind === "unreadable" && problems[0].detail).toContain(
+      "gradient",
+    );
   });
 });
 
 describe("describeContrastProblem", () => {
-  it("names the ratio, the floor, the pair, and where it was seen", () => {
+  it("names the ratio, the floor, the composited pair, and where it was seen", () => {
     const [problem] = findContrastProblems([
       sample({ color: "rgb(107, 122, 117)" }),
     ]);
@@ -213,6 +335,33 @@ describe("describeContrastProblem", () => {
     expect(described).toContain("rgb(107, 122, 117) on rgb(247, 245, 242)");
     expect(described).toContain("river/1440x1100");
     expect(described).toContain(".eyebrow");
+    expect(described).toContain("[text]");
     expect(described).toContain("Overview");
+  });
+
+  it("shows the whole stack when layers were composited", () => {
+    const [problem] = findContrastProblems([
+      sample({
+        backgroundLayers: ["rgba(0, 0, 0, 0.85)", "rgb(247, 245, 242)"],
+      }),
+    ]);
+    if (problem === undefined) {
+      throw new Error("expected the banded sample to be reported");
+    }
+    expect(describeContrastProblem(problem)).toContain(
+      "rgba(0, 0, 0, 0.85) over rgb(247, 245, 242)",
+    );
+  });
+
+  it("says why an unreadable sample could not be decided", () => {
+    const [problem] = findContrastProblems([
+      sample({ backgroundLayers: ["rgba(0, 0, 0, 0.5)"] }),
+    ]);
+    if (problem === undefined) {
+      throw new Error("expected the unresolvable stack to be reported");
+    }
+    const described = describeContrastProblem(problem);
+    expect(described).toContain("UNREADABLE");
+    expect(described).toContain("not opaque");
   });
 });
