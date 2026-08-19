@@ -15,8 +15,8 @@ import type {
 /**
  * The domain catalog and the deterministic request router.
  *
- * Two entries, on purpose. This is a catalog, not a plugin framework: adding a
- * third domain means adding a third literal entry, and the day that becomes
+ * Two sensor entries, on purpose. This is a catalog, not a plugin framework:
+ * adding a third sensor domain means adding a third literal entry, and the day that becomes
  * painful is the day a framework has earned its complexity. Everything a
  * domain needs to INTERPRET a request lives on its entry — computation
  * policy, vocabulary, demo thresholds, and a planner phrased in the domain's
@@ -25,8 +25,8 @@ import type {
  * from `source-runtime.ts` at request time, because where readings come from
  * is a deployment question and what they mean is a domain one.
  *
- * ROUTING IS DETERMINISTIC AND FAILS CLOSED. A request either names a domain
- * this product supports, names both, or names neither — and the router says
+ * ROUTING IS DETERMINISTIC AND FAILS CLOSED. A request either names one subject
+ * this product supports, names more than one, or names none — and the router says
  * which, rather than guessing. There is deliberately NO fallback to the
  * river: the product's first fixture is not its default answer, and "UC
  * Riverside enrollment" producing a Sacramento river dashboard would be the
@@ -46,9 +46,11 @@ export interface DomainEntry {
 }
 
 export type DomainKey = "river" | "air";
+export type KnownSourceKey = "ucr-enrollment";
 
 export type DomainDecision =
   | { kind: "domain"; domain: DomainEntry }
+  | { kind: "known-source"; source: KnownSourceKey }
   | { kind: "ambiguous" }
   | { kind: "unsupported" };
 
@@ -172,13 +174,24 @@ const RIVER_SIGNALS =
   /\b(?:rivers?|gauges?|floods?|flooding|streamflow|creeks?|water\s+levels?|water-levels?)\b/iu;
 const AIR_SIGNALS =
   /\b(?:air\s+quality|air-quality|\bair\b|aqi|pm\s*2\.?5|pm25|ozone|smoke|particulates?|wildfire)\b/iu;
+const UCR_SIGNALS =
+  /\b(?:ucr|uc\s+riverside|university\s+of\s+california,?\s+riverside)\b/iu;
+const ENROLLMENT_SIGNALS =
+  /\b(?:enrollment|student\s+headcount|students?\s+(?:are\s+)?enrolled)\b/iu;
 
 export function classifyRequest(requestText: string): DomainDecision {
   const river = RIVER_SIGNALS.test(requestText);
   const air = AIR_SIGNALS.test(requestText);
+  const ucrEnrollment =
+    UCR_SIGNALS.test(requestText) && ENROLLMENT_SIGNALS.test(requestText);
 
-  if (river && air) return { kind: "ambiguous" };
+  if ([river, air, ucrEnrollment].filter(Boolean).length > 1) {
+    return { kind: "ambiguous" };
+  }
   if (river) return { kind: "domain", domain: DOMAIN_CATALOG.river };
   if (air) return { kind: "domain", domain: DOMAIN_CATALOG.air };
+  if (ucrEnrollment) {
+    return { kind: "known-source", source: "ucr-enrollment" };
+  }
   return { kind: "unsupported" };
 }

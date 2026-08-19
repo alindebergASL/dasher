@@ -228,6 +228,74 @@ test.describe("a saved dashboard", () => {
     await expect(page.locator("main")).not.toContainText(/gauge/iu);
   });
 
+  test("the official UCR enrollment snapshot saves with honest provenance and reopens", async ({
+    page,
+  }) => {
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    expect(bootstrap.ok()).toBe(true);
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
+
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "What do you want to monitor?" })
+      .fill("Current student enrollment at UC Riverside");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("heading", {
+        name: "UC Riverside Enrollment — Fall 2025",
+      }),
+    ).toBeVisible();
+    const permalink = page.getByRole("link", {
+      name: "Open this dashboard by link",
+    });
+    await expect(permalink).toBeVisible();
+    const href = await permalink.getAttribute("href");
+    expect(href).toMatch(/^\/d\/[0-9a-f-]{36}$/u);
+
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      const provenance = await owner.query<{
+        provider: string;
+        model: string;
+      }>(
+        `SELECT run.provider, run.model
+         FROM dasher.dashboards AS dashboard
+         JOIN dasher.dashboard_versions AS version
+           ON version.organization_id = dashboard.organization_id
+          AND version.dashboard_id = dashboard.dashboard_id
+          AND version.version_id = dashboard.head_version_id
+         JOIN dasher.agent_runs AS run
+           ON run.organization_id = version.organization_id
+          AND run.run_id = version.run_id
+         WHERE dashboard.organization_id = $1
+           AND dashboard.title = 'UC Riverside Enrollment — Fall 2025'`,
+        [organizationId],
+      );
+      expect(provenance.rows).toEqual([
+        {
+          provider: "ucr-institutional-research",
+          model: "deterministic-enrollment-v1",
+        },
+      ]);
+    } finally {
+      await owner.end();
+    }
+
+    await page.goto(href!);
+    await expect(
+      page.getByRole("heading", {
+        name: "UC Riverside Enrollment — Fall 2025",
+      }),
+    ).toBeVisible();
+    await expect(page.getByText("27,633", { exact: true })).toBeVisible();
+    await expect(page.locator("main")).not.toContainText(
+      /gauge|monitor|station/iu,
+    );
+  });
+
   test("the listing finds saved dashboards again without their permalinks", async ({
     page,
   }) => {
@@ -308,10 +376,10 @@ test.describe("a saved dashboard", () => {
       name: "What do you want to monitor?",
     });
 
-    await requestBox.fill("UC Riverside enrollment");
+    await requestBox.fill("stock prices for tomorrow");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(page.locator("p.request-error")).toContainText(
-      "river conditions and air quality",
+      "river conditions, air quality, and UC Riverside enrollment",
     );
 
     await requestBox.fill("compare river conditions and air quality");

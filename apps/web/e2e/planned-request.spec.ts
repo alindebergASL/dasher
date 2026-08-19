@@ -156,6 +156,29 @@ test("an air-quality request produces an air dashboard in air vocabulary", async
   await expect(page.locator("main")).not.toContainText(/gauge|USGS/iu);
 });
 
+test("an explicit UCR enrollment request builds the official non-sensor dashboard", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Current student enrollment at UC Riverside" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "UC Riverside Enrollment — Fall 2025" }),
+  ).toBeVisible();
+  await expect(page.getByText("27,633", { exact: true })).toBeVisible();
+  await expect(page.getByText("24,034", { exact: true })).toBeVisible();
+  await expect(page.getByText("3,599", { exact: true })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText(
+    /gauge|monitor|station/iu,
+  );
+  await expect(page.getByLabel("Change this dashboard")).toHaveCount(0);
+  await expect(
+    page.getByText(/official snapshot has no refinement path yet/iu),
+  ).toBeVisible();
+});
+
 test("a request naming neither domain is refused, not guessed at", async ({
   page,
 }) => {
@@ -164,13 +187,10 @@ test("a request naming neither domain is refused, not guessed at", async ({
     name: "What do you want to monitor?",
   });
 
-  // "Riverside" contains r-i-v-e-r. A substring router would build a
-  // Sacramento river dashboard for a question about university enrollment,
-  // which is the confident wrongness the router exists to refuse.
-  await requestBox.fill("UC Riverside enrollment");
+  await requestBox.fill("stock prices for tomorrow");
   await page.getByRole("button", { name: "Build dashboard" }).click();
   await expect(page.locator("p.request-error")).toContainText(
-    "river conditions and air quality",
+    "river conditions, air quality, and UC Riverside enrollment",
   );
 
   await requestBox.fill("compare river conditions and air quality");

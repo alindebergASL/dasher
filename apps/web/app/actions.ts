@@ -16,8 +16,17 @@ import {
   canonicalSpecBytes,
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
+import {
+  buildUcrEnrollmentDashboard,
+  EnrollmentSnapshotSchema,
+} from "@dasher/enrollment-domain";
+import ucrEnrollmentSnapshot from "../../../fixtures/ucr/campus-facts-2025.snapshot.json";
 import { getPool, isPersistenceConfigured } from "./database";
-import { classifyRequest, type DomainEntry } from "./domains";
+import {
+  classifyRequest,
+  type DomainDecision,
+  type DomainEntry,
+} from "./domains";
 import { loadDomainSnapshot, SourceUnavailableError } from "./source-runtime";
 import { readSessionCredential } from "./session";
 
@@ -63,6 +72,7 @@ async function persist(
   requestText: string,
   dashboard: DashboardSpec,
   title: string,
+  provenance: { provider: string; model: string },
 ): Promise<string | undefined> {
   if (!isPersistenceConfigured()) return undefined;
 
@@ -76,11 +86,8 @@ async function persist(
       repository.save({
         title,
         requestText,
-        // The fake provider is what actually composed this, and the run row is
-        // provenance. Recording "fake" is the honest entry; a real provider
-        // name here would be a claim about how the dashboard was made.
-        provider: "fake",
-        model: "fake-planner",
+        provider: provenance.provider,
+        model: provenance.model,
         canonicalSpecBytes: canonicalSpecBytes(dashboard),
         requestId: randomUUID(),
         deploymentRevision: process.env["DASHER_DEPLOYMENT_REVISION"] ?? "dev",
@@ -107,7 +114,8 @@ async function planAndPersist(
   refine?: PlannerRunOptions["refine"],
   persistThis = true,
 ): Promise<PlanResult> {
-  const planned = await plan(requestText, refine);
+  const decision = classifyRequest(requestText);
+  const planned = await plan(requestText, decision, refine);
   if (
     !persistThis ||
     !planned.ok ||
@@ -124,7 +132,13 @@ async function planAndPersist(
     const dashboardId = await persist(
       requestText,
       planned.dashboard,
-      planned.plan?.title ?? requestText,
+      planned.dashboard.title,
+      decision.kind === "known-source"
+        ? {
+            provider: "ucr-institutional-research",
+            model: "deterministic-enrollment-v1",
+          }
+        : { provider: "fake", model: "fake-planner" },
     );
     return dashboardId === undefined ? planned : { ...planned, dashboardId };
   } catch {
@@ -140,26 +154,47 @@ async function planAndPersist(
 
 async function plan(
   requestText: string,
+  decision: DomainDecision,
   refine?: PlannerRunOptions["refine"],
 ): Promise<PlanResult> {
-  // Deterministic routing, closed on failure. The product supports two
-  // domains; a request that names neither gets an explanation, a request
-  // that names both gets a choice — and NOTHING falls back to the river.
-  // "UC Riverside enrollment" must not produce a Sacramento river dashboard.
-  const decision = classifyRequest(requestText);
+  // Deterministic routing, closed on failure. Nothing falls back to the river,
+  // and a known official snapshot is not forced through the sensor compiler.
   if (decision.kind === "unsupported") {
     return {
       ok: false,
       error:
-        "Dasher currently builds dashboards for river conditions and air quality. Try \u201criver conditions near Sacramento\u201d or \u201cair quality across Sacramento\u201d.",
+        "Dasher currently builds dashboards for river conditions, air quality, and UC Riverside enrollment. Try naming one of those subjects.",
     };
   }
   if (decision.kind === "ambiguous") {
     return {
       ok: false,
       error:
-        "That asks about both river conditions and air quality. Ask for one dashboard at a time, and you can build the other one next.",
+        "That asks about more than one supported subject. Ask for one dashboard at a time, and you can build the other one next.",
     };
+  }
+  if (decision.kind === "known-source") {
+    if (refine !== undefined) {
+      return {
+        ok: false,
+        error:
+          "This official enrollment snapshot cannot be refined yet. Build a new dashboard instead.",
+      };
+    }
+    try {
+      const snapshot = EnrollmentSnapshotSchema.parse(ucrEnrollmentSnapshot);
+      return {
+        ok: true,
+        dashboard: buildUcrEnrollmentDashboard(snapshot),
+        attempts: 1,
+      };
+    } catch {
+      return {
+        ok: false,
+        error:
+          "The official UC Riverside enrollment snapshot could not be verified.",
+      };
+    }
   }
   const domain: DomainEntry = decision.domain;
 

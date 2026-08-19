@@ -78,6 +78,27 @@ Neither issue blocks the bounded current-enrollment dashboard. Both would matter
 
 If this experiment is accepted, the next product slice can ask whether a user understands a source recommendation before Dasher builds the dashboard through the real request and persistence path. That slice should address the currency/reporting-period vocabulary explicitly rather than smuggling institutional snapshots through sensor freshness language.
 
+## Follow-up: product integration
+
+The next bounded slice completed the explicit request journey without changing
+the source experiment's boundaries:
+
+- requests naming both UCR and enrollment route to this captured official
+  snapshot;
+- requests naming UCR without enrollment remain unsupported;
+- the product validates the derived snapshot against the same typed schema the
+  raw HTML parser produces before building;
+- the dashboard carries no sensor plan, so the refinement surface is hidden;
+- persistence records `ucr-institutional-research` and
+  `deterministic-enrollment-v1`, then reopens the sealed bytes through the same
+  `/d/[id]` path;
+- the web product now imports `@dasher/enrollment-domain`, so its temporary
+  unreachable declaration was removed.
+
+The source is still a captured known source, not a live fetch or autonomous
+research result. Source recommendation and current-period refresh remain later
+product questions.
+
 ## Sources
 
 [1] https://ir.ucr.edu/campus-facts-tables — UCR Campus Facts Tables

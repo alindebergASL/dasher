@@ -48,6 +48,9 @@ importers:
       "@dasher/dashboard-schema":
         specifier: workspace:*
         version: link:../../packages/dashboard-schema
+      "@dasher/enrollment-domain":
+        specifier: workspace:*
+        version: link:../../packages/enrollment-domain
       "@dasher/planner":
         specifier: workspace:*
         version: link:../../packages/planner

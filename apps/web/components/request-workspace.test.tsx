@@ -86,11 +86,36 @@ beforeEach(() => {
 });
 
 describe("the planning disclosure", () => {
-  it("describes the deterministic planner without making a false source-mode claim", () => {
+  it("describes deterministic generation without claiming every dashboard used the sensor planner", () => {
     renderWorkspace();
 
-    expect(screen.getByText(/Deterministic planning\./u)).toBeVisible();
+    expect(screen.getByText(/Deterministic generation\./u)).toBeVisible();
     expect(screen.queryByText(/Fixture mode\./u)).toBeNull();
+  });
+
+  it("accepts a deterministic dashboard with no plan and hides refinement", async () => {
+    planDashboard.mockResolvedValue({
+      ok: true,
+      dashboard,
+      attempts: 1,
+      dashboardId: "11111111-1111-4111-8111-111111111111",
+    } satisfies PlanResult);
+
+    renderWorkspace();
+    screen.getByRole("button", { name: "Build dashboard" }).click();
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(plan.title, { exact: false }).length,
+      ).toBeGreaterThan(0);
+    });
+    expect(screen.queryByLabelText("Change this dashboard")).toBeNull();
+    expect(
+      screen.getByText(/official snapshot has no refinement path yet/u),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toHaveAttribute("href", "/d/11111111-1111-4111-8111-111111111111");
   });
 });
 

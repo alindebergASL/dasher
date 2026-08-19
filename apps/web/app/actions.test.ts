@@ -33,6 +33,23 @@ describe("planDashboard", () => {
     expect(result.dashboard?.schemaVersion).toBe("1.2");
   });
 
+  it("builds the official UCR enrollment snapshot without a sensor plan", async () => {
+    const result = await planDashboard(
+      "Current student enrollment at UC Riverside",
+      {
+        persist: false,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.plan).toBeUndefined();
+    expect(result.dashboard?.title).toBe("UC Riverside Enrollment — Fall 2025");
+    expect(JSON.stringify(result.dashboard)).not.toMatch(
+      /gauge|monitor|station/iu,
+    );
+    expect(JSON.stringify(result.dashboard)).toContain("27,633");
+  });
+
   it.each([
     ["empty", "   "],
     ["over the length limit", "x".repeat(REQUEST_MAX_LENGTH + 1)],
@@ -45,6 +62,18 @@ describe("planDashboard", () => {
 });
 
 describe("refineDashboard", () => {
+  it("refuses refinement for the deterministic enrollment snapshot", async () => {
+    const plan = await firstPlan();
+    const result = await refineDashboard(
+      "Current student enrollment at UC Riverside",
+      "Show the ten-year trend",
+      plan,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("cannot be refined yet");
+  });
+
   it("applies a change to the plan it was given", async () => {
     const plan = await firstPlan();
 
@@ -202,8 +231,8 @@ describe("the previous plan is parsed, not trusted", () => {
   });
 });
 
-describe("when a request never reaches a domain", () => {
-  it("contacts no upstream source for unsupported or ambiguous requests", async () => {
+describe("when a request does not need a sensor source", () => {
+  it("contacts no upstream source for known-source, unsupported, or ambiguous requests", async () => {
     // Routing decides before anything is fetched. A request the product
     // cannot place must not cost an upstream call — and in live mode, must
     // not be able to blame the source for its refusal either.
@@ -214,7 +243,10 @@ describe("when a request never reaches a domain", () => {
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     try {
-      const unsupported = await planDashboard("UC Riverside enrollment", {
+      const enrollment = await planDashboard("UC Riverside enrollment", {
+        persist: false,
+      });
+      const unsupported = await planDashboard("stock prices for tomorrow", {
         persist: false,
       });
       const ambiguous = await planDashboard(
@@ -222,6 +254,7 @@ describe("when a request never reaches a domain", () => {
         { persist: false },
       );
 
+      expect(enrollment.ok).toBe(true);
       expect(unsupported.ok).toBe(false);
       expect(ambiguous.ok).toBe(false);
       expect(fetchSpy).not.toHaveBeenCalled();

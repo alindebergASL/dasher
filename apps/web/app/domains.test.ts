@@ -40,9 +40,23 @@ describe("requests that name a domain", () => {
   });
 });
 
-describe("requests that do not", () => {
+describe("requests that name the known UCR enrollment source", () => {
   it.each([
     "UC Riverside enrollment",
+    "Current student enrollment at UCR",
+    "How many students are enrolled at the University of California, Riverside?",
+  ])("routes %j to the captured official snapshot", (text) => {
+    expect(classifyRequest(text)).toEqual({
+      kind: "known-source",
+      source: "ucr-enrollment",
+    });
+  });
+});
+
+describe("requests that do not", () => {
+  it.each([
+    "UC Riverside tuition",
+    "Riverside enrollment",
     "Show me a dashboard",
     "stock prices for tomorrow",
     "the fairground schedule",
@@ -57,6 +71,7 @@ describe("requests that do not", () => {
   it.each([
     "compare river conditions and air quality",
     "flood risk and smoke forecast for Sacramento",
+    "compare UCR enrollment with Sacramento air quality",
   ])("calls %j ambiguous instead of picking for the reader", (text) => {
     expect(classifyRequest(text)).toEqual({ kind: "ambiguous" });
   });

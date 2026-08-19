@@ -14,6 +14,7 @@
     "@dasher/air-domain": "workspace:*",
     "@dasher/control-plane": "workspace:*",
     "@dasher/dashboard-schema": "workspace:*",
+    "@dasher/enrollment-domain": "workspace:*",
     "@dasher/planner": "workspace:*",
     "@dasher/river-domain": "workspace:*",
     "@dasher/station-domain": "workspace:*",

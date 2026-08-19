@@ -16,6 +16,7 @@ import { DashboardShell } from "./dashboard-shell";
 const EXAMPLES = [
   "Create a live dashboard monitoring river gauges near Sacramento",
   "Air quality across Sacramento",
+  "Current student enrollment at UC Riverside",
   "Which gauges are rising fastest?",
   "How is the American river doing?",
 ] as const;
@@ -37,7 +38,7 @@ export function RequestWorkspace({
   initialRequest: string;
 }) {
   const [dashboard, setDashboard] = useState(initialDashboard);
-  const [plan, setPlan] = useState(initialPlan);
+  const [plan, setPlan] = useState<DashboardPlan | undefined>(initialPlan);
   const [request, setRequest] = useState(initialRequest);
   const [activeRequest, setActiveRequest] = useState(initialRequest);
   const [change, setChange] = useState("");
@@ -51,8 +52,8 @@ export function RequestWorkspace({
   const [pending, startTransition] = useTransition();
 
   function apply(result: PlanResult, nextRequest: string) {
-    if (!result.ok || !result.dashboard || !result.plan) {
-      setError(result.error ?? "That request could not be planned.");
+    if (!result.ok || !result.dashboard) {
+      setError(result.error ?? "That request could not be built.");
       setRefinement(undefined);
       return;
     }
@@ -86,6 +87,7 @@ export function RequestWorkspace({
   }
 
   function submitChange(instruction: string) {
+    if (plan === undefined) return;
     setChange(instruction);
     startTransition(async () => {
       apply(
@@ -146,9 +148,9 @@ export function RequestWorkspace({
         ) : null}
 
         <p className="request-note">
-          Deterministic planning. A planning stand-in chose this layout,
-          framing, and station selection from your words. Every number below is
-          calculated by Dasher from the source readings.
+          Deterministic generation. Dasher used a bounded builder or planner for
+          this request. Every number below is parsed or calculated from cited
+          source data.
           {revised
             ? " Its first plan was rejected by Dasher and corrected before anything rendered."
             : ""}{" "}
@@ -158,70 +160,78 @@ export function RequestWorkspace({
         </p>
       </form>
 
-      <form
-        className="refine-bar"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submitChange(change);
-        }}
-      >
-        <label className="request-label" htmlFor="dashboard-change">
-          Change this dashboard
-        </label>
-        <div className="request-row">
-          <input
-            autoComplete="off"
-            className="request-input"
-            id="dashboard-change"
-            maxLength={REFINEMENT_MAX_LENGTH}
-            name="change"
-            onChange={(event) => setChange(event.target.value)}
-            placeholder="Drop the map"
-            type="text"
-            value={change}
-          />
-          <button className="request-submit" disabled={pending} type="submit">
-            {pending ? "Changing…" : "Apply change"}
-          </button>
-        </div>
-
-        <div className="request-examples">
-          <span className="request-examples-label">Try:</span>
-          {REFINEMENTS.map((example) => (
-            <button
-              className="request-example"
-              disabled={pending}
-              key={example}
-              onClick={() => submitChange(example)}
-              type="button"
-            >
-              {example}
+      {plan === undefined ? (
+        <p className="request-note" role="status">
+          This official snapshot has no refinement path yet. Build a new
+          dashboard to ask a different question.
+        </p>
+      ) : (
+        <form
+          className="refine-bar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitChange(change);
+          }}
+        >
+          <label className="request-label" htmlFor="dashboard-change">
+            Change this dashboard
+          </label>
+          <div className="request-row">
+            <input
+              autoComplete="off"
+              className="request-input"
+              id="dashboard-change"
+              maxLength={REFINEMENT_MAX_LENGTH}
+              name="change"
+              onChange={(event) => setChange(event.target.value)}
+              placeholder="Drop the map"
+              type="text"
+              value={change}
+            />
+            <button className="request-submit" disabled={pending} type="submit">
+              {pending ? "Changing…" : "Apply change"}
             </button>
-          ))}
-        </div>
+          </div>
 
-        {refinement === "not-understood" ? (
-          <p className="request-note" role="status">
-            Dasher did not understand that change, so it left the dashboard as
-            it was. Naming a section — the map, the table, the history chart —
-            works better than describing a mood.
-          </p>
-        ) : null}
-        {savedId !== undefined ? (
-          <p className="request-note" role="status">
-            Saved.{" "}
-            <a className="request-permalink" href={`/d/${savedId}`}>
-              Open this dashboard by link
-            </a>{" "}
-            — it will still be here after a reload.
-          </p>
-        ) : null}
-        {refinement === "already-satisfied" ? (
-          <p className="request-note" role="status">
-            The dashboard already looks like that, so nothing changed.
-          </p>
-        ) : null}
-      </form>
+          <div className="request-examples">
+            <span className="request-examples-label">Try:</span>
+            {REFINEMENTS.map((example) => (
+              <button
+                className="request-example"
+                disabled={pending}
+                key={example}
+                onClick={() => submitChange(example)}
+                type="button"
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+
+          {refinement === "not-understood" ? (
+            <p className="request-note" role="status">
+              Dasher did not understand that change, so it left the dashboard as
+              it was. Naming a section — the map, the table, the history chart —
+              works better than describing a mood.
+            </p>
+          ) : null}
+          {refinement === "already-satisfied" ? (
+            <p className="request-note" role="status">
+              The dashboard already looks like that, so nothing changed.
+            </p>
+          ) : null}
+        </form>
+      )}
+
+      {savedId !== undefined ? (
+        <p className="request-note" role="status">
+          Saved.{" "}
+          <a className="request-permalink" href={`/d/${savedId}`}>
+            Open this dashboard by link
+          </a>{" "}
+          — it will still be here after a reload.
+        </p>
+      ) : null}
 
       <DashboardShell
         dashboard={dashboard}
