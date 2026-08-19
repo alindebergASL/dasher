@@ -114,147 +114,44 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
-      # The apt half of this is not cacheable and reaches a distribution mirror
-      # on every run. On 2026-08-19 that mirror went silent mid-`apt-get
-      # update`: the step held the runner for 29m37s, was cancelled by the job
-      # timeout, and not one product test ran. The retry still took 3m40s
-      # against a step that normally finishes in seconds, so the mirror was
-      # degraded rather than dead — intermittent, not a one-off.
+      # `install-deps` reaches a distribution mirror on every run — the apt half
+      # is not cacheable — and carried no step-level bound. On 2026-08-19 that
+      # mirror went silent mid-`apt-get update`, the step held the runner for
+      # 29m37s until the job ceiling killed it, no product test ran, and the log
+      # was unreadable until the moment of cancellation because a running job's
+      # logs cannot be fetched.
       #
-      # An unbounded network step inside a bounded job spends the whole job
-      # budget on its own worst case, reports it as a job timeout that reads
-      # like a product failure, and withholds the log until the very end,
-      # because a running job's logs cannot be fetched. Two bounded attempts
-      # cost at most eighteen minutes, recovery included, and leave the outer
-      # 30-minute ceiling as a backstop rather than as the mechanism.
+      # ONE bounded attempt, and deliberately no in-job retry.
       #
-      # The two bounds are deliberately asymmetric: SHORT first, GENEROUS retry.
+      # This file briefly carried a 4-minute attempt, a 2-minute apt-lock
+      # recovery, and a 12-minute retry. CI falsified it: that sequence spent
+      # 18 minutes and reached no product test, because the retry reused the
+      # same runner, the same mirrors, and the same outage. A SUCCESSFUL retry
+      # was never once observed, while the machinery to support it produced
+      # three defects of its own — a retry that could not acquire the dpkg lock,
+      # a recovery that probed a proxy instead of the lock, and a postcondition
+      # that checked one lock when four matter. The PR records the evidence.
       #
-      # A first attempt bounded near the healthy case detects a stuck mirror
-      # early instead of paying for it. But the retry must not inherit that
-      # bound, and CI proved why: a later run took 9m51s in this step and
-      # SUCCEEDED. Two five-minute attempts — the first version of this file —
-      # would have timed out twice against a mirror that was working and turned
-      # a slow green run red. A policy that fails on evidence already in hand is
-      # worse than the unbounded step it replaces.
+      # The operational retry is "Re-run failed jobs": a fresh machine, and a
+      # genuinely independent attempt rather than a repeat against the same
+      # network state and a half-finished apt run.
       #
-      # So: 4 minutes to notice, 2 to clear the wreckage, 12 to actually
-      # finish. Worst case 18 minutes, comfortably inside the 30-minute
-      # ceiling that still backstops the job, and better failure behaviour
-      # than two 8-minute attempts because the decision to retry arrives
-      # sooner.
-      #
-      # The first attempt may fail without failing the job. The second is
-      # fail-closed: when it fails the job stops here, and the browser suite
-      # below never runs against a half-installed system.
+      # Twelve minutes comes from evidence rather than taste. An observed
+      # SUCCESSFUL run of this step took 9m51s, so a shorter bound would fail a
+      # mirror that is slow but working; healthy runs finish in 12-14 seconds.
+      # The 30-minute job ceiling is unchanged and stays a backstop.
       - id: playwright-deps
-        continue-on-error: true
-        timeout-minutes: 4
+        timeout-minutes: 12
         run: pnpm --filter @dasher/web exec playwright install-deps chromium
 
-      # `outcome`, not `conclusion`. `continue-on-error: true` rewrites
-      # `conclusion` to `success`, so a condition written on `conclusion` would
-      # never fire, the retry would be unreachable, and this would collapse
-      # back to the single unbounded attempt it exists to replace — while
-      # looking correct.
-      # A timed-out step has its process tree killed, but the `apt-get` that
-      # `install-deps` launched under sudo SURVIVES as an orphan, still holding
-      # /var/lib/dpkg/lock-frontend. Observed live on 2026-08-19: the first
-      # attempt hit its bound at 4m13s, and the retry died three seconds later
-      # with "Could not get lock /var/lib/dpkg/lock-frontend. It is held by
-      # process 3868 (apt-get)". A retry that cannot acquire the lock is not a
-      # retry — it is a second failure wearing a retry's name, and without this
-      # step the whole mechanism above is decorative in exactly the case it
-      # exists for.
-      #
-      # Wait for the orphan to finish on its own first, since a mirror that is
-      # merely slow will complete and release the lock. Only kill it when it
-      # will not, and then repair whatever the kill left half-configured.
-      - id: playwright-deps-clear
-        name: Clear an interrupted apt run before retrying
-        # `success() &&` is explicit rather than implied. A bare `if:` is
-        # implicitly ANDed with `success()`, but relying on that here would make
-        # the difference between "the retry is skipped because recovery failed"
-        # and "the retry runs on a broken system" depend on a rule nobody can
-        # see in the file.
-        if: success() && steps.playwright-deps.outcome != 'success'
-        timeout-minutes: 2
-        run: |
-          # Wait for an orphan to finish on its own: a merely slow mirror will
-          # complete and release everything, and killing it would throw away a
-          # working install. Detection is on the PROCESS, not on a lock probe.
-          # An earlier version probed with `apt-get check`, which acquires
-          # neither the dpkg frontend lock nor the lists lock, so it reported
-          # "free" in three seconds while the orphan was still running and the
-          # retry then died on /var/lib/apt/lists/lock. Testing a proxy for the
-          # thing that fails is how a recovery step passes without recovering.
-          waited=0
-          while [ "$waited" -lt 60 ]; do
-            if ! pgrep -x apt-get >/dev/null 2>&1 && ! pgrep -x dpkg >/dev/null 2>&1; then
-              break
-            fi
-            waited=$((waited + 2))
-            sleep 2
-          done
-
-          if pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1; then
-            echo "apt or dpkg still running after ${waited}s; terminating the orphan."
-            # "no such process" is the expected result when the orphan exits
-            # between the check and the kill, and is not a failure.
-            sudo pkill -x apt-get || true
-            sudo pkill -x dpkg || true
-            sleep 3
-            sudo pkill -9 -x apt-get || true
-            sudo pkill -9 -x dpkg || true
-            sleep 2
-          else
-            echo "no orphaned apt or dpkg after ${waited}s."
-          fi
-
-          # NOT `|| true`. An unrepairable package database has to stop the job
-          # here. Swallowing this would hand the retry an unusable system and
-          # let the final annotation blame two install failures for what was
-          # really a failed repair.
-          sudo dpkg --configure -a
-
-          # Postcondition over EVERY lock the installer needs, not one of them.
-          # `flock` takes the same lock apt does, so this tests the thing that
-          # actually failed rather than a proxy for it. Two different locks have
-          # now broken the retry in two different runs, which is why this
-          # enumerates them instead of trusting one.
-          for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
-                      /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
-            if [ -e "$lock" ]; then
-              sudo flock --timeout 15 "$lock" true
-            fi
-          done
-          echo "every apt and dpkg lock is free."
-
-      - id: playwright-deps-retry
-        # Explicit `success()` again: when recovery fails this must not run.
-        if: success() && steps.playwright-deps.outcome != 'success'
-        timeout-minutes: 12
-        run: |
-          echo "First attempt: ${{ steps.playwright-deps.outcome }} within its 4-minute bound. Retrying once with a 12-minute bound."
-          pnpm --filter @dasher/web exec playwright install-deps chromium
-
-      # Both attempts are gone, so the job has already failed and nothing below
-      # this runs. It exists so the failure names its own cause: without it the
-      # only signal is a red step titled after a pnpm command, which reads as a
-      # test failure and sends the next reader bisecting a diff that is not
-      # involved.
-      - name: Report a failed apt recovery as its own cause
-        # A distinct cause deserves a distinct annotation. When recovery fails
-        # the retry is skipped, so the two-attempt annotation below stays quiet
-        # and this failure would otherwise be unnamed.
-        if: failure() && steps.playwright-deps-clear.outcome == 'failure'
-        run: |
-          echo "::error title=Could not recover the package manager before retrying::The first 'playwright install-deps chromium' attempt hit its bound, and clearing the interrupted apt run afterwards failed: the dpkg lock could not be released, 'dpkg --configure -a' could not repair the package database, or the package manager was still unusable afterwards. The retry was deliberately skipped rather than run against a broken system. This is a runner/system-dependency failure before any product test ran; the diff under test is not implicated."
-
+      # Gated on this step's own outcome, not on a bare `failure()`. `pnpm test`
+      # and `pnpm build` run above, so a bare `failure()` would put an
+      # apt-blaming annotation on a genuine product-test failure — the annotation
+      # exists to stop misattribution, and must not become a source of it.
       - name: Report a system-dependency failure as its own cause
-        if: failure() && steps.playwright-deps-retry.outcome == 'failure'
+        if: failure() && steps.playwright-deps.outcome == 'failure'
         run: |
-          echo "::error title=Playwright system dependencies failed twice::Both bounded attempts at 'playwright install-deps chromium' failed or timed out (4 minutes, then 12, with a lock recovery between them). This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Both attempt logs are above."
+          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound. This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Use 'Re-run failed jobs' to retry on a fresh runner."
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
@@ -414,106 +311,20 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
-      # Bounded and retried once, for the reason recorded above `verify`'s copy
-      # of this step. Both jobs install the same system dependencies from the
-      # same mirror, so both carry the same failure mode; on 2026-08-19 both
-      # burned their full 30-minute budget on it.
+      # One bounded attempt and no in-job retry, for the reason recorded above
+      # `verify`'s copy of this step. Both jobs install the same system
+      # dependencies from the same mirror and both burned their full budget on
+      # 2026-08-19.
       - id: playwright-deps
-        continue-on-error: true
-        timeout-minutes: 4
+        timeout-minutes: 12
         run: pnpm --filter @dasher/web exec playwright install-deps chromium
 
-      # `outcome`, not `conclusion`. `continue-on-error: true` rewrites
-      # `conclusion` to `success`, so a condition written on `conclusion` would
-      # never fire, the retry would be unreachable, and this would collapse
-      # back to the single unbounded attempt it exists to replace — while
-      # looking correct.
-      # Same orphaned-lock recovery as `verify`, for the reason recorded there.
-      - id: playwright-deps-clear
-        name: Clear an interrupted apt run before retrying
-        # `success() &&` is explicit rather than implied. A bare `if:` is
-        # implicitly ANDed with `success()`, but relying on that here would make
-        # the difference between "the retry is skipped because recovery failed"
-        # and "the retry runs on a broken system" depend on a rule nobody can
-        # see in the file.
-        if: success() && steps.playwright-deps.outcome != 'success'
-        timeout-minutes: 2
-        run: |
-          # Wait for an orphan to finish on its own: a merely slow mirror will
-          # complete and release everything, and killing it would throw away a
-          # working install. Detection is on the PROCESS, not on a lock probe.
-          # An earlier version probed with `apt-get check`, which acquires
-          # neither the dpkg frontend lock nor the lists lock, so it reported
-          # "free" in three seconds while the orphan was still running and the
-          # retry then died on /var/lib/apt/lists/lock. Testing a proxy for the
-          # thing that fails is how a recovery step passes without recovering.
-          waited=0
-          while [ "$waited" -lt 60 ]; do
-            if ! pgrep -x apt-get >/dev/null 2>&1 && ! pgrep -x dpkg >/dev/null 2>&1; then
-              break
-            fi
-            waited=$((waited + 2))
-            sleep 2
-          done
-
-          if pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1; then
-            echo "apt or dpkg still running after ${waited}s; terminating the orphan."
-            # "no such process" is the expected result when the orphan exits
-            # between the check and the kill, and is not a failure.
-            sudo pkill -x apt-get || true
-            sudo pkill -x dpkg || true
-            sleep 3
-            sudo pkill -9 -x apt-get || true
-            sudo pkill -9 -x dpkg || true
-            sleep 2
-          else
-            echo "no orphaned apt or dpkg after ${waited}s."
-          fi
-
-          # NOT `|| true`. An unrepairable package database has to stop the job
-          # here. Swallowing this would hand the retry an unusable system and
-          # let the final annotation blame two install failures for what was
-          # really a failed repair.
-          sudo dpkg --configure -a
-
-          # Postcondition over EVERY lock the installer needs, not one of them.
-          # `flock` takes the same lock apt does, so this tests the thing that
-          # actually failed rather than a proxy for it. Two different locks have
-          # now broken the retry in two different runs, which is why this
-          # enumerates them instead of trusting one.
-          for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
-                      /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
-            if [ -e "$lock" ]; then
-              sudo flock --timeout 15 "$lock" true
-            fi
-          done
-          echo "every apt and dpkg lock is free."
-
-      - id: playwright-deps-retry
-        # Explicit `success()` again: when recovery fails this must not run.
-        if: success() && steps.playwright-deps.outcome != 'success'
-        timeout-minutes: 12
-        run: |
-          echo "First attempt: ${{ steps.playwright-deps.outcome }} within its 4-minute bound. Retrying once with a 12-minute bound."
-          pnpm --filter @dasher/web exec playwright install-deps chromium
-
-      # Both attempts are gone, so the job has already failed and nothing below
-      # this runs. It exists so the failure names its own cause: without it the
-      # only signal is a red step titled after a pnpm command, which reads as a
-      # test failure and sends the next reader bisecting a diff that is not
-      # involved.
-      - name: Report a failed apt recovery as its own cause
-        # A distinct cause deserves a distinct annotation. When recovery fails
-        # the retry is skipped, so the two-attempt annotation below stays quiet
-        # and this failure would otherwise be unnamed.
-        if: failure() && steps.playwright-deps-clear.outcome == 'failure'
-        run: |
-          echo "::error title=Could not recover the package manager before retrying::The first 'playwright install-deps chromium' attempt hit its bound, and clearing the interrupted apt run afterwards failed: the dpkg lock could not be released, 'dpkg --configure -a' could not repair the package database, or the package manager was still unusable afterwards. The retry was deliberately skipped rather than run against a broken system. This is a runner/system-dependency failure before any product test ran; the diff under test is not implicated."
-
+      # Gated on this step's own outcome: the migration and build steps run
+      # above, so a bare `failure()` would blame apt for their failures.
       - name: Report a system-dependency failure as its own cause
-        if: failure() && steps.playwright-deps-retry.outcome == 'failure'
+        if: failure() && steps.playwright-deps.outcome == 'failure'
         run: |
-          echo "::error title=Playwright system dependencies failed twice::Both bounded attempts at 'playwright install-deps chromium' failed or timed out (4 minutes, then 12, with a lock recovery between them). This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Both attempt logs are above."
+          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound. This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Use 'Re-run failed jobs' to retry on a fresh runner."
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
