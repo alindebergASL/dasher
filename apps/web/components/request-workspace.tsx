@@ -146,9 +146,9 @@ export function RequestWorkspace({
         ) : null}
 
         <p className="request-note">
-          Fixture mode. A planning stand-in chose this layout, framing, and
-          station selection from your words. Every number below is calculated by
-          Dasher from the source readings.
+          Deterministic planning. A planning stand-in chose this layout,
+          framing, and station selection from your words. Every number below is
+          calculated by Dasher from the source readings.
           {revised
             ? " Its first plan was rejected by Dasher and corrected before anything rendered."
             : ""}{" "}
