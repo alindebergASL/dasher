@@ -146,12 +146,21 @@ jobs:
 
       # Gated on this step's own outcome, not on a bare `failure()`. `pnpm test`
       # and `pnpm build` run above, so a bare `failure()` would put an
-      # apt-blaming annotation on a genuine product-test failure — the annotation
-      # exists to stop misattribution, and must not become a source of it.
+      # apt-blaming annotation on a genuine product-test failure.
+      #
+      # The wording is bounded by what the outcome actually proves, which is
+      # narrower than the first version claimed. It said "before any product
+      # test ran" — false, since the unit tests above may already have passed —
+      # and "the diff under test is not implicated", which no step outcome can
+      # establish: a change to Playwright or its dependency inputs can break
+      # this install legitimately. An annotation written to prevent
+      # misattribution must not misattribute in the other direction by
+      # declaring the diff innocent. It now says what did not run and hands the
+      # cause to the log.
       - name: Report a system-dependency failure as its own cause
         if: failure() && steps.playwright-deps.outcome == 'failure'
         run: |
-          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound. This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Use 'Re-run failed jobs' to retry on a fresh runner."
+          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound, before the browser install and the E2E suite. Unit tests and the build run above this step and may already have passed, so this is not an E2E result. The cause may be a transient mirror or apt failure, or a change in this diff to Playwright or its dependency inputs -- the install log above decides which. Re-run failed jobs only if that log shows a transient failure."
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
@@ -320,11 +329,12 @@ jobs:
         run: pnpm --filter @dasher/web exec playwright install-deps chromium
 
       # Gated on this step's own outcome: the migration and build steps run
-      # above, so a bare `failure()` would blame apt for their failures.
+      # above, so a bare `failure()` would blame apt for their failures. The
+      # wording stays inside what the outcome proves — see `verify`'s copy.
       - name: Report a system-dependency failure as its own cause
         if: failure() && steps.playwright-deps.outcome == 'failure'
         run: |
-          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound. This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Use 'Re-run failed jobs' to retry on a fresh runner."
+          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound, before the persistence suite. The migration and the build run above this step and may already have passed, so this is not a persistence-test result. The cause may be a transient mirror or apt failure, or a change in this diff to Playwright or its dependency inputs -- the install log above decides which. Re-run failed jobs only if that log shows a transient failure."
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
