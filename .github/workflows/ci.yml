@@ -180,33 +180,55 @@ jobs:
         if: success() && steps.playwright-deps.outcome != 'success'
         timeout-minutes: 2
         run: |
+          # Wait for an orphan to finish on its own: a merely slow mirror will
+          # complete and release everything, and killing it would throw away a
+          # working install. Detection is on the PROCESS, not on a lock probe.
+          # An earlier version probed with `apt-get check`, which acquires
+          # neither the dpkg frontend lock nor the lists lock, so it reported
+          # "free" in three seconds while the orphan was still running and the
+          # retry then died on /var/lib/apt/lists/lock. Testing a proxy for the
+          # thing that fails is how a recovery step passes without recovering.
           waited=0
           while [ "$waited" -lt 60 ]; do
-            if sudo apt-get -o DPkg::Lock::Timeout=2 check >/dev/null 2>&1; then
+            if ! pgrep -x apt-get >/dev/null 2>&1 && ! pgrep -x dpkg >/dev/null 2>&1; then
               break
             fi
             waited=$((waited + 2))
             sleep 2
           done
-          if sudo apt-get -o DPkg::Lock::Timeout=5 check >/dev/null 2>&1; then
-            echo "apt lock free after ${waited}s; no orphan to clear."
-          else
-            echo "apt lock still held after ${waited}s; terminating the orphaned holder."
-            # "no such process" is the expected result when the orphan exited
+
+          if pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1; then
+            echo "apt or dpkg still running after ${waited}s; terminating the orphan."
+            # "no such process" is the expected result when the orphan exits
             # between the check and the kill, and is not a failure.
             sudo pkill -x apt-get || true
             sudo pkill -x dpkg || true
+            sleep 3
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
             sleep 2
-            # NOT `|| true`. An unrepairable package database has to stop the
-            # job here. Swallowing this would hand the retry an unusable system
-            # and let the final annotation blame two install failures for what
-            # was really a failed repair.
-            sudo dpkg --configure -a
+          else
+            echo "no orphaned apt or dpkg after ${waited}s."
           fi
-          # Postcondition, not decoration: recovery has only succeeded if the
-          # package manager is actually usable afterwards. Without it the step
-          # can report success on a system the retry cannot use.
-          sudo apt-get -o DPkg::Lock::Timeout=30 check
+
+          # NOT `|| true`. An unrepairable package database has to stop the job
+          # here. Swallowing this would hand the retry an unusable system and
+          # let the final annotation blame two install failures for what was
+          # really a failed repair.
+          sudo dpkg --configure -a
+
+          # Postcondition over EVERY lock the installer needs, not one of them.
+          # `flock` takes the same lock apt does, so this tests the thing that
+          # actually failed rather than a proxy for it. Two different locks have
+          # now broken the retry in two different runs, which is why this
+          # enumerates them instead of trusting one.
+          for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+                      /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+            if [ -e "$lock" ]; then
+              sudo flock --timeout 15 "$lock" true
+            fi
+          done
+          echo "every apt and dpkg lock is free."
 
       - id: playwright-deps-retry
         # Explicit `success()` again: when recovery fails this must not run.
@@ -417,33 +439,55 @@ jobs:
         if: success() && steps.playwright-deps.outcome != 'success'
         timeout-minutes: 2
         run: |
+          # Wait for an orphan to finish on its own: a merely slow mirror will
+          # complete and release everything, and killing it would throw away a
+          # working install. Detection is on the PROCESS, not on a lock probe.
+          # An earlier version probed with `apt-get check`, which acquires
+          # neither the dpkg frontend lock nor the lists lock, so it reported
+          # "free" in three seconds while the orphan was still running and the
+          # retry then died on /var/lib/apt/lists/lock. Testing a proxy for the
+          # thing that fails is how a recovery step passes without recovering.
           waited=0
           while [ "$waited" -lt 60 ]; do
-            if sudo apt-get -o DPkg::Lock::Timeout=2 check >/dev/null 2>&1; then
+            if ! pgrep -x apt-get >/dev/null 2>&1 && ! pgrep -x dpkg >/dev/null 2>&1; then
               break
             fi
             waited=$((waited + 2))
             sleep 2
           done
-          if sudo apt-get -o DPkg::Lock::Timeout=5 check >/dev/null 2>&1; then
-            echo "apt lock free after ${waited}s; no orphan to clear."
-          else
-            echo "apt lock still held after ${waited}s; terminating the orphaned holder."
-            # "no such process" is the expected result when the orphan exited
+
+          if pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1; then
+            echo "apt or dpkg still running after ${waited}s; terminating the orphan."
+            # "no such process" is the expected result when the orphan exits
             # between the check and the kill, and is not a failure.
             sudo pkill -x apt-get || true
             sudo pkill -x dpkg || true
+            sleep 3
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
             sleep 2
-            # NOT `|| true`. An unrepairable package database has to stop the
-            # job here. Swallowing this would hand the retry an unusable system
-            # and let the final annotation blame two install failures for what
-            # was really a failed repair.
-            sudo dpkg --configure -a
+          else
+            echo "no orphaned apt or dpkg after ${waited}s."
           fi
-          # Postcondition, not decoration: recovery has only succeeded if the
-          # package manager is actually usable afterwards. Without it the step
-          # can report success on a system the retry cannot use.
-          sudo apt-get -o DPkg::Lock::Timeout=30 check
+
+          # NOT `|| true`. An unrepairable package database has to stop the job
+          # here. Swallowing this would hand the retry an unusable system and
+          # let the final annotation blame two install failures for what was
+          # really a failed repair.
+          sudo dpkg --configure -a
+
+          # Postcondition over EVERY lock the installer needs, not one of them.
+          # `flock` takes the same lock apt does, so this tests the thing that
+          # actually failed rather than a proxy for it. Two different locks have
+          # now broken the retry in two different runs, which is why this
+          # enumerates them instead of trusting one.
+          for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+                      /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+            if [ -e "$lock" ]; then
+              sudo flock --timeout 15 "$lock" true
+            fi
+          done
+          echo "every apt and dpkg lock is free."
 
       - id: playwright-deps-retry
         # Explicit `success()` again: when recovery fails this must not run.
