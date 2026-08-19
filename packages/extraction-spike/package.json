@@ -1,0 +1,23 @@
+{
+  "name": "@dasher/extraction-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "report": "vite-node src/report-cli.ts"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.2",
+    "vite-node": "^6.0.0",
+    "vitest": "^4.1.10"
+  }
+}
