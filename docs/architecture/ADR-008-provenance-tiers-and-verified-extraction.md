@@ -60,11 +60,13 @@ being introduced here — `dasher.claims` in `0001_baseline.sql` already carries
 The vocabulary exists; this ADR binds the dashboard contract to it rather than
 inventing a parallel one on the evidence side.
 
-The dashboard contract consequence is that a value-bearing field must be able to
-say "no evidence, deliberately" rather than being forced to name an evidence ID.
-Today `RequiredEvidenceIdsSchema` admits only a non-empty list, so the only way
-to render an unsupported narrative claim is to fabricate an evidence record for
-it. That is the specific hole this closes.
+The dashboard contract consequence is a diagnosis rather than a feature. Today
+`RequiredEvidenceIdsSchema` admits only a non-empty list, so the only way to put
+an unsupported narrative claim on a dashboard is to fabricate an evidence record
+for it. This ADR closes that by forbidding the fabrication — not by opening a
+rendering path. Rule 3 keeps unsupported output off the page entirely until the
+contract grows an explicitly non-material projection, because under ADR-005 an
+`interpreted` or `recommended` label is not a place to park it.
 
 `kind` (`observed` / `calculated` / `interpreted` / `recommended`) is unchanged
 and answers a different question: what sort of claim this is. Provenance answers
@@ -111,13 +113,22 @@ separate.
 
 So these stay orthogonal and none of them collapses into another:
 
-| Dimension                | Answers                                                    | Carried by                              |
-| ------------------------ | ---------------------------------------------------------- | --------------------------------------- |
-| Transformation integrity | how the value got from artifact to claim                   | `tier` (this ADR)                       |
-| Source authority         | whether this source may speak to this subject at all       | connector approval, retrieval identity  |
-| Freshness                | how old the artifact is, and whether it still hashes equal | `observedAt` / `retrievedAt`, snapshot  |
-| Evidence completeness    | whether the supporting set covers the claim                | ADR-005's `complete` / `partial` states |
-| Confidence               | the stated strength of the claim                           | `confidence`                            |
+| Dimension                | Answers                                                       | Carried by                              |
+| ------------------------ | ------------------------------------------------------------- | --------------------------------------- |
+| Transformation integrity | how the value got from artifact to claim                      | `tier` (this ADR)                       |
+| Source authority         | whether this source may speak to this subject at all          | connector approval, retrieval identity  |
+| Freshness                | how old the artifact is, and whether a newer retrieval exists | `observedAt` / `retrievedAt`, policy    |
+| Artifact integrity       | whether the sealed bytes are still the sealed bytes           | `content_sha256`, fail-closed           |
+| Evidence completeness    | whether the supporting set covers the claim                   | ADR-005's `complete` / `partial` states |
+| Confidence               | the stated strength of the claim                              | `confidence`                            |
+
+Integrity is listed separately from freshness on purpose. `source_snapshots` is
+immutable and its `content_sha256` is constrained to equal
+`sha256(canonical_bytes)`, so a hash mismatch is not an aged artifact — it is
+corruption or tampering, and it **fails closed**. A claim goes stale because of
+observed or retrieved age, a retention or refresh policy, or a newer retrieval
+superseding it. Those are different events with different responses, and
+collapsing them would turn an integrity failure into a routine refresh prompt.
 
 ### What the verifier actually operates on
 
@@ -145,11 +156,24 @@ rendered spec. A candidate must name, at minimum:
 | `claimPointer`    | the JSON pointer into the spec this candidate is bound to                   |
 
 Trusted code then verifies **at the coordinates**: re-hash the snapshot, read the
-locator, and require that what is there equals `extractedText` and that
-`extractedText` denotes `value`. A candidate whose text exists elsewhere in the
-document but not at its stated coordinates is **refused**, and that negative case
-is a required test, not an incidental one — it is the difference between checking
-a citation and checking a search hit.
+locator, and require that what is there equals `extractedText`. A candidate whose
+text exists elsewhere in the document but not at its stated coordinates is
+**refused**, and that negative case is a required test, not an incidental one —
+it is the difference between checking a citation and checking a search hit.
+
+The relationship between `extractedText` and `value` is then checked under a
+deliberately narrow, deterministic definition: a **versioned lexical
+normalisation** turns the source characters into a token and a unit syntax, and
+the check is that `value` and `unit` are that token and that syntax. It decides
+that the characters `27,633` are the integer 27633, and that `4.7%` is a
+percentage rather than a count. It decides nothing about what the number is _of_.
+
+This is stated as a definition rather than left to the word "denotes" because
+"denotes" would smuggle in exactly the semantic verifier the next section says
+does not exist. Normalisation is versioned because widening it — thousands
+separators, unicode dashes, non-breaking spaces — changes what verifies, and a
+change of that kind must be a visible contract revision rather than a quiet
+loosening.
 
 These are the same primitives the durable graph already provides:
 `source_snapshots.content_sha256` (constrained to equal
@@ -178,10 +202,24 @@ writing that graph, not adding two fields to a rendered spec.
    stale too, regardless of tier. A calculation with any `unsupported` input is
    refused (rule 3), not merely marked.
 
-3. **Unsupported claims carry no numeric authority and may never feed a
-   calculation.** Such a claim may appear as framing or narrative under
-   `interpreted` or `recommended`, at low confidence, with no evidence ID and no
-   fabricated one, and nothing may be derived from it.
+3. **Unsupported output is confined to explicitly non-material framing.** It
+   carries no numeric authority, may never feed a calculation, and carries no
+   evidence ID and no fabricated one. Labelling it `interpreted` or
+   `recommended` does **not** license it: ADR-005 says "every material claim and
+   calculated value must resolve through typed transformations to authorized
+   immutable evidence. Interpretation and recommendation labels do not substitute
+   for evidence." A recommendation is frequently the most material thing on a
+   dashboard, and low confidence does not make it less so.
+
+   So the boundary is materiality, not label. Unsupported output may appear only
+   as explicit hypothesis or explicit unknown — "no source was found for this",
+   "one reading of this would be" — and never on a decision-bearing surface: not
+   as a metric, not in a ranking, not in an alert, not in the brief's findings.
+   The database already has this vocabulary in `claims.label` (`hypothesis`) and
+   `claims.evidence_state` (`unsupported`). The dashboard contract does not: its
+   `kind` vocabulary has no non-material projection, and adding one is a future
+   contract question this ADR names rather than settles. **Until it exists, the
+   conservative reading holds — unsupported output does not render.**
 
 4. **Research is a Dasher-run source job**, separately authorized, never a
    provider-hosted tool. The inference provider stays inference-only.
@@ -216,14 +254,15 @@ writing that graph, not adding two fields to a rendered spec.
 
 ### The visible and enforceable matrix
 
-| Question                                          | Decision                                                                                                                 |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| May a `parsed` evidence record carry a span?      | No. Coordinates and extracted text exist only for `extracted`; a parser's authority is its code, not a quotation.        |
-| Which `kind`s may an `unsupported` claim take?    | `interpreted` and `recommended` only, at `low` confidence. Never `observed` or `calculated`.                             |
-| How does a claim's provenance derive?             | The lowest tier among the evidence records that `support` it; `unsupported` when there are none.                         |
-| A calculation over mixed `parsed` and `extracted` | Displays as `extracted` (rule 2), and names both sources in its evidence.                                                |
-| A claim supported by several evidence IDs         | Same lowest-tier rule, on the tier dimension only. Adding a `parsed` citation beside an `extracted` one never raises it. |
-| A `contradicts` edge                              | Out of scope here; ADR-005's `contradicted` state governs it and this ADR does not weaken it.                            |
+| Question                                          | Decision                                                                                                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| May a `parsed` evidence record carry coordinates? | Yes — required. `evidence_records.coordinates` is `NOT NULL`, and parsed evidence names its source JSON path or record coordinate.         |
+| May a `parsed` evidence record carry a span?      | No. `extractedText` and its locator are extraction-specific; a parser's authority is its code under test, not a quotation.                 |
+| Which `kind`s may an `unsupported` claim take?    | None today. Per rule 3 it needs a non-material projection the contract does not yet have; `interpreted` / `recommended` do not substitute. |
+| How does a claim's provenance derive?             | The lowest tier among the evidence records that `support` it; `unsupported` when there are none.                                           |
+| A calculation over mixed `parsed` and `extracted` | Displays as `extracted` (rule 2), and names both sources in its evidence.                                                                  |
+| A claim supported by several evidence IDs         | Same lowest-tier rule, on the tier dimension only. Adding a `parsed` citation beside an `extracted` one never raises it.                   |
+| A `contradicts` edge                              | Out of scope here; ADR-005's `contradicted` state governs it and this ADR does not weaken it.                                              |
 
 ## What verified extraction does not prove
 
@@ -293,11 +332,15 @@ is refused. That was correct while every source needed a hand-written parser.
 
 With a verified extraction tier, an unconnected request has a second possible
 answer: build the dashboard from research, at a visibly lower tier, with
-citations. Connectors give high-trust, live, cheap-to-refresh, narrow coverage;
-research gives lower-trust, snapshot, expensive, unlimited coverage — and,
-per the section above, coverage whose semantic binding is unchecked. Graceful
-degradation instead of a closed door, and it is honest only because rule 6 puts
-the provenance on the page.
+citations. The two differ in governance and shape, not in how true they are —
+neither delivery method establishes truth, and the earlier dimension table is
+what keeps that straight. Connectors are connector-governed and monitored:
+approved source identity, live, cheap to re-fetch, narrow. Research is
+snapshot-grounded: coordinate-verified against retained bytes, semantically
+unverified, expensive, and reaching sources no connector covers — which is
+broader access, not unlimited access, since SSRF policy and source approval
+still bound it. Graceful degradation instead of a closed door, and it is honest
+only because rule 6 puts the provenance on the page.
 
 Fail-closed does not weaken. It moves from _unsupported_ to _unverifiable_: a
 request Dasher cannot answer from a connector **or** from coordinate-verified
@@ -322,8 +365,14 @@ be re-derivable identically: the page changed, or the model reads it differently
 These are different guarantees and a dashboard must know which of its facts are
 which — **monitored** or **researched**. A researched dashboard is a snapshot
 with citations, and refreshing it means re-running extraction and re-verifying
-at fresh coordinates, not assuming the previous answer still holds. A snapshot
-whose `content_sha256` no longer matches is a stale claim, not a silent refresh.
+at fresh coordinates, not assuming the previous answer still holds.
+
+Two failures live here and must not be confused. A claim goes **stale** when its
+artifact ages past policy, or when a newer retrieval supersedes it; the response
+is to re-retrieve and re-verify. A snapshot whose `content_sha256` no longer
+matches its bytes has suffered an **integrity failure** — the store is immutable
+and hash-constrained, so this is corruption or tampering, never age. The response
+is to fail closed on every claim resting on that snapshot, not to refresh it.
 
 ## Evidence stops being only justification
 
@@ -392,12 +441,23 @@ not a migration.
 
 ## What deliberately does not change
 
-- **The plan cannot influence a number.** Narrowed, not abandoned: the model may
-  propose _structure_ — which sections, which framing, and which field of a
-  document holds which value — and trusted code performs every computation and
-  every coordinate verification. A model proposing a mapping is not a model
-  producing a value. The mapping itself stays unverified, and the section above
-  says so rather than hiding it in this sentence.
+- **The lexical invariant**, which replaces "the plan cannot influence a number"
+  rather than preserving it by definition. The old sentence is not true under
+  extraction and cannot be rescued: choosing the mapping chooses which source
+  number becomes the displayed value, and this ADR's own example proves it —
+  binding `27,633 applications` to enrollment changes the enrollment figure on
+  the page while every coordinate check passes. Calling that "proposing
+  structure, not producing a value" is a definitional dodge.
+
+  What survives is narrower and lexical, not causal: **a model cannot introduce
+  numeric content that is absent from retained coordinates or from trusted
+  computation.** Every digit on the page traces to bytes someone retrieved and
+  sealed, or to a calculation trusted code performed over such bytes. The model
+  can still select — and misbind — which grounded number lands in which field,
+  and that mapping is semantically unverified. Trusted code still performs every
+  computation and every coordinate check. It does not check the mapping, and no
+  sentence in this ADR should be read as claiming otherwise.
+
 - **`kind` and `confidence`.** Both stay. Provenance is orthogonal to `kind`, and
   `confidence` is not a substitute for it: a webpage can be quoted with high
   confidence and still be a webpage.
