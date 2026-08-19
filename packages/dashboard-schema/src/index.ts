@@ -20,3 +20,10 @@ export {
 } from "./schema";
 
 export { canonicalSpecBytes } from "./canonical";
+export {
+  composeDashboards,
+  DashboardCompositionError,
+  type ComposedSource,
+  type ComposedSources,
+  type ComposeOptions,
+} from "./compose";

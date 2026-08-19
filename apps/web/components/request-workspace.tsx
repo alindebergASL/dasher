@@ -49,6 +49,9 @@ export function RequestWorkspace({
     "not-understood" | "already-satisfied" | undefined
   >(undefined);
   const [savedId, setSavedId] = useState<string | undefined>(undefined);
+  const [noRefinement, setNoRefinement] = useState<
+    "official-snapshot" | "combined-sources" | undefined
+  >(undefined);
   const [pending, startTransition] = useTransition();
 
   function apply(result: PlanResult, nextRequest: string) {
@@ -72,6 +75,7 @@ export function RequestWorkspace({
     // that is not persisted by this slice, so keeping the previous link would
     // point at a dashboard the reader is no longer looking at.
     setSavedId(result.dashboardId);
+    setNoRefinement(result.noRefinement);
     // Remounts the dashboard so a refinement visibly redraws. Keying on the
     // request alone would leave a refinement of the same request looking like
     // nothing happened.
@@ -161,9 +165,13 @@ export function RequestWorkspace({
       </form>
 
       {plan === undefined ? (
+        // Same missing plan, two different reasons, two different sentences.
+        // Calling a river-and-air dashboard an "official snapshot" described a
+        // product the reader was not looking at.
         <p className="request-note" role="status">
-          This official snapshot has no refinement path yet. Build a new
-          dashboard to ask a different question.
+          {noRefinement === "combined-sources"
+            ? "This combined dashboard has no refinement path yet, because a change would have to say which of its two sources it means. Build a new dashboard to ask a different question."
+            : "This official snapshot has no refinement path yet. Build a new dashboard to ask a different question."}
         </p>
       ) : (
         <form

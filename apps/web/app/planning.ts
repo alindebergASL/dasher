@@ -43,6 +43,23 @@ export interface PlanResult {
    */
   refinement?: "not-understood" | "already-satisfied";
   /**
+   * Why this dashboard has no refinement path, when it has none.
+   *
+   * Absence of a plan is what the workspace can observe, but it is not why:
+   *
+   * - `official-snapshot` — a builder produced the dashboard directly, so
+   *   there is no plan to edit.
+   * - `combined-sources` — there are TWO plans behind the dashboard and no
+   *   rule yet for which one an instruction addresses.
+   *
+   * They read as the same missing field and need different sentences. The
+   * workspace showed the official-snapshot wording for both until a combined
+   * dashboard existed to prove it wrong: a river-and-air dashboard is not an
+   * official snapshot, and telling a reader it is describes a different
+   * product than the one they are looking at.
+   */
+  noRefinement?: "official-snapshot" | "combined-sources";
+  /**
    * Present when the dashboard was persisted and can be reopened at
    * `/d/{id}`. Absent when the app runs without a database or the browser has
    * no session — both ordinary states, not failures.

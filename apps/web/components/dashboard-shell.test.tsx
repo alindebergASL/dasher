@@ -389,6 +389,40 @@ describe("DashboardShell", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the brief on the landing page whatever that page is called", () => {
+    // The gate used to be the literal `page.id === "overview"`. Composed
+    // dashboards namespace their page ids, so a combined river+air dashboard
+    // lands on `river:overview` and lost its brief entirely — the one place
+    // the two sources are attributed side by side. Renaming the first page is
+    // enough to reproduce that, without needing a second domain here.
+    const renamed = parseDashboardSpec({
+      ...dashboard,
+      pages: [
+        { ...dashboard.pages[0]!, id: "river:overview" },
+        ...dashboard.pages.slice(1),
+      ],
+    });
+
+    render(<DashboardShell dashboard={renamed} />);
+    expect(
+      screen.getByRole("region", { name: "Executive brief" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the brief on the landing page only, not on every page", () => {
+    // The counterweight: "first page" must not degrade into "all pages", or
+    // the brief stops being a summary and becomes a banner.
+    render(<DashboardShell dashboard={dashboard} />);
+    expect(
+      screen.getByRole("region", { name: "Executive brief" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Gauge details/ }));
+    expect(
+      screen.queryByRole("region", { name: "Executive brief" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders summary claims and metrics without React key errors", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

@@ -69,11 +69,58 @@ describe("requests that do not", () => {
   });
 
   it.each([
-    "compare river conditions and air quality",
-    "flood risk and smoke forecast for Sacramento",
     "compare UCR enrollment with Sacramento air quality",
+    "UCR enrollment and river levels",
+    "UCR enrollment, river levels, and air quality",
   ])("calls %j ambiguous instead of picking for the reader", (text) => {
+    // Still refused, and for a reason that did not go away when river+air
+    // became supported: enrollment is not a station. Composing it beside a
+    // sensor domain would need a shape the product does not have, and
+    // guessing which subject the reader meant is the failure this router
+    // exists to prevent.
     expect(classifyRequest(text)).toEqual({ kind: "ambiguous" });
+  });
+});
+
+describe("requests that name both sensor domains", () => {
+  it.each([
+    "Compare river conditions and air quality near Sacramento",
+    "flood risk and smoke forecast for Sacramento",
+    "air quality and river levels near Sacramento",
+    "smoke and streamflow",
+  ])("binds %j to both sources instead of refusing it", (text) => {
+    // The change this slice is about: fail-closed moved from refusing the
+    // PLURAL to refusing the UNRESOLVABLE. Two of these were `ambiguous`
+    // before, and the refusal they got was the product declining to answer a
+    // question it could answer.
+    expect(classifyRequest(text)).toEqual({
+      kind: "domains",
+      domains: [DOMAIN_CATALOG.river, DOMAIN_CATALOG.air],
+    });
+  });
+
+  it("orders the binding set by the catalog, not by the request", () => {
+    // "air ... river" and "river ... air" must produce the same dashboard.
+    // Ordering by first mention would make the page layout depend on how the
+    // reader phrased the question.
+    const riverFirst = classifyRequest("river levels and air quality");
+    const airFirst = classifyRequest("air quality and river levels");
+    expect(riverFirst).toEqual(airFirst);
+    expect(
+      riverFirst.kind === "domains"
+        ? riverFirst.domains.map((domain) => domain.key)
+        : [],
+    ).toEqual(["river", "air"]);
+  });
+
+  it("does not treat one domain named twice as two sources", () => {
+    // "river" and "streamflow" are both river signals; naming both is still a
+    // single-source request, and composing a dashboard with itself would
+    // collide every structural id.
+    expect(classifyRequest("river levels and streamflow")).toEqual({
+      kind: "domain",
+      domain: DOMAIN_CATALOG.river,
+    });
   });
 });
 

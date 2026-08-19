@@ -225,9 +225,107 @@ test("a request naming neither domain is refused, not guessed at", async ({
     "river conditions, air quality, and UC Riverside enrollment",
   );
 
-  await requestBox.fill("compare river conditions and air quality");
+  // Still refused, and for the reason that survived the multi-source slice:
+  // river + air is now a supported pair, but river + enrollment is not a pair
+  // at all -- one is sensor readings, the other an official snapshot with no
+  // shared notion of freshness. Naming both leaves nothing to build.
+  await requestBox.fill("compare river conditions and UC Riverside enrollment");
   await page.getByRole("button", { name: "Build dashboard" }).click();
   await expect(page.locator("p.request-error")).toContainText(
     "one dashboard at a time",
+  );
+});
+
+test("a request naming both sensor domains builds one dashboard with both halves", async ({
+  page,
+}) => {
+  // The multi-source journey, in fixture mode: no database, no live upstream,
+  // just intake -> two loads -> two compilations -> one composition -> render.
+  // This is the request the slice was scoped to and the only one it supports.
+  await page.goto("/");
+  await page
+    .getByLabel("What do you want to monitor?")
+    .fill("Compare river conditions and air quality near Sacramento");
+  await page.getByRole("button", { name: "Build dashboard" }).click();
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "River and Air quality — combined conditions",
+  );
+
+  // Four pages, each attributed. Both domains title their first page
+  // "Overview", so an unattributed nav would show the reader two of them.
+  const pageNav = page.locator(".sidebar, .page-nav").first();
+  await expect(
+    pageNav.getByRole("button", { name: /01\s+River — Overview/ }),
+  ).toBeVisible();
+  await expect(
+    pageNav.getByRole("button", { name: /03\s+Air quality — Overview/ }),
+  ).toBeVisible();
+
+  // Each half in its own vocabulary, on screen, on its own page. Scoped to the
+  // panel grid rather than `main`, because the SHARED surfaces around it — the
+  // freshness line and the footer notice — name both subjects on purpose, and
+  // that attribution is a feature of this dashboard rather than leakage.
+  const panels = page.locator(".dashboard-grid");
+  await expect(page.getByRole("heading", { name: "Gauge map" })).toBeVisible();
+  // `\bmonitors?\b`, not `monitor`. The river half says "Gauges monitored",
+  // which a substring match flags as air vocabulary -- it did, the first time
+  // this test ran, exactly as it did in the compiler's own prose sweep.
+  await expect(panels).not.toContainText(/\bmonitors?\b|pm2\.5|µg\/m³/iu);
+
+  await pageNav
+    .getByRole("button", { name: /03\s+Air quality — Overview/ })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Monitor map" }),
+  ).toBeVisible();
+  await expect(panels).not.toContainText(/gauge|USGS|water[\s-]level/iu);
+
+  // The executive brief is the one place both halves are attributed together,
+  // and it is on the landing page. Its page id is namespaced, which is exactly
+  // what stopped it rendering before the gate stopped matching on a literal.
+  await pageNav.getByRole("button", { name: /01\s+River — Overview/ }).click();
+  const brief = page.getByRole("region", { name: "Executive brief" });
+  await expect(brief).toBeVisible();
+  await expect(brief).toContainText("River:");
+  await expect(brief).toContainText("Air quality:");
+
+  // Freshness is the pair's, and says so.
+  await expect(page.locator(".freshness").first()).toContainText("River:");
+  await expect(page.locator(".freshness").first()).toContainText(
+    "Air quality:",
+  );
+});
+
+test("a combined dashboard cannot be refined yet, and says so", async ({
+  page,
+}) => {
+  // Refinement edits a single plan. There are two plans behind this dashboard
+  // and no rule yet for which one an instruction addresses, so the honest
+  // answer is a refusal rather than a guess at the reader's intent.
+  await page.goto("/");
+  await page
+    .getByLabel("What do you want to monitor?")
+    .fill("Compare river conditions and air quality near Sacramento");
+  await page.getByRole("button", { name: "Build dashboard" }).click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "River and Air quality — combined conditions",
+  );
+
+  // Not an error after a failed attempt: the form is not offered at all, and
+  // the reason is stated where the form would have been.
+  await expect(page.getByLabel("Change this dashboard")).toHaveCount(0);
+  const notice = page.locator(".request-workspace > .request-note");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(/combined dashboard/iu);
+  await expect(notice).toContainText(/which of its two sources/iu);
+  // And NOT the enrollment wording. Both cases reach this notice through the
+  // same missing plan, and both read it from the same element, so the only
+  // thing separating them is the reason the action reported.
+  await expect(notice).not.toContainText(/official snapshot/iu);
+
+  // The dashboard it declined to edit is still whole.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "River and Air quality — combined conditions",
   );
 });
