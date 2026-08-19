@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import metadata from "../../../fixtures/ucr/campus-facts-2025.meta.json";
+import capturedSnapshot from "../../../fixtures/ucr/campus-facts-2025.snapshot.json";
 import {
   buildUcrEnrollmentDashboard,
   parseUcrCampusFactsHtml,
@@ -22,6 +23,10 @@ function parse(input = html) {
 }
 
 describe("the official UCR Fall enrollment source", () => {
+  it("parses to the exact snapshot the product will consume", () => {
+    expect(parse(html)).toEqual(capturedSnapshot);
+  });
+
   it("parses the census definition and ten-year enrollment table", () => {
     const snapshot = parse();
 
