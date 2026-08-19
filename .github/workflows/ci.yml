@@ -125,7 +125,7 @@ jobs:
       # budget on its own worst case, reports it as a job timeout that reads
       # like a product failure, and withholds the log until the very end,
       # because a running job's logs cannot be fetched. Two bounded attempts
-      # cost at most ten minutes and leave the outer 30-minute ceiling as a
+      # cost at most sixteen minutes and leave the outer 30-minute ceiling as a
       # backstop rather than as the mechanism.
       #
       # The two bounds are deliberately asymmetric: SHORT first, GENEROUS retry.
