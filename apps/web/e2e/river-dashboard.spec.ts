@@ -110,7 +110,7 @@ test("river dashboard interactions, evidence, and architecture", async ({
   ).toEqual({
     outlineColor: "rgb(255, 255, 255)",
     outlineWidth: "3px",
-    boxShadow: "rgb(23, 108, 82) 0px 0px 0px 6px",
+    boxShadow: "rgb(20, 99, 74) 0px 0px 0px 6px",
   });
   await changedEvidenceButton.click();
   const changedEvidence = page.getByRole("dialog", {
