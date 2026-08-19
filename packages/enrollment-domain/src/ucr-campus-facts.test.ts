@@ -84,7 +84,17 @@ describe("a changed or contradictory source", () => {
       "Enrollment - Fall 2025",
       "Enrollment - Fall 2026",
     );
-    expect(() => parse(changed)).toThrow(/latest table year disagree/u);
+    expect(() => parse(changed)).toThrow(/term disagree/u);
+  });
+
+  it("rejects coherent heading/table drift when the overview still names the real term", () => {
+    const changed = html
+      .replace("Enrollment - Fall 2025", "Enrollment - Fall 2026")
+      .replace(
+        "<strong>2025</strong></span></th></tr></thead>",
+        "<strong>2026</strong></span></th></tr></thead>",
+      );
+    expect(() => parse(changed)).toThrow(/overview and section term disagree/u);
   });
 
   it("rejects another URL and malformed retrieval time", () => {

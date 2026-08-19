@@ -71,6 +71,9 @@ export function parseUcrCampusFactsHtml(
       /<h5\b[^>]*>\s*Overview\s*<\/h5>\s*<p\b[^>]*>([\s\S]*?)<\/p>/iu,
     ),
   );
+  if (!overview.includes(`In the Fall ${String(termYear)} term`)) {
+    throw new Error("UCR enrollment overview and section term disagree");
+  }
   const table = firstMatch(section, /<table\b[^>]*>([\s\S]*?)<\/table>/iu);
   const rows = tableRows(table);
   if (rows.length !== 4) {
