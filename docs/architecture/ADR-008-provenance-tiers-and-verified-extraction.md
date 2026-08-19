@@ -70,9 +70,12 @@ contract grows an explicitly non-material projection, because under ADR-005 an
 
 `kind` (`observed` / `calculated` / `interpreted` / `recommended`) is unchanged
 and answers a different question: what sort of claim this is. Provenance answers
-how much the claim can be trusted to correspond to a source. Today `observed`
-means both "a sensor reported it" and "a webpage said it," and those are not the
-same claim.
+a narrower one: whether the claim rests on a retained artifact at all, and — if
+it does — how the source characters were turned into it. It does **not** say
+that the claim corresponds to its source; source authority and semantic
+correctness are separate dimensions, kept separate below. Today `observed` means
+both "a sensor reported it" and "a webpage said it," and those are not the same
+claim.
 
 ### The tiers name one dimension only
 
@@ -82,8 +85,11 @@ integrity_. It is not a trust score, and the tiers are not a total ordering of
 how much a number deserves to be believed.
 
 **`parsed`** — a structured source (API, MCP tool result, captured fixture) read
-by a deterministic parser, with values computed by trusted code. Everything in
-the product today is this tier. Deterministic by construction.
+by a deterministic parser, with values computed by trusted code. Every
+source-derived numeric value in the product today is this tier — not everything
+on the page, since the planner already emits `interpreted` narrative
+(`packages/planner/src/compile.ts`) that is not a parsed source value.
+Deterministic by construction.
 
 **`extracted`** — a model read a retained document and proposed a value out of
 it, and trusted code verified that value at recorded coordinates in that
@@ -264,7 +270,7 @@ writing that graph, not adding two fields to a rendered spec.
 | A claim supported by several evidence IDs         | Same lowest-tier rule, on the tier dimension only. Adding a `parsed` citation beside an `extracted` one never raises it.                   |
 | A `contradicts` edge                              | Out of scope here; ADR-005's `contradicted` state governs it and this ADR does not weaken it.                                              |
 
-## What verified extraction does not prove
+## What coordinate-verified extraction does not prove
 
 Verification at coordinates proves **lexical grounding**: these characters really
 are in that document, at that place, unchanged since retrieval. It does not prove
@@ -330,7 +336,8 @@ Today `classifyRequest` in `apps/web/app/domains.ts` returns
 `{ kind: "unsupported" }` for a request naming no known domain, and the request
 is refused. That was correct while every source needed a hand-written parser.
 
-With a verified extraction tier, an unconnected request has a second possible
+With a coordinate-verified extraction tier, an unconnected request has a second
+possible
 answer: build the dashboard from research, at a visibly lower tier, with
 citations. The two differ in governance and shape, not in how true they are —
 neither delivery method establishes truth, and the earlier dimension table is
