@@ -28,8 +28,20 @@
   /* Ink — near-black with a green undertone, so text and accent share a root. */
   --ink: #14201c;
   --ink-soft: #3d4b46;
-  --muted: #6b7a75;
-  --faint: #94a09b;
+  /*
+   * Solved, not chosen. #6b7a75 measured 3.93–4.26:1 against every tinted
+   * surface it renders on — below the 4.5:1 WCAG AA floor for normal text.
+   * This value clears 4.5:1 with headroom on all seven: sidebar #ecf2ef 4.64,
+   * amber-soft 4.61, red-soft 4.74, paper 4.84, paper-sunk 4.59, card 5.26,
+   * panel-alt 4.98.
+   *
+   * There is deliberately no token below this one. A `--faint` tier existed
+   * and measured 2.36–2.71:1; solving it for AA produced #676f6c, which is
+   * indistinguishable from this value. "Quieter than muted" is not something
+   * normal-size text can be and stay legible, so the tier is gone rather than
+   * left as a trap for the next person who reaches for it.
+   */
+  --muted: #616f6a;
 
   /* One hairline weight, one heavier rule for section breaks. */
   --line: #e4e7e3;
@@ -249,7 +261,9 @@ a {
 }
 .sidebar nav button span {
   font-size: 10px;
-  color: #8aa098;
+  /* Was #8aa098 — 2.45:1 on the sidebar, 2.78:1 on white. Pre-existing, but
+     it is the same defect the token above was solved for. */
+  color: var(--muted);
 }
 .sidebar nav button.active {
   color: var(--green);
@@ -1399,7 +1413,7 @@ footer {
 }
 
 .request-input::placeholder {
-  color: var(--faint);
+  color: var(--muted);
 }
 
 .request-input:focus-visible {
@@ -1460,7 +1474,7 @@ footer {
   font-weight: var(--label-weight);
   letter-spacing: var(--label-track);
   text-transform: uppercase;
-  color: var(--faint);
+  color: var(--muted);
 }
 
 /*
@@ -1533,10 +1547,17 @@ footer {
    * is a flex column, so ordering it last is enough.
    */
   .request-workspace > .request-note {
+    /*
+     * `display` must be declared here. The general hide below matches this
+     * element too, and a rule that never names the property cannot override
+     * it however specific the selector is.
+     */
+    display: block;
     order: 1;
     padding: 0.9rem 1rem 4.5rem;
     border-top: 1px solid var(--line);
     border-bottom: none;
+    background: var(--card);
   }
 
   .refine-bar {
