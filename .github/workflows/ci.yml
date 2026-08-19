@@ -128,12 +128,27 @@ jobs:
       # cost at most ten minutes and leave the outer 30-minute ceiling as a
       # backstop rather than as the mechanism.
       #
+      # The two bounds are deliberately asymmetric: SHORT first, GENEROUS retry.
+      #
+      # A first attempt bounded near the healthy case detects a stuck mirror
+      # early instead of paying for it. But the retry must not inherit that
+      # bound, and CI proved why: a later run took 9m51s in this step and
+      # SUCCEEDED. Two five-minute attempts — the first version of this file —
+      # would have timed out twice against a mirror that was working and turned
+      # a slow green run red. A policy that fails on evidence already in hand is
+      # worse than the unbounded step it replaces.
+      #
+      # So: 4 minutes to notice, 12 to actually finish. Worst case 16 minutes,
+      # comfortably inside the 30-minute ceiling that still backstops the job,
+      # and better failure behaviour than two 8-minute attempts because the
+      # decision to retry arrives sooner.
+      #
       # The first attempt may fail without failing the job. The second is
       # fail-closed: when it fails the job stops here, and the browser suite
       # below never runs against a half-installed system.
       - id: playwright-deps
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 4
         run: pnpm --filter @dasher/web exec playwright install-deps chromium
 
       # `outcome`, not `conclusion`. `continue-on-error: true` rewrites
@@ -143,9 +158,9 @@ jobs:
       # looking correct.
       - id: playwright-deps-retry
         if: steps.playwright-deps.outcome != 'success'
-        timeout-minutes: 5
+        timeout-minutes: 12
         run: |
-          echo "First attempt: ${{ steps.playwright-deps.outcome }} within its 5-minute bound. Retrying once."
+          echo "First attempt: ${{ steps.playwright-deps.outcome }} within its 4-minute bound. Retrying once with a 12-minute bound."
           pnpm --filter @dasher/web exec playwright install-deps chromium
 
       # Both attempts are gone, so the job has already failed and nothing below
@@ -156,7 +171,7 @@ jobs:
       - name: Report a system-dependency failure as its own cause
         if: failure() && steps.playwright-deps-retry.outcome == 'failure'
         run: |
-          echo "::error title=Playwright system dependencies failed twice::Both bounded attempts at 'playwright install-deps chromium' failed or timed out, five minutes each. This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Both attempt logs are above."
+          echo "::error title=Playwright system dependencies failed twice::Both bounded attempts at 'playwright install-deps chromium' failed or timed out (4 minutes, then 12). This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Both attempt logs are above."
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
@@ -322,7 +337,7 @@ jobs:
       # burned their full 30-minute budget on it.
       - id: playwright-deps
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 4
         run: pnpm --filter @dasher/web exec playwright install-deps chromium
 
       # `outcome`, not `conclusion`. `continue-on-error: true` rewrites
@@ -332,9 +347,9 @@ jobs:
       # looking correct.
       - id: playwright-deps-retry
         if: steps.playwright-deps.outcome != 'success'
-        timeout-minutes: 5
+        timeout-minutes: 12
         run: |
-          echo "First attempt: ${{ steps.playwright-deps.outcome }} within its 5-minute bound. Retrying once."
+          echo "First attempt: ${{ steps.playwright-deps.outcome }} within its 4-minute bound. Retrying once with a 12-minute bound."
           pnpm --filter @dasher/web exec playwright install-deps chromium
 
       # Both attempts are gone, so the job has already failed and nothing below
@@ -345,7 +360,7 @@ jobs:
       - name: Report a system-dependency failure as its own cause
         if: failure() && steps.playwright-deps-retry.outcome == 'failure'
         run: |
-          echo "::error title=Playwright system dependencies failed twice::Both bounded attempts at 'playwright install-deps chromium' failed or timed out, five minutes each. This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Both attempt logs are above."
+          echo "::error title=Playwright system dependencies failed twice::Both bounded attempts at 'playwright install-deps chromium' failed or timed out (4 minutes, then 12). This is an apt/system-dependency failure that happened before any product test ran: it is not an E2E or persistence test failure, and the diff under test is not implicated. Both attempt logs are above."
 
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
