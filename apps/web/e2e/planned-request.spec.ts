@@ -179,6 +179,38 @@ test("an explicit UCR enrollment request builds the official non-sensor dashboar
   ).toBeVisible();
 });
 
+test("the UCR no-plan notice survives the mobile cascade", async ({ page }) => {
+  // The desktop test above cannot catch this. The mobile block hides every
+  // `.request-note` to keep the pinned request strip out of the layout, and
+  // this notice is the only thing standing in for the refinement form on the
+  // official-snapshot path — so if the hide wins, a phone is told nothing at
+  // all about why it cannot refine, visually or through the a11y tree.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page
+    .locator("#dashboard-request")
+    .fill("Current student enrollment at UC Riverside");
+  await page.getByRole("button", { name: "Build dashboard" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "UC Riverside Enrollment — Fall 2025" }),
+  ).toBeVisible();
+
+  const notice = page.locator(".request-workspace > .request-note");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(/no refinement path yet/iu);
+  const box = await notice.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.height).toBeGreaterThan(0);
+  // Flush against the viewport edge is the specific way this rendered wrong
+  // when the band's padding lived only on the refine form.
+  expect(
+    await notice.evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element).paddingLeft),
+    ),
+  ).toBeGreaterThan(0);
+});
+
 test("a request naming neither domain is refused, not guessed at", async ({
   page,
 }) => {
