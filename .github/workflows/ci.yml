@@ -156,6 +156,41 @@ jobs:
       # never fire, the retry would be unreachable, and this would collapse
       # back to the single unbounded attempt it exists to replace — while
       # looking correct.
+      # A timed-out step has its process tree killed, but the `apt-get` that
+      # `install-deps` launched under sudo SURVIVES as an orphan, still holding
+      # /var/lib/dpkg/lock-frontend. Observed live on 2026-08-19: the first
+      # attempt hit its bound at 4m13s, and the retry died three seconds later
+      # with "Could not get lock /var/lib/dpkg/lock-frontend. It is held by
+      # process 3868 (apt-get)". A retry that cannot acquire the lock is not a
+      # retry — it is a second failure wearing a retry's name, and without this
+      # step the whole mechanism above is decorative in exactly the case it
+      # exists for.
+      #
+      # Wait for the orphan to finish on its own first, since a mirror that is
+      # merely slow will complete and release the lock. Only kill it when it
+      # will not, and then repair whatever the kill left half-configured.
+      - name: Clear an interrupted apt run before retrying
+        if: steps.playwright-deps.outcome != 'success'
+        timeout-minutes: 2
+        run: |
+          waited=0
+          while [ "$waited" -lt 60 ]; do
+            if sudo apt-get -o DPkg::Lock::Timeout=2 check >/dev/null 2>&1; then
+              break
+            fi
+            waited=$((waited + 2))
+            sleep 2
+          done
+          if sudo apt-get -o DPkg::Lock::Timeout=5 check >/dev/null 2>&1; then
+            echo "apt lock free after ${waited}s; no orphan to clear."
+          else
+            echo "apt lock still held after ${waited}s; terminating the orphaned holder."
+            sudo pkill -x apt-get || true
+            sudo pkill -x dpkg || true
+            sleep 2
+            sudo dpkg --configure -a || true
+          fi
+
       - id: playwright-deps-retry
         if: steps.playwright-deps.outcome != 'success'
         timeout-minutes: 12
@@ -345,6 +380,29 @@ jobs:
       # never fire, the retry would be unreachable, and this would collapse
       # back to the single unbounded attempt it exists to replace — while
       # looking correct.
+      # Same orphaned-lock recovery as `verify`, for the reason recorded there.
+      - name: Clear an interrupted apt run before retrying
+        if: steps.playwright-deps.outcome != 'success'
+        timeout-minutes: 2
+        run: |
+          waited=0
+          while [ "$waited" -lt 60 ]; do
+            if sudo apt-get -o DPkg::Lock::Timeout=2 check >/dev/null 2>&1; then
+              break
+            fi
+            waited=$((waited + 2))
+            sleep 2
+          done
+          if sudo apt-get -o DPkg::Lock::Timeout=5 check >/dev/null 2>&1; then
+            echo "apt lock free after ${waited}s; no orphan to clear."
+          else
+            echo "apt lock still held after ${waited}s; terminating the orphaned holder."
+            sudo pkill -x apt-get || true
+            sudo pkill -x dpkg || true
+            sleep 2
+            sudo dpkg --configure -a || true
+          fi
+
       - id: playwright-deps-retry
         if: steps.playwright-deps.outcome != 'success'
         timeout-minutes: 12
