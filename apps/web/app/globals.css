@@ -618,7 +618,10 @@ td .item-evidence {
   left: 46%;
   top: 54%;
   padding: 3px 6px;
-  background: rgba(255, 255, 255, 0.75);
+  /* Opaque, not translucent. This plate floats over the map's gradient, and
+     text over a gradient has no single background colour — neither a reader
+     nor the contrast guard can say what it is painted on. */
+  background: var(--card);
   border-radius: 5px;
   font-size: 10px;
   font-weight: 700;
@@ -659,7 +662,8 @@ td .item-evidence {
   bottom: 12px;
   display: flex;
   gap: 10px;
-  background: rgba(255, 255, 255, 0.9);
+  /* Opaque for the same reason as `.map-city`. */
+  background: var(--card);
   padding: 7px 9px;
   border-radius: 8px;
   font-size: 9px;
@@ -680,8 +684,9 @@ td .item-evidence {
   padding: 10px 12px;
   border: 1px solid rgba(23, 108, 82, 0.22);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 8px 24px rgba(24, 55, 46, 0.14);
+  /* Opaque for the same reason as `.map-city`. */
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(20, 32, 28, 0.14);
 }
 .map-selection strong {
   font-size: 11px;
