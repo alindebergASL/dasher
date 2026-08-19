@@ -6,6 +6,11 @@
       "name": "@dasher/calculation-engine",
       "reason": "Its only importer was the integration test cross-checking the PL/pgSQL evaluator that the baseline squash deleted. Wiring it into @dasher/planner is step 4 of the restructure proposal and is the next visible change.",
       "since": "2026-08-14"
+    },
+    {
+      "name": "@dasher/enrollment-domain",
+      "reason": "A bounded UCR known-source experiment proving one official parser and non-sensor dashboard without product routing. The next slice decides source recommendation and currency/reporting-period semantics before any web import.",
+      "since": "2026-08-19"
     }
   ]
 }

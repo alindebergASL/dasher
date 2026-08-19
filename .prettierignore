@@ -6,3 +6,7 @@ packages/control-plane/migrations/*.sql
 # would change the bytes and silently invalidate that check.
 docs/validation/eval/*.json
 docs/validation/eval/*.log
+
+# Raw third-party source capture. The sidecar records its SHA-256; formatting
+# would destroy the exact official bytes the parser was tested against.
+fixtures/ucr/*.html
