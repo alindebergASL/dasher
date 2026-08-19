@@ -1359,6 +1359,19 @@ footer {
   border-bottom: 1px solid var(--line);
 }
 
+/*
+ * The band's third possible closing row. A dashboard built from an official
+ * snapshot has no plan to refine, so the workspace renders this note in place
+ * of the refine form. It has to close the band the same way the form does —
+ * otherwise the command surface runs into the app header with no edge, and
+ * the note sits flush against the viewport with no gutter.
+ */
+.request-workspace > .request-note {
+  padding: var(--s5) clamp(var(--s4), 4vw, var(--s7)) var(--s6);
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
 .request-label {
   font-size: var(--label-size);
   font-weight: var(--label-weight);
@@ -1519,6 +1532,13 @@ footer {
    * too, so it moves below the pages it changes instead. `.request-workspace`
    * is a flex column, so ordering it last is enough.
    */
+  .request-workspace > .request-note {
+    order: 1;
+    padding: 0.9rem 1rem 4.5rem;
+    border-top: 1px solid var(--line);
+    border-bottom: none;
+  }
+
   .refine-bar {
     order: 1;
     padding: 0.9rem 1rem 4.5rem;
