@@ -69,10 +69,16 @@ describe("the corpus is not hollow", () => {
           scored.verdict.accepted ? "" : scored.verdict.reason,
         ),
     );
-    // `unknown-snapshot` and `unit-not-in-extracted-text` are unreachable from a
-    // corpus built over real documents — the first needs a snapshot id that does
-    // not exist, the second needs text whose unit contradicts a claim about the
-    // same text. Both are covered in `verify.test.ts` instead.
+    // Two reasons sit outside the corpus, for different reasons.
+    //
+    // `unknown-snapshot` is inherently unreachable here: it needs a candidate
+    // naming a snapshot id that does not exist, and every corpus candidate
+    // names a document the spike sealed.
+    //
+    // `unit-not-in-extracted-text` IS reachable from a real document — the
+    // direct test drives it with real UCR bytes at offset 18071 — and is simply
+    // not duplicated in the corpus. Calling it unreachable, as this comment
+    // once did, would justify a coverage gap that does not exist.
     const coveredElsewhere: readonly RefusalReason[] = [
       "unknown-snapshot",
       "unit-not-in-extracted-text",

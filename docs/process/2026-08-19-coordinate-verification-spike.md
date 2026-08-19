@@ -55,10 +55,21 @@ coordinate system agreeing with neither.
 
 ## What it rejects
 
-All nine refusal reasons are deterministic and fail-closed. Seven are reached by
-the corpus; two (`unknown-snapshot`, `unit-not-in-extracted-text`) cannot be
-reached from real documents and are covered by unit tests instead — a test
-asserts that no reason is left unexercised by both.
+All ten refusal reasons are deterministic and fail-closed. Eight are reached by
+the corpus. The other two are covered by direct verifier tests, and for
+different reasons that are worth keeping apart:
+
+- `unknown-snapshot` is inherently outside a real-document corpus. It requires a
+  candidate naming a snapshot id that does not exist, and every corpus candidate
+  names a document the spike actually sealed.
+- `unit-not-in-extracted-text` **is** reachable from a real document, and
+  `verify.test.ts` reaches it — real UCR bytes at offset 18071, the characters
+  `4.7%`, and a candidate claiming unit `count`. It is left out of the corpus
+  because the direct test already covers it, not because the corpus cannot
+  produce it. An earlier version of this paragraph said it "cannot be reached
+  from real documents", which was simply false.
+
+A test asserts that no reason is left unexercised by both.
 
 The two worth quoting, because they are the ones the ADR singled out:
 
