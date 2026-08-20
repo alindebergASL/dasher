@@ -15,7 +15,8 @@
     "packages/planner/src/provider.ts",
     "packages/planner/src/run.ts",
     "packages/station-domain/src/facts.ts",
-    "packages/station-domain/src/metrics.ts"
+    "packages/station-domain/src/metrics.ts",
+    "packages/dashboard-schema/src/compose.ts"
   ],
   "vitest": {
     "related": false,
