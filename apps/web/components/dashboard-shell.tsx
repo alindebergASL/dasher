@@ -558,7 +558,18 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
                   : "Unknown"}
               </span>
             </div>
-            {page.id === "overview" && dashboard.schemaVersion === "1.2" ? (
+            {/*
+              One brief per dashboard, on the page the reader lands on. This
+              was `page.id === "overview"`, a literal that happened to match
+              the river and air compilers' first page. A combined dashboard's
+              pages are namespaced (`river:overview`), so the literal matched
+              nothing and the brief — the one surface where both sources are
+              attributed side by side — silently disappeared from exactly the
+              dashboard that needs it most. Asking which page is first says
+              what was meant, and does not depend on what a builder names it.
+            */}
+            {page.id === dashboard.pages[0]!.id &&
+            dashboard.schemaVersion === "1.2" ? (
               <ExecutiveBrief dashboard={dashboard} onEvidence={openEvidence} />
             ) : null}
             <div className="dashboard-grid">

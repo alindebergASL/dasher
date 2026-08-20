@@ -14,6 +14,8 @@ import {
 import { withDashboardRepository } from "@dasher/control-plane";
 import {
   canonicalSpecBytes,
+  composeDashboards,
+  DashboardCompositionError,
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
 import {
@@ -152,6 +154,138 @@ async function planAndPersist(
   }
 }
 
+/**
+ * How a domain names itself to a reader: "river" -> "River", "air-quality" ->
+ * "Air quality". The catalog's label is a routing word; this is the one that
+ * appears in front of a person, and every attributed line in a combined
+ * dashboard is built from it.
+ */
+function readerLabel(domain: DomainEntry): string {
+  const spaced = domain.label.replaceAll("-", " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/**
+ * One request, two trusted sources, one dashboard.
+ *
+ * The shape here is the whole point of the slice: both sources are loaded
+ * independently and in parallel, each is compiled by ITS OWN parser,
+ * computation policy, vocabulary and thresholds through the same planner the
+ * single-source path uses, and only the finished specs meet — in
+ * `composeDashboards`, which arranges and attributes but never computes. There
+ * is no place in this function where one domain's rule could reach the other's
+ * readings, and that is a structural property rather than a convention.
+ *
+ * IT REFUSES AS A UNIT. If either source is unavailable the whole request is
+ * refused and nothing is persisted. A dashboard titled for two subjects that
+ * silently contains one is worse than no dashboard: it answers a question the
+ * reader did not ask while looking like it answered the one they did.
+ */
+async function planCombined(
+  requestText: string,
+  domains: readonly [DomainEntry, DomainEntry],
+): Promise<PlanResult> {
+  const loaded = await Promise.allSettled(
+    domains.map(async (domain) => loadDomainSnapshot(domain.key)),
+  );
+
+  const unavailable: string[] = [];
+  for (const [index, result] of loaded.entries()) {
+    if (result.status !== "rejected") continue;
+    const domain = domains[index];
+    if (
+      result.reason instanceof SourceUnavailableError &&
+      domain !== undefined
+    ) {
+      unavailable.push(domain.label);
+      continue;
+    }
+    // Not a source outage: a real fault, and it must not be reported as one.
+    throw result.reason;
+  }
+  if (unavailable.length > 0) {
+    return {
+      ok: false,
+      error: `Live ${unavailable.join(" and ")} data is temporarily unavailable; try again.`,
+    };
+  }
+
+  const snapshots = loaded.map((result) =>
+    result.status === "fulfilled" ? result.value : undefined,
+  );
+
+  try {
+    const built = await Promise.all(
+      domains.map(async (domain, index) => {
+        const snapshot = snapshots[index];
+        if (snapshot === undefined) {
+          throw new Error(`missing snapshot for ${domain.key}`);
+        }
+        const run = await runPlanner({
+          requestText,
+          gauges: snapshot.stations,
+          provider: domain.provider,
+          asOf: snapshot.asOf,
+          thresholds: domain.thresholds,
+          computation: domain.computation,
+          words: domain.words,
+        });
+        return run.dashboard;
+      }),
+    );
+
+    const [first, second] = domains;
+    const [firstDashboard, secondDashboard] = built;
+    if (firstDashboard === undefined || secondDashboard === undefined) {
+      throw new Error("combined build produced fewer dashboards than sources");
+    }
+    const labels = [readerLabel(first), readerLabel(second)] as const;
+
+    return {
+      ok: true,
+      dashboard: composeDashboards(
+        [
+          { key: first.key, label: labels[0], dashboard: firstDashboard },
+          { key: second.key, label: labels[1], dashboard: secondDashboard },
+        ],
+        {
+          id: `combined-${first.key}-${second.key}-conditions`,
+          title: `${labels[0]} and ${labels[1]} — combined conditions`,
+          audience: `Readers tracking ${first.label} and ${second.label} together`,
+          notice: `Two sources, built separately and shown side by side. ${labels[0]} and ${labels[1]} each keep their own readings, thresholds, and wording, and no value on this page was calculated using the other subject's rules. Freshness is reported for the pair: this dashboard is only as current as its least current source.`,
+        },
+      ),
+      attempts: 1,
+      noRefinement: "combined-sources",
+    };
+  } catch (error) {
+    if (error instanceof PlanRejected) {
+      return {
+        ok: false,
+        error:
+          `Dasher could not build a dashboard it could stand behind for that request. ${error.findings[0]?.message ?? ""}`.trim(),
+      };
+    }
+    if (error instanceof DashboardCompositionError) {
+      // Both halves built; the PAIR is what could not be shown honestly —
+      // colliding namespaces, a mismatched data mode, or two dashboards that
+      // do not fit inside one contract budget. "Try rewording it" was the
+      // message here before, and it is advice that cannot work: no phrasing
+      // makes two dashboards fit in one. The single-source path is the thing
+      // that will actually succeed, so that is what the reader is offered.
+      return {
+        ok: false,
+        error:
+          "Dasher built both dashboards but could not combine them into one it could stand behind. Ask for river conditions or air quality on its own.",
+      };
+    }
+    return {
+      ok: false,
+      error: "Something went wrong building that dashboard. Try rewording it.",
+    };
+  }
+}
+
 async function plan(
   requestText: string,
   decision: DomainDecision,
@@ -173,6 +307,16 @@ async function plan(
         "That asks about more than one supported subject. Ask for one dashboard at a time, and you can build the other one next.",
     };
   }
+  if (decision.kind === "domains") {
+    if (refine !== undefined) {
+      return {
+        ok: false,
+        error:
+          "A combined dashboard cannot be refined yet. Build a new one instead.",
+      };
+    }
+    return planCombined(requestText, decision.domains);
+  }
   if (decision.kind === "known-source") {
     if (refine !== undefined) {
       return {
@@ -187,6 +331,7 @@ async function plan(
         ok: true,
         dashboard: buildUcrEnrollmentDashboard(snapshot),
         attempts: 1,
+        noRefinement: "official-snapshot",
       };
     } catch {
       return {

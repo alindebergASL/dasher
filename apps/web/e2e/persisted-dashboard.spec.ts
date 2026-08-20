@@ -346,6 +346,79 @@ test.describe("a saved dashboard", () => {
     ).toBeVisible();
   });
 
+  test("a combined dashboard saves once, lists once, and reopens whole", async ({
+    page,
+  }) => {
+    // The slice's question, end to end: one request naming two sources
+    // produces ONE persisted dashboard, findable by browsing rather than by a
+    // link the reader kept, and reopening it shows both halves.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    expect(bootstrap.ok()).toBe(true);
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
+
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "What do you want to monitor?" })
+      .fill("Compare river conditions and air quality near Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      "River and Air quality — combined conditions",
+    );
+    const permalink = page.getByRole("link", {
+      name: "Open this dashboard by link",
+    });
+    await expect(permalink).toBeVisible();
+    const href = await permalink.getAttribute("href");
+    expect(href).toMatch(/^\/d\/[0-9a-f-]{36}$/u);
+
+    // ONE row, not one per source. Counted as the owner so row security is not
+    // what makes the number right.
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      const rows = await owner.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dasher.dashboards WHERE organization_id = $1",
+        [organizationId],
+      );
+      expect(Number(rows.rows[0]?.count)).toBe(1);
+    } finally {
+      await owner.end();
+    }
+
+    // Found by browsing, with no link retained.
+    await page.getByRole("link", { name: "Your dashboards" }).click();
+    const items = page.locator(".dashboard-list-item");
+    await expect(items).toHaveCount(1);
+    await expect(items.nth(0)).toContainText(
+      "River and Air quality — combined conditions",
+    );
+
+    await items.nth(0).getByRole("link").first().click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      "River and Air quality — combined conditions",
+    );
+
+    // Both halves survived the round trip through stored bytes.
+    const pageNav = page.locator(".sidebar, .page-nav").first();
+    await expect(
+      pageNav.getByRole("button", { name: /01\s+River — Overview/ }),
+    ).toBeVisible();
+    await expect(
+      pageNav.getByRole("button", { name: /03\s+Air quality — Overview/ }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Gauge map" }),
+    ).toBeVisible();
+    await pageNav
+      .getByRole("button", { name: /03\s+Air quality — Overview/ })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Monitor map" }),
+    ).toBeVisible();
+  });
+
   test("the listing is empty for an organization that has saved nothing", async ({
     page,
   }) => {
@@ -364,8 +437,17 @@ test.describe("a saved dashboard", () => {
 
   test("refused requests persist nothing", async ({ page }) => {
     // Fail closed, all the way down: a request the router cannot place — or
-    // places in both domains — must not leave a row behind. Counted as the
-    // owner, so row security cannot be what makes this zero.
+    // places in two domains that cannot be combined — must not leave a row
+    // behind. Counted as the owner, so row security cannot be what makes this
+    // zero.
+    //
+    // The OTHER way a combined request is refused — one upstream source being
+    // unavailable — is deliberately not tested here. This suite runs with
+    // `DASHER_SOURCE_MODE: fixture`, so no request ever leaves the process and
+    // blocking a host at the browser would assert nothing while looking like
+    // it asserted something. That refusal is proven where it can actually be
+    // provoked: `actions.test.ts` takes exactly one domain offline at the
+    // source seam and checks the refusal names that domain AND NOT the other.
     const bootstrap = await page.context().request.post("/dev/bootstrap");
     const { organizationId } = (await bootstrap.json()) as {
       organizationId: string;
@@ -382,7 +464,10 @@ test.describe("a saved dashboard", () => {
       "river conditions, air quality, and UC Riverside enrollment",
     );
 
-    await requestBox.fill("compare river conditions and air quality");
+    // River + air is a supported pair now; river + enrollment still is not.
+    await requestBox.fill(
+      "compare river conditions and UC Riverside enrollment",
+    );
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(page.locator("p.request-error")).toContainText(
       "one dashboard at a time",

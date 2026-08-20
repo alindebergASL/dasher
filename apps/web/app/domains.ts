@@ -50,6 +50,12 @@ export type KnownSourceKey = "ucr-enrollment";
 
 export type DomainDecision =
   | { kind: "domain"; domain: DomainEntry }
+  /**
+   * A request that binds more than one supported sensor domain. Ordered by the
+   * catalog rather than by the order the words appeared, so "air and river"
+   * and "river and air" produce the same dashboard.
+   */
+  | { kind: "domains"; domains: readonly [DomainEntry, DomainEntry] }
   | { kind: "known-source"; source: KnownSourceKey }
   | { kind: "ambiguous" }
   | { kind: "unsupported" };
@@ -185,6 +191,21 @@ export function classifyRequest(requestText: string): DomainDecision {
   const ucrEnrollment =
     UCR_SIGNALS.test(requestText) && ENROLLMENT_SIGNALS.test(requestText);
 
+  // ONE plural request is supported, and it is named rather than inferred.
+  // River and air are both station domains: same shape, same compiler, two
+  // policies, so they compose without either one's rules reaching the other's
+  // readings. Every other plural combination is still refused, because
+  // enrollment is not a station and pretending otherwise is how a dashboard
+  // starts computing a headcount with a flood tolerance.
+  //
+  // Fail-closed did not weaken here; it moved. What is refused is now the
+  // UNRESOLVABLE rather than the merely plural.
+  if (river && air && !ucrEnrollment) {
+    return {
+      kind: "domains",
+      domains: [DOMAIN_CATALOG.river, DOMAIN_CATALOG.air],
+    };
+  }
   if ([river, air, ucrEnrollment].filter(Boolean).length > 1) {
     return { kind: "ambiguous" };
   }
