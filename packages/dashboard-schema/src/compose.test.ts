@@ -24,6 +24,9 @@ function source(options: {
   readonly freshness: DashboardSpec["freshness"];
   readonly dataMode?: "demo" | "live";
   readonly statementTypes?: readonly string[];
+  /** Overrides the `important` detail, so a test can supply prose that does
+   *  not end in punctuation — which is what the real river half does. */
+  readonly importantDetail?: string;
 }): DashboardSpec {
   return parseDashboardSpec({
     schemaVersion: "1.2",
@@ -136,7 +139,7 @@ function source(options: {
       important: {
         statementTypes: ["interpreted"],
         headline: `${options.title} important`,
-        detail: `What matters for ${options.title}.`,
+        detail: options.importantDetail ?? `What matters for ${options.title}.`,
         evidenceIds: ["station-reading"],
       },
     },
@@ -424,6 +427,52 @@ describe("the brief carries both sources", () => {
     expect(known.headline).toContain("Air quality");
     expect(known.detail).toContain("River");
     expect(known.detail).toContain("Air quality");
+  });
+
+  it("ends the first source's sentence before the second label starts", () => {
+    // The assertion above is `toContain`, and `toContain` is exactly as
+    // satisfied by fused prose as by separated prose — which is how
+    // "...more than two hours old Air quality: Highest priority:..." reached
+    // the executive brief of every combined dashboard. This one looks at the
+    // BOUNDARY: whatever character precedes the second label must be able to
+    // end a sentence.
+    const unpunctuated = "Water-level reading is more than two hours old";
+    const sources = pair({
+      first: {
+        title: "River",
+        stationId: "1",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+        importantDetail: unpunctuated,
+      },
+    });
+    const { detail } = compose(sources).executiveBrief.important;
+
+    // Guard the guard: the fixture really does supply prose with no terminal
+    // punctuation, so a regression has something to fail on.
+    expect(unpunctuated).not.toMatch(/[.!?]$/u);
+    expect(detail).toContain(unpunctuated);
+    expect(detail).toMatch(/old\. Air quality:/u);
+    expect(detail).not.toMatch(/old Air quality:/u);
+  });
+
+  it("does not double the punctuation of a detail that already ends", () => {
+    // The other direction. The fixture's own details end in a full stop, and
+    // "readings.. Air quality:" would be the obvious way to overcorrect.
+    const spec = compose();
+    for (const claim of ["known", "changed", "important"] as const) {
+      expect(spec.executiveBrief[claim].detail).not.toMatch(/[.!?]{2}/u);
+    }
+    expect(spec.nextAction.detail).not.toMatch(/[.!?]{2}/u);
+    expect(spec.architecture.summary).not.toMatch(/[.!?]{2}/u);
+  });
+
+  it("leaves headlines joined by the separator, not a full stop", () => {
+    // Headlines are labels. Terminating one would be wrong in the other
+    // direction, so the fix must not have leaked across.
+    const { known } = compose().executiveBrief;
+    expect(known.headline).toContain(" · Air quality:");
+    expect(known.headline).not.toMatch(/\. Air quality:/u);
   });
 
   it("cites evidence from both sources", () => {

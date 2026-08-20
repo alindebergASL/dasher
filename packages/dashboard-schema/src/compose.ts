@@ -121,12 +121,42 @@ function mergeStatementTypes(
   return STATEMENT_ORDER.filter((type) => keptWeakestFirst.includes(type));
 }
 
-/** Attributed, never blended: a reader can always see which source said what. */
+/**
+ * Terminal punctuation, allowing one closing bracket or quote after it, so
+ * `(provisional.)` is recognised as already ended rather than given a second
+ * full stop.
+ */
+const SENTENCE_END = /[.!?\u2026][)\]"'\u201d\u2019]?$/u;
+
+/**
+ * Attributed, never blended: a reader can always see which source said what.
+ *
+ * The first source's text is sentence-terminated before the second label
+ * follows it. Detail strings are prose and do not all end in punctuation — the
+ * river half's highest-priority line ends "…more than two hours old" — so
+ * joining on a bare space produced
+ *
+ *   "…Water-level reading is more than two hours old Air quality: Highest
+ *    priority: Elevated PM2.5 watch…"
+ *
+ * two sentences fused into one unreadable run, on the executive brief and the
+ * next action of every combined dashboard.
+ *
+ * IT SHIPPED THAT WAY, and the reason is worth keeping: the tests on either
+ * side of this function asserted that both labels APPEAR, which is exactly as
+ * true of fused prose as of separated prose. An assertion that cannot fail on
+ * the defect is not a test of it. The tests now pin the boundary itself.
+ *
+ * Headlines keep `·` instead: they are labels rather than sentences, and a
+ * full stop after one would be wrong in the other direction.
+ */
 function attribute(
   sources: ComposedSources,
   texts: readonly [string, string],
 ): string {
-  return `${sources[0].label}: ${texts[0]} ${sources[1].label}: ${texts[1]}`;
+  const lead = texts[0].trimEnd();
+  const terminated = SENTENCE_END.test(lead) ? lead : `${lead}.`;
+  return `${sources[0].label}: ${terminated} ${sources[1].label}: ${texts[1]}`;
 }
 
 function joinHeadlines(

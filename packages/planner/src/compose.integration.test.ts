@@ -207,6 +207,40 @@ describe("neither half acquires the other's vocabulary", () => {
     ).toEqual([]);
   });
 
+  it("does not fuse the two halves into one run-on sentence", () => {
+    // The defect this test exists for, against REAL compiled prose rather
+    // than a fixture. The river half's highest-priority line ends
+    // "...more than two hours old" with no full stop, and the unattributed
+    // join put "Air quality: Highest priority:" directly after it.
+    //
+    // The sibling test below asserts both subjects are NAMED, which is what
+    // shipped this: naming is just as true of a run-on as of two sentences.
+    const spec = combined();
+    const attributed = [
+      spec.executiveBrief.known.detail,
+      spec.executiveBrief.changed.detail,
+      spec.executiveBrief.important.detail,
+      spec.nextAction.detail,
+      spec.architecture.summary,
+    ];
+
+    // Guard the guard: at least one real half genuinely lacks terminal
+    // punctuation, so this is testing the product and not a tautology.
+    const rawLeads = [
+      river.executiveBrief.important.detail,
+      river.nextAction.detail,
+    ];
+    expect(rawLeads.some((text) => !/[.!?]$/u.test(text))).toBe(true);
+
+    for (const text of attributed) {
+      expect(text).toContain("Air quality:");
+      // Whatever precedes the second label must be able to end a sentence...
+      expect(text).toMatch(/[.!?][)\]"']? Air quality:/u);
+      // ...and must not have been doubled to get there.
+      expect(text).not.toMatch(/[.!?]{2}/u);
+    }
+  });
+
   it("still says both subjects in the combined dashboard's own prose", () => {
     // Attribution is the point: the shared surfaces must name both.
     const spec = combined();
