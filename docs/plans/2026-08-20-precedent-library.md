@@ -1,6 +1,6 @@
 # Precedent Library — Learning to Build Dashboards From Experience
 
-Status: proposal for the design thread · v2 · 2026-08-20
+Status: proposal for the design thread · v3 · 2026-08-20
 
 v1 consolidated four research rounds (CBR, agent skill libraries, organizational
 memory, retrieval & bandits). v2 adds a citation-verification pass and three further
@@ -9,6 +9,9 @@ skill induction 2023–2026, and feedback metrics & small-n experimentation — 
 sixty primary sources checked, every load-bearing number below traced to a named one.
 The architecture survived the pass. The primary precedent, the metric, and the
 selection machinery did not, and this revision records what replaced them and why.
+v3 adds a fourth sweep — decision science, BI adoption empirics, trusted learning
+products, and engineered precedent systems (citators, ASRS, clinical guidelines) —
+answering the question v2 left implicit: what this library is *for* [H-sections].
 
 ## Problem
 
@@ -117,6 +120,45 @@ Persisting the edit trail (proposed plan → settled plan, with the diff) provid
    field's remedy is inducing it from **differences between case pairs** [C3], never
    hand-written prose. An edit pair _is_ a case-pair difference. Notes become
    optional annotation; the edit diff is the adaptation container.
+
+## Why this is Dasher, not a feature
+
+The requirements doc's thesis — "a governed decision loop that turns a bounded
+plain-language intent and authorized evidence into a safe managerial action and
+**durable decision memory**" — makes the precedent library the second half of that
+sentence, operationalized. The one-instrument schema change *is* the decision-memory
+clause. What the fourth research sweep adds is that each remaining clause of the
+loop corrects a specific, measured failure of unaugmented judgment:
+
+- **Bind intent** corrects framing: identical outcomes framed as gains vs losses
+  reversed preferences 72% vs 22% of respondents [H1].
+- **Answers first** matches how executives actually read: BLUF documents were read
+  17–23% faster with better comprehension by 262 naval officers [H2].
+- **Epistemic typing + durable memory** is the calibration mechanism: the
+  tournament literature's largest measured judgment improvement came from
+  record-decision → score-outcome → feedback loops (GJP forecasters reached
+  near-perfect calibration, 0.01 overconfidence, by making finer-grained
+  distinctions between what they knew and what they were judging) [H3]; and
+  reconstructing "what was known and why" is the only documented correction for
+  hindsight and outcome bias, the two best-replicated biases in the review
+  literature [H4]. ADR-005's success criterion — "later reconstruct what was known
+  and why — not merely when a dashboard renders" — is, read this way, an
+  anti-hindsight instrument.
+- **Propose, never act** is the comfortable side of the personalization evidence:
+  trust damage from personalization is driven by *unexpected* inference, and
+  aggregate-level signals ("your team's kept dashboards") are consistently more
+  comfortable than individual-level ones ("users like you") [H5]. The library's
+  only visible surface — one row in "Why Dasher says this" — is attributional,
+  aggregate, and on-demand, which is the trusted shape on every axis measured.
+
+The market framing follows from the same sweep: BI hands-on use has plateaued at
+roughly a quarter to a third of the workforce across two decades of measurement,
+and ~80% of enterprise decision-makers consume *mediated* evidence rather than
+using tools directly [H6]. A plain-language request that yields an inspectable,
+epistemically-typed proposal is an interface for the mediated majority. The
+library compounds that position without widening authority — the flywheel turns
+within one workspace, which is both the no-surveillance posture and the
+vertical-specific, defensible form of the data advantage [H7].
 
 ## Retrieval: structured-first, and honest about scale
 
@@ -231,6 +273,39 @@ From Draco 2 [A2] and design-systems practice, the operating manual:
   constraint knowledge bases outgrow their maintainers' ability to retrace
   decisions [A9].
 
+## Interaction consequences — where the loop meets a person
+
+The fourth sweep also located the interaction seams where the loop's promise
+strains, all verified against the current code:
+
+- **"Live" must mean live.** The flagship example request says "live dashboard," the
+  shell renders the label "Live dashboard," and the saved artifact renders sealed
+  build-time bytes with no refresh path. A "live" label on a frozen artifact is an
+  expectation the product cannot meet; reserve the word for data that actually
+  updates and label the sealed artifact a snapshot. (Alert-adjacent honesty:
+  clinical systems reach 90%+ alert override once volume erodes scarcity [H8] —
+  "Needs attention" is a trust asset only while it stays scarce.)
+- **Refinements are the product's soul and its data loss.** Refinement edits shape
+  the on-screen dashboard but only fresh generations get durable identity
+  (`actions.ts:127`). The user who refines to perfection, leaves, and returns from
+  the listing finds their edits gone. The one-instrument change (stage 3) closes
+  this; until then the on-screen divergence should at least be labeled.
+- **No undo.** There is no revert or history surface anywhere in the app;
+  conversational editing is currently one-way. A session-scoped undo stack is the
+  cheap interim.
+- **The refinement wall on combined dashboards.** `planning.ts` honestly records
+  why two-plan dashboards have no refinement path; #39 made multi-source the growth
+  direction, so the newest capability creates the dashboards where the best
+  interaction is missing. Scoped refinement ("on the river half, drop the map") is
+  the in-vocabulary design answer.
+- **Abstention needs a graceful surface.** The request path needs the same dignity
+  the refinement path already has ("did not understand that change" instead of
+  redrawing): a novel prompt the library cannot serve should produce the honest
+  nearest-true-thing, not a blank or a shrug.
+- **Learning must never move furniture.** Adaptation shapes proposals only; nothing
+  the user placed changes without instruction (the adaptive-vs-adaptable
+  distinction, and the reviewable-diff rule for registry growth) [H9].
+
 ## Layout lives here too
 
 The queued packing thread converges on the same artifact. No published system
@@ -300,6 +375,18 @@ retrieval under the no-model posture. Cross-domain section interleaving.
   memory; no precedent to lean on.
 - **The event schema's edges.** What counts as "discard" in a product with no
   delete; how a reopened-months-later dashboard scores.
+- **Failure-response arithmetic.** The citator model's leverage is graded doubt:
+  accumulated weak-negative treatment moved the probability of strong negative
+  treatment from 0.5% to 80.2% in the legal corpus [H10]. Dasher's analog — how
+  many soft contradictions (edits away from a card) before a card loses retrieval
+  standing — has no measured answer; ship a conservative rule and revise from
+  logged outcomes, exactly as the abstention rule is.
+- **Learning-rate realism.** The library can learn only from deviation. Kept-vs-
+  edited distillation is exploitation; the competence trap is "effective in the
+  short run but self-destructive in the long run" [H11]. Abstention clusters must
+  actually feed registry expansion, or the learning stalls. Double-loop moments —
+  recurring abstention patterns questioning the taxonomy itself — should be
+  scheduled, not spontaneous [H12].
 
 ## References
 
@@ -399,3 +486,49 @@ Dropped from v1: the hybrid-retrieval decision framework and AI-flywheel comment
 references (blog-tier, superseded by [C4–C6] and [E4–E12]); HyST (arXiv 2508.18048)
 demoted from load-bearing to motivational — it verifies, but it is an unreviewed
 preprint with a 76-query single-benchmark evaluation.
+
+Fourth sweep (v3) — decision science, BI empirics, trusted learning, engineered
+precedent systems:
+
+[H1] Tversky & Kahneman, "The Framing of Decisions and the Psychology of Choice,"
+Science 211 (1981).
+[H2] Suchan & Colucci, "An Empirical Study of Military Communications: BLUF vs.
+Bottom-Up," IEEE Trans. Professional Communication 32(1) (1989); n = 262.
+[H3] Mellers, Ungar, Baron et al., "Psychological Strategies for Winning a
+Geopolitical Forecasting Tournament," Psychological Science 25(5) (2014);
+Tetlock, Mellers, Rohrbaugh, Chen, "Forecasting Tournaments," (2017);
+Chang, Chen, Mellers, Tetlock, "The Henry Alexander Murray Lecture: Study and
+Improving Expert Political Judgment with the HITCH," (2016). Calibration and
+training effect sizes from the GJP/IARPA program.
+[H4] Fischhoff, "Hindsight ≠ Foresight: The Effect of Outcome Knowledge on
+Judgment Under Uncertainty," JPSP 1975; Baron & Hershey, "Outcome Bias in
+Decision Evaluation," JPSP 1988; Guilbault, Bryant, Brockway & Posavac,
+"A Meta-Analysis of Research on Hindsight Bias," Basic & Applied Social
+Psychology 26 (2004).
+[H5] Ur, Page, Kiesler et al., "Do Dark Patterns & Personalization coincide?
+An Analysis of Creepiness, Agency & Situational Awareness," CHI 2018 (n = 401);
+Zhan, Trewin et al., "Relationship between AI-Mindfulness and Trust in
+AI-Enabled Services," CHI 2025 (n = 450; intermediate autonomy flattens the
+personalization-trust damage).
+[H6] Howson, "The Analytics Landscape in 2016," Forrester (the ~80% mediated-
+consumption finding); Davenport et al., Deloitte access-gap surveys (2018);
+Brynjolfsson & McElheran, "Data in Action: Data-Driven Decision Making in US
+Manufacturing," SSRN 2016; Bloom & Van Reenen, "Measuring and Explaining
+Management Practices Across Firms and Countries," QJE 122(1) (2007).
+[H7] Institute for Product Management, "AI Network Effects" (four flywheel gates;
+vertical-specificity of application-layer data advantages).
+[H8] Nanji, Slight, Seger et al., "Overrides of Medication-Related Clinical
+Decision Support Alerts in Outpatients," JAMIA 21(3) (2014; 49–96% override
+prevalence across studies, pooled estimates near 90% for high-severity drug-
+interaction alerts); van der Sijs et al., "Overriding of Drug Safety Alerts in
+Computerized Physician Order Entry," JAMIA 13(2) (2006).
+[H9] Findlater & McGrenere, "Impact of User Goals on Customizable UI Usage,"
+CHI 2004 (mixed-initiative vs. pure adaptive); Kay, "Scrutable Adaptation:
+Because We Can and Must," UMAP 2006 (invited).
+[H10] Spriggs & Hansford, "The Malleability of Legal Precedent: A Study of
+Overruling and Negative Treatment," Law & Society Review 37:1 (2007).
+[H11] March, "Exploration and Exploitation in Organizational Learning,"
+Organization Science 2(1) (1991).
+[H12] Argyris, "Double Loop Learning in Organizations," Harvard Business Review
+(1977); Wegner, Giuliano & Hertel, "Cognitive Interdependence in Close
+Relationships" (1985; transactive memory).
