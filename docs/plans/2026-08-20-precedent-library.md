@@ -11,7 +11,7 @@ The architecture survived the pass. The primary precedent, the metric, and the
 selection machinery did not, and this revision records what replaced them and why.
 v3 adds a fourth sweep — decision science, BI adoption empirics, trusted learning
 products, and engineered precedent systems (citators, ASRS, clinical guidelines) —
-answering the question v2 left implicit: what this library is *for* [H-sections].
+answering the question v2 left implicit: what this library is _for_ [H-sections].
 
 ## Problem
 
@@ -126,7 +126,7 @@ Persisting the edit trail (proposed plan → settled plan, with the diff) provid
 The requirements doc's thesis — "a governed decision loop that turns a bounded
 plain-language intent and authorized evidence into a safe managerial action and
 **durable decision memory**" — makes the precedent library the second half of that
-sentence, operationalized. The one-instrument schema change *is* the decision-memory
+sentence, operationalized. The one-instrument schema change _is_ the decision-memory
 clause. What the fourth research sweep adds is that each remaining clause of the
 loop corrects a specific, measured failure of unaugmented judgment:
 
@@ -145,20 +145,26 @@ loop corrects a specific, measured failure of unaugmented judgment:
   and why — not merely when a dashboard renders" — is, read this way, an
   anti-hindsight instrument.
 - **Propose, never act** is the comfortable side of the personalization evidence:
-  trust damage from personalization is driven by *unexpected* inference, and
+  trust damage from personalization is driven by _unexpected_ inference, and
   aggregate-level signals ("your team's kept dashboards") are consistently more
   comfortable than individual-level ones ("users like you") [H5]. The library's
   only visible surface — one row in "Why Dasher says this" — is attributional,
   aggregate, and on-demand, which is the trusted shape on every axis measured.
 
-The market framing follows from the same sweep: BI hands-on use has plateaued at
-roughly a quarter to a third of the workforce across two decades of measurement,
-and ~80% of enterprise decision-makers consume *mediated* evidence rather than
-using tools directly [H6]. A plain-language request that yields an inspectable,
-epistemically-typed proposal is an interface for the mediated majority. The
-library compounds that position without widening authority — the flywheel turns
-within one workspace, which is both the no-surveillance posture and the
-vertical-specific, defensible form of the data advantage [H7].
+The market framing follows from the same sweep, and is held more loosely than
+everything above it. Industry analysis reports that BI hands-on use has plateaued
+at roughly a quarter to a third of the workforce, with the large majority of
+enterprise decision-makers consuming _mediated_ evidence rather than using tools
+directly [H6-industry]; the peer-reviewed adjacent literature establishes the
+weaker but firmer claim that data-driven decision practice is unevenly adopted
+and management-practice bound [H6-reviewed]. The specific ~80% figure is
+analyst-sourced and not independently verified here, so no design decision in
+this note rests on it. What does the work is the thesis itself: a plain-language
+request that yields an inspectable, epistemically-typed proposal is an interface
+for people who currently receive evidence secondhand, whatever their exact share.
+The library compounds that position without widening authority — the flywheel
+turns within one workspace, which is both the no-surveillance posture and the
+vertical-specific, defensible form of the data advantage [H7-commentary].
 
 ## Retrieval: structured-first, and honest about scale
 
@@ -278,11 +284,16 @@ From Draco 2 [A2] and design-systems practice, the operating manual:
 The fourth sweep also located the interaction seams where the loop's promise
 strains, all verified against the current code:
 
-- **"Live" must mean live.** The flagship example request says "live dashboard," the
-  shell renders the label "Live dashboard," and the saved artifact renders sealed
-  build-time bytes with no refresh path. A "live" label on a frozen artifact is an
-  expectation the product cannot meet; reserve the word for data that actually
-  updates and label the sealed artifact a snapshot. (Alert-adjacent honesty:
+- **"Live" has three meanings and they do not agree.** The example prompt invites
+  "a live dashboard" (`planning.ts:20`, and the placeholder and chip beside it);
+  the shell badges `dataMode === "live"` (`dashboard-shell.tsx:485`); but every
+  builder hardcodes `dataMode: "demo"` (`compile.ts:373`,
+  `ucr-campus-facts.ts:188`, and `compose.ts:399` inheriting from its sources), so
+  the live badge is currently **unreachable** — a genuinely live-sourced build
+  still reads "Demo." `sourceMode()` never reaches `dataMode`. The badge therefore
+  carries no information today. Wire them, and add a third state for sealed
+  artifacts: a reopened dashboard renders build-time bytes with no refresh path, so
+  it is a snapshot regardless of how its data was fetched. (Alert-adjacent honesty:
   clinical systems reach 90%+ alert override once volume erodes scarcity [H8] —
   "Needs attention" is a trust asset only while it stays scarce.)
 - **Refinements are the product's soul and its data loss.** Refinement edits shape
@@ -488,7 +499,11 @@ demoted from load-bearing to motivational — it verifies, but it is an unreview
 preprint with a 76-query single-benchmark evaluation.
 
 Fourth sweep (v3) — decision science, BI empirics, trusted learning, engineered
-precedent systems:
+precedent systems. Tiered, as the rest of this list is: [H6-industry] and [H7-commentary] are analyst
+and practitioner material carrying the market framing, and are marked in-text so a
+reader can see which claims rest on peer review and which do not.
+
+Peer-reviewed:
 
 [H1] Tversky & Kahneman, "The Framing of Decisions and the Psychology of Choice,"
 Science 211 (1981).
@@ -510,13 +525,12 @@ An Analysis of Creepiness, Agency & Situational Awareness," CHI 2018 (n = 401);
 Zhan, Trewin et al., "Relationship between AI-Mindfulness and Trust in
 AI-Enabled Services," CHI 2025 (n = 450; intermediate autonomy flattens the
 personalization-trust damage).
-[H6] Howson, "The Analytics Landscape in 2016," Forrester (the ~80% mediated-
-consumption finding); Davenport et al., Deloitte access-gap surveys (2018);
-Brynjolfsson & McElheran, "Data in Action: Data-Driven Decision Making in US
-Manufacturing," SSRN 2016; Bloom & Van Reenen, "Measuring and Explaining
-Management Practices Across Firms and Countries," QJE 122(1) (2007).
-[H7] Institute for Product Management, "AI Network Effects" (four flywheel gates;
-vertical-specificity of application-layer data advantages).
+[H6-reviewed] Brynjolfsson & McElheran, "Data in Action: Data-Driven Decision
+Making in US Manufacturing," SSRN 2016; Bloom & Van Reenen, "Measuring and
+Explaining Management Practices Across Firms and Countries," QJE 122(1) (2007).
+These establish uneven adoption of data-driven practice; they do not report the
+~80% mediated-consumption figure.
+
 [H8] Nanji, Slight, Seger et al., "Overrides of Medication-Related Clinical
 Decision Support Alerts in Outpatients," JAMIA 21(3) (2014; 49–96% override
 prevalence across studies, pooled estimates near 90% for high-severity drug-
@@ -532,3 +546,11 @@ Organization Science 2(1) (1991).
 [H12] Argyris, "Double Loop Learning in Organizations," Harvard Business Review
 (1977); Wegner, Giuliano & Hertel, "Cognitive Interdependence in Close
 Relationships" (1985; transactive memory).
+
+Industry analysis and commentary — not peer-reviewed, and marked as such in-text:
+
+[H6-industry] Howson, "The Analytics Landscape in 2016," Forrester (source of the
+~80% mediated-consumption finding); Davenport et al., Deloitte access-gap surveys
+(2018). Analyst methodology not independently verified for this note.
+[H7-commentary] Institute for Product Management, "AI Network Effects" (four
+flywheel gates; vertical-specificity of application-layer data advantages).
