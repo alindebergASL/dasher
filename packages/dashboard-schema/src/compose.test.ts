@@ -5,7 +5,11 @@ import {
   DashboardCompositionError,
   type ComposedSources,
 } from "./compose";
-import { parseDashboardSpec, type DashboardSpec } from "./schema";
+import {
+  DASHBOARD_MAX_EVIDENCE_IDS,
+  parseDashboardSpec,
+  type DashboardSpec,
+} from "./schema";
 
 /**
  * The fixtures deliberately COLLIDE.
@@ -17,6 +21,11 @@ import { parseDashboardSpec, type DashboardSpec } from "./schema";
  * tests would fail on the contract rather than on an assertion, which is the
  * intended design.
  */
+/** `count` citation ids, or none. Ids are per-source-namespaced downstream. */
+function extraCitationIds(count = 0): string[] {
+  return Array.from({ length: count }, (_, index) => `cite-${String(index)}`);
+}
+
 function source(options: {
   readonly title: string;
   readonly stationId: string;
@@ -27,6 +36,13 @@ function source(options: {
   /** Overrides the `important` detail, so a test can supply prose that does
    *  not end in punctuation — which is what the real river half does. */
   readonly importantDetail?: string;
+  /**
+   * Extra evidence records, all cited by the `known` claim. Real fixtures cite
+   * two or three things, which is why the interleave-and-cap in
+   * `mergeEvidenceIds` went unverified: the cap never fired and the two lists
+   * were never different lengths.
+   */
+  readonly extraCitations?: number;
 }): DashboardSpec {
   return parseDashboardSpec({
     schemaVersion: "1.2",
@@ -108,6 +124,15 @@ function source(options: {
         detail: "Derived from readings.",
         confidence: "high",
       },
+      ...extraCitationIds(options.extraCitations).map((id) => ({
+        id,
+        kind: "observed" as const,
+        label: `Citation ${id}`,
+        sourceName: "Dasher",
+        retrievedAt: options.generatedAt,
+        detail: "One more supporting link.",
+        confidence: "high" as const,
+      })),
     ],
     architecture: {
       title: "How this works",
@@ -128,7 +153,10 @@ function source(options: {
         statementTypes: options.statementTypes ?? ["observed"],
         headline: `${options.title} known`,
         detail: `What is known about ${options.title}.`,
-        evidenceIds: ["station-reading"],
+        evidenceIds: [
+          "station-reading",
+          ...extraCitationIds(options.extraCitations),
+        ],
       },
       changed: {
         statementTypes: ["calculated"],
@@ -431,7 +459,10 @@ describe("an unknown observation time is unknown, not the other half's", () => {
           },
         }),
       );
-      expect(combined.freshness.latestObservationAt).toBeUndefined();
+      // The KEY is absent, not present-and-undefined. `toBeUndefined` cannot
+      // tell those apart, and only one of them is what the contract's
+      // optional field means.
+      expect(combined.freshness).not.toHaveProperty("latestObservationAt");
       // The label still names both halves, so the reader is not left with
       // nothing — only with no false precision.
       expect(combined.freshness.label).toContain("River:");
@@ -469,13 +500,27 @@ describe("an unknown observation time is unknown, not the other half's", () => {
 });
 
 describe("composition refuses what it cannot state honestly", () => {
-  it("refuses two sources sharing a namespace", () => {
+  it("refuses two sources sharing a namespace, and says which", () => {
+    // ASSERTED ON THE MESSAGE, not just the type, and that distinction is the
+    // whole point. The contract would catch this collision anyway — once
+    // `parseComposed` began wrapping contract failures in the same error
+    // class, `toThrow(DashboardCompositionError)` stopped being able to tell
+    // the guard from the fallback. Mutation testing proved it: the guard could
+    // be deleted outright and every test still passed.
+    //
+    // So the guard has to earn its place on the only thing it adds — naming
+    // the colliding namespace instead of reporting a generic contract
+    // failure — and the test has to check that, or the guard is dead weight
+    // that looks alive.
     const sources = pair();
     const clashing = [
       sources[0],
       { ...sources[1], key: "river" },
     ] as ComposedSources;
+
     expect(() => compose(clashing)).toThrow(DashboardCompositionError);
+    expect(() => compose(clashing)).toThrow(/namespace "river"/u);
+    expect(() => compose(clashing)).not.toThrow(/does not satisfy/u);
   });
 
   it("refuses a demo source beside a live one", () => {
@@ -605,6 +650,69 @@ describe("the brief carries both sources", () => {
     const { known } = compose().executiveBrief;
     expect(known.evidenceIds.some((id) => id.startsWith("river:"))).toBe(true);
     expect(known.evidenceIds.some((id) => id.startsWith("air:"))).toBe(true);
+  });
+
+  it("keeps every citation when the union fits, however uneven the halves", () => {
+    // `Math.max` -> `Math.min` survived mutation testing because every fixture
+    // cited the same small number of things from each side. With 25 against 5
+    // the two are distinguishable: `min` stops after five rounds and silently
+    // drops twenty of the river half's citations.
+    //
+    // This also pins the `!== undefined` guards. Without them the short half
+    // pushes `undefined` for rounds 5..24, and the contract refuses the spec.
+    const sources = pair({
+      first: {
+        title: "River",
+        stationId: "1",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+        extraCitations: 24,
+      },
+      second: {
+        title: "Air",
+        stationId: "2",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+        extraCitations: 4,
+      },
+    });
+    const { evidenceIds } = compose(sources).executiveBrief.known;
+
+    // 25 from the first half, 5 from the second, and the cap is 32.
+    expect(evidenceIds.length).toBe(30);
+    expect(evidenceIds.filter((id) => id.startsWith("river:")).length).toBe(25);
+    expect(evidenceIds.filter((id) => id.startsWith("air:")).length).toBe(5);
+    expect(new Set(evidenceIds).size).toBe(evidenceIds.length);
+  });
+
+  it("keeps both halves represented when the union exceeds the cap", () => {
+    // The property the module's own comment claims and nothing checked:
+    // "interleaving guarantees both sources are represented in whatever
+    // survives". Removing the `.slice` survived mutation testing too, because
+    // no fixture ever cited enough to reach the bound.
+    //
+    // 20 + 20 = 40, capped to 32. Interleaved that is 16 each. A naive
+    // concat-then-truncate would keep all 20 of the first and only 12 of the
+    // second, so the 15-per-side floor below is what separates the two
+    // implementations rather than merely observing that the cap applied.
+    const twenty = {
+      generatedAt: "2026-08-19T12:00:00.000Z",
+      freshness: FRESH,
+      extraCitations: 19,
+    } as const;
+    const sources = pair({
+      first: { title: "River", stationId: "1", ...twenty },
+      second: { title: "Air", stationId: "2", ...twenty },
+    });
+    const { evidenceIds } = compose(sources).executiveBrief.known;
+
+    expect(evidenceIds.length).toBe(DASHBOARD_MAX_EVIDENCE_IDS);
+    expect(
+      evidenceIds.filter((id) => id.startsWith("river:")).length,
+    ).toBeGreaterThanOrEqual(15);
+    expect(
+      evidenceIds.filter((id) => id.startsWith("air:")).length,
+    ).toBeGreaterThanOrEqual(15);
   });
 
   it("keeps the weaker statement types when the cap forces a choice", () => {
