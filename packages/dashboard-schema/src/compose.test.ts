@@ -392,6 +392,82 @@ describe("freshness is the pair's, not either source's", () => {
   });
 });
 
+describe("an unknown observation time is unknown, not the other half's", () => {
+  const OBSERVED = {
+    status: "fresh",
+    label: "Fresh",
+    latestObservationAt: "2026-08-19T11:30:00.000Z",
+  } as const;
+  // Stale, not fresh, and that is the contract's doing rather than a choice
+  // here: `fresh` REQUIRES `latestObservationAt`, so a half with no timestamp
+  // is never fresh. Which means omitting the pair's timestamp can never
+  // produce an illegal fresh-without-a-timestamp spec — the composed status
+  // is only `fresh` when both halves are, and both therefore had one.
+  const UNTIMED = { status: "stale", label: "No recent readings" } as const;
+
+  it("reports nothing when either half has no observation time", () => {
+    // A missing timestamp is the LEAST current state there is — unknown — so
+    // it cannot be filtered out on the way to "the earliest". Doing that let
+    // the half that did report stand for the whole page, under a single
+    // "Latest observation" heading a reader takes to cover everything on it.
+    for (const [first, second] of [
+      [OBSERVED, UNTIMED],
+      [UNTIMED, OBSERVED],
+      [UNTIMED, UNTIMED],
+    ] as const) {
+      const combined = compose(
+        pair({
+          first: {
+            title: "River",
+            stationId: "1",
+            generatedAt: "2026-08-19T12:00:00.000Z",
+            freshness: first,
+          },
+          second: {
+            title: "Air",
+            stationId: "2",
+            generatedAt: "2026-08-19T12:00:00.000Z",
+            freshness: second,
+          },
+        }),
+      );
+      expect(combined.freshness.latestObservationAt).toBeUndefined();
+      // The label still names both halves, so the reader is not left with
+      // nothing — only with no false precision.
+      expect(combined.freshness.label).toContain("River:");
+      expect(combined.freshness.label).toContain("Air quality:");
+    }
+  });
+
+  it("still reports the earliest when both halves have one", () => {
+    // The counterweight: "omit when either is missing" must not degrade into
+    // "omit always", which would drop a timestamp the pair genuinely has.
+    const combined = compose(
+      pair({
+        first: {
+          title: "River",
+          stationId: "1",
+          generatedAt: "2026-08-19T12:00:00.000Z",
+          freshness: OBSERVED,
+        },
+        second: {
+          title: "Air",
+          stationId: "2",
+          generatedAt: "2026-08-19T12:00:00.000Z",
+          freshness: {
+            status: "fresh",
+            label: "Fresh",
+            latestObservationAt: "2026-08-19T11:00:00.000Z",
+          },
+        },
+      }),
+    );
+    expect(combined.freshness.latestObservationAt).toBe(
+      "2026-08-19T11:00:00.000Z",
+    );
+  });
+});
+
 describe("composition refuses what it cannot state honestly", () => {
   it("refuses two sources sharing a namespace", () => {
     const sources = pair();
@@ -413,6 +489,56 @@ describe("composition refuses what it cannot state honestly", () => {
       },
     });
     expect(() => compose(sources)).toThrow(DashboardCompositionError);
+  });
+
+  it("refuses a pair that overruns the contract, as a composition failure", () => {
+    // A contract rejection here is a property of the PAIR, not of either half:
+    // both were parsed by whoever built them. Letting the `ZodError` escape
+    // made it indistinguishable from a genuine fault, and the caller reported
+    // it to the reader as "try rewording it" — advice that cannot work, since
+    // no phrasing makes two dashboards fit inside one budget.
+    //
+    // Sixteen pages is the contract's ceiling, so nine plus nine overruns it.
+    const oversized = (key: string): DashboardSpec => {
+      const base = source({
+        title: key,
+        stationId: "1",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+      });
+      return parseDashboardSpec({
+        ...base,
+        pages: Array.from({ length: 9 }, (_, index) => ({
+          ...base.pages[0]!,
+          id: `${key}-page-${String(index)}`,
+          components: base.pages[0]!.components.map((component) => ({
+            ...component,
+            id: `${key}-${String(index)}-${component.id}`,
+          })),
+        })),
+      });
+    };
+
+    const sources: ComposedSources = [
+      { key: "river", label: "River", dashboard: oversized("r") },
+      { key: "air", label: "Air quality", dashboard: oversized("a") },
+    ];
+
+    // Guard the guard: each half is legal on its own, so the failure really is
+    // the pair's and this test is not just asserting a broken fixture.
+    expect(sources[0].dashboard.pages.length).toBe(9);
+    expect(() => parseDashboardSpec(sources[0].dashboard)).not.toThrow();
+
+    expect(() => compose(sources)).toThrow(DashboardCompositionError);
+    // The contract's own reason survives for logs, even though the reader
+    // never sees it.
+    try {
+      compose(sources);
+      throw new Error("expected composition to refuse");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DashboardCompositionError);
+      expect((error as Error).cause).toBeDefined();
+    }
   });
 });
 

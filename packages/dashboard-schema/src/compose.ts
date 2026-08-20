@@ -47,8 +47,8 @@ export interface ComposeOptions {
 export type ComposedSources = readonly [ComposedSource, ComposedSource];
 
 export class DashboardCompositionError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "DashboardCompositionError";
   }
 }
@@ -287,18 +287,47 @@ function composeFreshness(
   // The EARLIEST of the two, not the latest. A combined dashboard is only as
   // current as its least current half, and reporting the newer timestamp would
   // let a just-updated river reading vouch for hours-old air data.
-  const observations = [a.latestObservationAt, b.latestObservationAt].filter(
+  //
+  // AND ONLY WHEN BOTH HALVES HAVE ONE. A missing timestamp is not a value to
+  // skip over; it is the least current state there is — unknown. Filtering it
+  // out and taking the earliest of what remained let the half that DID report
+  // stand for the whole page, under a single "Latest observation" heading a
+  // reader takes to cover everything on it. That is the same substitution the
+  // paragraph above refuses, arriving through absence instead of arithmetic.
+  // Saying nothing is the honest answer, and the shell already renders a
+  // missing timestamp as "Unknown".
+  const observations = [a.latestObservationAt, b.latestObservationAt];
+  const known = observations.filter(
     (value): value is string => value !== undefined,
   );
-  const earliest = observations
-    .slice()
-    .sort((x, y) => Date.parse(x) - Date.parse(y))[0];
+  const earliest =
+    known.length === observations.length
+      ? known.slice().sort((x, y) => Date.parse(x) - Date.parse(y))[0]
+      : undefined;
 
   return {
     status,
     label: `${first.label}: ${a.label} · ${second.label}: ${b.label}`,
     ...(earliest === undefined ? {} : { latestObservationAt: earliest }),
   };
+}
+
+/**
+ * The contract check, with its failure named for what it is.
+ *
+ * Only the composed result goes through here. Each source was already parsed
+ * by whoever built it, so a failure at this point is a property of the PAIR —
+ * two halves that cannot share one spec — rather than of either half.
+ */
+function parseComposed(candidate: unknown): DashboardSpec {
+  try {
+    return parseDashboardSpec(candidate);
+  } catch (error) {
+    throw new DashboardCompositionError(
+      "The combined dashboard does not satisfy the dashboard contract; the two sources cannot be shown together.",
+      { cause: error },
+    );
+  }
 }
 
 export function composeDashboards(
@@ -353,7 +382,15 @@ export function composeDashboards(
   // Re-parsed, not assembled and trusted. Everything a merge can break —
   // colliding ids, dangling evidence, orphaned edges, budget overruns — is
   // already the contract's job, and this is where that job runs.
-  return parseDashboardSpec({
+  //
+  // ITS REJECTION IS TRANSLATED, NOT RE-RAISED. A `ZodError` escaping here is
+  // indistinguishable to a caller from a genuine fault, so it was being caught
+  // as "something went wrong" and reported to the reader as an invitation to
+  // reword — advice that cannot work, because no wording makes two dashboards
+  // fit inside one budget. Composition failing the contract is a REFUSAL: this
+  // pair cannot be combined honestly. The reason is preserved as `cause` for
+  // logs; the caller decides what a reader is told.
+  return parseComposed({
     schemaVersion: "1.2",
     id: options.id,
     title: options.title,

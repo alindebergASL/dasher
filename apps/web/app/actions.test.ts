@@ -13,6 +13,7 @@ import {
 // treat type positions differently from value ones -- nor comments differently
 // from code, which is why this note does not quote the form it is avoiding.
 import type * as SourceRuntime from "./source-runtime";
+import type * as DashboardSchema from "@dasher/dashboard-schema";
 
 /**
  * One domain can be taken offline at the source seam while the other keeps its
@@ -23,6 +24,37 @@ import type * as SourceRuntime from "./source-runtime";
  * other test in this file.
  */
 let unavailableDomain: "river" | "air" | undefined;
+
+/**
+ * Composition refusal has no natural trigger from the fake planner: the two
+ * real halves always fit. What is under test is the ACTION's handling of that
+ * refusal — which error it recognises and what it then tells a reader — so the
+ * refusal is injected at the seam and the real composer is used everywhere
+ * else.
+ */
+let composeRefuses = false;
+/** A fault that is NOT a refusal, so the two branches can be told apart. */
+let composeFaults = false;
+
+vi.mock("@dasher/dashboard-schema", async (importOriginal) => {
+  const actual = await importOriginal<typeof DashboardSchema>();
+  return {
+    ...actual,
+    composeDashboards: (
+      ...args: Parameters<typeof actual.composeDashboards>
+    ) => {
+      if (composeRefuses) {
+        throw new actual.DashboardCompositionError(
+          "The combined dashboard does not satisfy the dashboard contract.",
+        );
+      }
+      if (composeFaults) {
+        throw new TypeError("undefined is not a function");
+      }
+      return actual.composeDashboards(...args);
+    },
+  };
+});
 
 vi.mock("./source-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof SourceRuntime>();
@@ -407,6 +439,47 @@ describe("one request, two trusted sources", () => {
       }
     },
   );
+
+  it("says the pair cannot be combined, not that the reader should reword", async () => {
+    // Both halves built; the PAIR is what failed. Before this, the contract's
+    // rejection escaped as a raw `ZodError`, was caught as an unknown fault,
+    // and came back as "Try rewording it" — advice that cannot work, because
+    // no phrasing makes two dashboards fit inside one budget. The message must
+    // point at the thing that WILL succeed.
+    composeRefuses = true;
+    try {
+      const result = await planDashboard(COMBINED, { persist: false });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("could not combine");
+      expect(result.error).toMatch(/on its own/u);
+      expect(result.error).not.toMatch(/reword/iu);
+      expect(result.dashboard).toBeUndefined();
+      expect(result.dashboardId).toBeUndefined();
+    } finally {
+      composeRefuses = false;
+    }
+  });
+
+  it("still reaches the generic message for a fault that is not a refusal", async () => {
+    // The counterweight, and it has to throw something REAL to be one. An
+    // earlier version of this test just ran the happy path and asserted it
+    // passed, which says nothing about the branch it claims to cover — the
+    // same hollow shape this slice has now produced twice. Recognising
+    // `DashboardCompositionError` must not widen into treating every failure
+    // as an uncombinable pair, or a genuine bug is reported to the reader as
+    // a property of their request.
+    composeFaults = true;
+    try {
+      const result = await planDashboard(COMBINED, { persist: false });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/reword/iu);
+      expect(result.error).not.toContain("could not combine");
+    } finally {
+      composeFaults = false;
+    }
+  });
 
   it("refuses to refine a combined dashboard rather than half-refining it", async () => {
     const built = await planDashboard(COMBINED, { persist: false });

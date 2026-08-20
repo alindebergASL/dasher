@@ -15,6 +15,7 @@ import { withDashboardRepository } from "@dasher/control-plane";
 import {
   canonicalSpecBytes,
   composeDashboards,
+  DashboardCompositionError,
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
 import {
@@ -263,6 +264,19 @@ async function planCombined(
         ok: false,
         error:
           `Dasher could not build a dashboard it could stand behind for that request. ${error.findings[0]?.message ?? ""}`.trim(),
+      };
+    }
+    if (error instanceof DashboardCompositionError) {
+      // Both halves built; the PAIR is what could not be shown honestly —
+      // colliding namespaces, a mismatched data mode, or two dashboards that
+      // do not fit inside one contract budget. "Try rewording it" was the
+      // message here before, and it is advice that cannot work: no phrasing
+      // makes two dashboards fit in one. The single-source path is the thing
+      // that will actually succeed, so that is what the reader is offered.
+      return {
+        ok: false,
+        error:
+          "Dasher built both dashboards but could not combine them into one it could stand behind. Ask for river conditions or air quality on its own.",
       };
     }
     return {
