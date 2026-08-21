@@ -335,18 +335,30 @@ export class FakePlanningProvider implements PlanningProvider {
 }
 
 /**
- * The one section to keep when a refinement would otherwise empty the plan.
+ * The one section to keep when a refinement would otherwise empty the plan, or
+ * nothing when the registry offers nothing that could stand there.
  *
- * `conditions-summary` by design — it needs no station and every one of its
+ * `conditions-summary` in practice — it needs no station and every one of its
  * claims has a zero case — but chosen through the registry rather than written
  * as a literal, so a deprecated summary cannot become the thing Dasher falls
- * back to. If nothing offered can render without a station, the summary is
- * still the least wrong answer available.
+ * back to.
+ *
+ * IT USED TO SAY THAT AND NOT DO IT. The implementation ended
+ * `?? "conditions-summary"`, so with every station-free kind deprecated the
+ * literal came back and Dasher synthesised a retired section at the one moment
+ * it is choosing entirely for itself. The mutation gate had flagged that exact
+ * `?.` as a survivor and it was dismissed as an equivalent mutant; it was not
+ * equivalent, it was the tell.
+ *
+ * Returning nothing is the honest answer to "there is nothing left I am willing
+ * to show". The caller then hands back a plan the schema refuses, which the
+ * planner reports as a malformed plan and asks to have repaired — a visible
+ * refusal rather than a silently resurrected kind.
  */
-function fallbackSection(entries: readonly PatternEntry[]): PlanSectionKind {
-  const offered = offeredEntries(entries);
-  const standalone = offered.find((entry) => !entry.requiresSites);
-  return standalone?.kind ?? "conditions-summary";
+function fallbackSection(
+  entries: readonly PatternEntry[],
+): PlanSectionKind | undefined {
+  return offeredEntries(entries).find((entry) => !entry.requiresSites)?.kind;
 }
 
 /**
@@ -449,12 +461,25 @@ function verbBefore(text: string, at: number): "remove" | "add" | undefined {
  * vocabulary and the vocabulary a model provider is told about could drift
  * apart while both looked authoritative.
  *
- * Deprecated entries are skipped, because a section Dasher no longer proposes
- * must not stay reachable by naming it. That rule is why this is a pure
- * function over a list rather than a loop inside `readRefinementIntent`: the
- * shipped registry has nothing deprecated in it, so the only way to check the
- * filtering actually happens HERE — and not merely in `offeredEntries`, which
- * has its own test — is to be able to hand this a deprecated entry.
+ * IT APPLIES NO LIFECYCLE FILTERING, and that is a correction. It used to skip
+ * deprecated entries, which sounded like the rule — a section Dasher no longer
+ * proposes should not be reachable by naming it — and was too blunt by half,
+ * because it ran BEFORE the verb was read. So a deprecated section could not be
+ * REMOVED either: a reader looking at a dashboard that still contained a
+ * retired map, typing "Drop the map.", got their instruction reported as
+ * uninterpretable and the map left where it was.
+ *
+ * Deprecation removes a section from what Dasher PROPOSES, never from what it
+ * HONOURS, and removing something is not proposing it. Which mentions may
+ * become additions is `readRefinementIntent`'s decision, after it knows the
+ * verb. This function only answers what was named, and where.
+ *
+ * CASE-FOLDED HERE rather than relied upon from the caller. This is exported,
+ * and `PatternEntry.triggerWords` documents matching as case-folded, so
+ * `matchedSections("ADD THE MAP", …)` returning nothing was a public API
+ * contradicting its own contract. Folding is length-preserving for these
+ * ASCII trigger words, so the returned position still indexes the caller's
+ * string.
  *
  * ORDERED BY WHERE THE READER NAMED THEM, not by the order of the list being
  * searched. This is load-bearing rather than tidy. `refine` fills the pages
@@ -479,9 +504,10 @@ export function matchedSections(
   text: string,
   entries: readonly PatternEntry[],
 ): ReadonlyArray<readonly [PlanSectionKind, number]> {
+  const folded = text.toLowerCase();
   const matched: Array<readonly [PlanSectionKind, number]> = [];
-  for (const entry of offeredEntries(entries)) {
-    const at = firstIndexOfAny(text, entry.triggerWords);
+  for (const entry of entries) {
+    const at = firstIndexOfAny(folded, entry.triggerWords);
     if (at !== -1) matched.push([entry.kind, at]);
   }
   return matched.sort(([, left], [, right]) => left - right);
@@ -551,14 +577,25 @@ export function readRefinementIntent(
   const anyRemove = has(REMOVE_WORDS);
   const anyAdd = has(ADD_WORDS);
 
+  // The lifecycle rule applies to ADDITIONS ONLY, and it is applied here rather
+  // than in the matcher because it depends on the verb. A retired section may
+  // always be named for removal — a reader looking at one has to be able to get
+  // rid of it — and may never be named for addition, because that is Dasher
+  // proposing it again. A mixed instruction gets both: "Drop the map and add
+  // the table" removes a deprecated map and adds an offered table.
+  const offered = new Set(offeredEntries(entries).map((entry) => entry.kind));
+  const addIfOffered = (section: PlanSectionKind): void => {
+    if (offered.has(section)) add.push(section);
+  };
+
   for (const [section, at] of matchedSections(text, entries)) {
     const verb = verbBefore(text, at);
     if (verb === "remove") remove.push(section);
-    else if (verb === "add") add.push(section);
+    else if (verb === "add") addIfOffered(section);
     // Named with no verb in front of it: fall back to the instruction's own
     // single verb, so "the map — drop it" still reads as a removal.
     else if (anyRemove && !anyAdd) remove.push(section);
-    else if (anyAdd && !anyRemove) add.push(section);
+    else if (anyAdd && !anyRemove) addIfOffered(section);
   }
 
   return {
@@ -624,6 +661,16 @@ function refine(
   if (intent.add.length > 0) {
     const present = new Set(pages.flatMap((page) => page.sections));
     const missing = intent.add.filter((section) => !present.has(section));
+
+    // A removal that emptied every page must not swallow the addition beside
+    // it. "Drop the map and add the trends" against a one-section plan left
+    // nothing for the addition to land on, so the section was silently dropped
+    // and the empty-plan fallback below substituted a summary the reader had
+    // not asked for. Seeding a page keeps the reader's second instruction.
+    if (pages.length === 0 && missing.length > 0) {
+      pages = [{ ...plan.pages[0]!, sections: [] }];
+    }
+
     // Onto the first page with room. A section appended to a full page would be
     // dropped by the contract's own limit, which looks like the request was
     // ignored rather than refused.
@@ -635,6 +682,13 @@ function refine(
         target.sections = [...target.sections, section];
       }
     }
+
+    // No empty-page sweep here, and it is worth saying why rather than leaving
+    // a defensive line nothing can kill. Removals already dropped every page
+    // they emptied, so the pages reaching this block all have sections; a page
+    // is only seeded when there is an addition to place, and a freshly seeded
+    // page always has room for the first one. Mutation testing is what made the
+    // point: the sweep survived every mutant, because no input reaches it.
   }
 
   // "Make it shorter" collapses to a single page, keeping order.
@@ -651,13 +705,13 @@ function refine(
   if (pages.length === 0) {
     // Refusing to render nothing. Emptying every page is a plan the contract
     // would reject, and a finding the reader cannot act on is worse than a
-    // dashboard that kept its summary.
-    pages = [
-      {
-        ...plan.pages[0]!,
-        sections: [fallbackSection(entries)],
-      },
-    ];
+    // dashboard that kept its summary — as long as what is kept is something
+    // Dasher would still offer. When it is not, the empty plan goes forward and
+    // the contract refuses it, which is the honest outcome.
+    const kept = fallbackSection(entries);
+    if (kept !== undefined) {
+      pages = [{ ...plan.pages[0]!, sections: [kept] }];
+    }
   }
 
   return {
@@ -718,21 +772,14 @@ function repair(
     }))
     .filter((page) => page.sections.length > 0);
 
-  return {
-    ...plan,
-    siteIds,
-    pages:
-      pages.length > 0
-        ? pages
-        : [
-            {
-              id: "overview",
-              title: "Overview",
-              description: "Current conditions.",
-              sections: ["conditions-summary", "gauge-table"],
-            },
-          ],
-  };
+  // NO SYNTHESISED FALLBACK HERE. There was one — a literal
+  // `["conditions-summary", "gauge-table"]` page for the case where `pages`
+  // came out empty — and it was both a second lifecycle bypass and dead code.
+  // Dedup keeps the FIRST occurrence of each section, and nothing has been seen
+  // before the first page's first section, so a schema-valid previous plan
+  // (min one page, min one section) always yields at least one page. Proved by
+  // test rather than asserted here.
+  return { ...plan, siteIds, pages };
 }
 
 function indexFrom(path: string, field: string): number | undefined {

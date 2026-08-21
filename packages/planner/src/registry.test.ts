@@ -243,19 +243,181 @@ describe("the registry governs itself", () => {
     ).toBe(true);
   });
 
-  it("keeps a deprecated section out of what an instruction can reach", () => {
-    // `offeredEntries` being correct does not make its CALL SITES correct, and
-    // the refinement matcher is the one that would silently re-offer a retired
-    // section the moment someone iterated the full list instead. Handing the
-    // matcher a deprecated entry directly is the only way to check that today,
-    // because the shipped registry has nothing deprecated in it.
-    const map = patternFor("gauge-map");
-    const retired: PatternEntry = { ...map, status: "deprecated" };
-
-    expect(matchedSections("add the map", [map]).map(([kind]) => kind)).toEqual(
-      ["gauge-map"],
+  /** The shipped registry with `gauge-map` retired. */
+  const withoutMaps = (): PatternEntry[] =>
+    PATTERN_ENTRIES.map((entry) =>
+      entry.kind === "gauge-map"
+        ? { ...entry, status: "deprecated" as const }
+        : entry,
     );
-    expect(matchedSections("add the map", [retired])).toEqual([]);
+
+  /** The plan a reader is looking at, containing the retired section. */
+  const looking = () => planFor([site], ["gauge-map", "gauge-table"]);
+
+  async function refined(
+    instruction: string,
+    entries: PatternEntry[],
+  ): Promise<readonly PlanSectionKind[]> {
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      entries,
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: { previousPlan: looking(), instruction },
+    });
+    return DashboardPlanSchema.parse(out).pages.flatMap(
+      (page) => page.sections,
+    );
+  }
+
+  it("will not ADD a deprecated section", async () => {
+    const plan = planFor([site], ["gauge-table"]);
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      withoutMaps(),
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: { previousPlan: plan, instruction: "Add the map." },
+    });
+    expect(
+      DashboardPlanSchema.parse(out).pages.flatMap((page) => page.sections),
+    ).not.toContain("gauge-map");
+  });
+
+  it("still lets a reader REMOVE one", async () => {
+    // The half that was wrong. Lifecycle filtering ran in the matcher, BEFORE
+    // the verb was read, so a retired section could not be removed either: a
+    // reader looking at a dashboard that still contained a retired map, typing
+    // "Drop the map.", was told the instruction was not understood and the map
+    // stayed. Deprecation removes a section from what Dasher PROPOSES, never
+    // from what it HONOURS, and removing something is not proposing it.
+    expect(await refined("Drop the map.", withoutMaps())).not.toContain(
+      "gauge-map",
+    );
+    // And the same instruction against the shipped registry, so the removal
+    // above is not just the section never having been there.
+    expect(await refined("Drop the map.", [...PATTERN_ENTRIES])).not.toContain(
+      "gauge-map",
+    );
+    expect(looking().pages[0]?.sections).toContain("gauge-map");
+  });
+
+  it("does both when one instruction asks for both", async () => {
+    // A mixed instruction has to split along the verb rather than along the
+    // status: remove the retired map, add the offered trends.
+    const plan = planFor([site], ["gauge-map"]);
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      withoutMaps(),
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: {
+        previousPlan: plan,
+        instruction: "Drop the map and add the trends.",
+      },
+    });
+    const sections = DashboardPlanSchema.parse(out).pages.flatMap(
+      (page) => page.sections,
+    );
+
+    expect(sections).not.toContain("gauge-map");
+    expect(sections).toContain("stage-trends");
+  });
+
+  it("synthesises nothing rather than resurrecting a retired section", async () => {
+    // The last-resort branch, with nothing left it is willing to show. It read
+    // `?? "conditions-summary"`, so with every station-free kind deprecated the
+    // literal came back and Dasher put a retired section on the page at the one
+    // moment it is choosing entirely for itself.
+    //
+    // The mutation gate had flagged that exact `?.` as a survivor and it was
+    // dismissed as an equivalent mutant. It was not equivalent; it was the tell.
+    const nothingStandalone = PATTERN_ENTRIES.map((entry) =>
+      entry.requiresSites ? entry : { ...entry, status: "deprecated" as const },
+    );
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      nothingStandalone,
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: {
+        previousPlan: planFor([site], ["gauge-map"]),
+        instruction: "Drop the map.",
+      },
+    });
+
+    // An empty plan, which the contract refuses — a visible refusal the planner
+    // turns into a revision request, rather than a silently restored kind.
+    expect(DashboardPlanSchema.safeParse(out).success).toBe(false);
+    expect(JSON.stringify(out)).not.toContain("conditions-summary");
+
+    // Guard the guard: the SAME one-section plan and instruction against the
+    // shipped registry keeps the summary, so the refusal above is the
+    // deprecation and not the instruction failing to parse.
+    const shipped = await new FakePlanningProvider().plan({
+      ...BASE_REQUEST,
+      refinement: {
+        previousPlan: planFor([site], ["gauge-map"]),
+        instruction: "Drop the map.",
+      },
+    });
+    expect(
+      DashboardPlanSchema.parse(shipped).pages.flatMap((page) => page.sections),
+    ).toEqual(["conditions-summary"]);
+  });
+
+  it("needs no synthesised page when repairing a schema-valid plan", async () => {
+    // `repair` carried a literal `["conditions-summary", "gauge-table"]` page
+    // for the case where deduplication emptied everything — a second lifecycle
+    // bypass, and dead. Deduplication keeps the FIRST occurrence of each
+    // section and nothing has been seen before the first page's first section,
+    // so at least one page always survives. Removing the branch needs that
+    // stated as a property rather than assumed.
+    //
+    // Two pages naming the same single section is the worst case: page two
+    // empties completely.
+    const duplicated = DashboardPlanSchema.parse({
+      ...planFor([site], ["gauge-map"]),
+      pages: [
+        { id: "one", title: "One", description: "D", sections: ["gauge-map"] },
+        { id: "two", title: "Two", description: "D", sections: ["gauge-map"] },
+      ],
+    });
+
+    const out = await new FakePlanningProvider().plan({
+      ...BASE_REQUEST,
+      revision: {
+        attempt: 1,
+        previousPlan: duplicated,
+        findings: [
+          {
+            code: "duplicate_section" as const,
+            path: "pages[1].sections[0]",
+            message: "x",
+          },
+        ],
+      },
+    });
+    const repaired = DashboardPlanSchema.parse(out);
+
+    expect(repaired.pages.length).toBe(1);
+    expect(repaired.pages[0]?.sections).toEqual(["gauge-map"]);
+  });
+
+  it("matches the reader's words however they capitalised them", async () => {
+    // `matchedSections` is public API and `PatternEntry.triggerWords` documents
+    // matching as case-folded. It folded nowhere: the caller lowercased first,
+    // so `matchedSections("ADD THE MAP", …)` answered nothing while the same
+    // instruction through `readRefinementIntent` worked.
+    expect(
+      matchedSections("ADD THE MAP", PATTERN_ENTRIES).map(([kind]) => kind),
+    ).toEqual(["gauge-map"]);
+    expect(matchedSections("ADD THE MAP", PATTERN_ENTRIES)).toEqual(
+      matchedSections("add the map", PATTERN_ENTRIES),
+    );
+    expect(await refined("DROP THE MAP.", [...PATTERN_ENTRIES])).not.toContain(
+      "gauge-map",
+    );
   });
 
   it("offers everything it has today, so the filter is not hiding a mistake", () => {

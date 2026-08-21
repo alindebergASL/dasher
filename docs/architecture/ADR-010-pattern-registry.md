@@ -77,11 +77,27 @@ is the right behaviour and it is now pinned.
 ## Lifecycle, and the one rule with teeth
 
 `experimental → stable → deprecated`. Deprecation removes a section from what
-Dasher **proposes** — it leaves the model prompt, stops being reachable by a
-change instruction, and stops appearing in a fresh composition — while it keeps
-**compiling**, because plans naming it are already persisted and a reopened
-dashboard renders from stored bytes. Removal from the schema is a separate,
-later, breaking change.
+Dasher **proposes**, never from what it **honours**. Precisely, and the
+precision is the point — an earlier draft of this ADR said a deprecated entry
+"stops being reachable by a change instruction", which is one rule too many:
+
+| A deprecated kind                               |         |
+| ----------------------------------------------- | ------- |
+| Shown in the model prompt                       | **no**  |
+| Newly proposed by the deterministic provider    | **no**  |
+| Newly **added** by a refinement                 | **no**  |
+| Named for **removal** by a refinement           | **yes** |
+| Schema-valid, and compiled, in a persisted plan | **yes** |
+
+The fourth row is the one the looser wording got wrong, and the code with it.
+Lifecycle filtering ran inside the matcher, before the verb was read, so a
+reader looking at a dashboard that still contained a retired section and typing
+"Drop the map." was told the instruction was not understood, and the map stayed.
+Removing something is not proposing it. Filtering now happens after
+classification, in `readRefinementIntent`, and a mixed instruction splits along
+the verb rather than the status.
+
+Removal from the schema is a separate, later, breaking change.
 
 There are four places that must honour it, and the first version of this ADR
 claimed the rule while shipping two of them. Review caught it: the model prompt
@@ -104,6 +120,22 @@ The second lesson is narrower and worth writing down: testing the pure function
 is not testing its **call site**. `retainOffered` had a passing test while the
 composer that was supposed to call it could have the call removed with every test
 still green. Each filtering point now has a test that drives the provider.
+
+A fourth place had to honour the rule and did not: the empty-plan fallback. Its
+comment said a deprecated summary could not become the thing Dasher falls back
+to; its implementation ended `?? "conditions-summary"`, so with every
+station-free kind retired the literal came back. It now returns nothing, and the
+empty plan the contract refuses is the honest answer to "there is nothing left I
+am willing to show". **The mutation gate had flagged that exact `?.` as a
+survivor, and it was dismissed as an equivalent mutant.** It was not equivalent;
+it was the tell. A survivor on a line whose comment makes a promise deserves
+reading as evidence about the promise.
+
+`repair` carried a second literal bypass — a synthesised
+`["conditions-summary", "gauge-table"]` page — which was also dead: deduplication
+keeps the first occurrence of each section, so a schema-valid previous plan
+always yields at least one page. Deleted, with the property under test rather
+than assumed.
 
 The third came from the mutation gate rather than from reading. A filter on the
 composition path must **remove what is retired, not everything it fails to
