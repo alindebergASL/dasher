@@ -4,6 +4,7 @@ import {
   composeDashboards,
   DashboardCompositionError,
   type ComposedSources,
+  MAX_COMPOSED_SOURCES,
 } from "./compose";
 import {
   DASHBOARD_MAX_EVIDENCE_IDS,
@@ -499,6 +500,213 @@ describe("an unknown observation time is unknown, not the other half's", () => {
   });
 });
 
+describe("three sources, because the count is policy and not a type", () => {
+  // These tests could not be WRITTEN before this change: `ComposedSources` was
+  // a 2-tuple, so a third source was a compile error rather than a product
+  // decision. Everything below is the same rule the pair version had, with the
+  // quantifier made explicit.
+  const trio = (): ComposedSources => [
+    {
+      key: "river",
+      label: "River",
+      dashboard: source({
+        title: "River",
+        stationId: "11447650",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+      }),
+    },
+    {
+      key: "air",
+      label: "Air quality",
+      dashboard: source({
+        title: "Air",
+        stationId: "678",
+        generatedAt: "2026-08-19T12:30:00.000Z",
+        freshness: FRESH,
+      }),
+    },
+    {
+      key: "tide",
+      label: "Tide",
+      dashboard: source({
+        title: "Tide",
+        stationId: "9414290",
+        generatedAt: "2026-08-19T11:00:00.000Z",
+        freshness: FRESH,
+      }),
+    },
+  ];
+
+  it("namespaces all three id spaces and keeps every page", () => {
+    const combined = compose(trio());
+    expect(combined.pages.map((page) => page.id)).toEqual([
+      "river:overview",
+      "air:overview",
+      "tide:overview",
+    ]);
+    expect(combined.evidence.map((item) => item.id)).toEqual([
+      "river:station-reading",
+      "river:calculated-trends",
+      "air:station-reading",
+      "air:calculated-trends",
+      "tide:station-reading",
+      "tide:calculated-trends",
+    ]);
+  });
+
+  it("attributes all three in prose, in catalog order", () => {
+    const combined = compose(trio());
+    expect(combined.executiveBrief.known.headline).toBe(
+      "River: River known · Air quality: Air known · Tide: Tide known",
+    );
+    // Sentence-terminated between halves, and NOT after the last one.
+    expect(combined.executiveBrief.known.detail).toBe(
+      "River: What is known about River. Air quality: What is known about Air. Tide: What is known about Tide.",
+    );
+    expect(combined.executiveBrief.known.detail).not.toMatch(/[.!?]{2}/u);
+  });
+
+  it("takes the latest generatedAt and the earliest observation across all three", () => {
+    const observed = (at: string) =>
+      ({ status: "fresh", label: "Fresh", latestObservationAt: at }) as const;
+    const combined = compose([
+      {
+        ...trio()[0]!,
+        dashboard: source({
+          title: "River",
+          stationId: "1",
+          generatedAt: "2026-08-19T12:00:00.000Z",
+          freshness: observed("2026-08-19T11:45:00.000Z"),
+        }),
+      },
+      {
+        ...trio()[1]!,
+        dashboard: source({
+          title: "Air",
+          stationId: "2",
+          generatedAt: "2026-08-19T12:30:00.000Z",
+          freshness: observed("2026-08-19T11:10:00.000Z"),
+        }),
+      },
+      {
+        ...trio()[2]!,
+        dashboard: source({
+          title: "Tide",
+          stationId: "3",
+          generatedAt: "2026-08-19T12:00:00.000Z",
+          freshness: observed("2026-08-19T10:30:00.000Z"),
+        }),
+      },
+    ]);
+    // Latest generatedAt is the SECOND source's and earliest observation is the
+    // THIRD's, so neither answer can come from comparing just the first pair.
+    expect(combined.generatedAt).toBe("2026-08-19T12:30:00.000Z");
+    expect(combined.freshness.latestObservationAt).toBe(
+      "2026-08-19T10:30:00.000Z",
+    );
+  });
+
+  it("is fresh only when every source is fresh", () => {
+    const stale = { status: "stale", label: "Stale" } as const;
+    const sources = trio();
+    expect(compose(sources).freshness.status).toBe("fresh");
+    expect(
+      compose([
+        sources[0]!,
+        sources[1]!,
+        {
+          ...sources[2]!,
+          dashboard: source({
+            title: "Tide",
+            stationId: "3",
+            generatedAt: "2026-08-19T12:00:00.000Z",
+            freshness: stale,
+          }),
+        },
+      ]).freshness.status,
+    ).toBe("partial");
+  });
+
+  it("gives every source a share of the capped evidence list", () => {
+    // Round-robin is N-way now, so the cap divides across all three rather
+    // than favouring whoever came first.
+    const many = (key: string, label: string, stationId: string) => ({
+      key,
+      label,
+      dashboard: source({
+        title: label,
+        stationId,
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+        extraCitations: 19,
+      }),
+    });
+    const { evidenceIds } = compose([
+      many("river", "River", "1"),
+      many("air", "Air quality", "2"),
+      many("tide", "Tide", "3"),
+    ]).executiveBrief.known;
+
+    expect(evidenceIds.length).toBe(DASHBOARD_MAX_EVIDENCE_IDS);
+    for (const key of ["river:", "air:", "tide:"]) {
+      expect(
+        evidenceIds.filter((id) => id.startsWith(key)).length,
+      ).toBeGreaterThanOrEqual(10);
+    }
+  });
+});
+
+describe("arity is checked at runtime, where a policy belongs", () => {
+  it("refuses a single source, which is not a composition", () => {
+    expect(() => compose([pair()[0]!])).toThrow(/at least two sources/u);
+  });
+
+  it("refuses more sources than policy allows", () => {
+    const one = (key: string) => ({
+      key,
+      label: key,
+      dashboard: source({
+        title: key,
+        stationId: "1",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+      }),
+    });
+    const tooMany = Array.from({ length: MAX_COMPOSED_SOURCES + 1 }, (_, i) =>
+      one(`s${String(i)}`),
+    );
+    expect(() => compose(tooMany)).toThrow(
+      new RegExp(`limited to ${String(MAX_COMPOSED_SOURCES)} sources`, "u"),
+    );
+  });
+
+  it("refuses any repeated namespace, not just the first pair", () => {
+    const sources = trioWithDuplicate();
+    expect(() => compose(sources)).toThrow(/namespace "air"/u);
+  });
+
+  function trioWithDuplicate(): ComposedSources {
+    const build = (key: string, label: string, stationId: string) => ({
+      key,
+      label,
+      dashboard: source({
+        title: label,
+        stationId,
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+      }),
+    });
+    // The duplicate is in positions 2 and 3 — a pair-shaped check comparing
+    // only the first two would miss it entirely.
+    return [
+      build("river", "River", "1"),
+      build("air", "Air", "2"),
+      build("air", "Air", "3"),
+    ];
+  }
+});
+
 describe("composition refuses what it cannot state honestly", () => {
   it("refuses two sources sharing a namespace, and says which", () => {
     // ASSERTED ON THE MESSAGE, not just the type, and that distinction is the
@@ -571,8 +779,9 @@ describe("composition refuses what it cannot state honestly", () => {
 
     // Guard the guard: each half is legal on its own, so the failure really is
     // the pair's and this test is not just asserting a broken fixture.
-    expect(sources[0].dashboard.pages.length).toBe(9);
-    expect(() => parseDashboardSpec(sources[0].dashboard)).not.toThrow();
+    const half = sources[0]!;
+    expect(half.dashboard.pages.length).toBe(9);
+    expect(() => parseDashboardSpec(half.dashboard)).not.toThrow();
 
     expect(() => compose(sources)).toThrow(DashboardCompositionError);
     // The contract's own reason survives for logs, even though the reader
