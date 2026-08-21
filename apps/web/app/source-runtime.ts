@@ -64,6 +64,16 @@ export interface DomainSnapshot {
   readonly stations: readonly Station[];
   /** When this snapshot was obtained: the source's own retrieval time. */
   readonly asOf: string;
+  /**
+   * Where these readings came from, carried BY the snapshot rather than read
+   * from the environment again downstream.
+   *
+   * A second `sourceMode()` call would be a separate assertion about the same
+   * fact, and separate assertions drift. The dashboard's `dataMode` is derived
+   * from this field, so the label a reader sees is a property of the data in
+   * front of them rather than of the process that happened to render it.
+   */
+  readonly mode: SourceMode;
 }
 
 export type SourceMode = "fixture" | "live";
@@ -108,10 +118,12 @@ const FIXTURE_SNAPSHOTS: Record<DomainKey, () => DomainSnapshot> = {
   river: () => ({
     stations: parseUsgsInstantaneousValues(riverFixture),
     asOf: "2026-07-29T12:02:00.000Z",
+    mode: "fixture",
   }),
   air: () => ({
     stations: parseOpenAqHourlySnapshot(airFixture),
     asOf: "2026-08-18T12:02:00.000Z",
+    mode: "fixture",
   }),
 };
 
@@ -177,7 +189,7 @@ async function fetchRiverSnapshot(): Promise<DomainSnapshot> {
 
   const payload = await fetchJson(url, "river");
   const stations = parseUsgsInstantaneousValues(payload);
-  return { stations, asOf: retrievedAtOf(stations, "river") };
+  return { stations, asOf: retrievedAtOf(stations, "river"), mode: "live" };
 }
 
 async function fetchAirSnapshot(): Promise<DomainSnapshot> {
@@ -233,7 +245,7 @@ async function fetchAirSnapshot(): Promise<DomainSnapshot> {
     locations: { results },
     hours,
   });
-  return { stations, asOf: retrievedAt };
+  return { stations, asOf: retrievedAt, mode: "live" };
 }
 
 /**

@@ -382,7 +382,25 @@ function ExecutiveBrief({
   );
 }
 
-export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
+export function DashboardShell({
+  dashboard,
+  sealed = false,
+}: {
+  dashboard: DashboardSpec;
+  /**
+   * True when these bytes came back from storage rather than from a build that
+   * just ran.
+   *
+   * DELIBERATELY A RENDER PROP AND NOT A FIELD ON THE SPEC. A saved dashboard's
+   * bytes are byte-identical to the ones that were sealed — that is the whole
+   * persistence promise, and `canonicalSpecBytes` hashes them. Recording
+   * "reopened" inside the spec would either mutate what was sealed or make the
+   * stored bytes disagree with the rendered page. Whether a reader is looking
+   * at a fresh build or a stored one is a fact about this render, so it lives
+   * here.
+   */
+  sealed?: boolean;
+}) {
   const [pageId, setPageId] = useState(dashboard.pages[0]!.id);
   const [architectureOpen, setArchitectureOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -481,10 +499,21 @@ export function DashboardShell({ dashboard }: { dashboard: DashboardSpec }) {
         <div className="workspace">
           <aside className="sidebar">
             <div>
+              {/*
+                Three states, because there are three things worth telling a
+                reader apart: data arriving live, data captured for a
+                demonstration, and a page that is neither because it is a
+                record of a build that already happened. `sealed` wins — a
+                stored dashboard is a snapshot however its readings were
+                originally fetched, and "Live dashboard" on bytes frozen last
+                Tuesday is the least true thing this badge could say.
+              */}
               <span className="eyebrow">
-                {dashboard.dataMode === "live"
-                  ? "Live dashboard"
-                  : "Demo dashboard"}
+                {sealed
+                  ? "Saved snapshot"
+                  : dashboard.dataMode === "live"
+                    ? "Live dashboard"
+                    : "Demo dashboard"}
               </span>
               <h1>{dashboard.title}</h1>
               <p>{dashboard.audience}</p>

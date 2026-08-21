@@ -41,6 +41,16 @@ export interface CompileOptions {
    */
   planner: { readonly id: string; readonly usesModel: boolean };
   /**
+   * Whether these readings came from a live source or a captured fixture.
+   *
+   * DEFAULTS TO `"demo"`, which is what every caller got when this was a
+   * literal — so adding the option changes no existing output. It is an option
+   * rather than something the compiler works out because the compiler cannot:
+   * where readings come from is a deployment fact, known to the app that
+   * loaded them, and inventing it here would be a guess rendered as a badge.
+   */
+  dataMode?: "demo" | "live";
+  /**
    * User-configured threshold alerts. These are deliberately not part of the
    * plan contract: a threshold is the user's standing instruction, not a
    * composition choice, so a planner can neither add, remove, nor retune one.
@@ -370,7 +380,7 @@ export function compilePlan(
     title: plan.title,
     audience: plan.audience,
     generatedAt: options.asOf,
-    dataMode: "demo",
+    dataMode: options.dataMode ?? "demo",
     freshness: {
       status: facts.staleOrMissing.length > 0 ? "partial" : "fresh",
       label:
