@@ -43,8 +43,31 @@ export interface ComposeOptions {
   readonly notice: string;
 }
 
-/** Exactly two. Widening this is a product decision, not a refactor. */
-export type ComposedSources = readonly [ComposedSource, ComposedSource];
+/**
+ * Two or more sources, checked at runtime rather than pinned in the type.
+ *
+ * This was a 2-tuple, which made the count a fact about the type system: three
+ * sources did not compile, so raising the limit meant rewriting the module
+ * rather than changing a number. That is the wrong place for a product
+ * decision to live. The count is now a POLICY value —
+ * `MAX_COMPOSED_SOURCES` — and every rule below is written for N.
+ *
+ * The floor of two is real: one source is not a composition, and the caller
+ * should build it directly.
+ */
+export type ComposedSources = readonly ComposedSource[];
+
+/**
+ * How many sources one dashboard may combine today.
+ *
+ * Deliberately low, and deliberately a constant rather than a type. Raising it
+ * is a product decision that must be taken together with the fail-closed
+ * policy: composition currently refuses unless every source loads, and at 95%
+ * per-source availability that succeeds 90% of the time at two sources, 77% at
+ * five, 60% at ten. The arithmetic — not the rendering — is what makes a large
+ * N a different product.
+ */
+export const MAX_COMPOSED_SOURCES = 3;
 
 export class DashboardCompositionError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -82,20 +105,14 @@ function namespaced(key: string, id: string): string {
  * rather than the claim itself — so the honest choice is the one that cannot
  * make a two-source claim look single-source.
  */
-function mergeEvidenceIds(
-  first: readonly string[],
-  second: readonly string[],
-): string[] {
+function mergeEvidenceIds(lists: readonly (readonly string[])[]): string[] {
   const interleaved: string[] = [];
-  for (
-    let index = 0;
-    index < Math.max(first.length, second.length);
-    index += 1
-  ) {
-    const a = first[index];
-    const b = second[index];
-    if (a !== undefined) interleaved.push(a);
-    if (b !== undefined) interleaved.push(b);
+  const longest = Math.max(0, ...lists.map((list) => list.length));
+  for (let index = 0; index < longest; index += 1) {
+    for (const list of lists) {
+      const id = list[index];
+      if (id !== undefined) interleaved.push(id);
+    }
   }
   return [...new Set(interleaved)].slice(0, DASHBOARD_MAX_EVIDENCE_IDS);
 }
@@ -111,10 +128,9 @@ type StatementType = (typeof STATEMENT_ORDER)[number];
  * is the safe error, so the weaker kinds are kept.
  */
 function mergeStatementTypes(
-  first: readonly string[],
-  second: readonly string[],
+  lists: readonly (readonly string[])[],
 ): StatementType[] {
-  const present = new Set([...first, ...second]);
+  const present = new Set(lists.flat());
   const keptWeakestFirst = (["interpreted", "calculated", "observed"] as const)
     .filter((type) => present.has(type))
     .slice(0, 2);
@@ -150,20 +166,26 @@ const SENTENCE_END = /[.!?\u2026][)\]"'\u201d\u2019]?$/u;
  * Headlines keep `·` instead: they are labels rather than sentences, and a
  * full stop after one would be wrong in the other direction.
  */
-function attribute(
-  sources: ComposedSources,
-  texts: readonly [string, string],
-): string {
-  const lead = texts[0].trimEnd();
-  const terminated = SENTENCE_END.test(lead) ? lead : `${lead}.`;
-  return `${sources[0].label}: ${terminated} ${sources[1].label}: ${texts[1]}`;
+function attribute(sources: ComposedSources, texts: readonly string[]): string {
+  // Every text but the last is sentence-terminated before the next label
+  // follows it; the last is left as its source wrote it.
+  return sources
+    .map((source, index) => {
+      const text = (texts[index] ?? "").trimEnd();
+      const isLast = index === sources.length - 1;
+      const terminated = isLast || SENTENCE_END.test(text) ? text : `${text}.`;
+      return `${source.label}: ${terminated}`;
+    })
+    .join(" ");
 }
 
 function joinHeadlines(
   sources: ComposedSources,
-  texts: readonly [string, string],
+  texts: readonly string[],
 ): string {
-  return `${sources[0].label}: ${texts[0]} · ${sources[1].label}: ${texts[1]}`;
+  return sources
+    .map((source, index) => `${source.label}: ${texts[index] ?? ""}`)
+    .join(" · ");
 }
 
 function remapSpec(source: ComposedSource): {
@@ -273,30 +295,22 @@ function remapSpec(source: ComposedSource): {
 function composeFreshness(
   sources: ComposedSources,
 ): DashboardSpec["freshness"] {
-  const [first, second] = sources;
-  const a = first.dashboard.freshness;
-  const b = second.dashboard.freshness;
+  const parts = sources.map((source) => source.dashboard.freshness);
 
-  const status =
-    a.status === "fresh" && b.status === "fresh"
-      ? "fresh"
-      : a.status === "stale" && b.status === "stale"
-        ? "stale"
-        : "partial";
+  // EVERY half fresh is fresh; every half stale is stale; any mixture is
+  // partial. The pair version read "a && b"; the N version is the same rule
+  // with the quantifier made explicit, which is what it always meant.
+  const status = parts.every((part) => part.status === "fresh")
+    ? "fresh"
+    : parts.every((part) => part.status === "stale")
+      ? "stale"
+      : "partial";
 
-  // The EARLIEST of the two, not the latest. A combined dashboard is only as
-  // current as its least current half, and reporting the newer timestamp would
-  // let a just-updated river reading vouch for hours-old air data.
-  //
-  // AND ONLY WHEN BOTH HALVES HAVE ONE. A missing timestamp is not a value to
-  // skip over; it is the least current state there is — unknown. Filtering it
-  // out and taking the earliest of what remained let the half that DID report
-  // stand for the whole page, under a single "Latest observation" heading a
-  // reader takes to cover everything on it. That is the same substitution the
-  // paragraph above refuses, arriving through absence instead of arithmetic.
-  // Saying nothing is the honest answer, and the shell already renders a
-  // missing timestamp as "Unknown".
-  const observations = [a.latestObservationAt, b.latestObservationAt];
+  // The EARLIEST of them, and only when EVERY half has one. A missing
+  // timestamp is the least current state there is — unknown — so it cannot be
+  // filtered past on the way to a minimum, or the halves that did report would
+  // stand for the whole page under a single heading.
+  const observations = parts.map((part) => part.latestObservationAt);
   const known = observations.filter(
     (value): value is string => value !== undefined,
   );
@@ -307,7 +321,10 @@ function composeFreshness(
 
   return {
     status,
-    label: `${first.label}: ${a.label} · ${second.label}: ${b.label}`,
+    label: joinHeadlines(
+      sources,
+      parts.map((part) => part.label),
+    ),
     ...(earliest === undefined ? {} : { latestObservationAt: earliest }),
   };
 }
@@ -316,15 +333,15 @@ function composeFreshness(
  * The contract check, with its failure named for what it is.
  *
  * Only the composed result goes through here. Each source was already parsed
- * by whoever built it, so a failure at this point is a property of the PAIR —
- * two halves that cannot share one spec — rather than of either half.
+ * by whoever built it, so a failure at this point is a property of the SET —
+ * sources that cannot share one spec — rather than of any one of them.
  */
 function parseComposed(candidate: unknown): DashboardSpec {
   try {
     return parseDashboardSpec(candidate);
   } catch (error) {
     throw new DashboardCompositionError(
-      "The combined dashboard does not satisfy the dashboard contract; the two sources cannot be shown together.",
+      "The combined dashboard does not satisfy the dashboard contract; these sources cannot be shown together.",
       { cause: error },
     );
   }
@@ -334,47 +351,71 @@ export function composeDashboards(
   sources: ComposedSources,
   options: ComposeOptions,
 ): DashboardSpec {
-  const [first, second] = sources;
-
-  if (first.key === second.key) {
+  // Arity is checked here, not in the type. One source is not a composition;
+  // the ceiling is a product policy that moves with the fail-closed decision.
+  if (sources.length < 2) {
     throw new DashboardCompositionError(
-      `Both sources use the namespace ${JSON.stringify(first.key)}; structural ids would collide.`,
+      `Composition needs at least two sources; received ${String(sources.length)}.`,
     );
   }
-  // Two sources cannot be honestly labelled with one mode. Demo readings beside
-  // live ones under a single "live" banner is exactly the confident wrongness
-  // the rest of this product refuses.
-  if (first.dashboard.dataMode !== second.dashboard.dataMode) {
+  if (sources.length > MAX_COMPOSED_SOURCES) {
     throw new DashboardCompositionError(
-      `Sources disagree about data mode: ${first.dashboard.dataMode} and ${second.dashboard.dataMode}.`,
+      `Composition is limited to ${String(MAX_COMPOSED_SOURCES)} sources; received ${String(sources.length)}.`,
     );
   }
 
-  const remapped = sources.map(remapSpec) as [
-    ReturnType<typeof remapSpec>,
-    ReturnType<typeof remapSpec>,
+  const keys = sources.map((source) => source.key);
+  const duplicate = keys.find((key, index) => keys.indexOf(key) !== index);
+  if (duplicate !== undefined) {
+    throw new DashboardCompositionError(
+      `More than one source uses the namespace ${JSON.stringify(duplicate)}; structural ids would collide.`,
+    );
+  }
+
+  // Sources cannot be honestly labelled with one mode unless they agree. Demo
+  // readings beside live ones under a single "live" banner is exactly the
+  // confident wrongness the rest of this product refuses.
+  const modes = [
+    ...new Set(sources.map((source) => source.dashboard.dataMode)),
   ];
+  if (modes.length > 1) {
+    throw new DashboardCompositionError(
+      `Sources disagree about data mode: ${modes.join(" and ")}.`,
+    );
+  }
+  const dataMode = modes[0]!;
 
-  // The later of the two: the contract requires every evidence `retrievedAt`
-  // and the freshness timestamp to fall at or before `generatedAt`, and taking
-  // the earlier one could put the other source's evidence in the future.
-  const generatedAt = [
-    first.dashboard.generatedAt,
-    second.dashboard.generatedAt,
-  ].sort((x, y) => Date.parse(y) - Date.parse(x))[0] as string;
+  const remapped = sources.map(remapSpec);
+
+  // The LATEST of them: the contract requires every evidence `retrievedAt` and
+  // the freshness timestamp to fall at or before `generatedAt`, and taking an
+  // earlier one could put another source's evidence in the future.
+  const generatedAt = sources
+    .map((source) => source.dashboard.generatedAt)
+    .sort((x, y) => Date.parse(y) - Date.parse(x))[0]!;
 
   const brief = (
     claim: "known" | "changed" | "important",
   ): DashboardSpec["executiveBrief"]["known"] => {
-    const a = first.dashboard.executiveBrief[claim];
-    const b = second.dashboard.executiveBrief[claim];
+    const claims = sources.map(
+      (source) => source.dashboard.executiveBrief[claim],
+    );
     return {
-      statementTypes: mergeStatementTypes(a.statementTypes, b.statementTypes),
-      headline: joinHeadlines(sources, [a.headline, b.headline]),
-      detail: attribute(sources, [a.detail, b.detail]),
+      statementTypes: mergeStatementTypes(
+        claims.map((entry) => entry.statementTypes),
+      ),
+      headline: joinHeadlines(
+        sources,
+        claims.map((entry) => entry.headline),
+      ),
+      detail: attribute(
+        sources,
+        claims.map((entry) => entry.detail),
+      ),
       evidenceIds: mergeEvidenceIds(
-        a.evidenceIds.map((id) => namespaced(first.key, id)),
-        b.evidenceIds.map((id) => namespaced(second.key, id)),
+        claims.map((entry, index) =>
+          entry.evidenceIds.map((id) => namespaced(sources[index]!.key, id)),
+        ),
       ),
     };
   };
@@ -386,47 +427,46 @@ export function composeDashboards(
   // ITS REJECTION IS TRANSLATED, NOT RE-RAISED. A `ZodError` escaping here is
   // indistinguishable to a caller from a genuine fault, so it was being caught
   // as "something went wrong" and reported to the reader as an invitation to
-  // reword — advice that cannot work, because no wording makes two dashboards
-  // fit inside one budget. Composition failing the contract is a REFUSAL: this
-  // pair cannot be combined honestly. The reason is preserved as `cause` for
-  // logs; the caller decides what a reader is told.
+  // reword — advice that cannot work, because no wording makes several
+  // dashboards fit inside one budget. Composition failing the contract is a
+  // REFUSAL: this set cannot be combined honestly. The reason is preserved as
+  // `cause` for logs; the caller decides what a reader is told.
   return parseComposed({
     schemaVersion: "1.2",
     id: options.id,
     title: options.title,
     audience: options.audience,
     generatedAt,
-    dataMode: first.dashboard.dataMode,
+    dataMode,
     freshness: composeFreshness(sources),
     nextAction: {
-      title: joinHeadlines(sources, [
-        first.dashboard.nextAction.title,
-        second.dashboard.nextAction.title,
-      ]),
-      detail: attribute(sources, [
-        first.dashboard.nextAction.detail,
-        second.dashboard.nextAction.detail,
-      ]),
+      title: joinHeadlines(
+        sources,
+        sources.map((source) => source.dashboard.nextAction.title),
+      ),
+      detail: attribute(
+        sources,
+        sources.map((source) => source.dashboard.nextAction.detail),
+      ),
       evidenceIds: mergeEvidenceIds(
-        first.dashboard.nextAction.evidenceIds.map((id) =>
-          namespaced(first.key, id),
-        ),
-        second.dashboard.nextAction.evidenceIds.map((id) =>
-          namespaced(second.key, id),
+        sources.map((source) =>
+          source.dashboard.nextAction.evidenceIds.map((id) =>
+            namespaced(source.key, id),
+          ),
         ),
       ),
     },
     notice: options.notice,
-    pages: [...remapped[0].pages, ...remapped[1].pages],
-    evidence: [...remapped[0].evidence, ...remapped[1].evidence],
+    pages: remapped.flatMap((entry) => entry.pages),
+    evidence: remapped.flatMap((entry) => entry.evidence),
     architecture: {
       title: options.title,
-      summary: attribute(sources, [
-        first.dashboard.architecture.summary,
-        second.dashboard.architecture.summary,
-      ]),
-      nodes: [...remapped[0].nodes, ...remapped[1].nodes],
-      edges: [...remapped[0].edges, ...remapped[1].edges],
+      summary: attribute(
+        sources,
+        sources.map((source) => source.dashboard.architecture.summary),
+      ),
+      nodes: remapped.flatMap((entry) => entry.nodes),
+      edges: remapped.flatMap((entry) => entry.edges),
     },
     executiveBrief: {
       known: brief("known"),
