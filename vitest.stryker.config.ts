@@ -21,6 +21,15 @@ import { defineConfig } from "vitest/config";
  * planner glob above. The rest of `@dasher/dashboard-schema`'s suite is
  * deliberately NOT included — those tests do not touch composition, and
  * `generated-code-gate.test.ts` walks the whole repository on every run.
+ *
+ * `registry.ts` needs no new entry here: the planner glob already covers
+ * `registry.test.ts`. What it does need saying is what its score MEANS. The
+ * registry is mostly a static object literal, and `ignoreStatic` in
+ * `stryker.config.json` skips mutants that only module-load code covers — so
+ * the eight mutants it reports are the two functions beside the data, not the
+ * entries. What covers the entries is `registry.test.ts`'s block-per-entry,
+ * each checking a claim by making the compiler or the validator do the thing.
+ * A clean score on that file is not a claim that the data is mutation-tested.
  */
 export default defineConfig({
   test: {
