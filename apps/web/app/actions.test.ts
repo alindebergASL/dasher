@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 
+import riverFixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
+
 import { planDashboard, refineDashboard } from "./actions";
+import { clearSourceCache } from "./source-runtime";
 import {
   DEFAULT_REQUEST,
   REFINEMENT_MAX_LENGTH,
@@ -289,6 +292,44 @@ describe("the previous plan is parsed, not trusted", () => {
 
     expect(readings(relabelled)).toStrictEqual(readings(untouched));
     expect(relabelled.dashboard?.title).toBe("Everything Is Fine");
+  });
+});
+
+describe("the badge tells the truth about where readings came from", () => {
+  // THE BUG THIS SLICE FIXES. Every builder wrote `dataMode: "demo"` as a
+  // literal, so the shell's `dataMode === "live"` branch was unreachable and a
+  // genuinely live-sourced dashboard still badged itself "Demo dashboard" —
+  // the badge carried no information at all.
+  it("says demo in fixture mode", async () => {
+    const result = await planDashboard(DEFAULT_REQUEST, { persist: false });
+    expect(result.ok).toBe(true);
+    expect(result.dashboard?.dataMode).toBe("demo");
+  });
+
+  it("says live when the readings actually came from upstream", async () => {
+    // Live mode with a real payload: the snapshot reports its own origin and
+    // the spec inherits it. Before the fix this returned "demo" too, which is
+    // what made the badge meaningless.
+    const previousMode = process.env["DASHER_SOURCE_MODE"];
+    const originalFetch = globalThis.fetch;
+    process.env["DASHER_SOURCE_MODE"] = "live";
+    clearSourceCache();
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(riverFixture), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+
+    try {
+      const result = await planDashboard(DEFAULT_REQUEST, { persist: false });
+      expect(result.ok).toBe(true);
+      expect(result.dashboard?.dataMode).toBe("live");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearSourceCache();
+      if (previousMode === undefined) delete process.env["DASHER_SOURCE_MODE"];
+      else process.env["DASHER_SOURCE_MODE"] = previousMode;
+    }
   });
 });
 

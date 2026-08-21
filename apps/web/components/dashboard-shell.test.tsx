@@ -423,6 +423,25 @@ describe("DashboardShell", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("badges a reopened dashboard as a snapshot, not by its data mode", () => {
+    // A stored dashboard is a record of a build that already happened. Its
+    // readings may well have been live at the time, so the data-mode badge is
+    // the wrong thing to show — "Live dashboard" over bytes frozen last week is
+    // the least true thing this corner of the page could say.
+    render(<DashboardShell dashboard={dashboard} sealed />);
+    expect(screen.getByText("Saved snapshot")).toBeInTheDocument();
+    expect(screen.queryByText("Demo dashboard")).not.toBeInTheDocument();
+    expect(screen.queryByText("Live dashboard")).not.toBeInTheDocument();
+  });
+
+  it("badges live readings as live when the build is fresh", () => {
+    // The branch that was unreachable before this slice: every builder wrote
+    // `dataMode: "demo"` as a literal, so nothing could ever render here.
+    const live = parseDashboardSpec({ ...dashboard, dataMode: "live" });
+    render(<DashboardShell dashboard={live} />);
+    expect(screen.getByText("Live dashboard")).toBeInTheDocument();
+  });
+
   it("renders summary claims and metrics without React key errors", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

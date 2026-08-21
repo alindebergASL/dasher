@@ -29,7 +29,11 @@ import {
   type DomainDecision,
   type DomainEntry,
 } from "./domains";
-import { loadDomainSnapshot, SourceUnavailableError } from "./source-runtime";
+import {
+  loadDomainSnapshot,
+  SourceUnavailableError,
+  type SourceMode,
+} from "./source-runtime";
 import { readSessionCredential } from "./session";
 
 import {
@@ -166,6 +170,21 @@ function readerLabel(domain: DomainEntry): string {
 }
 
 /**
+ * How a snapshot's origin becomes the badge a reader sees.
+ *
+ * `SourceMode` is the runtime's word ("fixture" or "live"); `dataMode` is the
+ * contract's ("demo" or "live"). They are deliberately different vocabularies —
+ * one is about where bytes were fetched from, the other about what a reader
+ * should believe — and this is the single place they are joined. Before this,
+ * every builder wrote `dataMode: "demo"` as a literal, so a genuinely
+ * live-sourced dashboard still badged itself "Demo dashboard" and the badge
+ * carried no information at all.
+ */
+function dataModeOf(snapshot: { readonly mode: SourceMode }): "demo" | "live" {
+  return snapshot.mode === "live" ? "live" : "demo";
+}
+
+/**
  * One request, two trusted sources, one dashboard.
  *
  * The shape here is the whole point of the slice: both sources are loaded
@@ -229,6 +248,7 @@ async function planCombined(
           thresholds: domain.thresholds,
           computation: domain.computation,
           words: domain.words,
+          dataMode: dataModeOf(snapshot),
         });
         return run.dashboard;
       }),
@@ -374,6 +394,7 @@ async function plan(
       thresholds: domain.thresholds,
       computation: domain.computation,
       words: domain.words,
+      dataMode: dataModeOf(snapshot),
       ...(refine === undefined ? {} : { refine }),
     });
     const same =

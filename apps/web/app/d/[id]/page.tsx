@@ -85,7 +85,10 @@ export default async function SavedDashboard({
     notFound();
   }
 
-  return <DashboardShell dashboard={spec} />;
+  // `sealed`: these are stored bytes. The route renders what `finalize_run`
+  // hashed, so the badge says snapshot rather than describing how the readings
+  // were fetched on the day the dashboard was built.
+  return <DashboardShell dashboard={spec} sealed />;
 }
 
 function isDenied(error: unknown): boolean {

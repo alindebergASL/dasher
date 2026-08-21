@@ -52,10 +52,17 @@ test.describe("a saved dashboard", () => {
     const href = await permalink.getAttribute("href");
     expect(href).toMatch(/^\/d\/[0-9a-f-]{36}$/u);
 
+    // The freshly built page describes its data; the stored one describes
+    // itself. Asserted on both sides of the navigation, because "Saved
+    // snapshot" everywhere would pass a one-sided check just as well.
+    await expect(page.getByText("Demo dashboard")).toBeVisible();
+
     // The reload. A fresh navigation to the id, with no client state carried
     // over — if the spec were being recomposed rather than read, this is where
     // it would differ.
     await page.goto(href!);
+    await expect(page.getByText("Saved snapshot")).toBeVisible();
+    await expect(page.getByText("Demo dashboard")).toHaveCount(0);
     await expect(page.getByRole("heading", { level: 2 }).first()).toBeVisible();
 
     // And again, to make the point that it is durable rather than cached in

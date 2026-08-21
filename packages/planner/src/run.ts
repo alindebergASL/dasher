@@ -36,6 +36,8 @@ export interface PlannerRunOptions {
    */
   computation?: StationComputation;
   words?: StationWords;
+  /** Passed straight to the compiler; see `CompileOptions.dataMode`. */
+  dataMode?: "demo" | "live";
   /** Total plan attempts, including the first. Defaults to 3. */
   maxAttempts?: number;
   /**
@@ -99,6 +101,7 @@ export async function runPlanner(
       ? {}
       : { computation: options.computation }),
     ...(options.words === undefined ? {} : { words: options.words }),
+    ...(options.dataMode === undefined ? {} : { dataMode: options.dataMode }),
   };
 
   const attempts: PlannerAttempt[] = [];

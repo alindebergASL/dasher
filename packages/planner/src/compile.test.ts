@@ -343,3 +343,24 @@ describe("the unit of a change", () => {
     ).not.toContain("ft");
   });
 });
+
+describe("dataMode reports where the readings came from", () => {
+  // The literal this replaced meant a live-sourced dashboard still badged
+  // itself "Demo". These two tests pin both directions: the default cannot
+  // drift (every existing caller relies on it), and the option must actually
+  // reach the spec rather than being accepted and ignored.
+  const specWith = (dataMode?: "demo" | "live") =>
+    compilePlan(planFor([site], ["conditions-summary"]), gauges, {
+      asOf: AS_OF,
+      planner: { id: "fake-keyword-planner-v1", usesModel: false },
+      ...(dataMode === undefined ? {} : { dataMode }),
+    });
+
+  it("defaults to demo, so callers that say nothing are unchanged", () => {
+    expect(specWith().dataMode).toBe("demo");
+  });
+
+  it("says live when the caller says the readings are live", () => {
+    expect(specWith("live").dataMode).toBe("live");
+  });
+});
