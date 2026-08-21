@@ -19,6 +19,9 @@ were made; this closes the small gap that remained.
 
 ## In flight
 
+**PR #47 — composition member order.** The correction to #44 described below.
+Independent of #45.
+
 **PR #45 — pattern registry.** Green on all seven checks at `fb761be`, not
 merged, awaiting a re-review. Its first head carried three review findings
 (a real behaviour change wrongly claimed to be none, a lifecycle rule that did
@@ -28,14 +31,30 @@ during the fix. ADR-010 records each, including the falsified claim rather
 than quietly dropping it. **Do not merge before the re-review lands** — that
 review is the control that caught all three.
 
-## Merged without review, and worth a post-hoc read
+## Merged without review — and what the post-hoc read found
 
 **PR #43 (n-ary composition)** and **PR #44 (honest partial)** went to `main`
-on green CI alone. Both have zero reviews. They are load-bearing — #43 made
-the source count a policy value and #44 reversed the fail-closed-all rule —
-and they merged during the stretch in which the next reviewed PR came back
-with three blocking findings. That is not evidence they are wrong; it is a
-reason not to assume they are right.
+on green CI alone, with zero reviews, during the stretch in which the next
+reviewed PR came back with three blocking findings. They were read afterwards.
+
+**#43 passed.** Three-source namespacing, attribution, timestamps, freshness
+quantification, data-mode consistency, evidence interleaving and duplicate-key
+detection are genuinely N-ary; arity is enforced at runtime; two-source
+behaviour is structurally equivalent.
+
+**#44 carried a defect, corrected in PR #47.** ADR-009 claimed an absence
+"keeps its place in every attributed line". It did not: absences were carried
+in a separate `options.absent` array, and two lists cannot interleave, so a
+reader who asked for river conditions and air quality on a day the river gauge
+was down was handed a dashboard whose executive brief, next action, freshness
+label and architecture summary each began `Air quality:` and ended
+`River: unavailable` — the subject they asked about, moved to the end of every
+line.
+
+The generalisation is worth more than the instance. **Merging on green CI is
+not merging on evidence.** Both PRs were green on every gate this project has,
+including mutation, and one of them shipped a defect visible in the first
+sentence a reader would see.
 
 ## The error shape to watch for
 
@@ -65,8 +84,9 @@ re-read by the author has not.
 
 `docs/process/2026-08-12-working-practice.md` is the doctrine this project
 adopted after the drift analysis. Checked against it rather than against
-recollection, this stretch of work reverted on five of its points. Each item
-below is stated so it can be verified from the repository, not taken on trust.
+recollection, this stretch of work reverted on five of its points, and drifted
+on two more of the codebase's own rules. Each item below is stated so it can be
+verified from the repository, not taken on trust.
 
 ### 1. It built a layer and called that a virtue (§1)
 
@@ -138,7 +158,19 @@ of them comment. The house style is deliberately comment-heavy and that is not
 the problem — the problem is that the ratio moved without anyone deciding it
 should, which is exactly the signal §7 says to watch.
 
-### 6. "No indirection ahead of evidence" was applied inconsistently, in one file
+### 6. A claim the data structure could not satisfy
+
+The narrow pattern above has a sharper form, and PR #44 is the case. ADR-009
+did not merely overstate what the tests checked — it described a shape the code
+had never had. "A first-class composition member" was the design; a separate
+`options.absent` array was the implementation, and two lists cannot interleave
+at all.
+
+No test would have saved this, because the property was unreachable. The tell
+is different from the one above: **when a document describes a structure, check
+that the structure exists.** The fix was a type, not an assertion.
+
+### 7. "No indirection ahead of evidence" was applied inconsistently, in one file
 
 Not from the working practice but from the codebase's own rule, stated in
 `source-runtime.ts`: _"the day a third source makes this painful is the day the
