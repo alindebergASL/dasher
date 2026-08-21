@@ -1,6 +1,13 @@
 import { z } from "zod";
 
 import { findSmuggledText } from "./freetext";
+import {
+  patternFor,
+  PLAN_SECTION_KINDS,
+  type PlanSectionKind,
+} from "./registry";
+
+export { PLAN_SECTION_KINDS, type PlanSectionKind };
 
 /**
  * The `DashboardPlan` is the only structure a planning model is permitted to
@@ -31,24 +38,6 @@ export const PLAN_STRING_LIMITS = {
   shortText: 256,
   longText: 1_024,
 } as const;
-
-/**
- * The closed set of sections the trusted compiler knows how to build. A plan
- * naming anything outside this list is rejected, so an unsupported or invented
- * section can never reach the renderer.
- */
-export const PLAN_SECTION_KINDS = [
-  "conditions-summary",
-  "headline-metrics",
-  "gauge-map",
-  "fastest-rising",
-  "attention",
-  "gauge-table",
-  "stage-trends",
-  "change-windows",
-] as const;
-
-export type PlanSectionKind = (typeof PLAN_SECTION_KINDS)[number];
 
 const PlanIdSchema = z
   .string()
@@ -119,18 +108,6 @@ export class PlanRejected extends Error {
 }
 
 /**
- * Sections that describe individual gauges and therefore cannot render from an
- * empty selection. `attention` and `conditions-summary` are excluded: both stay
- * meaningful when no gauge qualifies, and both say so explicitly.
- */
-const SECTIONS_REQUIRING_SITES = new Set<PlanSectionKind>([
-  "gauge-map",
-  "gauge-table",
-  "stage-trends",
-  "change-windows",
-]);
-
-/**
  * Structural validation of a plan against the observations actually available.
  * Returns findings rather than throwing so the caller can decide whether to
  * request a revision or fail.
@@ -193,7 +170,12 @@ export function findPlanProblems(
       }
       seenSections.add(section);
 
-      if (resolvedSites.length === 0 && SECTIONS_REQUIRING_SITES.has(section)) {
+      // Which sections need a station is the registry's fact, not this
+      // function's. It was a private `Set` here whose comment named two of its
+      // four exclusions and quietly omitted `headline-metrics` and
+      // `fastest-rising` — the kind of drift that a list of names in one file
+      // and a reason in another produces on its own.
+      if (resolvedSites.length === 0 && patternFor(section).requiresSites) {
         findings.push({
           code: "section_needs_sites",
           path,

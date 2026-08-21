@@ -5,9 +5,9 @@ import {
   DashboardPlanSchema,
   PLAN_MAX_PAGES,
   PLAN_MAX_SECTIONS_PER_PAGE,
-  PLAN_SECTION_KINDS,
 } from "./plan";
 import type { PlanningProvider, PlanningRequest } from "./provider";
+import { offeredEntries, PATTERN_ENTRIES } from "./registry";
 
 /**
  * A planning provider backed by a real model.
@@ -77,9 +77,11 @@ You emit one JSON object and nothing else:
   title, a description, and up to ${PLAN_MAX_SECTIONS_PER_PAGE} sections.
 
 Sections are a closed set. Use only these, and use each one at most once across
-the whole plan:
+the whole plan. What each one is for is the registry's answer, not yours:
 
-${PLAN_SECTION_KINDS.map((kind) => `- ${kind}`).join("\n")}
+${offeredEntries(PATTERN_ENTRIES)
+  .map((entry) => `- ${entry.kind} — ${entry.guidance}`)
+  .join("\n")}
 
 Rules for the free-text fields — title, audience, framing, and the page titles
 and descriptions. These are shown to the reader exactly as you write them, so

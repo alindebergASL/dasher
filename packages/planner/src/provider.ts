@@ -4,6 +4,7 @@ import {
   type PlanFinding,
   type PlanSectionKind,
 } from "./plan";
+import { offeredEntries, PATTERN_ENTRIES, type PatternEntry } from "./registry";
 
 /**
  * Context a provider may see about the available data. These are identifiers
@@ -342,23 +343,6 @@ function selectSites(text: string, sites: readonly AvailableSite[]): string[] {
   return [...base.map((site) => site.siteId), ...speculative];
 }
 
-/**
- * Words a reader is likely to use for each section, for the fake's refinement
- * pass. This is keyword matching, not language understanding, and it is only
- * ever a stand-in — a real provider reads the instruction. What it has to be is
- * deterministic, so the refinement loop can be tested without a model.
- */
-const SECTION_WORDS: ReadonlyArray<[PlanSectionKind, readonly string[]]> = [
-  ["gauge-map", ["map", "locations", "where"]],
-  ["gauge-table", ["table", "readings", "list"]],
-  ["stage-trends", ["trend", "history", "chart", "graph"]],
-  ["fastest-rising", ["fastest", "ranking", "rising", "ranked"]],
-  ["attention", ["alert", "attention", "warning", "concern"]],
-  ["conditions-summary", ["summary", "overview"]],
-  ["headline-metrics", ["metric", "at a glance", "headline", "numbers"]],
-  ["change-windows", ["window", "change"]],
-];
-
 const REMOVE_WORDS = [
   "remove",
   "drop",
@@ -422,6 +406,37 @@ function verbBefore(text: string, at: number): "remove" | "add" | undefined {
   return best?.kind;
 }
 
+/**
+ * Which sections an instruction names, and where.
+ *
+ * The words a reader uses for each section are the registry's, not this
+ * module's. They were a private table here, which meant the fake's refinement
+ * vocabulary and the vocabulary a model provider is told about could drift
+ * apart while both looked authoritative.
+ *
+ * Deprecated entries are skipped, because a section Dasher no longer proposes
+ * must not stay reachable by naming it. That rule is why this is a pure
+ * function over a list rather than a loop inside `readRefinementIntent`: the
+ * shipped registry has nothing deprecated in it, so the only way to check the
+ * filtering actually happens HERE — and not merely in `offeredEntries`, which
+ * has its own test — is to be able to hand this a deprecated entry.
+ *
+ * This is still keyword matching rather than language understanding, and it is
+ * still only a stand-in; a real provider reads the instruction. What it has to
+ * be is deterministic, so the refinement loop can be tested without a model.
+ */
+export function matchedSections(
+  text: string,
+  entries: readonly PatternEntry[],
+): ReadonlyArray<readonly [PlanSectionKind, number]> {
+  const matched: Array<readonly [PlanSectionKind, number]> = [];
+  for (const entry of offeredEntries(entries)) {
+    const at = firstIndexOfAny(text, entry.triggerWords);
+    if (at !== -1) matched.push([entry.kind, at]);
+  }
+  return matched;
+}
+
 export function readRefinementIntent(
   instruction: string,
   sites: readonly AvailableSite[],
@@ -435,9 +450,7 @@ export function readRefinementIntent(
   const anyRemove = has(REMOVE_WORDS);
   const anyAdd = has(ADD_WORDS);
 
-  for (const [section, words] of SECTION_WORDS) {
-    const at = firstIndexOfAny(text, words);
-    if (at === -1) continue;
+  for (const [section, at] of matchedSections(text, PATTERN_ENTRIES)) {
     const verb = verbBefore(text, at);
     if (verb === "remove") remove.push(section);
     else if (verb === "add") add.push(section);
