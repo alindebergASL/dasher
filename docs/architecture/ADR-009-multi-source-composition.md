@@ -22,15 +22,46 @@ and states, in the spec, which ones did not. It refuses only when _no_ source
 loads.
 
 An absence is a first-class member of a composition, not a caller's footnote.
-It contributes no page, no evidence and no architecture node — nothing was
-fetched, so there is nothing to show — and it does three things:
+Literally: one entry in the same ordered list as the sources that loaded, in
+the position the reader asked for it. It contributes no page, no evidence and
+no architecture node — nothing was fetched, so there is nothing to show — and
+it does three things:
 
 - it keeps its place in every attributed line, so the brief, the next action,
-  the architecture summary and the freshness label all name it;
+  the architecture summary and the freshness label all name it, where they
+  would have named the source;
 - it costs the dashboard its `fresh` status and its page-level
   `latestObservationAt`, so a machine reading the spec sees an incomplete page
   without reading prose;
 - it is stated in the `notice`, which renders on every page, and in the title.
+
+### The sentence above was false when this ADR was written
+
+Worth recording rather than quietly fixing, because the shape recurs. "First-class
+member" was the design; the implementation carried absences in a separate
+`options.absent` array beside the list of loaded sources. Two lists cannot
+interleave, so labels came out present-first: a reader who asked for river and
+air quality on a day the river gauge was down was handed a dashboard whose
+executive brief, next action, freshness label and architecture summary every one
+began `Air quality:` and ended `River: unavailable`. The missing subject — the
+one they had asked about — was moved to the end of every line.
+
+Every test passed, because every fixture put the absence last. The action test
+ran both outage directions and asserted only that the absent label APPEARED,
+which is exactly as true of an appended label as of one in place.
+
+Found in review, on the merged code. The correction is structural rather than a
+patch: `CompositionMember` is one ordered list of present-or-absent voices, and
+position on the page is position in that list. A claim that a data structure
+cannot satisfy is not a claim that better tests would have saved — the
+documentation and the shape have to agree, and here the documentation described
+a design the shape had never had.
+
+**The title is the deliberate exception.** It reads what-is-present, then
+what-is-absent, because it is one statement rather than a sequence of voices and
+leading with the bad news misdescribes a dashboard that does have something to
+show. Stated here because it now visibly disagrees with the freshness label for
+the same request, and that difference is intended.
 
 ## Why the unit refusal is being reversed
 

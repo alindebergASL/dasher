@@ -10,11 +10,11 @@
  * and re-checks. That is deliberate: the moment composition starts computing,
  * "air values under river rules" becomes reachable.
  *
- * A SOURCE THAT DID NOT LOAD IS COMPOSED TOO, as an absence. It contributes no
- * page, no evidence and no architecture node — nothing was fetched, so there is
- * nothing to show — but it keeps its place in every attributed line, and it
- * costs the dashboard its `fresh` status and its observation timestamp. See
- * `AbsentSource`.
+ * A SOURCE THAT DID NOT LOAD IS COMPOSED TOO, as an absence — one member of the
+ * same ordered list, in the position the reader asked for it. It contributes no
+ * page, no evidence and no architecture node, because nothing was fetched; it
+ * keeps its place in every attributed line; and it costs the dashboard its
+ * `fresh` status and its observation timestamp. See `AbsentSource`.
  *
  * THE CONTRACT IS THE CHECK. Composition ends by running the result through
  * `parseDashboardSpec`, which already enforces everything a merge can break:
@@ -77,22 +77,47 @@ export interface AbsentSource {
   readonly label: string;
 }
 
+/**
+ * One voice in the composition, present or not.
+ *
+ * ONE ORDERED LIST, and the shape is the guarantee. Absences arrived here as a
+ * separate `options.absent` array while this module's own prose — and ADR-009 —
+ * called an absence "a first-class composition member" that "keeps its place in
+ * every attributed line". Two lists cannot interleave, so it did not: labels
+ * were emitted present-first, and a reader who asked for river and air quality
+ * with the river down was told "Air quality: … River: unavailable", with the
+ * missing subject moved to the end of every attributed surface.
+ *
+ * The claim was in the documentation and the contradiction was in the data
+ * structure. Making membership one list is what makes the sentence true rather
+ * than aspirational; the position a member holds here is the position it holds
+ * on the page.
+ *
+ * An absence is exactly a member with no dashboard, which is what `isPresent`
+ * asks. There is no separate status flag: the missing field IS the status, and
+ * a second way of saying it would be a second thing to keep in agreement.
+ */
+export type CompositionMember = ComposedSource | AbsentSource;
+
+export function isPresent(member: CompositionMember): member is ComposedSource {
+  return "dashboard" in member;
+}
+
 export interface ComposeOptions {
   readonly id: string;
   readonly title: string;
   readonly audience: string;
-  readonly notice: string;
   /**
-   * Sources that were asked for and did not load. Empty or omitted is the
-   * ordinary case; when it is not empty the result is a partial dashboard and
-   * the caller's `title` and `notice` are the two places that must say so —
-   * this module cannot know what the reader typed.
+   * When any member is absent the result is a partial dashboard, and this and
+   * `title` are the two places that must say so — this module cannot know what
+   * the reader typed.
    */
-  readonly absent?: readonly AbsentSource[];
+  readonly notice: string;
 }
 
 /**
- * Two or more sources, checked at runtime rather than pinned in the type.
+ * Two or more voices, in the order the reader asked for them, checked at
+ * runtime rather than pinned in the type.
  *
  * This was a 2-tuple, which made the count a fact about the type system: three
  * sources did not compile, so raising the limit meant rewriting the module
@@ -104,7 +129,7 @@ export interface ComposeOptions {
  * one absence is still a composition, and composing it is what lets a partial
  * dashboard keep the same shape as the whole one it was asked to be.
  */
-export type ComposedSources = readonly ComposedSource[];
+export type ComposedSources = readonly CompositionMember[];
 
 /**
  * How many sources one dashboard may combine today.
@@ -260,25 +285,26 @@ const ABSENT_DETAIL = "unavailable when this dashboard was built.";
 /** The same fact where headlines are joined, which are labels and not sentences. */
 const ABSENT_HEADLINE = "unavailable";
 
-/** Present labels then absent ones, in the order the caller gave them. */
-function voiceLabels(
-  sources: ComposedSources,
-  absent: readonly AbsentSource[],
-): string[] {
-  return [
-    ...sources.map((source) => source.label),
-    ...absent.map((a) => a.label),
-  ];
+/** Every label, in composition order — the order the reader asked for. */
+function voiceLabels(members: ComposedSources): string[] {
+  return members.map((member) => member.label);
 }
 
-/** One source's own words for each present voice, the fixed text for each absence. */
+/**
+ * Each member's own words, or the fixed absence text, IN PLACE.
+ *
+ * The whole point of the ordered member list: this maps one array rather than
+ * concatenating two, so a member that did not load stays where the reader put
+ * it instead of being appended after everything that did.
+ */
 function voiceTexts(
-  sources: ComposedSources,
-  absent: readonly AbsentSource[],
+  members: ComposedSources,
   say: (source: ComposedSource) => string,
   whenAbsent: string,
 ): string[] {
-  return [...sources.map(say), ...absent.map(() => whenAbsent)];
+  return members.map((member) =>
+    isPresent(member) ? say(member) : whenAbsent,
+  );
 }
 
 function remapSpec(source: ComposedSource): {
@@ -392,16 +418,17 @@ function remapSpec(source: ComposedSource): {
  * notice still sees the page decline to call itself current.
  */
 function composeFreshness(
-  sources: ComposedSources,
-  absent: readonly AbsentSource[],
+  members: ComposedSources,
 ): DashboardSpec["freshness"] {
-  const parts = sources.map((source) => source.dashboard.freshness);
+  const parts = members
+    .filter(isPresent)
+    .map((source) => source.dashboard.freshness);
 
   // EVERY part fresh is fresh; every part stale is stale; any mixture is
   // partial. The pair version read "a && b"; the N version is the same rule
   // with the quantifier made explicit, which is what it always meant. Absences
   // are counted in the denominator and satisfy neither.
-  const total = parts.length + absent.length;
+  const total = members.length;
   const status =
     parts.filter((part) => part.status === "fresh").length === total
       ? "fresh"
@@ -427,10 +454,9 @@ function composeFreshness(
   return {
     status,
     label: joinHeadlines(
-      voiceLabels(sources, absent),
+      voiceLabels(members),
       voiceTexts(
-        sources,
-        absent,
+        members,
         (source) => source.dashboard.freshness.label,
         ABSENT_HEADLINE,
       ),
@@ -458,11 +484,14 @@ function parseComposed(candidate: unknown): DashboardSpec {
 }
 
 export function composeDashboards(
-  sources: ComposedSources,
+  members: ComposedSources,
   options: ComposeOptions,
 ): DashboardSpec {
-  const absent = options.absent ?? [];
-  const voices = sources.length + absent.length;
+  // Everything structural comes from the members that loaded; everything
+  // ATTRIBUTED comes from the whole ordered list, so a member that did not load
+  // still occupies its position in the prose.
+  const sources = members.filter(isPresent);
+  const voices = members.length;
 
   // Arity is checked here, not in the type. Two rules, and they are different
   // rules: at least one source must have LOADED, because a page of nothing but
@@ -489,10 +518,7 @@ export function composeDashboards(
   // but it is the same key the source would have used, and letting it collide
   // here would mean a request whose duplicate only becomes an error on the days
   // both sources happen to be up.
-  const keys = [
-    ...sources.map((source) => source.key),
-    ...absent.map((a) => a.key),
-  ];
+  const keys = members.map((member) => member.key);
   const duplicate = keys.find((key, index) => keys.indexOf(key) !== index);
   if (duplicate !== undefined) {
     throw new DashboardCompositionError(
@@ -500,7 +526,7 @@ export function composeDashboards(
     );
   }
 
-  const labels = voiceLabels(sources, absent);
+  const labels = voiceLabels(members);
 
   // Sources cannot be honestly labelled with one mode unless they agree. Demo
   // readings beside live ones under a single "live" banner is exactly the
@@ -527,6 +553,9 @@ export function composeDashboards(
   const brief = (
     claim: "known" | "changed" | "important",
   ): DashboardSpec["executiveBrief"]["known"] => {
+    // Statement types and evidence come from the members that loaded — an
+    // absence cites nothing, because nothing was retrieved. Only the prose runs
+    // over the whole ordered list.
     const claims = sources.map(
       (source) => source.dashboard.executiveBrief[claim],
     );
@@ -534,14 +563,22 @@ export function composeDashboards(
       statementTypes: mergeStatementTypes(
         claims.map((entry) => entry.statementTypes),
       ),
-      headline: joinHeadlines(labels, [
-        ...claims.map((entry) => entry.headline),
-        ...absent.map(() => ABSENT_HEADLINE),
-      ]),
-      detail: attribute(labels, [
-        ...claims.map((entry) => entry.detail),
-        ...absent.map(() => ABSENT_DETAIL),
-      ]),
+      headline: joinHeadlines(
+        labels,
+        voiceTexts(
+          members,
+          (source) => source.dashboard.executiveBrief[claim].headline,
+          ABSENT_HEADLINE,
+        ),
+      ),
+      detail: attribute(
+        labels,
+        voiceTexts(
+          members,
+          (source) => source.dashboard.executiveBrief[claim].detail,
+          ABSENT_DETAIL,
+        ),
+      ),
       evidenceIds: mergeEvidenceIds(
         claims.map((entry, index) =>
           entry.evidenceIds.map((id) => namespaced(sources[index]!.key, id)),
@@ -568,13 +605,12 @@ export function composeDashboards(
     audience: options.audience,
     generatedAt,
     dataMode,
-    freshness: composeFreshness(sources, absent),
+    freshness: composeFreshness(members),
     nextAction: {
       title: joinHeadlines(
         labels,
         voiceTexts(
-          sources,
-          absent,
+          members,
           (source) => source.dashboard.nextAction.title,
           ABSENT_HEADLINE,
         ),
@@ -582,8 +618,7 @@ export function composeDashboards(
       detail: attribute(
         labels,
         voiceTexts(
-          sources,
-          absent,
+          members,
           (source) => source.dashboard.nextAction.detail,
           ABSENT_DETAIL,
         ),
@@ -604,8 +639,7 @@ export function composeDashboards(
       summary: attribute(
         labels,
         voiceTexts(
-          sources,
-          absent,
+          members,
           (source) => source.dashboard.architecture.summary,
           ABSENT_DETAIL,
         ),

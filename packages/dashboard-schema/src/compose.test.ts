@@ -4,6 +4,7 @@ import {
   composeDashboards,
   DashboardCompositionError,
   type AbsentSource,
+  type ComposedSource,
   type ComposedSources,
   MAX_COMPOSED_SOURCES,
 } from "./compose";
@@ -187,7 +188,7 @@ function pair(
     first?: Parameters<typeof source>[0];
     second?: Parameters<typeof source>[0];
   } = {},
-): ComposedSources {
+): ComposedSource[] {
   return [
     {
       key: "river",
@@ -506,7 +507,7 @@ describe("three sources, because the count is policy and not a type", () => {
   // a 2-tuple, so a third source was a compile error rather than a product
   // decision. Everything below is the same rule the pair version had, with the
   // quantifier made explicit.
-  const trio = (): ComposedSources => [
+  const trio = (): ComposedSource[] => [
     {
       key: "river",
       label: "River",
@@ -773,7 +774,7 @@ describe("composition refuses what it cannot state honestly", () => {
       });
     };
 
-    const sources: ComposedSources = [
+    const sources: ComposedSource[] = [
       { key: "river", label: "River", dashboard: oversized("r") },
       { key: "air", label: "Air quality", dashboard: oversized("a") },
     ];
@@ -994,19 +995,20 @@ describe("the brief carries both sources", () => {
 });
 
 describe("a source that did not load is composed as an absence", () => {
-  const AIR_ABSENT: readonly AbsentSource[] = [
-    { key: "air", label: "Air quality" },
-  ];
+  const AIR_ABSENT: AbsentSource = { key: "air", label: "Air quality" };
 
-  /** One loaded source, one absence, and a title that does not overclaim. */
+  /**
+   * One ordered member list, and the default puts the absence LAST on purpose —
+   * that is the arrangement the first version of this feature happened to
+   * produce for every input, so the tests written against it could not see the
+   * defect. The ordering tests below supply their own order.
+   */
   function partial(
-    sources: ComposedSources = [pair()[0]!],
-    absent: readonly AbsentSource[] = AIR_ABSENT,
+    members: ComposedSources = [pair()[0]!, AIR_ABSENT],
   ): DashboardSpec {
-    return composeDashboards(sources, {
+    return composeDashboards(members, {
       ...OPTIONS,
       title: "River — Air quality unavailable",
-      absent,
     });
   }
 
@@ -1055,11 +1057,84 @@ describe("a source that did not load is composed as an absence", () => {
           importantDetail: "Water-level reading is more than two hours old",
         }),
       },
+      AIR_ABSENT,
     ]);
     const { detail } = spec.executiveBrief.important;
 
     expect(detail).toMatch(/old\. Air quality: unavailable/u);
     expect(detail).not.toMatch(/old Air quality:/u);
+  });
+
+  it("leaves a missing FIRST source in first position", () => {
+    // THE TEST THAT SHOULD HAVE EXISTED WHEN THE ABSENCE FEATURE LANDED.
+    // Absences arrived as a separate `options.absent` list, so labels were
+    // always emitted present-first — a reader who asked for river and air
+    // quality with the river down was told "Air quality: … River: unavailable",
+    // with the missing subject moved to the end of every attributed surface,
+    // while ADR-009 claimed an absence "keeps its place in every attributed
+    // line". Every test passed, because every fixture put the absence last.
+    //
+    // Asserted on EXACT strings. `toContain("River")` is equally satisfied by
+    // both orderings, which is exactly how this shipped.
+    const river: AbsentSource = { key: "river", label: "River" };
+    const air = pair()[1]!;
+    const spec = partial([river, air]);
+
+    expect(spec.freshness.label).toBe(
+      "River: unavailable · Air quality: Fresh",
+    );
+    expect(spec.executiveBrief.known.headline).toBe(
+      "River: unavailable · Air quality: Air known",
+    );
+    expect(spec.executiveBrief.known.detail).toBe(
+      "River: unavailable when this dashboard was built. Air quality: What is known about Air.",
+    );
+
+    // The counterweight: the same two voices the other way round give the
+    // mirror answer, so this is composition order and not a fixed rule that
+    // happens to put absences first now.
+    const mirrored = partial([
+      pair()[0]!,
+      { key: "air", label: "Air quality" },
+    ]);
+    expect(mirrored.freshness.label).toBe(
+      "River: Fresh · Air quality: unavailable",
+    );
+  });
+
+  it("leaves a missing MIDDLE source in the middle", () => {
+    // Three voices, absent in the middle. A rule that merely put absences
+    // first, or sorted them to either end, passes the pair test above and
+    // fails here — position has to come from the list itself.
+    const spec = composeDashboards(
+      [
+        pair()[0]!,
+        { key: "tide", label: "Tide" },
+        {
+          key: "air",
+          label: "Air quality",
+          dashboard: source({
+            title: "Air",
+            stationId: "678",
+            generatedAt: "2026-08-19T12:30:00.000Z",
+            freshness: FRESH,
+          }),
+        },
+      ],
+      { ...OPTIONS, title: "River and Air quality — Tide unavailable" },
+    );
+
+    expect(spec.freshness.label).toBe(
+      "River: Fresh · Tide: unavailable · Air quality: Fresh",
+    );
+    expect(spec.executiveBrief.known.detail).toBe(
+      "River: What is known about River. Tide: unavailable when this dashboard was built. Air quality: What is known about Air.",
+    );
+    // And it contributed nothing structural from the middle either.
+    expect(spec.pages.map((page) => page.id)).toEqual([
+      "river:overview",
+      "air:overview",
+    ]);
   });
 
   it("keeps the absence a label in headlines, not a sentence", () => {
@@ -1132,13 +1207,13 @@ describe("a source that did not load is composed as an absence", () => {
 
   it("refuses when nothing loaded, because that is a refusal", () => {
     expect(() =>
-      composeDashboards([], {
-        ...OPTIONS,
-        absent: [
+      composeDashboards(
+        [
           { key: "river", label: "River" },
           { key: "air", label: "Air quality" },
         ],
-      }),
+        OPTIONS,
+      ),
     ).toThrow(/at least one source that loaded/u);
   });
 
@@ -1147,7 +1222,8 @@ describe("a source that did not load is composed as an absence", () => {
     // counted only what loaded would let a request past the policy on the days
     // its sources were down, which is backwards.
     expect(() =>
-      partial(pair(), [
+      partial([
+        ...pair(),
         { key: "tide", label: "Tide" },
         { key: "wind", label: "Wind" },
       ]),
@@ -1160,7 +1236,7 @@ describe("a source that did not load is composed as an absence", () => {
     // The key claims no ids today. It is still checked, because otherwise a
     // duplicate would only become an error on the days both sources are up.
     expect(() =>
-      partial(pair(), [{ key: "air", label: "Air quality" }]),
+      partial([...pair(), { key: "air", label: "Air quality" }]),
     ).toThrow(/namespace "air"/u);
   });
 });
