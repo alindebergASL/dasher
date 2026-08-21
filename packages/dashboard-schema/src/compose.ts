@@ -1,14 +1,20 @@
 /**
- * Compose two finished dashboards into one, without either domain's rules
- * touching the other's numbers.
+ * Compose several finished dashboards into one, without any domain's rules
+ * touching another's numbers.
  *
- * This is the smallest seam that a two-source dashboard needs. Each source is
+ * This is the smallest seam a multi-source dashboard needs. Each source is
  * built by its own parser, computation policy, vocabulary, thresholds and
  * builder, exactly as it is today, and arrives here as a finished
  * `DashboardSpec`. Nothing here recomputes a reading, re-derives a trend, or
  * applies one domain's tolerance to another's values — it arranges, attributes,
  * and re-checks. That is deliberate: the moment composition starts computing,
  * "air values under river rules" becomes reachable.
+ *
+ * A SOURCE THAT DID NOT LOAD IS COMPOSED TOO, as an absence. It contributes no
+ * page, no evidence and no architecture node — nothing was fetched, so there is
+ * nothing to show — but it keeps its place in every attributed line, and it
+ * costs the dashboard its `fresh` status and its observation timestamp. See
+ * `AbsentSource`.
  *
  * THE CONTRACT IS THE CHECK. Composition ends by running the result through
  * `parseDashboardSpec`, which already enforces everything a merge can break:
@@ -36,11 +42,53 @@ export interface ComposedSource {
   readonly dashboard: DashboardSpec;
 }
 
+/**
+ * A source that was asked for and could not be loaded.
+ *
+ * WHY AN ABSENCE IS A COMPOSITION MEMBER AND NOT A CALLER'S FOOTNOTE. There
+ * are three things this module could do when one of several sources fails, and
+ * only one of them is honest:
+ *
+ * - refuse the whole request. Truthful, and it was the shipped behaviour, but
+ *   at 95% per-source availability it throws away 10% of two-source requests
+ *   and 23% of five-source ones over a fault in a part the reader may not even
+ *   have been looking at.
+ * - show what loaded and say nothing. This is the failure the rest of the
+ *   product exists to prevent: a page that answers a narrower question than
+ *   the one asked, while looking like it answered the one asked.
+ * - show what loaded and SAY WHAT IS MISSING. That is this.
+ *
+ * Making the absence a member rather than a caller-supplied sentence is what
+ * makes the third option hold. Attribution, freshness and the observation
+ * timestamp all run over present and absent members together, so a source
+ * cannot be dropped from one of those surfaces by forgetting it there: the
+ * reader sees the same named voices in the brief, the next action and the
+ * freshness line whether or not that voice had data.
+ *
+ * It carries no reason. Which upstream failed and why is a server-side fact;
+ * to the reader it is one fact — this part could not be built — and the
+ * difference between a 401 and a timeout must not become a description of
+ * Dasher's credentials.
+ */
+export interface AbsentSource {
+  /** Namespace it would have used. Checked against the present sources' keys. */
+  readonly key: string;
+  /** How the absence is attributed, e.g. "Air quality". */
+  readonly label: string;
+}
+
 export interface ComposeOptions {
   readonly id: string;
   readonly title: string;
   readonly audience: string;
   readonly notice: string;
+  /**
+   * Sources that were asked for and did not load. Empty or omitted is the
+   * ordinary case; when it is not empty the result is a partial dashboard and
+   * the caller's `title` and `notice` are the two places that must say so —
+   * this module cannot know what the reader typed.
+   */
+  readonly absent?: readonly AbsentSource[];
 }
 
 /**
@@ -52,20 +100,26 @@ export interface ComposeOptions {
  * decision to live. The count is now a POLICY value —
  * `MAX_COMPOSED_SOURCES` — and every rule below is written for N.
  *
- * The floor of two is real: one source is not a composition, and the caller
- * should build it directly.
+ * The floor is two VOICES, not two loaded sources: one present source beside
+ * one absence is still a composition, and composing it is what lets a partial
+ * dashboard keep the same shape as the whole one it was asked to be.
  */
 export type ComposedSources = readonly ComposedSource[];
 
 /**
  * How many sources one dashboard may combine today.
  *
- * Deliberately low, and deliberately a constant rather than a type. Raising it
- * is a product decision that must be taken together with the fail-closed
- * policy: composition currently refuses unless every source loads, and at 95%
- * per-source availability that succeeds 90% of the time at two sources, 77% at
- * five, 60% at ten. The arithmetic — not the rendering — is what makes a large
- * N a different product.
+ * Deliberately low, and deliberately a constant rather than a type. What used
+ * to make raising it expensive was the fail-closed policy — refuse unless every
+ * source loads — because at 95% per-source availability that succeeds 90% of
+ * the time at two sources, 77% at five and 60% at ten. Degrading per source
+ * removes that arithmetic as an obstacle: a large N now loses parts rather than
+ * whole dashboards.
+ *
+ * What still binds is the reader. Every additional voice lengthens the same
+ * attributed sentences and the same freshness line, and those are bounded by
+ * the contract's short-text limit. Raising this number is a decision about how
+ * much a person can hold at once, which is the right thing for it to be about.
  */
 export const MAX_COMPOSED_SOURCES = 3;
 
@@ -166,26 +220,65 @@ const SENTENCE_END = /[.!?\u2026][)\]"'\u201d\u2019]?$/u;
  * Headlines keep `·` instead: they are labels rather than sentences, and a
  * full stop after one would be wrong in the other direction.
  */
-function attribute(sources: ComposedSources, texts: readonly string[]): string {
+function attribute(
+  labels: readonly string[],
+  texts: readonly string[],
+): string {
   // Every text but the last is sentence-terminated before the next label
   // follows it; the last is left as its source wrote it.
-  return sources
-    .map((source, index) => {
+  return labels
+    .map((label, index) => {
       const text = (texts[index] ?? "").trimEnd();
-      const isLast = index === sources.length - 1;
+      const isLast = index === labels.length - 1;
       const terminated = isLast || SENTENCE_END.test(text) ? text : `${text}.`;
-      return `${source.label}: ${terminated}`;
+      return `${label}: ${terminated}`;
     })
     .join(" ");
 }
 
 function joinHeadlines(
-  sources: ComposedSources,
+  labels: readonly string[],
   texts: readonly string[],
 ): string {
-  return sources
-    .map((source, index) => `${source.label}: ${texts[index] ?? ""}`)
+  return labels
+    .map((label, index) => `${label}: ${texts[index] ?? ""}`)
     .join(" · ");
+}
+
+/**
+ * What an absence says where a source's own words would have been.
+ *
+ * "When this dashboard was built" and not "right now": a saved dashboard is
+ * reopened later, and by then the source may well be answering again. The
+ * sentence has to stay true in the archive, because that is where it will
+ * mostly be read.
+ *
+ * It is already terminated, so it survives being last in an attributed line
+ * without picking up a second full stop.
+ */
+const ABSENT_DETAIL = "unavailable when this dashboard was built.";
+/** The same fact where headlines are joined, which are labels and not sentences. */
+const ABSENT_HEADLINE = "unavailable";
+
+/** Present labels then absent ones, in the order the caller gave them. */
+function voiceLabels(
+  sources: ComposedSources,
+  absent: readonly AbsentSource[],
+): string[] {
+  return [
+    ...sources.map((source) => source.label),
+    ...absent.map((a) => a.label),
+  ];
+}
+
+/** One source's own words for each present voice, the fixed text for each absence. */
+function voiceTexts(
+  sources: ComposedSources,
+  absent: readonly AbsentSource[],
+  say: (source: ComposedSource) => string,
+  whenAbsent: string,
+): string[] {
+  return [...sources.map(say), ...absent.map(() => whenAbsent)];
 }
 
 function remapSpec(source: ComposedSource): {
@@ -286,44 +379,61 @@ function remapSpec(source: ComposedSource): {
 }
 
 /**
- * Both fresh is fresh, both stale is stale, anything else is partial.
+ * All fresh is fresh, all stale is stale, anything else is partial.
  *
- * `partial` is the only honest answer to a mixed pair: a combined dashboard
- * whose river half is current and whose air half is not is neither fresh nor
- * stale, and calling it either would misdescribe half the page.
+ * `partial` is the only honest answer to a mixture: a combined dashboard whose
+ * river half is current and whose air half is not is neither fresh nor stale,
+ * and calling it either would misdescribe half the page.
+ *
+ * AN ABSENCE IS A MIXTURE OF ONE. A source that did not load has no freshness
+ * at all, so it satisfies neither quantifier, and a dashboard missing a part it
+ * was asked for cannot be `fresh` however current the parts it has. This is the
+ * machine-readable half of the honest partial: a reader who never reaches the
+ * notice still sees the page decline to call itself current.
  */
 function composeFreshness(
   sources: ComposedSources,
+  absent: readonly AbsentSource[],
 ): DashboardSpec["freshness"] {
   const parts = sources.map((source) => source.dashboard.freshness);
 
-  // EVERY half fresh is fresh; every half stale is stale; any mixture is
+  // EVERY part fresh is fresh; every part stale is stale; any mixture is
   // partial. The pair version read "a && b"; the N version is the same rule
-  // with the quantifier made explicit, which is what it always meant.
-  const status = parts.every((part) => part.status === "fresh")
-    ? "fresh"
-    : parts.every((part) => part.status === "stale")
-      ? "stale"
-      : "partial";
+  // with the quantifier made explicit, which is what it always meant. Absences
+  // are counted in the denominator and satisfy neither.
+  const total = parts.length + absent.length;
+  const status =
+    parts.filter((part) => part.status === "fresh").length === total
+      ? "fresh"
+      : parts.filter((part) => part.status === "stale").length === total
+        ? "stale"
+        : "partial";
 
-  // The EARLIEST of them, and only when EVERY half has one. A missing
+  // The EARLIEST of them, and only when EVERY voice has one. A missing
   // timestamp is the least current state there is — unknown — so it cannot be
-  // filtered past on the way to a minimum, or the halves that did report would
-  // stand for the whole page under a single heading.
+  // filtered past on the way to a minimum, or the parts that did report would
+  // stand for the whole page under a single heading. An absence is exactly such
+  // a missing timestamp, which is why it suppresses this field rather than
+  // letting the loaded sources date the page.
   const observations = parts.map((part) => part.latestObservationAt);
   const known = observations.filter(
     (value): value is string => value !== undefined,
   );
   const earliest =
-    known.length === observations.length
+    known.length === total
       ? known.slice().sort((x, y) => Date.parse(x) - Date.parse(y))[0]
       : undefined;
 
   return {
     status,
     label: joinHeadlines(
-      sources,
-      parts.map((part) => part.label),
+      voiceLabels(sources, absent),
+      voiceTexts(
+        sources,
+        absent,
+        (source) => source.dashboard.freshness.label,
+        ABSENT_HEADLINE,
+      ),
     ),
     ...(earliest === undefined ? {} : { latestObservationAt: earliest }),
   };
@@ -351,26 +461,46 @@ export function composeDashboards(
   sources: ComposedSources,
   options: ComposeOptions,
 ): DashboardSpec {
-  // Arity is checked here, not in the type. One source is not a composition;
-  // the ceiling is a product policy that moves with the fail-closed decision.
-  if (sources.length < 2) {
+  const absent = options.absent ?? [];
+  const voices = sources.length + absent.length;
+
+  // Arity is checked here, not in the type. Two rules, and they are different
+  // rules: at least one source must have LOADED, because a page of nothing but
+  // absences is a refusal wearing a dashboard's clothes and the caller owns
+  // that message; and at least two must have been ASKED FOR, because one source
+  // on its own is not a composition and the caller should build it directly.
+  if (sources.length < 1) {
     throw new DashboardCompositionError(
-      `Composition needs at least two sources; received ${String(sources.length)}.`,
+      "Composition needs at least one source that loaded; received none.",
     );
   }
-  if (sources.length > MAX_COMPOSED_SOURCES) {
+  if (voices < 2) {
     throw new DashboardCompositionError(
-      `Composition is limited to ${String(MAX_COMPOSED_SOURCES)} sources; received ${String(sources.length)}.`,
+      `Composition needs at least two sources; received ${String(voices)}.`,
+    );
+  }
+  if (voices > MAX_COMPOSED_SOURCES) {
+    throw new DashboardCompositionError(
+      `Composition is limited to ${String(MAX_COMPOSED_SOURCES)} sources; received ${String(voices)}.`,
     );
   }
 
-  const keys = sources.map((source) => source.key);
+  // Absences are namespaced along with the rest. Their key claims no ids today,
+  // but it is the same key the source would have used, and letting it collide
+  // here would mean a request whose duplicate only becomes an error on the days
+  // both sources happen to be up.
+  const keys = [
+    ...sources.map((source) => source.key),
+    ...absent.map((a) => a.key),
+  ];
   const duplicate = keys.find((key, index) => keys.indexOf(key) !== index);
   if (duplicate !== undefined) {
     throw new DashboardCompositionError(
       `More than one source uses the namespace ${JSON.stringify(duplicate)}; structural ids would collide.`,
     );
   }
+
+  const labels = voiceLabels(sources, absent);
 
   // Sources cannot be honestly labelled with one mode unless they agree. Demo
   // readings beside live ones under a single "live" banner is exactly the
@@ -404,14 +534,14 @@ export function composeDashboards(
       statementTypes: mergeStatementTypes(
         claims.map((entry) => entry.statementTypes),
       ),
-      headline: joinHeadlines(
-        sources,
-        claims.map((entry) => entry.headline),
-      ),
-      detail: attribute(
-        sources,
-        claims.map((entry) => entry.detail),
-      ),
+      headline: joinHeadlines(labels, [
+        ...claims.map((entry) => entry.headline),
+        ...absent.map(() => ABSENT_HEADLINE),
+      ]),
+      detail: attribute(labels, [
+        ...claims.map((entry) => entry.detail),
+        ...absent.map(() => ABSENT_DETAIL),
+      ]),
       evidenceIds: mergeEvidenceIds(
         claims.map((entry, index) =>
           entry.evidenceIds.map((id) => namespaced(sources[index]!.key, id)),
@@ -438,15 +568,25 @@ export function composeDashboards(
     audience: options.audience,
     generatedAt,
     dataMode,
-    freshness: composeFreshness(sources),
+    freshness: composeFreshness(sources, absent),
     nextAction: {
       title: joinHeadlines(
-        sources,
-        sources.map((source) => source.dashboard.nextAction.title),
+        labels,
+        voiceTexts(
+          sources,
+          absent,
+          (source) => source.dashboard.nextAction.title,
+          ABSENT_HEADLINE,
+        ),
       ),
       detail: attribute(
-        sources,
-        sources.map((source) => source.dashboard.nextAction.detail),
+        labels,
+        voiceTexts(
+          sources,
+          absent,
+          (source) => source.dashboard.nextAction.detail,
+          ABSENT_DETAIL,
+        ),
       ),
       evidenceIds: mergeEvidenceIds(
         sources.map((source) =>
@@ -462,8 +602,13 @@ export function composeDashboards(
     architecture: {
       title: options.title,
       summary: attribute(
-        sources,
-        sources.map((source) => source.dashboard.architecture.summary),
+        labels,
+        voiceTexts(
+          sources,
+          absent,
+          (source) => source.dashboard.architecture.summary,
+          ABSENT_DETAIL,
+        ),
       ),
       nodes: remapped.flatMap((entry) => entry.nodes),
       edges: remapped.flatMap((entry) => entry.edges),

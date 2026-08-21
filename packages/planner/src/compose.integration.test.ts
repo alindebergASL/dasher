@@ -84,6 +84,30 @@ const air = compilePlan(planFor(airStations), airStations, {
   thresholds: [],
 });
 
+/**
+ * The same river source, composed against a real absence.
+ *
+ * The unit suite proves the absence rules against hand-built specs. This proves
+ * them against what the product actually compiles — and it can make one claim
+ * the unit suite cannot: that an absent source contributes NO air vocabulary
+ * anywhere in the spec except its own name. Nothing was fetched, so nothing
+ * about monitors, PM2.5 or ozone can honestly appear, and a partial that leaked
+ * any of it would be describing data it does not have.
+ */
+function partial(): DashboardSpec {
+  return composeDashboards(
+    [{ key: "river", label: "River", dashboard: river }],
+    {
+      id: "combined-river-air-conditions",
+      title: "River — Air quality unavailable",
+      audience: "Readers tracking river and air-quality together",
+      notice:
+        "Air quality could not be loaded when this dashboard was built, and nothing here was substituted in its place.",
+      absent: [{ key: "air", label: "Air quality" }],
+    },
+  );
+}
+
 function combined(): DashboardSpec {
   return composeDashboards(
     [
@@ -296,5 +320,80 @@ describe("readings stay under their own rules", () => {
           ),
       ),
     );
+  });
+});
+
+describe("a real source composed against a real absence", () => {
+  it("passes the contract with one source and one absence", () => {
+    // Reaching this line is the contract check: `composeDashboards` ends in
+    // `parseDashboardSpec`. A partial is a real dashboard or it is nothing.
+    const spec = partial();
+
+    expect(spec.schemaVersion).toBe("1.2");
+    expect(spec.pages.length).toBe(river.pages.length);
+    expect(spec.evidence.length).toBe(river.evidence.length);
+    expect(spec.pages.every((page) => page.id.startsWith("river:"))).toBe(true);
+  });
+
+  it("borrows no air vocabulary for a source it never loaded", () => {
+    // The claim only an integration test can make. `air` is compiled and
+    // available in this file, so a composer that reached for it would be
+    // caught here; the unit fixtures could not tell the difference because
+    // their two halves share a vocabulary.
+    //
+    // READINGS VOCABULARY, not the bare word "monitor". The sibling sweep over
+    // the air pages can afford `\bmonitors?\b` because it looks at one half's
+    // pages; this one looks at the WHOLE spec, and the river half's own
+    // architecture edge is labelled "monitor and refresh" — ordinary English,
+    // not evidence of a leak. What air data cannot fail to bring with it is its
+    // pollutants and its units, so those are what this asks for.
+    //
+    // "Air quality" is the one permitted mention: it is the absence's own name,
+    // which is the whole point of attributing it.
+    const AIR_READINGS =
+      /pm\s*2\.?5|µg\/m³|\bozone\b|air[\s-]quality (index|monitors?)/iu;
+
+    // Guard the guard: the air half really does say these things, so a leak
+    // would have something to be caught by.
+    expect(prose(air).some(([, text]) => AIR_READINGS.test(text))).toBe(true);
+
+    const texts = prose(partial());
+    expect(texts.length).toBeGreaterThan(20);
+    expect(texts.filter(([, text]) => AIR_READINGS.test(text))).toEqual([]);
+  });
+
+  it("names the absence in the same places it would have spoken", () => {
+    const spec = partial();
+    const attributed = [
+      spec.executiveBrief.known.detail,
+      spec.executiveBrief.changed.detail,
+      spec.executiveBrief.important.detail,
+      spec.nextAction.detail,
+      spec.architecture.summary,
+    ];
+
+    // Guard the guard: at least one real river line lacks terminal
+    // punctuation, so the sentence boundary below is testing the product.
+    expect(
+      [river.executiveBrief.important.detail, river.nextAction.detail].some(
+        (text) => !/[.!?]$/u.test(text),
+      ),
+    ).toBe(true);
+
+    for (const text of attributed) {
+      expect(text).toContain(
+        "Air quality: unavailable when this dashboard was built.",
+      );
+      expect(text).toMatch(/[.!?][)\]"']? Air quality:/u);
+      expect(text).not.toMatch(/[.!?]{2}/u);
+    }
+  });
+
+  it("declines to date the page from the source that did report", () => {
+    // The whole dashboard's currency, given up because part of it is missing.
+    // The guard is the other direction: the same river source, composed with a
+    // second source that DID load, keeps a timestamp.
+    expect(partial().freshness.latestObservationAt).toBeUndefined();
+    expect(combined().freshness.latestObservationAt).toBeDefined();
   });
 });

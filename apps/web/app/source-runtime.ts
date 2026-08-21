@@ -24,11 +24,18 @@ import type { DomainKey } from "./domains";
  * and the day a third source makes this painful is the day the abstraction
  * has evidence behind it.
  *
- * FAIL CLOSED, NEVER QUIETLY. In live mode a source failure refuses the
- * request. It does not fall back to the fixture: a dashboard built from
- * yesterday's committed sample, presented as what is happening now, is the
- * exact dishonesty every gate in this product exists to prevent. The
- * refusal is a `SourceUnavailableError`, and the caller persists nothing.
+ * FAIL CLOSED, NEVER QUIETLY. In live mode a source failure produces a
+ * `SourceUnavailableError` and nothing else. It does not fall back to the
+ * fixture: a dashboard built from yesterday's committed sample, presented as
+ * what is happening now, is the exact dishonesty every gate in this product
+ * exists to prevent.
+ *
+ * WHAT THE CALLER DOES WITH THAT IS THE CALLER'S POLICY, and the two callers
+ * differ. A single-source request has nothing left when its one source fails,
+ * so it refuses. A combined request keeps the sources that did load and names
+ * the one that did not, which is a decision about honesty rather than about
+ * fetching — see `planCombined`. Neither of them substitutes anything, which
+ * is the part this module guarantees.
  *
  * STALE IS NOT THE SAME AS BROKEN. A payload that arrives and parses builds
  * a dashboard even if its observations are hours old — the freshness
