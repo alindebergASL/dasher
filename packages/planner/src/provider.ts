@@ -351,9 +351,12 @@ export class FakePlanningProvider implements PlanningProvider {
  * equivalent, it was the tell.
  *
  * Returning nothing is the honest answer to "there is nothing left I am willing
- * to show". The caller then hands back a plan the schema refuses, which the
- * planner reports as a malformed plan and asks to have repaired — a visible
- * refusal rather than a silently resurrected kind.
+ * to show". The caller then hands back a plan the schema refuses, and the run
+ * loop treats that as a malformed plan: it keeps no previous plan to revise
+ * from, starts the next attempt clean, and throws `PlanRejected` with
+ * `plan_malformed` once the attempts are spent (`run.ts`). A visible refusal
+ * rather than a silently resurrected kind — and a retry, not a repair request,
+ * because there is no well-formed plan to ask anyone to repair.
  */
 function fallbackSection(
   entries: readonly PatternEntry[],
@@ -517,11 +520,12 @@ export function matchedSections(
  * Pages with anything Dasher no longer offers taken out of them.
  *
  * The other half of the deprecation rule, and the half that governs the path
- * the product actually ships. `matchedSections` stops a retired section being
- * ADDED by name; without this, the deterministic provider would keep PROPOSING
- * one on every fresh request, because its compositions are written as literals.
- * A lifecycle rule that governs the model prompt and the refinement matcher but
- * not the provider in front of readers governs nothing.
+ * the product actually ships. `readRefinementIntent` stops a retired section
+ * being ADDED by name — not `matchedSections`, which deliberately matches it so
+ * that removal stays possible. Without THIS, the deterministic provider would
+ * keep PROPOSING one on every fresh request, because its compositions are
+ * written as literals. A lifecycle rule that governs the model prompt and the
+ * refinement path but not the provider in front of readers governs nothing.
  *
  * IT REMOVES WHAT IS RETIRED, not everything it fails to recognise, and the
  * difference is the whole safety of putting a filter on this path. Written as

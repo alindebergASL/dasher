@@ -61,12 +61,21 @@ So `registry.test.ts` checks every claim by making the product do the thing:
 - **`triggerWords`** — put each word in a change instruction and check the
   refinement matcher reaches that section.
 
-Nine hand-built mutants — a wrong `componentKind`, an inverted `requiresSites`, a
-copy-pasted `kind`, a validator that ignores the registry, a prompt that drops
-the guidance, a matcher that ignores deprecation, a colliding trigger word — each
-fail at least one of these. Draco 2's operating rule is a test per constraint
-[A2]; this is that rule with the tests pointed at reality rather than at the
-entry.
+Each of the following hand-built mutants fails at least one of them: a wrong
+`componentKind`; an inverted `requiresSites`; an inverted `mayBeOmitted`; a
+copy-pasted `kind` that keeps the previous entry's name; a validator that ignores
+the registry; a prompt that drops the guidance; a trigger word that collides with
+another entry's; `offeredEntries` that does not filter; a composer that does not
+filter its fresh compositions; a matcher that filters on lifecycle before reading
+the verb; a removal that is status-checked; an addition that is not; a fallback
+that restores its literal; and a matcher that does not case-fold.
+
+No running total is given across commits, deliberately. One earlier mutant — a
+matcher that ignores deprecation — describes the CURRENT correct behaviour rather
+than a defect, so a cumulative count would be counting a fixture against itself.
+The list above is the set at this head. Draco 2's operating rule is a test per
+constraint [A2]; this is that rule with the tests pointed at reality rather than
+at the entry.
 
 Writing those tests found a property nobody had stated: a plan whose only section
 is the omittable one is **refused**, not rendered empty. The page loses its only
@@ -108,13 +117,23 @@ that governs the model prompt and not the provider in front of readers governs
 nothing. The empty-plan fallback named `conditions-summary` as a literal for the
 same reason, at the one moment Dasher is choosing entirely for itself.
 
-The filtering points are pure functions over a list (`offeredEntries`,
-`matchedSections`, `retainOffered`) and the provider takes its envelope as a
-constructor dependency beside its phrasing. Neither is a test seam: what a
-planner may propose is configuration, not a fact about the class, and the shipped
-registry has nothing deprecated in it, so a rule expressed only as a loop over
-the real data would be a rule nothing proves until the first real deprecation —
-exactly the wrong moment to find out whether it works.
+There are exactly three places lifecycle is enforced, and `matchedSections` is
+not one of them — it identifies every known mention and filters nothing, so that
+a retired section can still be named for removal:
+
+| Where                                  | What it gates                                      |
+| -------------------------------------- | -------------------------------------------------- |
+| `offeredEntries`                       | the entries the model prompt lists                 |
+| `readRefinementIntent`'s addition gate | whether a named section may be **added**           |
+| `retainOffered`                        | what a fresh deterministic composition may contain |
+
+All three are registry-aware helpers taking their entries as a parameter, and
+the provider takes its envelope as a constructor dependency beside its phrasing.
+None is a test seam: what a planner may propose is configuration, not a fact
+about the class, and the shipped registry has nothing deprecated in it, so a rule
+expressed only as a loop over the real data would be a rule nothing proves until
+the first real deprecation — exactly the wrong moment to find out whether it
+works.
 
 The second lesson is narrower and worth writing down: testing the pure function
 is not testing its **call site**. `retainOffered` had a passing test while the
