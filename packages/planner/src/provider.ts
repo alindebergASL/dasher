@@ -201,9 +201,24 @@ export class FakePlanningProvider implements PlanningProvider {
   /** Keyword matching over the request text. No model, no network. */
   readonly usesModel = false;
   readonly phrasing: FakePlannerPhrasing;
+  /**
+   * The envelope this provider composes within.
+   *
+   * A constructor dependency for the same reason `phrasing` is one: what a
+   * planner may propose is configuration, not a fact about this class. It is
+   * also the only way to check that the deprecation rule reaches the path this
+   * product actually ships — the registry has nothing deprecated in it, so a
+   * test that cannot hand this provider a retired entry cannot tell a filtered
+   * composition from an unfiltered one.
+   */
+  readonly entries: readonly PatternEntry[];
 
-  constructor(phrasing: FakePlannerPhrasing = RIVER_FAKE_PHRASING) {
+  constructor(
+    phrasing: FakePlannerPhrasing = RIVER_FAKE_PHRASING,
+    entries: readonly PatternEntry[] = PATTERN_ENTRIES,
+  ) {
     this.phrasing = phrasing;
+    this.entries = entries;
   }
 
   async plan(request: PlanningRequest): Promise<unknown> {
@@ -215,7 +230,7 @@ export class FakePlanningProvider implements PlanningProvider {
       return repair(request.revision, request.availableSites);
     }
     if (request.refinement !== undefined) {
-      return refine(request.refinement, request.availableSites);
+      return refine(request.refinement, request.availableSites, this.entries);
     }
     return this.draft(request);
   }
@@ -236,12 +251,17 @@ export class FakePlanningProvider implements PlanningProvider {
       audience: words.audience,
       framing: words.framing,
       siteIds,
-      pages: pages.map((page, index) => ({
-        id: page.id,
-        title: words.pages[index]?.title ?? page.id,
-        description: words.pages[index]?.description ?? page.id,
-        sections: page.sections,
-      })),
+      // Filtered AFTER the titles are attached, so dropping a page cannot shift
+      // the phrasing index and give the next page someone else's heading.
+      pages: retainOffered(
+        pages.map((page, index) => ({
+          id: page.id,
+          title: words.pages[index]?.title ?? page.id,
+          description: words.pages[index]?.description ?? page.id,
+          sections: page.sections,
+        })),
+        this.entries,
+      ),
     });
 
     if (has("emergency", "flood", "evacuat", "warning", "public safety")) {
@@ -312,6 +332,21 @@ export class FakePlanningProvider implements PlanningProvider {
       },
     ]);
   }
+}
+
+/**
+ * The one section to keep when a refinement would otherwise empty the plan.
+ *
+ * `conditions-summary` by design — it needs no station and every one of its
+ * claims has a zero case — but chosen through the registry rather than written
+ * as a literal, so a deprecated summary cannot become the thing Dasher falls
+ * back to. If nothing offered can render without a station, the summary is
+ * still the least wrong answer available.
+ */
+function fallbackSection(entries: readonly PatternEntry[]): PlanSectionKind {
+  const offered = offeredEntries(entries);
+  const standalone = offered.find((entry) => !entry.requiresSites);
+  return standalone?.kind ?? "conditions-summary";
 }
 
 /**
@@ -421,6 +456,21 @@ function verbBefore(text: string, at: number): "remove" | "add" | undefined {
  * filtering actually happens HERE — and not merely in `offeredEntries`, which
  * has its own test — is to be able to hand this a deprecated entry.
  *
+ * ORDERED BY WHERE THE READER NAMED THEM, not by the order of the list being
+ * searched. This is load-bearing rather than tidy. `refine` fills the pages
+ * that have room, in the order it receives additions, so when an instruction
+ * asks for more sections than there are slots the order decides which request
+ * is honoured — and iterating a list meant the answer belonged to whoever last
+ * sorted that list. Moving the trigger words into the registry silently changed
+ * it: "Add the table and summary." against a nearly-full plan kept the table
+ * before and kept the summary after, because the registry lists
+ * `conditions-summary` before `gauge-table` and the old private table listed
+ * them the other way round. Caught in review, not by the 200 tests that passed.
+ *
+ * Sorting by position in the instruction makes the answer a property of what
+ * the reader wrote. Named first, served first, which is also the only rule that
+ * can be explained to them.
+ *
  * This is still keyword matching rather than language understanding, and it is
  * still only a stand-in; a real provider reads the instruction. What it has to
  * be is deterministic, so the refinement loop can be tested without a model.
@@ -434,12 +484,63 @@ export function matchedSections(
     const at = firstIndexOfAny(text, entry.triggerWords);
     if (at !== -1) matched.push([entry.kind, at]);
   }
-  return matched;
+  return matched.sort(([, left], [, right]) => left - right);
+}
+
+/**
+ * Pages with anything Dasher no longer offers taken out of them.
+ *
+ * The other half of the deprecation rule, and the half that governs the path
+ * the product actually ships. `matchedSections` stops a retired section being
+ * ADDED by name; without this, the deterministic provider would keep PROPOSING
+ * one on every fresh request, because its compositions are written as literals.
+ * A lifecycle rule that governs the model prompt and the refinement matcher but
+ * not the provider in front of readers governs nothing.
+ *
+ * IT REMOVES WHAT IS RETIRED, not everything it fails to recognise, and the
+ * difference is the whole safety of putting a filter on this path. Written as
+ * "keep what is offered", it also quietly swallowed section names that are not
+ * in the registry at all — which are not retired, they are invalid, and the
+ * plan schema is what has to refuse them. Mutation testing said so plainly:
+ * replacing a section name inside a hardcoded composition with `""` used to be
+ * killed by the schema and started surviving, because the filter ate the empty
+ * string on the way past.
+ *
+ * A page THIS FUNCTION emptied is dropped rather than left blank. A page that
+ * arrived empty is kept exactly as it came, for the same reason: an empty page
+ * is a plan the schema refuses, so a composition authored with no sections is a
+ * bug that must keep surfacing rather than disappearing here.
+ *
+ * If every page empties — every section Dasher can build deprecated at once —
+ * this returns nothing, the plan fails its own schema, and the run reports a
+ * malformed plan. That is the honest outcome for a registry in that state, and
+ * it is a state only a deliberate edit can produce.
+ */
+export function retainOffered<T extends { sections: PlanSectionKind[] }>(
+  pages: readonly T[],
+  entries: readonly PatternEntry[],
+): T[] {
+  const offeredKinds = new Set(offeredEntries(entries).map((e) => e.kind));
+  const retired = new Set(
+    entries
+      .map((entry) => entry.kind)
+      .filter((kind) => !offeredKinds.has(kind)),
+  );
+  return pages
+    .map((page) => ({
+      ...page,
+      sections: page.sections.filter((section) => !retired.has(section)),
+    }))
+    .filter(
+      (page, index) =>
+        page.sections.length > 0 || pages[index]?.sections.length === 0,
+    );
 }
 
 export function readRefinementIntent(
   instruction: string,
   sites: readonly AvailableSite[],
+  entries: readonly PatternEntry[] = PATTERN_ENTRIES,
 ): RefinementIntent {
   const text = instruction.toLowerCase();
   const has = (words: readonly string[]): boolean =>
@@ -450,7 +551,7 @@ export function readRefinementIntent(
   const anyRemove = has(REMOVE_WORDS);
   const anyAdd = has(ADD_WORDS);
 
-  for (const [section, at] of matchedSections(text, PATTERN_ENTRIES)) {
+  for (const [section, at] of matchedSections(text, entries)) {
     const verb = verbBefore(text, at);
     if (verb === "remove") remove.push(section);
     else if (verb === "add") add.push(section);
@@ -500,9 +601,10 @@ export function isUninterpretable(intent: RefinementIntent): boolean {
 function refine(
   refinement: PlanningRefinement,
   sites: readonly AvailableSite[],
+  entries: readonly PatternEntry[],
 ): DashboardPlan {
   const plan = refinement.previousPlan;
-  const intent = readRefinementIntent(refinement.instruction, sites);
+  const intent = readRefinementIntent(refinement.instruction, sites, entries);
 
   let pages = plan.pages.map((page) => ({ ...page }));
 
@@ -553,7 +655,7 @@ function refine(
     pages = [
       {
         ...plan.pages[0]!,
-        sections: ["conditions-summary"],
+        sections: [fallbackSection(entries)],
       },
     ];
   }

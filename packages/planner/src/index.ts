@@ -42,6 +42,7 @@ export {
   isUninterpretable,
   matchedSections,
   readRefinementIntent,
+  retainOffered,
   type AvailableSite,
   type FakeDraftText,
   type FakePlannerPhrasing,

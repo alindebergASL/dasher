@@ -31,12 +31,19 @@ import type { DashboardComponent } from "@dasher/dashboard-schema";
  * GOVERNANCE. Draco 2's operating model, which this borrows: a test and
  * co-located documentation per entry, and a version stamp on the whole. The
  * version is monolithic and semantic — one number for the registry, not one per
- * entry — because entries are read together and a plan is valid against the set:
+ * entry — because entries are read together and a plan is valid against the set.
  *
- * - MAJOR: a kind is added to or removed from the offered set, or a trigger
- *   word's meaning changes. Either can change which plan a request produces.
- * - MINOR: a new entry ships `experimental`, or an entry is promoted or
- *   deprecated.
+ * The rule is subtractive-versus-additive, and stating it any other way
+ * contradicts itself. A first draft here said "added to or removed from the
+ * offered set" was MAJOR while "promoted or deprecated" was MINOR — but
+ * deprecating IS removing from the offered set, so every deprecation was both.
+ *
+ * - MAJOR: an entry stops being offered, or a trigger word's meaning changes.
+ *   Both change which plan a request produces, and the first makes a section a
+ *   reader could previously ask for unreachable.
+ * - MINOR: a new entry is added, or one is promoted from `experimental` to
+ *   `stable`. Additive: every plan valid before is valid after, the offered set
+ *   only grows, and a promotion changes the promise rather than the behaviour.
  * - PATCH: `summary` or `guidance` wording.
  */
 export const PATTERN_REGISTRY_VERSION = "1.0.0";
@@ -231,9 +238,12 @@ export const PATTERN_REGISTRY: Readonly<Record<PlanSectionKind, PatternEntry>> =
 /**
  * Every entry, in the order the closed set is presented and iterated.
  *
- * Order is part of the registry rather than incidental: it is the order the
- * model prompt lists sections in and the order a refinement instruction is
- * matched against, so changing it changes behaviour.
+ * PRESENTATION order, and only that: it is the order the model prompt lists
+ * sections in. It is deliberately NOT the order a refinement instruction is
+ * resolved in — `matchedSections` sorts by where the reader named each section,
+ * because that order decides which request survives when an instruction asks
+ * for more sections than a plan has slots, and an answer that depends on how a
+ * registry file happens to be sorted is an answer nobody can be given.
  */
 export const PATTERN_ENTRIES: readonly PatternEntry[] = PLAN_SECTION_KINDS.map(
   (kind) => PATTERN_REGISTRY[kind],

@@ -77,27 +77,60 @@ is the right behaviour and it is now pinned.
 ## Lifecycle, and the one rule with teeth
 
 `experimental → stable → deprecated`. Deprecation removes a section from what
-Dasher **proposes** — it leaves the model prompt and stops being reachable by a
-change instruction — while it keeps **compiling**, because plans naming it are
-already persisted and a reopened dashboard renders from stored bytes. Removal
-from the schema is a separate, later, breaking change.
+Dasher **proposes** — it leaves the model prompt, stops being reachable by a
+change instruction, and stops appearing in a fresh composition — while it keeps
+**compiling**, because plans naming it are already persisted and a reopened
+dashboard renders from stored bytes. Removal from the schema is a separate,
+later, breaking change.
 
-Both filtering points are pure functions over a list (`offeredEntries`,
-`matchedSections`) rather than loops over the module's own registry. That is not
-a test seam; it is what makes the rule checkable at all. The shipped registry has
-nothing deprecated in it, so a rule expressed only as a loop over the real data
-would be a rule nothing proves until the first real deprecation — exactly the
-wrong moment to find out whether it works.
+There are four places that must honour it, and the first version of this ADR
+claimed the rule while shipping two of them. Review caught it: the model prompt
+and the refinement matcher filtered, but `FakePlanningProvider` — the provider
+this product actually runs — writes its compositions as literals, so every fresh
+request would have kept proposing a retired section forever. A lifecycle rule
+that governs the model prompt and not the provider in front of readers governs
+nothing. The empty-plan fallback named `conditions-summary` as a literal for the
+same reason, at the one moment Dasher is choosing entirely for itself.
+
+The filtering points are pure functions over a list (`offeredEntries`,
+`matchedSections`, `retainOffered`) and the provider takes its envelope as a
+constructor dependency beside its phrasing. Neither is a test seam: what a
+planner may propose is configuration, not a fact about the class, and the shipped
+registry has nothing deprecated in it, so a rule expressed only as a loop over
+the real data would be a rule nothing proves until the first real deprecation —
+exactly the wrong moment to find out whether it works.
+
+The second lesson is narrower and worth writing down: testing the pure function
+is not testing its **call site**. `retainOffered` had a passing test while the
+composer that was supposed to call it could have the call removed with every test
+still green. Each filtering point now has a test that drives the provider.
+
+The third came from the mutation gate rather than from reading. A filter on the
+composition path must **remove what is retired, not everything it fails to
+recognise**. Written as "keep what is offered", `retainOffered` also swallowed
+section names that are not in the registry at all — which are not retired, they
+are invalid, and the plan schema is what has to refuse them. Two classes of
+mutant that the schema used to kill started surviving: a section name replaced
+with `""`, and a composition's sections replaced with `[]`. So the filter drops
+only known-deprecated kinds, and a page it did not itself empty is left alone.
+A safety filter that quietly absorbs bugs is a worse trade than the bug.
 
 ## Versioning
 
 Monolithic and semantic. Entries are read together and a plan is valid against
 the set, so a per-entry version would describe something no consumer holds.
 
-- **MAJOR** — a kind joins or leaves the offered set, or a trigger word's meaning
-  changes. Either can change which plan a request produces.
-- **MINOR** — a new entry ships `experimental`, or an entry is promoted or
-  deprecated.
+The rule is subtractive-versus-additive. Stating it any other way contradicts
+itself, and the first version of this ADR did: "a kind joins or leaves the
+offered set" was MAJOR while "promoted or deprecated" was MINOR, so every
+deprecation was both at once.
+
+- **MAJOR** — an entry stops being offered, or a trigger word's meaning changes.
+  Both change which plan a request produces, and the first makes a section a
+  reader could previously ask for unreachable.
+- **MINOR** — a new entry is added, or one is promoted from `experimental` to
+  `stable`. Additive: every plan valid before is valid after, the offered set
+  only grows, and a promotion changes the promise rather than the behaviour.
 - **PATCH** — `summary` or `guidance` wording.
 
 ## What is deliberately not in an entry yet
@@ -121,14 +154,34 @@ unverified claim sitting next to verified ones.
   eight identical fields saying so would be indirection ahead of evidence. The
   first kind that legitimately repeats is what promotes it to an entry field.
 
-## What this does not change
+## What this changed that it should not have
 
-No behaviour, deliberately. All 200 existing planner tests passed against the
-rewiring before a single registry test was added, which is the bar: a
-consolidation that quietly moved a rule would be worse than not consolidating.
-The one visible difference is the model prompt, which now carries each section's
-purpose beside its name — and that path is unreachable in the shipped product,
-which runs the deterministic fake.
+The first version of this slice claimed no behaviour change, on the evidence that
+all 200 existing planner tests passed against the rewiring. The evidence was true
+and the conclusion was wrong.
+
+Moving the trigger words into the registry changed the order they are matched in
+— the private table listed `gauge-table` before `conditions-summary`, the
+registry lists them the other way round — and `refine` fills the pages that have
+room in the order it receives additions. So "Add the table and summary." against
+a nearly-full plan kept the table before and kept the summary after. Two hundred
+tests passed either way, because not one of them asked for more sections than
+there were slots.
+
+The mistake underneath was conflating two orders. The registry preserved
+`PLAN_SECTION_KINDS` order, which is the _schema's_ order; what mattered was the
+_matcher's_ order, which lived somewhere else entirely and was never written down.
+
+The fix is not to restore the old order, which was itself arbitrary.
+`matchedSections` now sorts by where the reader named each section, so the answer
+is a property of what they wrote — named first, served first, which is also the
+only rule that can be explained to them. Both directions are tested, so an
+implementation that merely picked the other fixed order fails.
+
+What genuinely does not change: every rule the registry states is the rule that
+was already being enforced, and the model prompt is the only other visible
+difference — it now carries each section's purpose beside its name, on a path
+unreachable in the shipped product, which runs the deterministic fake.
 
 ## Where the registry lives
 
