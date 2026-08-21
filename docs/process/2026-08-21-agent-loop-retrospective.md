@@ -86,10 +86,13 @@ understates the role of a failing test and is contradicted by the correction it
 was describing.
 
 The tell is therefore not "tests cannot help here". It is: **when a document
-describes a structure, check the structure exists.** The gap was that nobody
-wrote the discriminating test, and the reason nobody wrote it is that every
-fixture put the absence last — the one arrangement in which the two
-implementations agree.
+describes a structure, check the structure exists.**
+
+_Repository-verifiable:_ every fixture put the absence last — the one
+arrangement in which both implementations agree — which left the
+first-source-absent case undiscriminated. Whether that is _why_ nobody wrote the
+test is not something the repository records, and an earlier draft stated it as
+though it did.
 
 ## 3. Green CI is not evidence
 
