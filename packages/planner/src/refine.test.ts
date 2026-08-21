@@ -6,6 +6,7 @@ import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json
 import {
   FakePlanningProvider,
   isUninterpretable,
+  PLAN_MAX_SECTIONS_PER_PAGE,
   PlanRejected,
   readRefinementIntent,
   runPlanner,
@@ -158,6 +159,58 @@ describe("refining a dashboard the reader can see", () => {
     expect(second.plan.pages.length).toBeGreaterThan(0);
     expect(second.dashboard.pages.length).toBeGreaterThan(0);
   });
+});
+
+describe("when a change asks for more than the plan has room for", () => {
+  /** Five of six slots used, so exactly one addition can land. */
+  const nearlyFull: DashboardPlan = {
+    planVersion: "plan-v1",
+    title: "Conditions",
+    audience: "Operations",
+    framing: "Where things stand.",
+    siteIds: ["11447650"],
+    pages: [
+      {
+        id: "overview",
+        title: "Overview",
+        description: "Everything at once.",
+        sections: [
+          "headline-metrics",
+          "gauge-map",
+          "fastest-rising",
+          "attention",
+          "stage-trends",
+        ],
+      },
+    ],
+  };
+
+  it.each([
+    ["Add the table and summary.", "gauge-table", "conditions-summary"],
+    ["Add the summary and table.", "conditions-summary", "gauge-table"],
+  ])(
+    "honours the section named first in %s",
+    async (instruction, first, second) => {
+      // THE TEST THAT SHOULD HAVE EXISTED BEFORE THE REGISTRY LANDED. Which
+      // request survives here was decided by the iteration order of whatever
+      // list the matcher walked, and moving the trigger words into the registry
+      // silently reversed it: this same instruction kept the table before and
+      // kept the summary after. Two hundred tests passed either way, because
+      // none of them asked for more sections than there were slots.
+      //
+      // Both directions are asserted, so an implementation that simply picked
+      // the other fixed order would fail one of them. The rule under test is
+      // "named first, served first" — a property of what the reader wrote — and
+      // nothing weaker distinguishes it from a list that happens to be sorted
+      // conveniently.
+      const run = await refine(nearlyFull, instruction);
+      const sections = sectionsOf(run.plan);
+
+      expect(sections).toContain(first);
+      expect(sections).not.toContain(second);
+      expect(sections.length).toBe(PLAN_MAX_SECTIONS_PER_PAGE);
+    },
+  );
 });
 
 describe("what refinement does not let through", () => {

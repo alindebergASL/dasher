@@ -40,7 +40,9 @@ export {
   FakePlanningProvider,
   RIVER_FAKE_PHRASING,
   isUninterpretable,
+  matchedSections,
   readRefinementIntent,
+  retainOffered,
   type AvailableSite,
   type FakeDraftText,
   type FakePlannerPhrasing,
@@ -52,6 +54,16 @@ export {
 } from "./provider";
 
 export { compilePlan, type CompileOptions } from "./compile";
+
+export {
+  offeredEntries,
+  PATTERN_ENTRIES,
+  PATTERN_REGISTRY,
+  PATTERN_REGISTRY_VERSION,
+  patternFor,
+  type PatternEntry,
+  type PatternStatus,
+} from "./registry";
 
 export {
   PLANNER_MAX_ATTEMPTS,

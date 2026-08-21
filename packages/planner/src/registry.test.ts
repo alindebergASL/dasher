@@ -1,0 +1,657 @@
+import { describe, expect, it } from "vitest";
+
+import type { Station } from "@dasher/station-domain";
+
+import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
+
+import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
+import { compilePlan } from "./compile";
+import {
+  DashboardPlanSchema,
+  findPlanProblems,
+  PlanRejected,
+  type DashboardPlan,
+  type PlanSectionKind,
+} from "./plan";
+import {
+  matchedSections,
+  readRefinementIntent,
+  retainOffered,
+  type PlanningProvider,
+} from "./provider";
+import { runPlanner } from "./run";
+import { FakePlanningProvider, RIVER_FAKE_PHRASING } from "./provider";
+import {
+  offeredEntries,
+  PATTERN_ENTRIES,
+  PATTERN_REGISTRY,
+  PATTERN_REGISTRY_VERSION,
+  patternFor,
+  PLAN_SECTION_KINDS,
+  type PatternEntry,
+} from "./registry";
+
+/**
+ * The registry checked against reality, not against itself.
+ *
+ * A registry is worth having only if it is the source of the facts it states.
+ * The failure mode it invites is the opposite: a tidy data file that DESCRIBES
+ * the compiler, drifts from it, and is believed anyway — which is what the
+ * private `Set` in `plan.ts` had already done, naming two of its four
+ * exclusions in a comment and omitting the other two for as long as it existed.
+ *
+ * So every claim below is checked by making the product do the thing. What a
+ * section compiles to is checked by compiling it and reading the component that
+ * came out. Whether it needs a station is checked by validating a plan with no
+ * available station and looking for the finding. Whether it may be omitted is
+ * checked by compiling it against data too thin to draw. An entry that lies now
+ * fails here rather than in front of a reader.
+ */
+
+const AS_OF = "2026-07-29T12:02:00.000Z";
+const gauges = parseUsgsInstantaneousValues(fixture);
+const site = "11447650";
+
+function planFor(
+  siteIds: readonly string[],
+  sections: DashboardPlan["pages"][number]["sections"],
+): DashboardPlan {
+  return {
+    planVersion: "plan-v1",
+    title: "Registry Test",
+    audience: "Testers",
+    framing: "A framing sentence.",
+    siteIds: [...siteIds],
+    pages: [
+      {
+        id: "overview",
+        title: "Overview",
+        description: "Everything at once.",
+        sections: [...sections],
+      },
+    ],
+  };
+}
+
+function compileOnly(
+  section: PatternEntry["kind"],
+  stations: readonly Station[] = gauges,
+) {
+  const spec = compilePlan(planFor([site], [section]), stations, {
+    asOf: AS_OF,
+    planner: { id: "registry-test-planner", usesModel: false },
+  });
+  return spec.pages
+    .flatMap((page) => page.components)
+    .find((component) => component.id === section);
+}
+
+/**
+ * The same gauge with a single observation on its primary series.
+ *
+ * One point cannot be a line, which is the only condition under which the
+ * compiler is allowed to drop a planned section. Trimming a real gauge rather
+ * than inventing one keeps every other field the compiler reads exactly as the
+ * fixture has it, so a section that goes missing here went missing for the
+ * stated reason.
+ */
+function withOnePoint(): readonly Station[] {
+  const gauge = gauges.find((candidate) => candidate.siteId === site);
+  if (gauge?.primary === undefined)
+    throw new Error("fixture gauge has no primary series");
+  const first = gauge.primary.observations[0];
+  if (first === undefined) throw new Error("fixture gauge has no observation");
+  return [{ ...gauge, primary: { ...gauge.primary, observations: [first] } }];
+}
+
+describe.each(PATTERN_ENTRIES.map((entry) => [entry.kind, entry] as const))(
+  "the %s entry describes what the product actually does",
+  (kind, entry) => {
+    it("compiles to the component kind it claims", () => {
+      const component = compileOnly(kind);
+      expect(component).toBeDefined();
+      expect(component?.kind).toBe(entry.componentKind);
+    });
+
+    it("agrees with the validator about needing a station", () => {
+      // No available station at all: the plan is refused either way, but only
+      // the sections that describe individual stations should be named as the
+      // reason, because those findings are what a provider gets back to repair.
+      const findings = findPlanProblems(planFor(["nope"], [kind]), []);
+      const needsSites = findings.some(
+        (finding) => finding.code === "section_needs_sites",
+      );
+      expect(needsSites).toBe(entry.requiresSites);
+    });
+
+    it("is present or omitted, on thin data, exactly as it claims", () => {
+      // One observation is enough for every section except a trend line.
+      //
+      // COMPILED BESIDE A COMPANION, not alone. The compiler drops a page whose
+      // components all came to nothing, and a spec with no pages fails the
+      // contract — so a plan of nothing but the omittable section does not
+      // render an empty dashboard, it is refused. That is the right behaviour
+      // and it is checked separately below; here it would just mask the
+      // question, because the section would be "missing" from a spec that never
+      // existed.
+      const companion =
+        kind === "conditions-summary"
+          ? "headline-metrics"
+          : "conditions-summary";
+      const spec = compilePlan(
+        planFor([site], [companion, kind]),
+        withOnePoint(),
+        {
+          asOf: AS_OF,
+          planner: { id: "registry-test-planner", usesModel: false },
+        },
+      );
+      const present = spec.pages
+        .flatMap((page) => page.components)
+        .some((component) => component.id === kind);
+
+      expect(present).toBe(!entry.mayBeOmitted);
+    });
+
+    it("is reachable by every word it lists", () => {
+      for (const word of entry.triggerWords) {
+        const intent = readRefinementIntent(`add the ${word}`, []);
+        expect(intent.add).toContain(kind);
+      }
+    });
+
+    it("carries its own documentation", () => {
+      // Draco 2's rule, and the reason this file has a block per entry at all:
+      // an entry with no stated purpose is a name, and a planner choosing
+      // between eight names is guessing.
+      expect(entry.summary.length).toBeGreaterThan(20);
+      expect(entry.guidance.length).toBeGreaterThan(40);
+      expect(entry.summary).toMatch(/[.!?]$/u);
+      expect(entry.guidance).toMatch(/[.!?]$/u);
+      expect(entry.kind).toBe(kind);
+    });
+  },
+);
+
+/** A fresh-plan request with one real available site. */
+const BASE_REQUEST = {
+  requestText: "Show me river conditions near Sacramento",
+  availableSites: [{ siteId: site, name: "Station", river: "American" }],
+};
+
+describe("the registry governs itself", () => {
+  it("has exactly one entry per kind the schema accepts", () => {
+    expect(PATTERN_ENTRIES.map((entry) => entry.kind)).toEqual([
+      ...PLAN_SECTION_KINDS,
+    ]);
+    expect(Object.keys(PATTERN_REGISTRY).sort()).toEqual(
+      [...PLAN_SECTION_KINDS].sort(),
+    );
+  });
+
+  it("keys every entry by its own kind", () => {
+    // A copy-pasted entry that kept the previous one's `kind` would pass every
+    // per-entry check above, because those look the entry up BY that field.
+    for (const [key, entry] of Object.entries(PATTERN_REGISTRY)) {
+      expect(entry.kind).toBe(key);
+    }
+  });
+
+  it("lets no trigger word of one entry hide inside another's", () => {
+    // Trigger words are matched as substrings, so "map" inside "roadmap" would
+    // route one instruction to two sections and the refinement would do two
+    // things the reader asked once for. This is the invariant that makes
+    // substring matching safe, and nothing enforced it while the table lived
+    // privately in the provider.
+    const owned = PATTERN_ENTRIES.flatMap((entry) =>
+      entry.triggerWords.map((word) => [entry.kind, word] as const),
+    );
+    const collisions = owned.flatMap(([kind, word]) =>
+      owned
+        .filter(
+          ([otherKind, other]) => otherKind !== kind && other.includes(word),
+        )
+        .map(
+          ([otherKind, other]) =>
+            `${kind}:${word} inside ${otherKind}:${other}`,
+        ),
+    );
+    expect(collisions).toEqual([]);
+  });
+
+  it("stops offering a deprecated entry without unplanning it", () => {
+    // The half of the lifecycle rule that has teeth. Deprecation removes a
+    // section from what Dasher PROPOSES; it must not remove it from what Dasher
+    // HONOURS, because plans naming it are already persisted and a reopened
+    // dashboard renders from stored bytes.
+    //
+    // Checked against a hand-built list rather than the shipped registry, which
+    // has nothing deprecated in it: a rule no entry exercises is a rule nothing
+    // proves, and waiting for a real deprecation to find out whether the
+    // filtering works is the wrong order.
+    const retired: PatternEntry = {
+      ...patternFor("change-windows"),
+      status: "deprecated",
+    };
+    const offered = offeredEntries([patternFor("gauge-map"), retired]);
+
+    expect(offered.map((entry) => entry.kind)).toEqual(["gauge-map"]);
+    // ...and the schema still accepts a plan that names it.
+    expect(
+      DashboardPlanSchema.safeParse(planFor([site], ["change-windows"]))
+        .success,
+    ).toBe(true);
+  });
+
+  /** The shipped registry with `gauge-map` retired. */
+  const withoutMaps = (): PatternEntry[] =>
+    PATTERN_ENTRIES.map((entry) =>
+      entry.kind === "gauge-map"
+        ? { ...entry, status: "deprecated" as const }
+        : entry,
+    );
+
+  /** The plan a reader is looking at, containing the retired section. */
+  const looking = () => planFor([site], ["gauge-map", "gauge-table"]);
+
+  async function refined(
+    instruction: string,
+    entries: PatternEntry[],
+  ): Promise<readonly PlanSectionKind[]> {
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      entries,
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: { previousPlan: looking(), instruction },
+    });
+    return DashboardPlanSchema.parse(out).pages.flatMap(
+      (page) => page.sections,
+    );
+  }
+
+  it("will not ADD a deprecated section", async () => {
+    const plan = planFor([site], ["gauge-table"]);
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      withoutMaps(),
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: { previousPlan: plan, instruction: "Add the map." },
+    });
+    expect(
+      DashboardPlanSchema.parse(out).pages.flatMap((page) => page.sections),
+    ).not.toContain("gauge-map");
+  });
+
+  it("still lets a reader REMOVE one", async () => {
+    // The half that was wrong. Lifecycle filtering ran in the matcher, BEFORE
+    // the verb was read, so a retired section could not be removed either: a
+    // reader looking at a dashboard that still contained a retired map, typing
+    // "Drop the map.", was told the instruction was not understood and the map
+    // stayed. Deprecation removes a section from what Dasher PROPOSES, never
+    // from what it HONOURS, and removing something is not proposing it.
+    expect(await refined("Drop the map.", withoutMaps())).not.toContain(
+      "gauge-map",
+    );
+    // And the same instruction against the shipped registry, so the removal
+    // above is not just the section never having been there.
+    expect(await refined("Drop the map.", [...PATTERN_ENTRIES])).not.toContain(
+      "gauge-map",
+    );
+    expect(looking().pages[0]?.sections).toContain("gauge-map");
+  });
+
+  it("does both when one instruction asks for both", async () => {
+    // A mixed instruction has to split along the verb rather than along the
+    // status: remove the retired map, add the offered trends.
+    const plan = planFor([site], ["gauge-map"]);
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      withoutMaps(),
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: {
+        previousPlan: plan,
+        instruction: "Drop the map and add the trends.",
+      },
+    });
+    const sections = DashboardPlanSchema.parse(out).pages.flatMap(
+      (page) => page.sections,
+    );
+
+    expect(sections).not.toContain("gauge-map");
+    expect(sections).toContain("stage-trends");
+  });
+
+  it("synthesises nothing rather than resurrecting a retired section", async () => {
+    // The last-resort branch, with nothing left it is willing to show. It read
+    // `?? "conditions-summary"`, so with every station-free kind deprecated the
+    // literal came back and Dasher put a retired section on the page at the one
+    // moment it is choosing entirely for itself.
+    //
+    // The mutation gate had flagged that exact `?.` as a survivor and it was
+    // dismissed as an equivalent mutant. It was not equivalent; it was the tell.
+    const nothingStandalone = PATTERN_ENTRIES.map((entry) =>
+      entry.requiresSites ? entry : { ...entry, status: "deprecated" as const },
+    );
+    const out = await new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      nothingStandalone,
+    ).plan({
+      ...BASE_REQUEST,
+      refinement: {
+        previousPlan: planFor([site], ["gauge-map"]),
+        instruction: "Drop the map.",
+      },
+    });
+
+    // An empty plan, which the contract refuses — a visible refusal the planner
+    // turns into a revision request, rather than a silently restored kind.
+    expect(DashboardPlanSchema.safeParse(out).success).toBe(false);
+    expect(JSON.stringify(out)).not.toContain("conditions-summary");
+
+    // Guard the guard: the SAME one-section plan and instruction against the
+    // shipped registry keeps the summary, so the refusal above is the
+    // deprecation and not the instruction failing to parse.
+    const shipped = await new FakePlanningProvider().plan({
+      ...BASE_REQUEST,
+      refinement: {
+        previousPlan: planFor([site], ["gauge-map"]),
+        instruction: "Drop the map.",
+      },
+    });
+    expect(
+      DashboardPlanSchema.parse(shipped).pages.flatMap((page) => page.sections),
+    ).toEqual(["conditions-summary"]);
+  });
+
+  it("needs no synthesised page when repairing a schema-valid plan", async () => {
+    // `repair` carried a literal `["conditions-summary", "gauge-table"]` page
+    // for the case where deduplication emptied everything — a second lifecycle
+    // bypass, and dead. Deduplication keeps the FIRST occurrence of each
+    // section and nothing has been seen before the first page's first section,
+    // so at least one page always survives. Removing the branch needs that
+    // stated as a property rather than assumed.
+    //
+    // Two pages naming the same single section is the worst case: page two
+    // empties completely.
+    const duplicated = DashboardPlanSchema.parse({
+      ...planFor([site], ["gauge-map"]),
+      pages: [
+        { id: "one", title: "One", description: "D", sections: ["gauge-map"] },
+        { id: "two", title: "Two", description: "D", sections: ["gauge-map"] },
+      ],
+    });
+
+    const out = await new FakePlanningProvider().plan({
+      ...BASE_REQUEST,
+      revision: {
+        attempt: 1,
+        previousPlan: duplicated,
+        findings: [
+          {
+            code: "duplicate_section" as const,
+            path: "pages[1].sections[0]",
+            message: "x",
+          },
+        ],
+      },
+    });
+    const repaired = DashboardPlanSchema.parse(out);
+
+    expect(repaired.pages.length).toBe(1);
+    expect(repaired.pages[0]?.sections).toEqual(["gauge-map"]);
+  });
+
+  it("matches the reader's words however they capitalised them", async () => {
+    // `matchedSections` is public API and `PatternEntry.triggerWords` documents
+    // matching as case-folded. It folded nowhere: the caller lowercased first,
+    // so `matchedSections("ADD THE MAP", …)` answered nothing while the same
+    // instruction through `readRefinementIntent` worked.
+    expect(
+      matchedSections("ADD THE MAP", PATTERN_ENTRIES).map(([kind]) => kind),
+    ).toEqual(["gauge-map"]);
+    expect(matchedSections("ADD THE MAP", PATTERN_ENTRIES)).toEqual(
+      matchedSections("add the map", PATTERN_ENTRIES),
+    );
+    expect(await refined("DROP THE MAP.", [...PATTERN_ENTRIES])).not.toContain(
+      "gauge-map",
+    );
+  });
+
+  it("offers everything it has today, so the filter is not hiding a mistake", () => {
+    // The counterweight to the test above: `offeredEntries` returning fewer
+    // than everything would also satisfy it. Nothing is deprecated yet, so the
+    // two lists are the same length, and the day that stops being true is the
+    // day this test is edited deliberately.
+    expect(offeredEntries(PATTERN_ENTRIES).length).toBe(PATTERN_ENTRIES.length);
+  });
+
+  it("keeps a deprecated section out of a fresh proposal too", () => {
+    // The gap review found, and the one that mattered most: `matchedSections`
+    // stops a retired section being ADDED by name, but the deterministic
+    // provider — the one this product actually ships — writes its compositions
+    // as literals, so every fresh request would keep proposing a deprecated
+    // section forever. A lifecycle rule that governs the model prompt and the
+    // refinement matcher but not the provider in front of readers governs
+    // nothing.
+    const pages = [
+      {
+        id: "map",
+        sections: ["gauge-map", "gauge-table"] as PlanSectionKind[],
+      },
+      { id: "extra", sections: ["stage-trends"] as PlanSectionKind[] },
+    ];
+    const retired: PatternEntry = {
+      ...patternFor("stage-trends"),
+      status: "deprecated",
+    };
+    const entries = [
+      patternFor("gauge-map"),
+      patternFor("gauge-table"),
+      retired,
+    ];
+
+    const kept = retainOffered(pages, entries);
+
+    // The retired section is gone, its page went with it because nothing else
+    // was on it, and the page that still had something kept everything else.
+    expect(kept.map((page) => page.id)).toEqual(["map"]);
+    expect(kept[0]?.sections).toEqual(["gauge-map", "gauge-table"]);
+
+    // And with nothing deprecated it is the identity, so the filter cannot be
+    // quietly eating sections in the ordinary case.
+    expect(retainOffered(pages, PATTERN_ENTRIES)).toEqual(pages);
+  });
+
+  it("keeps a page that arrived empty, so a bad composition still fails", () => {
+    // The distinction between a page this filter emptied and one that was
+    // authored empty. Dropping both would make a composition written with no
+    // sections — a bug the schema refuses — disappear silently instead.
+    //
+    // Mutation testing found this directly: with every empty page dropped,
+    // replacing a hardcoded composition's sections with `[]` survived, where
+    // the plan schema used to kill it.
+    const authoredEmpty = [
+      { id: "blank", sections: [] as PlanSectionKind[] },
+      { id: "real", sections: ["gauge-map"] as PlanSectionKind[] },
+    ];
+
+    expect(retainOffered(authoredEmpty, PATTERN_ENTRIES)).toEqual(
+      authoredEmpty,
+    );
+
+    // Same reasoning, one step further: a section name the registry has never
+    // heard of is not retired, it is invalid, and letting the filter eat it
+    // would hide the bug from the schema that exists to refuse it.
+    const nonsense = [
+      { id: "p", sections: ["gauge-map", ""] as PlanSectionKind[] },
+    ];
+    expect(retainOffered(nonsense, PATTERN_ENTRIES)).toEqual(nonsense);
+    // ...and a plan built from it is refused, which is the point of keeping it.
+    expect(
+      DashboardPlanSchema.safeParse({
+        ...planFor([site], ["gauge-map"]),
+        pages: authoredEmpty.map((page) => ({
+          ...page,
+          title: "T",
+          description: "D",
+        })),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("wires that filter into the provider readers actually get", async () => {
+    // `retainOffered` being right does not make its call site right — the same
+    // mistake one level down from the one review caught, and the mutant that
+    // proves it: removing the call from the fake's composer left every test
+    // above green, because they all check the function rather than the plan a
+    // reader would receive.
+    const withoutMaps = new FakePlanningProvider(
+      RIVER_FAKE_PHRASING,
+      PATTERN_ENTRIES.map((entry) =>
+        entry.kind === "gauge-map" ? { ...entry, status: "deprecated" } : entry,
+      ),
+    );
+    const request = {
+      requestText: "Show me a map of the gauges near Sacramento",
+      availableSites: [{ siteId: site, name: "Station", river: "American" }],
+    };
+
+    const retired = DashboardPlanSchema.parse(await withoutMaps.plan(request));
+    const sections = retired.pages.flatMap((page) => page.sections);
+    expect(sections).not.toContain("gauge-map");
+    expect(sections.length).toBeGreaterThan(0);
+
+    // Guard the guard: the SAME request against the shipped registry proposes
+    // the map, so the absence above is the deprecation and not a keyword miss.
+    const normal = DashboardPlanSchema.parse(
+      await new FakePlanningProvider().plan(request),
+    );
+    expect(normal.pages.flatMap((page) => page.sections)).toContain(
+      "gauge-map",
+    );
+  });
+
+  it("falls back to something it still offers when a change empties the plan", async () => {
+    // The last-resort branch: a refinement that removes everything leaves one
+    // section behind rather than a plan the contract would refuse. It named
+    // `conditions-summary` as a literal, which would have handed a reader a
+    // retired section at the one moment Dasher is choosing entirely for itself.
+    const entries = PATTERN_ENTRIES.map((entry) =>
+      entry.kind === "conditions-summary"
+        ? { ...entry, status: "deprecated" as const }
+        : entry,
+    );
+    const previousPlan = planFor([site], ["gauge-map"]);
+    const emptied = {
+      previousPlan,
+      instruction: "Drop the map.",
+    };
+
+    const shipped = DashboardPlanSchema.parse(
+      await new FakePlanningProvider().plan({
+        ...BASE_REQUEST,
+        refinement: emptied,
+      }),
+    );
+    expect(shipped.pages.flatMap((page) => page.sections)).toEqual([
+      "conditions-summary",
+    ]);
+
+    const retired = DashboardPlanSchema.parse(
+      await new FakePlanningProvider(RIVER_FAKE_PHRASING, entries).plan({
+        ...BASE_REQUEST,
+        refinement: emptied,
+      }),
+    );
+    expect(retired.pages.flatMap((page) => page.sections)).not.toContain(
+      "conditions-summary",
+    );
+  });
+
+  it("still compiles a deprecated section, because saved plans name it", () => {
+    // The other half of the rule. Deprecation removes a section from what
+    // Dasher PROPOSES, never from what it HONOURS: a dashboard persisted before
+    // the deprecation reopens from stored bytes and has to keep rendering.
+    const retired: PatternEntry = {
+      ...patternFor("stage-trends"),
+      status: "deprecated",
+    };
+    expect(offeredEntries([retired])).toEqual([]);
+
+    const spec = compilePlan(planFor([site], ["stage-trends"]), gauges, {
+      asOf: AS_OF,
+      planner: { id: "registry-test-planner", usesModel: false },
+    });
+    expect(
+      spec.pages
+        .flatMap((page) => page.components)
+        .some((component) => component.id === "stage-trends"),
+    ).toBe(true);
+  });
+
+  it("refuses a plan of nothing but an omittable section", () => {
+    // Found by writing the test above rather than by reading the code. When the
+    // only planned section is one the compiler may drop, the page empties, the
+    // empty page is dropped, and the contract refuses a spec with no pages.
+    //
+    // That is the honest outcome — a dashboard with nothing on it should not
+    // render — and it reaches the planner as a `spec_rejected` finding, which
+    // is a revision request rather than a crash. Pinned here because it is the
+    // one place `mayBeOmitted` has a consequence beyond a missing panel.
+    const omittable = PATTERN_ENTRIES.find((entry) => entry.mayBeOmitted);
+    expect(omittable).toBeDefined();
+
+    expect(() =>
+      compilePlan(planFor([site], [omittable!.kind]), withOnePoint(), {
+        asOf: AS_OF,
+        planner: { id: "registry-test-planner", usesModel: false },
+      }),
+    ).toThrow();
+
+    // Guard the guard: the same plan against the full fixture builds fine, so
+    // the refusal is the thin data and not the single-section shape.
+    expect(() =>
+      compilePlan(planFor([site], [omittable!.kind]), gauges, {
+        asOf: AS_OF,
+        planner: { id: "registry-test-planner", usesModel: false },
+      }),
+    ).not.toThrow();
+  });
+
+  it("turns that refusal into a revision request rather than a crash", async () => {
+    // The claim above was that the refusal reaches the planner as a
+    // `spec_rejected` finding and becomes a revision. Asserting `compilePlan`
+    // throws does not check that: the translation happens in `runPlanner`, and
+    // a change that let the throw escape would keep the earlier test green
+    // while turning a repairable plan into a crashed request.
+    const omittable = PATTERN_ENTRIES.find((entry) => entry.mayBeOmitted);
+    const plan = planFor([site], [omittable!.kind]);
+    const provider: PlanningProvider = {
+      id: "registry-test-provider",
+      usesModel: false,
+      plan: async () => plan,
+    };
+
+    const failure = await runPlanner({
+      requestText: "trends only",
+      gauges: withOnePoint(),
+      provider,
+      asOf: AS_OF,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PlanRejected);
+    expect(
+      (failure as PlanRejected).findings.map((finding) => finding.code),
+    ).toContain("spec_rejected");
+  });
+
+  it("stamps a semantic version on the set, not on each entry", () => {
+    // Monolithic on purpose: entries are read together and a plan is valid
+    // against the set, so a per-entry version would describe something no
+    // consumer holds.
+    expect(PATTERN_REGISTRY_VERSION).toMatch(/^\d+\.\d+\.\d+$/u);
+  });
+});

@@ -7,6 +7,7 @@ import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 import { AnthropicPlanningProvider } from "./anthropic";
+import { patternFor } from "./registry";
 import { PLAN_SECTION_KINDS, type DashboardPlan } from "./plan";
 import { runPlanner } from "./run";
 
@@ -216,7 +217,7 @@ describe("the request the provider actually sends", () => {
     expect(schema).toContain("siteIds");
   });
 
-  it("restates the closed section list in the prompt, since the enum is advisory", async () => {
+  it("gives the model each section's purpose, not just its name", async () => {
     const stub = await serve([messageWith(JSON.stringify(plan))]);
     const provider = new AnthropicPlanningProvider({
       apiKey: "k",
@@ -228,7 +229,14 @@ describe("the request the provider actually sends", () => {
 
     const system = String(stub.requests[0]!.system);
     for (const kind of PLAN_SECTION_KINDS) {
+      // The closed list is restated because the enum is advisory to a model...
       expect(system).toContain(kind);
+      // ...and each name carries the registry's guidance, because eight bare
+      // names give a planner nothing to choose between. This assertion is the
+      // registry's only consumer that a reader would notice: a plan composed
+      // from names alone and a plan composed from purposes are different
+      // dashboards.
+      expect(system).toContain(patternFor(kind).guidance);
     }
   });
 
