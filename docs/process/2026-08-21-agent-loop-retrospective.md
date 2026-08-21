@@ -15,12 +15,17 @@ themselves. What is here is what that body of work revealed about how it was
 made — checked against `docs/process/2026-08-12-working-practice.md`, the
 doctrine this project adopted after the drift analysis.
 
-**Every claim below is one of two kinds, and they are labelled.** A
-_repository-verifiable_ claim comes with an immutable command anyone can re-run.
-A _session observation_ is something the author saw at the time and the
-repository does not independently record. The distinction is not pedantry: the
-central defect this work kept producing was a claim verified adjacent to itself,
-and a retrospective about that failure has no business committing it.
+**Factual claims use immutable repository evidence where it exists** — an
+immutable command anyone can re-run. **Observations not independently
+recoverable from the repository are identified as session observations where
+that distinction matters.**
+
+That is a weaker promise than the first version of this file made, which said
+every claim was labelled as one or the other. It was not, and it could not
+sensibly be: a retrospective is largely interpretation, and labelling every
+sentence would be ceremony rather than rigour. The promise was itself the defect
+this document is about — a claim that outran what was behind it — which is worth
+recording rather than quietly narrowing.
 
 ## State at the time of writing
 
@@ -72,9 +77,19 @@ architecture summary each began with the source that _did_ load, and ended
 "River: unavailable" — the subject they had asked about, moved to the end of
 every line.
 
-No test would have saved this, because the property was unreachable. The tell is
-different: **when a document describes a structure, check the structure exists.**
-The fix was a type, not an assertion.
+**A test would have exposed this immediately** — PR #47 contains exactly such a
+test, and a mutant reproducing the two-list arrangement dies against it. What no
+test could do was make the property PASS: satisfying it required a structural
+correction, a single ordered member type, not a stronger assertion over two
+lists. An earlier draft of this file said "no test would have saved this", which
+understates the role of a failing test and is contradicted by the correction it
+was describing.
+
+The tell is therefore not "tests cannot help here". It is: **when a document
+describes a structure, check the structure exists.** The gap was that nobody
+wrote the discriminating test, and the reason nobody wrote it is that every
+fixture put the absence last — the one arrangement in which the two
+implementations agree.
 
 ## 3. Green CI is not evidence
 
@@ -96,8 +111,11 @@ demonstrable, so there is no point at which reality can correct it."_
 
 The pattern registry's headline claim was **no behaviour change**, offered as
 evidence of a careful consolidation. Under §1 that is the diagnostic, not the
-virtue. And it played out as §1 predicts: reality did not correct it, a reviewer
-did — on the one part that _did_ touch behaviour.
+virtue.
+
+_Repository-verifiable:_ CI accepted the first head; later review produced a
+concrete failing case on the one part that did touch behaviour, and the fix and
+its discriminating test are in the merged history.
 
 _Correction to an earlier draft:_ that draft said the registry's "one behavioural
 consumer is the model prompt". False of what merged. The merged registry supplies
@@ -126,11 +144,12 @@ git diff --name-only \
 Returns nothing. That range starts at the merge of PR #42 and ends at the merged
 head of PR #45, spanning #43, #44 and #45 entire.
 
-The honest partial (#44) is the sharpest case. Its browser proof was reasoned
-away on sound grounds — fixture mode never fails a source, so reaching the
-partial in a browser would need a test seam in shipped code. The reasoning was
-sound and the conclusion still inverted the doctrine: impossibility was treated
-as permission to skip the proof, where §2 says it is the signal to redraw the
+The honest partial (#44) is the sharpest case, and the argument for skipping its
+browser proof is recoverable from the code rather than only from the session:
+fixture mode never fails a source, so reaching a partial dashboard in a browser
+requires either live credentials or a test seam in shipped code. Granting that,
+the conclusion still inverted the doctrine — impossibility was treated as
+permission to skip the proof, where §2 says it is the signal to redraw the
 slice.
 
 ### §3 — the check that cannot be faked
@@ -176,9 +195,12 @@ git diff --numstat \
 ```
 
 Of those, **1,251 are TypeScript and 248 are Markdown**. The house style is
-deliberately comment-heavy and that is not the complaint. The complaint is that
-the shape moved across three correction rounds without anyone deciding it should,
-which is exactly what §7 says to watch.
+deliberately comment-heavy and that is not the complaint.
+
+_Repository-verifiable:_ the diff grew across three correction rounds — the same
+figures recomputed at `16d3f1b`, `233a0e9` and `cf32792` differ — and each round
+was a response to review. §7 names the ratio as the early warning; what the
+repository shows is that it moved.
 
 _An earlier draft published a finer breakdown — comment lines against code lines
 — computed from the first head and never recomputed. Removed rather than
