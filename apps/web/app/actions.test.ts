@@ -26,7 +26,7 @@ import type * as DashboardSchema from "@dasher/dashboard-schema";
  * `undefined` means every domain loads normally, which is the default for every
  * other test in this file.
  */
-let unavailableDomain: "river" | "air" | undefined;
+let unavailableDomains: readonly ("river" | "air")[] = [];
 
 /**
  * Composition refusal has no natural trigger from the fake planner: the two
@@ -64,7 +64,7 @@ vi.mock("./source-runtime", async (importOriginal) => {
   return {
     ...actual,
     loadDomainSnapshot: async (domain: "river" | "air") => {
-      if (domain === unavailableDomain) {
+      if (unavailableDomains.includes(domain)) {
         throw new actual.SourceUnavailableError(domain);
       }
       return actual.loadDomainSnapshot(domain);
@@ -452,34 +452,103 @@ describe("one request, two trusted sources", () => {
   });
 
   it.each([
-    ["river", "air-quality"],
-    ["air-quality", "river"],
+    ["river", "River", "Air quality"],
+    ["air", "Air quality", "River"],
   ])(
-    "refuses the pair and persists nothing when the %s source is unavailable",
-    async (label, other) => {
+    "keeps what loaded and names what did not when %s is unavailable",
+    async (failing, absentLabel, shownLabel) => {
       // One source down, the OTHER genuinely working. An earlier version of
       // this test returned an unparseable body for the healthy host, so both
       // sources failed and it proved nothing about independence — the
-      // assertion that the message names one domain and NOT the other is what
+      // assertion that the result names one domain and NOT the other is what
       // exposed that. Failing the domain at the source-runtime seam keeps the
       // healthy half on its real fixture instead of a hand-rolled stand-in for
       // two upstream protocols.
-      const failing = label === "river" ? "river" : "air";
-      unavailableDomain = failing;
+      //
+      // This used to refuse. Refusing was truthful and too blunt: it threw
+      // away a working dashboard over a fault in a part the reader may not
+      // even have been looking at.
+      unavailableDomains = [failing as "river" | "air"];
       try {
         const result = await planDashboard(COMBINED, { persist: false });
+        const dashboard = result.dashboard;
 
-        expect(result.ok).toBe(false);
-        expect(result.error).toContain("temporarily unavailable");
-        expect(result.error).toContain(label);
-        expect(result.error).not.toContain(other);
-        expect(result.dashboard).toBeUndefined();
-        expect(result.dashboardId).toBeUndefined();
+        expect(result.ok).toBe(true);
+        if (dashboard === undefined) throw new Error("expected a dashboard");
+
+        // What is on the page is the healthy source, and only it. Nothing was
+        // substituted for the source that failed.
+        const prefix = failing === "river" ? "air:" : "river:";
+        expect(dashboard.pages.length).toBeGreaterThan(0);
+        expect(
+          dashboard.pages.every((page) => page.id.startsWith(prefix)),
+        ).toBe(true);
+
+        // THE TITLE DOES NOT OVERCLAIM. Asserted as an exact string, because
+        // `toContain("River")` is equally satisfied by the title a silent
+        // partial would carry.
+        expect(dashboard.title).toBe(
+          `${shownLabel} — ${absentLabel} unavailable`,
+        );
+
+        // And the absence is stated, in the footer that renders on every page
+        // and in the brief.
+        expect(dashboard.notice).toContain(
+          `${absentLabel} could not be loaded when this dashboard was built`,
+        );
+        expect(dashboard.notice).toContain("nothing here was substituted");
+        expect(dashboard.executiveBrief.known.detail).toContain(
+          `${absentLabel}: unavailable when this dashboard was built.`,
+        );
+
+        // The machine-readable half, for a reader who never reaches the
+        // footer. NOT asserted on `status` here: the two committed fixtures
+        // differ in age, so a whole river-and-air dashboard is already
+        // `partial` and the field could not tell the two apart. The
+        // discriminating version of that assertion lives in the composer's own
+        // suite, where the fixtures can be made equally fresh. What separates
+        // them HERE is the page-level observation time, which a partial has to
+        // give up rather than date the page from the source that reported.
+        expect(dashboard.freshness.latestObservationAt).toBeUndefined();
+        expect(dashboard.freshness.label).toContain(
+          `${absentLabel}: unavailable`,
+        );
       } finally {
-        unavailableDomain = undefined;
+        unavailableDomains = [];
       }
     },
   );
+
+  it("still refuses when no source loads, because that is a refusal", async () => {
+    // The floor. An honest partial needs something to be partial ABOUT; a page
+    // of nothing but absences is a refusal wearing a dashboard's clothes.
+    unavailableDomains = ["river", "air"];
+    try {
+      const result = await planDashboard(COMBINED, { persist: false });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("temporarily unavailable");
+      expect(result.error).toContain("river");
+      expect(result.error).toContain("air-quality");
+      expect(result.dashboard).toBeUndefined();
+      expect(result.dashboardId).toBeUndefined();
+    } finally {
+      unavailableDomains = [];
+    }
+  });
+
+  it("names both sources in the title when both load", async () => {
+    // The counterweight to the partial title. Without it, a title rule that
+    // ALWAYS said "unavailable" would pass every assertion above.
+    const result = await planDashboard(COMBINED, { persist: false });
+
+    expect(result.dashboard?.title).toBe(
+      "River and Air quality — combined conditions",
+    );
+    expect(result.dashboard?.notice).not.toContain("substituted");
+    expect(result.dashboard?.freshness.latestObservationAt).toBeDefined();
+    expect(result.dashboard?.freshness.label).not.toContain("unavailable");
+  });
 
   it("says the pair cannot be combined, not that the reader should reword", async () => {
     // Both halves built; the PAIR is what failed. Before this, the contract's

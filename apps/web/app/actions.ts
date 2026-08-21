@@ -16,6 +16,7 @@ import {
   canonicalSpecBytes,
   composeDashboards,
   DashboardCompositionError,
+  type AbsentSource,
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
 import {
@@ -32,6 +33,7 @@ import {
 import {
   loadDomainSnapshot,
   SourceUnavailableError,
+  type DomainSnapshot,
   type SourceMode,
 } from "./source-runtime";
 import { readSessionCredential } from "./session";
@@ -185,96 +187,134 @@ function dataModeOf(snapshot: { readonly mode: SourceMode }): "demo" | "live" {
 }
 
 /**
- * One request, two trusted sources, one dashboard.
+ * One request, several trusted sources, one dashboard.
  *
- * The shape here is the whole point of the slice: both sources are loaded
+ * The shape here is the whole point of the slice: every source is loaded
  * independently and in parallel, each is compiled by ITS OWN parser,
  * computation policy, vocabulary and thresholds through the same planner the
  * single-source path uses, and only the finished specs meet — in
  * `composeDashboards`, which arranges and attributes but never computes. There
- * is no place in this function where one domain's rule could reach the other's
+ * is no place in this function where one domain's rule could reach another's
  * readings, and that is a structural property rather than a convention.
  *
- * IT REFUSES AS A UNIT. If either source is unavailable the whole request is
- * refused and nothing is persisted. A dashboard titled for two subjects that
- * silently contains one is worse than no dashboard: it answers a question the
- * reader did not ask while looking like it answered the one they did.
+ * IT DEGRADES PER SOURCE, AND SAYS SO. This refused as a unit when it shipped:
+ * one source down refused the whole request. That was truthful and it was too
+ * blunt — it threw away a working river dashboard over a fault in the air
+ * source, and it does so more often the more sources a request names.
+ *
+ * What made the unit refusal defensible was the alternative it was compared
+ * against: a dashboard titled for two subjects that silently contains one,
+ * which answers a question the reader did not ask while looking like it
+ * answered the one they did. That is still forbidden. The third option is the
+ * one taken here — show what loaded and NAME what did not — and it holds only
+ * if three things are true together:
+ *
+ * - the title names the subjects that are actually on the page,
+ * - the absence is attributed beside the sources that did load, which is
+ *   `composeDashboards`' job rather than this one's, and
+ * - all of it lives in the spec, so a saved partial still says so when it is
+ *   reopened months later with no memory of the request.
+ *
+ * Nothing loading at all is still a refusal. A page of nothing but absences is
+ * a refusal wearing a dashboard's clothes.
  */
+interface LoadedSource {
+  readonly domain: DomainEntry;
+  readonly snapshot: DomainSnapshot;
+}
+
+/**
+ * Every requested source, attempted in parallel, with an outage recorded
+ * rather than thrown.
+ *
+ * The domain travels WITH its result. The previous version loaded through
+ * `Promise.allSettled` and matched results back to domains by array index,
+ * which is correct and is correct only for as long as nobody filters, sorts or
+ * short-circuits the list in between. Pairing at the point of the attempt makes
+ * the correspondence unbreakable rather than merely currently unbroken.
+ *
+ * Only a `SourceUnavailableError` becomes an absence. Anything else is a real
+ * fault and propagates: a bug in a parser must not be reported to a reader as
+ * an upstream having a bad minute.
+ */
+async function loadSources(
+  domains: readonly DomainEntry[],
+): Promise<readonly (LoadedSource | { readonly domain: DomainEntry })[]> {
+  return Promise.all(
+    domains.map(async (domain) => {
+      try {
+        return { domain, snapshot: await loadDomainSnapshot(domain.key) };
+      } catch (error) {
+        if (error instanceof SourceUnavailableError) return { domain };
+        throw error;
+      }
+    }),
+  );
+}
+
+function didLoad(
+  attempt: LoadedSource | { readonly domain: DomainEntry },
+): attempt is LoadedSource {
+  return "snapshot" in attempt;
+}
+
 async function planCombined(
   requestText: string,
   domains: readonly [DomainEntry, DomainEntry],
 ): Promise<PlanResult> {
-  const loaded = await Promise.allSettled(
-    domains.map(async (domain) => loadDomainSnapshot(domain.key)),
-  );
+  const attempts = await loadSources(domains);
+  const present = attempts.filter(didLoad);
+  const missing = attempts.filter((attempt) => !didLoad(attempt));
 
-  const unavailable: string[] = [];
-  for (const [index, result] of loaded.entries()) {
-    if (result.status !== "rejected") continue;
-    const domain = domains[index];
-    if (
-      result.reason instanceof SourceUnavailableError &&
-      domain !== undefined
-    ) {
-      unavailable.push(domain.label);
-      continue;
-    }
-    // Not a source outage: a real fault, and it must not be reported as one.
-    throw result.reason;
-  }
-  if (unavailable.length > 0) {
+  if (present.length === 0) {
+    // Nothing loaded, so there is no dashboard to be partial about. This is the
+    // same refusal the single-source path gives, for the same reason.
     return {
       ok: false,
-      error: `Live ${unavailable.join(" and ")} data is temporarily unavailable; try again.`,
+      error: `Live ${domains.map((domain) => domain.label).join(" and ")} data is temporarily unavailable; try again.`,
     };
   }
 
-  const snapshots = loaded.map((result) =>
-    result.status === "fulfilled" ? result.value : undefined,
-  );
+  const shown = present.map((entry) => readerLabel(entry.domain));
+  const absent: AbsentSource[] = missing.map((entry) => ({
+    key: entry.domain.key,
+    label: readerLabel(entry.domain),
+  }));
 
   try {
     const built = await Promise.all(
-      domains.map(async (domain, index) => {
-        const snapshot = snapshots[index];
-        if (snapshot === undefined) {
-          throw new Error(`missing snapshot for ${domain.key}`);
-        }
+      present.map(async (entry) => {
         const run = await runPlanner({
           requestText,
-          gauges: snapshot.stations,
-          provider: domain.provider,
-          asOf: snapshot.asOf,
-          thresholds: domain.thresholds,
-          computation: domain.computation,
-          words: domain.words,
-          dataMode: dataModeOf(snapshot),
+          gauges: entry.snapshot.stations,
+          provider: entry.domain.provider,
+          asOf: entry.snapshot.asOf,
+          thresholds: entry.domain.thresholds,
+          computation: entry.domain.computation,
+          words: entry.domain.words,
+          dataMode: dataModeOf(entry.snapshot),
         });
-        return run.dashboard;
+        return {
+          key: entry.domain.key,
+          label: readerLabel(entry.domain),
+          dashboard: run.dashboard,
+        };
       }),
     );
 
-    const [first, second] = domains;
-    const [firstDashboard, secondDashboard] = built;
-    if (firstDashboard === undefined || secondDashboard === undefined) {
-      throw new Error("combined build produced fewer dashboards than sources");
-    }
-    const labels = [readerLabel(first), readerLabel(second)] as const;
-
     return {
       ok: true,
-      dashboard: composeDashboards(
-        [
-          { key: first.key, label: labels[0], dashboard: firstDashboard },
-          { key: second.key, label: labels[1], dashboard: secondDashboard },
-        ],
-        {
-          id: `combined-${first.key}-${second.key}-conditions`,
-          title: `${labels[0]} and ${labels[1]} — combined conditions`,
-          audience: `Readers tracking ${first.label} and ${second.label} together`,
-          notice: `Two sources, built separately and shown side by side. ${labels[0]} and ${labels[1]} each keep their own readings, thresholds, and wording, and no value on this page was calculated using the other subject's rules. Freshness is reported for the pair: this dashboard is only as current as its least current source.`,
-        },
-      ),
+      dashboard: composeDashboards(built, {
+        id: `combined-${domains.map((domain) => domain.key).join("-")}-conditions`,
+        // THE TITLE NAMES WHAT IS ON THE PAGE. A partial that kept the whole
+        // request's title would be the silent partial with extra steps: the
+        // one line a reader reads before anything else would still promise a
+        // subject the page does not contain.
+        title: composedTitle(shown, absent),
+        audience: `Readers tracking ${domains.map((domain) => domain.label).join(" and ")} together`,
+        notice: composedNotice(shown, absent),
+        ...(absent.length === 0 ? {} : { absent }),
+      }),
       attempts: 1,
       noRefinement: "combined-sources",
     };
@@ -287,16 +327,19 @@ async function planCombined(
       };
     }
     if (error instanceof DashboardCompositionError) {
-      // Both halves built; the PAIR is what could not be shown honestly —
-      // colliding namespaces, a mismatched data mode, or two dashboards that
-      // do not fit inside one contract budget. "Try rewording it" was the
+      // Every source that loaded built; the SET is what could not be shown
+      // honestly — colliding namespaces, a mismatched data mode, or dashboards
+      // that do not fit inside one contract budget. "Try rewording it" was the
       // message here before, and it is advice that cannot work: no phrasing
-      // makes two dashboards fit in one. The single-source path is the thing
-      // that will actually succeed, so that is what the reader is offered.
+      // makes several dashboards fit in one. The single-source path is the
+      // thing that will actually succeed, so that is what the reader is
+      // offered.
+      const subjects = domains
+        .map((domain) => domain.label.replaceAll("-", " "))
+        .join(" or ");
       return {
         ok: false,
-        error:
-          "Dasher built both dashboards but could not combine them into one it could stand behind. Ask for river conditions or air quality on its own.",
+        error: `Dasher built what it could for that request but could not combine the results into one dashboard it could stand behind. Ask for ${subjects} on its own.`,
       };
     }
     return {
@@ -304,6 +347,34 @@ async function planCombined(
       error: "Something went wrong building that dashboard. Try rewording it.",
     };
   }
+}
+
+function composedTitle(
+  shown: readonly string[],
+  absent: readonly AbsentSource[],
+): string {
+  const subjects = shown.join(" and ");
+  if (absent.length === 0) return `${subjects} — combined conditions`;
+  return `${subjects} — ${absent.map((entry) => entry.label).join(" and ")} unavailable`;
+}
+
+/**
+ * The footer sentence, which is the one place the absence is stated in full.
+ *
+ * It renders on EVERY page, unlike the executive brief, which appears on the
+ * first one. That is why the complete statement lives here rather than only in
+ * the brief: a reader who lands on page three still gets told.
+ */
+function composedNotice(
+  shown: readonly string[],
+  absent: readonly AbsentSource[],
+): string {
+  const separately = `Each source keeps its own readings, thresholds, and wording, and no value on this page was calculated using another subject's rules.`;
+  if (absent.length === 0) {
+    return `${shown.join(" and ")} were built separately and are shown side by side. ${separately} Freshness is reported for the whole page: this dashboard is only as current as its least current source.`;
+  }
+  const names = absent.map((entry) => entry.label).join(" and ");
+  return `${names} could not be loaded when this dashboard was built, and nothing here was substituted in its place — the sections below are ${shown.join(" and ")} only. ${separately} This dashboard is marked partial rather than current, and stays that way if it is saved and reopened.`;
 }
 
 async function plan(

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeDashboards,
   DashboardCompositionError,
+  type AbsentSource,
   type ComposedSources,
   MAX_COMPOSED_SOURCES,
 } from "./compose";
@@ -836,6 +837,48 @@ describe("the brief carries both sources", () => {
     expect(detail).not.toMatch(/old Air quality:/u);
   });
 
+  it("carries each source's own next action and summary, not just its label", () => {
+    // Mutation testing found this gap: replacing the readers that pull
+    // `nextAction.title`, `nextAction.detail` and `architecture.summary` off
+    // each source with `() => undefined` left every other test passing. The
+    // composed strings became "River: . Air quality: ." — correctly attributed
+    // labels around nothing at all — and only the assertions above ran, which
+    // check that the LABELS appear. Labels appearing is exactly as true of an
+    // empty composition as of a full one.
+    const spec = compose();
+
+    expect(spec.nextAction.title).toContain("Check the highest reading");
+    expect(spec.nextAction.detail).toContain(
+      "Open the station with the largest recent change.",
+    );
+    expect(spec.architecture.summary).toContain("River pipeline.");
+    expect(spec.architecture.summary).toContain("Air pipeline.");
+  });
+
+  it("leaves the last source's words as it wrote them", () => {
+    // The other half of the termination rule, and the half nothing checked:
+    // text is terminated so the NEXT label can follow it, so the last one has
+    // nothing to be separated from. Forcing `isLast` to false survived
+    // mutation because every fixture's last detail already ended in a full
+    // stop. Here the last one does not, and a stray period would be the
+    // composer editing a source's prose.
+    const unpunctuated = "Ozone is climbing at two monitors";
+    const sources = pair({
+      second: {
+        title: "Air",
+        stationId: "2",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+        freshness: FRESH,
+        importantDetail: unpunctuated,
+      },
+    });
+
+    expect(unpunctuated).not.toMatch(/[.!?]$/u);
+    expect(compose(sources).executiveBrief.important.detail).toMatch(
+      /Ozone is climbing at two monitors$/u,
+    );
+  });
+
   it("does not double the punctuation of a detail that already ends", () => {
     // The other direction. The fixture's own details end in a full stop, and
     // "readings.. Air quality:" would be the obvious way to overcorrect.
@@ -947,5 +990,177 @@ describe("the brief carries both sources", () => {
       "calculated",
       "interpreted",
     ]);
+  });
+});
+
+describe("a source that did not load is composed as an absence", () => {
+  const AIR_ABSENT: readonly AbsentSource[] = [
+    { key: "air", label: "Air quality" },
+  ];
+
+  /** One loaded source, one absence, and a title that does not overclaim. */
+  function partial(
+    sources: ComposedSources = [pair()[0]!],
+    absent: readonly AbsentSource[] = AIR_ABSENT,
+  ): DashboardSpec {
+    return composeDashboards(sources, {
+      ...OPTIONS,
+      title: "River — Air quality unavailable",
+      absent,
+    });
+  }
+
+  it("builds the dashboard instead of refusing the whole request", () => {
+    // The behaviour this slice reverses. Refusing here was truthful, but it
+    // discarded a river dashboard the reader could have used over a fault in
+    // the air source.
+    const spec = partial();
+
+    expect(spec.pages.map((page) => page.id)).toEqual(["river:overview"]);
+    expect(() => parseDashboardSpec(spec)).not.toThrow();
+  });
+
+  it("says which source is missing, everywhere the loaded one speaks", () => {
+    // The difference between an honest partial and a silent one. A silent
+    // partial passes every structural assertion above and mentions the absent
+    // source in none of these four places.
+    const spec = partial();
+
+    expect(spec.executiveBrief.known.detail).toMatch(
+      /Air quality: unavailable when this dashboard was built\.$/u,
+    );
+    expect(spec.nextAction.detail).toMatch(
+      /Air quality: unavailable when this dashboard was built\.$/u,
+    );
+    expect(spec.architecture.summary).toMatch(
+      /Air quality: unavailable when this dashboard was built\.$/u,
+    );
+    expect(spec.freshness.label).toBe(
+      "River: Fresh · Air quality: unavailable",
+    );
+  });
+
+  it("ends the loaded source's sentence before the absence starts", () => {
+    // Same boundary defect as the two-loaded-source case, and `toContain`
+    // would be as satisfied by fused prose here as it was there.
+    const spec = partial([
+      {
+        key: "river",
+        label: "River",
+        dashboard: source({
+          title: "River",
+          stationId: "1",
+          generatedAt: "2026-08-19T12:00:00.000Z",
+          freshness: FRESH,
+          importantDetail: "Water-level reading is more than two hours old",
+        }),
+      },
+    ]);
+    const { detail } = spec.executiveBrief.important;
+
+    expect(detail).toMatch(/old\. Air quality: unavailable/u);
+    expect(detail).not.toMatch(/old Air quality:/u);
+  });
+
+  it("keeps the absence a label in headlines, not a sentence", () => {
+    expect(partial().executiveBrief.known.headline).toBe(
+      "River: River known · Air quality: unavailable",
+    );
+  });
+
+  it("invents no page, no evidence and no architecture node for it", () => {
+    // Nothing was fetched, so there is nothing to cite. Manufacturing an
+    // evidence record for an absence would be the one dishonesty worse than
+    // saying nothing: a citation for a thing that was never retrieved.
+    const spec = partial();
+
+    for (const id of [
+      ...spec.pages.map((page) => page.id),
+      ...spec.evidence.map((item) => item.id),
+      ...spec.architecture.nodes.map((node) => node.id),
+    ]) {
+      expect(id.startsWith("air:")).toBe(false);
+    }
+  });
+
+  it("will not call itself fresh while a source is missing", () => {
+    // The machine-readable half of the honest partial, for a reader who never
+    // reaches the notice. The loaded source is FRESH, so a rule that only
+    // quantifies over what loaded reports "fresh" here.
+    expect(partial().freshness.status).toBe("partial");
+
+    // Guard the guard: the same source, composed with a second one that DID
+    // load and is equally fresh, is fresh. So "partial" above is the absence
+    // talking and not a fixture that was never fresh to begin with.
+    expect(compose().freshness.status).toBe("fresh");
+  });
+
+  it("refuses to date the page from the half that reported", () => {
+    // An absence is an unknown observation time, and the existing rule is that
+    // one unknown suppresses the field. Reporting the loaded source's
+    // timestamp under a single page-level heading would present half the
+    // page's currency as the whole page's.
+    // OMITTED, not present-and-undefined. `toBeUndefined` alone passes on a
+    // spec that carries the key with no value, which is a different claim: the
+    // field is optional in the contract and its absence is what says "unknown".
+    expect(partial().freshness).not.toHaveProperty("latestObservationAt");
+    expect(compose().freshness.latestObservationAt).toBe(
+      "2026-08-19T11:00:00.000Z",
+    );
+  });
+
+  it("survives being saved and reopened, because it lives in the spec", () => {
+    // The absence has to be a property of the dashboard, not of the render
+    // that happened to produce it. A reopened dashboard is parsed from stored
+    // bytes with no memory of the request, so anything the renderer knew and
+    // the spec did not is gone by then.
+    const reopened = parseDashboardSpec(
+      JSON.parse(JSON.stringify(partial())) as unknown,
+    );
+
+    expect(reopened.freshness.status).toBe("partial");
+    expect(reopened.executiveBrief.known.detail).toContain(
+      "Air quality: unavailable when this dashboard was built.",
+    );
+    // "when this dashboard was built", not "right now": by the time this is
+    // reopened the source may well be answering again, and the sentence still
+    // has to be true.
+    expect(reopened.executiveBrief.known.detail).not.toContain(
+      "unavailable right now",
+    );
+  });
+
+  it("refuses when nothing loaded, because that is a refusal", () => {
+    expect(() =>
+      composeDashboards([], {
+        ...OPTIONS,
+        absent: [
+          { key: "river", label: "River" },
+          { key: "air", label: "Air quality" },
+        ],
+      }),
+    ).toThrow(/at least one source that loaded/u);
+  });
+
+  it("counts an absence against the source ceiling", () => {
+    // Two loaded and two absent is four sources asked for. A ceiling that
+    // counted only what loaded would let a request past the policy on the days
+    // its sources were down, which is backwards.
+    expect(() =>
+      partial(pair(), [
+        { key: "tide", label: "Tide" },
+        { key: "wind", label: "Wind" },
+      ]),
+    ).toThrow(
+      new RegExp(`limited to ${String(MAX_COMPOSED_SOURCES)} sources`, "u"),
+    );
+  });
+
+  it("refuses an absence that would collide with a loaded namespace", () => {
+    // The key claims no ids today. It is still checked, because otherwise a
+    // duplicate would only become an error on the days both sources are up.
+    expect(() =>
+      partial(pair(), [{ key: "air", label: "Air quality" }]),
+    ).toThrow(/namespace "air"/u);
   });
 });

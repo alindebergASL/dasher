@@ -23,6 +23,8 @@ export { canonicalSpecBytes } from "./canonical";
 export {
   composeDashboards,
   DashboardCompositionError,
+  MAX_COMPOSED_SOURCES,
+  type AbsentSource,
   type ComposedSource,
   type ComposedSources,
   type ComposeOptions,
