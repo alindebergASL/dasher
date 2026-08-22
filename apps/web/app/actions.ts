@@ -17,6 +17,7 @@ import {
   composeDashboards,
   DashboardCompositionError,
   type AbsentSource,
+  type CompositionMember,
   type DashboardSpec,
 } from "@dasher/dashboard-schema";
 import {
@@ -264,7 +265,6 @@ async function planCombined(
 ): Promise<PlanResult> {
   const attempts = await loadSources(domains);
   const present = attempts.filter(didLoad);
-  const missing = attempts.filter((attempt) => !didLoad(attempt));
 
   if (present.length === 0) {
     // Nothing loaded, so there is no dashboard to be partial about. This is the
@@ -276,27 +276,42 @@ async function planCombined(
   }
 
   const shown = present.map((entry) => readerLabel(entry.domain));
-  const absent: AbsentSource[] = missing.map((entry) => ({
-    key: entry.domain.key,
-    label: readerLabel(entry.domain),
-  }));
+  const absent: AbsentSource[] = attempts
+    .filter((attempt) => !didLoad(attempt))
+    .map((entry) => ({
+      key: entry.domain.key,
+      label: readerLabel(entry.domain),
+    }));
 
   try {
-    const built = await Promise.all(
-      present.map(async (entry) => {
+    // IN REQUEST ORDER, absences included. `attempts` preserves the order the
+    // router produced, and mapping it — rather than planning the loaded sources
+    // and appending the rest — is what keeps a missing first subject first on
+    // the page. Partitioning here was the caller's half of a defect the
+    // composer's separate `absent` list made unavoidable: a reader who asked
+    // for river and air quality with the river down got a dashboard whose every
+    // attributed line began "Air quality:".
+    const members: CompositionMember[] = await Promise.all(
+      attempts.map(async (attempt) => {
+        if (!didLoad(attempt)) {
+          return {
+            key: attempt.domain.key,
+            label: readerLabel(attempt.domain),
+          };
+        }
         const run = await runPlanner({
           requestText,
-          gauges: entry.snapshot.stations,
-          provider: entry.domain.provider,
-          asOf: entry.snapshot.asOf,
-          thresholds: entry.domain.thresholds,
-          computation: entry.domain.computation,
-          words: entry.domain.words,
-          dataMode: dataModeOf(entry.snapshot),
+          gauges: attempt.snapshot.stations,
+          provider: attempt.domain.provider,
+          asOf: attempt.snapshot.asOf,
+          thresholds: attempt.domain.thresholds,
+          computation: attempt.domain.computation,
+          words: attempt.domain.words,
+          dataMode: dataModeOf(attempt.snapshot),
         });
         return {
-          key: entry.domain.key,
-          label: readerLabel(entry.domain),
+          key: attempt.domain.key,
+          label: readerLabel(attempt.domain),
           dashboard: run.dashboard,
         };
       }),
@@ -304,7 +319,7 @@ async function planCombined(
 
     return {
       ok: true,
-      dashboard: composeDashboards(built, {
+      dashboard: composeDashboards(members, {
         id: `combined-${domains.map((domain) => domain.key).join("-")}-conditions`,
         // THE TITLE NAMES WHAT IS ON THE PAGE. A partial that kept the whole
         // request's title would be the silent partial with extra steps: the
@@ -313,7 +328,6 @@ async function planCombined(
         title: composedTitle(shown, absent),
         audience: `Readers tracking ${domains.map((domain) => domain.label).join(" and ")} together`,
         notice: composedNotice(shown, absent),
-        ...(absent.length === 0 ? {} : { absent }),
       }),
       attempts: 1,
       noRefinement: "combined-sources",
@@ -349,6 +363,20 @@ async function planCombined(
   }
 }
 
+/**
+ * What is on the page, then what is not.
+ *
+ * DELIBERATELY NOT COMPOSITION ORDER, unlike every attributed line. A title is
+ * one statement rather than a sequence of voices, and its two halves mean
+ * different things: the first says what the reader is getting, the second says
+ * what they are not. Leading with the absence — "River unavailable — Air
+ * quality" — leads with the bad news about a dashboard that does have something
+ * to show. Within each half the request's order is kept.
+ *
+ * Worth stating because it now visibly disagrees with the freshness label,
+ * which reads "River: unavailable · Air quality: …" for the same request. That
+ * is the intended difference, not the ordering defect that produced it.
+ */
 function composedTitle(
   shown: readonly string[],
   absent: readonly AbsentSource[],

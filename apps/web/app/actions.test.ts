@@ -501,6 +501,19 @@ describe("one request, two trusted sources", () => {
           `${absentLabel}: unavailable when this dashboard was built.`,
         );
 
+        // IN THE ORDER THE READER ASKED. This it.each already ran both outage
+        // directions and asserted only that the absent label APPEARED, which
+        // is equally true of an absence appended to the end — and appended is
+        // what shipped. These positional assertions are what separate them;
+        // the composer's own suite pins the complete exact strings.
+        const first = failing === "river" ? absentLabel : shownLabel;
+        const second = failing === "river" ? shownLabel : absentLabel;
+        expect(dashboard.freshness.label.startsWith(`${first}: `)).toBe(true);
+        expect(dashboard.freshness.label).toContain(` · ${second}: `);
+        expect(dashboard.executiveBrief.known.detail).toMatch(
+          new RegExp(`^${first}: `, "u"),
+        );
+
         // The machine-readable half, for a reader who never reaches the
         // footer. NOT asserted on `status` here: the two committed fixtures
         // differ in age, so a whole river-and-air dashboard is already

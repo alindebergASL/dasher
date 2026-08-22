@@ -96,14 +96,40 @@ const air = compilePlan(planFor(airStations), airStations, {
  */
 function partial(): DashboardSpec {
   return composeDashboards(
-    [{ key: "river", label: "River", dashboard: river }],
+    [
+      { key: "river", label: "River", dashboard: river },
+      { key: "air", label: "Air quality" },
+    ],
     {
       id: "combined-river-air-conditions",
       title: "River — Air quality unavailable",
       audience: "Readers tracking river and air-quality together",
       notice:
         "Air quality could not be loaded when this dashboard was built, and nothing here was substituted in its place.",
-      absent: [{ key: "air", label: "Air quality" }],
+    },
+  );
+}
+
+/**
+ * The same two subjects with the ABSENCE FIRST, against real compiled prose.
+ *
+ * The unit suite pins the ordering rule; this pins it where the words are the
+ * product's own. When absences were a separate list, every attributed line here
+ * began "Air quality:" and ended "River: unavailable" — the missing subject,
+ * which is the one the reader asked about, moved to the end of the page.
+ */
+function absentFirst(): DashboardSpec {
+  return composeDashboards(
+    [
+      { key: "river", label: "River" },
+      { key: "air", label: "Air quality", dashboard: air },
+    ],
+    {
+      id: "combined-river-air-conditions",
+      title: "Air quality — River unavailable",
+      audience: "Readers tracking river and air-quality together",
+      notice:
+        "River could not be loaded when this dashboard was built, and nothing here was substituted in its place.",
     },
   );
 }
@@ -387,6 +413,29 @@ describe("a real source composed against a real absence", () => {
       expect(text).toMatch(/[.!?][)\]"']? Air quality:/u);
       expect(text).not.toMatch(/[.!?]{2}/u);
     }
+  });
+
+  it("leaves a missing first subject first, in real compiled prose", () => {
+    const spec = absentFirst();
+
+    for (const text of [
+      spec.executiveBrief.known.detail,
+      spec.nextAction.detail,
+      spec.architecture.summary,
+    ]) {
+      expect(
+        text.startsWith("River: unavailable when this dashboard was built."),
+      ).toBe(true);
+      expect(text).toContain("Air quality:");
+    }
+    expect(spec.freshness.label.startsWith("River: unavailable · ")).toBe(true);
+
+    // The mirror: same two subjects, other one missing, opposite order. A rule
+    // that fixed absences to either end passes one of these and fails the other.
+    expect(partial().executiveBrief.known.detail.startsWith("River: ")).toBe(
+      true,
+    );
+    expect(partial().freshness.label).toMatch(/ · Air quality: unavailable$/u);
   });
 
   it("declines to date the page from the source that did report", () => {
