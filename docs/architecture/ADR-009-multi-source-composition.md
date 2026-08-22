@@ -10,7 +10,8 @@ which was recorded only in `planCombined`'s own comment and never in an ADR.
 Two decisions, taken together because neither is safe without the other.
 
 **1. The number of sources a dashboard may combine is a policy value, not a
-type.** `ComposedSources` is `readonly ComposedSource[]`; the ceiling is
+type.** `ComposedSources` is `readonly CompositionMember[]` — each member a
+loaded source or an absence; the ceiling is
 `MAX_COMPOSED_SOURCES`, currently 3, and every rule inside `composeDashboards`
 — namespacing, attribution, evidence interleaving, statement-type merging,
 freshness — is written for N. Raising the ceiling is an edit to one constant
@@ -52,10 +53,14 @@ which is exactly as true of an appended label as of one in place.
 
 Found in review, on the merged code. The correction is structural rather than a
 patch: `CompositionMember` is one ordered list of present-or-absent voices, and
-position on the page is position in that list. A claim that a data structure
-cannot satisfy is not a claim that better tests would have saved — the
+position on the page is position in that list.
+
+**A discriminating order test would have exposed the contradiction
+immediately.** Making it pass required a structural correction — a single
+ordered member list — not a weaker assertion over two separate lists. The
 documentation and the shape have to agree, and here the documentation described
-a design the shape had never had.
+a design the shape had never had; what was missing was a test that put an
+absence anywhere but last.
 
 **The title is the deliberate exception.** It reads what-is-present, then
 what-is-absent, because it is one statement rather than a sequence of voices and

@@ -504,7 +504,8 @@ describe("one request, two trusted sources", () => {
         // IN THE ORDER THE READER ASKED. This it.each already ran both outage
         // directions and asserted only that the absent label APPEARED, which
         // is equally true of an absence appended to the end — and appended is
-        // what shipped. The exact string is what separates them.
+        // what shipped. These positional assertions are what separate them;
+        // the composer's own suite pins the complete exact strings.
         const first = failing === "river" ? absentLabel : shownLabel;
         const second = failing === "river" ? shownLabel : absentLabel;
         expect(dashboard.freshness.label.startsWith(`${first}: `)).toBe(true);
