@@ -3,9 +3,18 @@
 import type { DashboardComponent } from "@dasher/dashboard-schema";
 import { useState } from "react";
 
-interface ComponentRendererProps {
+interface ComponentPartProps {
   component: DashboardComponent;
   onEvidence: (ids: string[]) => void;
+}
+
+interface ComponentRendererProps extends ComponentPartProps {
+  /**
+   * Columns out of `LAYOUT_COLUMNS`, decided by the packer. The width used to
+   * be hardcoded here, one kind at a time, which is how five of seven ended up
+   * claiming the full row and the sixth was left stranded in a third of one.
+   */
+  span: number;
 }
 
 function SourcesButton({
@@ -48,7 +57,7 @@ function ItemEvidenceButton({
   );
 }
 
-function ComponentHeader({ component, onEvidence }: ComponentRendererProps) {
+function ComponentHeader({ component, onEvidence }: ComponentPartProps) {
   return (
     <div className="component-heading">
       <div>
@@ -182,11 +191,15 @@ function StationMap({
 export function ComponentRenderer({
   component,
   onEvidence,
+  span,
 }: ComponentRendererProps) {
   switch (component.kind) {
     case "summary":
       return (
-        <section className={`panel summary-panel tone-${component.tone}`}>
+        <section
+          className={`panel summary-panel tone-${component.tone}`}
+          data-span={span}
+        >
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="summary-copy">
             {component.claims.map((claim, index) => (
@@ -207,7 +220,7 @@ export function ComponentRenderer({
       );
     case "metric-grid":
       return (
-        <section className="panel span-full">
+        <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="metric-grid">
             {component.metrics.map((metric, index) => (
@@ -230,7 +243,7 @@ export function ComponentRenderer({
       );
     case "station-map":
       return (
-        <section className="panel map-card span-two">
+        <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <StationMap
             label={component.title}
@@ -241,7 +254,7 @@ export function ComponentRenderer({
       );
     case "ranking":
       return (
-        <section className="panel">
+        <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <ol className="ranking-list">
             {component.items.map((item, index) => (
@@ -264,7 +277,7 @@ export function ComponentRenderer({
       );
     case "alert-list":
       return (
-        <section className="panel">
+        <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="alert-list">
             {component.alerts.map((alert) => (
@@ -291,7 +304,7 @@ export function ComponentRenderer({
       );
     case "station-table":
       return (
-        <section className="panel span-full">
+        <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="table-wrap">
             <table>
@@ -347,7 +360,7 @@ export function ComponentRenderer({
       );
     case "trend-list":
       return (
-        <section className="panel span-full">
+        <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
           <div className="trend-grid">
             {component.series.map((series) => (

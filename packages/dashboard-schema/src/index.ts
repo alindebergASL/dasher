@@ -19,6 +19,15 @@ export {
   type Page,
 } from "./schema";
 
+export {
+  COMPONENT_LAYOUT,
+  LAYOUT_COLUMNS,
+  packComponents,
+  type DashboardComponentKind,
+  type LayoutConstraint,
+  type PlacedComponent,
+} from "./layout";
+
 export { canonicalSpecBytes } from "./canonical";
 export {
   composeDashboards,
