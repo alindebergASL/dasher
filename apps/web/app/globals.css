@@ -1181,6 +1181,18 @@ footer {
 }
 
 @media (max-width: 1050px) {
+  /*
+   * The packer works in six columns and decides rows there, so CSS cannot
+   * re-pack them narrower — mapping a half to a third here would leave a row
+   * summing to nine and wrap it ragged. Below this width every component takes
+   * the full row instead: rows stay full by construction, and nothing is asked
+   * to render at a width it cannot hold. Removing this rule was measured at
+   * 761px as a 214.6px map and ranking, a ranking overflowing its own panel by
+   * 40px, and 9px of horizontal scroll on the document.
+   */
+  .dashboard-grid > [data-span] {
+    grid-column: 1 / -1;
+  }
   .executive-brief-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

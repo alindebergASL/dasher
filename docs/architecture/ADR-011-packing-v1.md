@@ -75,9 +75,30 @@ the field to avoid.
   item count a divisor of six, and so keeps spans whole. A kind admitted at one
   would let five share a row and produce a 1.2-column span. A unit test asserts
   it on every entry rather than leaving it to the next person to notice.
-- The 1050px breakpoint no longer overrides the grid. It collapsed three columns
-  to two because two-thirds-plus-one-third was cramped there; six columns hold
-  down to 760px, where everything becomes one column.
+- **Below 1050px every component takes the full row.** The first version of this
+  ADR said six columns "hold down to 760px". That was false, and measuring it
+  disproved it: at 761px the map and the ranking came out 214.6px each, the
+  ranking's content was 40px wider than its own panel, and the document gained
+  9px of horizontal scroll. CSS cannot rescue this by narrowing spans, because
+  the packer fixed the rows at six columns — mapping a half to a third leaves a
+  row summing to nine, which wraps ragged. So the 1050px breakpoint keeps a
+  rule, and that rule gives every component the full row. Measured widths for
+  the map, base against this branch:
+
+  | Viewport | Base `73ff42c` | Without the rule | With the rule |
+  | -------- | -------------- | ---------------- | ------------- |
+  | 761px    | 445.1px        | 214.6px          | 445.1px       |
+  | 800px    | 481px          | 232.5px          | 481px         |
+  | 900px    | 573px          | 278.5px          | 573px         |
+  | 1049px   | 710.1px        | 347.0px          | 710.1px       |
+
+- **Between 1051px and roughly 1260px the map is narrower than it was.** It
+  takes a half of the grid — 348px at 1051px, 444px at 1260px — where the base
+  stylesheet gave it the full width up to 1050px and two of three columns above
+  that. Nothing overflows and every row stays full, but 348px is the width this
+  file calls too small for a third at 1440px, and it is honest to say the same
+  number is tight here. Moving the collapse to ~1260px would fix it and is a
+  breakpoint change, deliberately out of this slice.
 
 ## What this does not do
 

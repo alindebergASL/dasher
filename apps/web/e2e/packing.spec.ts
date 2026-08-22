@@ -19,8 +19,11 @@ interface PanelBox {
   readonly title: string;
   readonly left: number;
   readonly right: number;
+  readonly width: number;
   readonly top: number;
   readonly height: number;
+  /** How far the panel's content exceeds its own box. */
+  readonly overflow: number;
   readonly span: string | null;
 }
 
@@ -35,8 +38,10 @@ async function panelBoxes(page: Page): Promise<PanelBox[]> {
           title: panel.querySelector("h2")?.textContent?.trim() ?? "",
           left: box.left,
           right: box.right,
+          width: box.width,
           top: box.top,
           height: box.height,
+          overflow: panel.scrollWidth - panel.clientWidth,
           span: panel.getAttribute("data-span"),
         };
       }),
@@ -112,15 +117,22 @@ test("a combined dashboard packs into full rows of equal-height peers", async ({
   // shorter, so the ranking hung in mid-air. Peers now share a row's height.
   expectEqualHeights(rows);
 
-  // The specific pairing this dashboard produces: a map and a ranking as equal
-  // halves. Before, they were two thirds and one third of a three-column grid.
-  const shared = rows.find((row) => row.length === 2);
-  expect(shared).toBeDefined();
-  expect(shared!.map((panel) => panel.span)).toEqual(["3", "3"]);
-  expect(
-    Math.abs(shared![0]!.right - shared![0]!.left) -
-      Math.abs(shared![1]!.right - shared![1]!.left),
-  ).toBeLessThanOrEqual(TOLERANCE);
+  // The specific pairing this dashboard produces: the gauge map and the ranking
+  // beside it, as equal halves. Before, they were two thirds and one third of a
+  // three-column grid. Naming both panels matters — taking whichever row
+  // happens to hold two would pass on some other pair — and so does comparing
+  // their widths absolutely: a signed difference is satisfied by a first panel
+  // that is arbitrarily narrower than the second.
+  const map = panels.find((panel) => panel.title === "Gauge map");
+  const ranking = panels.find(
+    (panel) => panel.title === "Fastest-rising gauges",
+  );
+  expect(map).toBeDefined();
+  expect(ranking).toBeDefined();
+  expect(Math.abs(map!.top - ranking!.top)).toBeLessThanOrEqual(TOLERANCE);
+  expect([map!.span, ranking!.span]).toEqual(["3", "3"]);
+  expect(Math.abs(map!.width - ranking!.width)).toBeLessThanOrEqual(TOLERANCE);
+  expect(map!.left).toBeLessThan(ranking!.left);
 });
 
 test("an enrollment dashboard leaves no stranded panel in its last row", async ({
@@ -167,3 +179,52 @@ test("the river dashboard renders in reading order at full width", async ({
     headings.map((heading) => heading.trim()),
   );
 });
+
+/**
+ * Below 1050px the six-column grid gives every component the full row.
+ *
+ * The first version of this slice deleted the base stylesheet's 1050px rule and
+ * claimed six columns held down to 760px. They do not: at 761px the map and the
+ * ranking were 214.6px each, the ranking's content was 40px wider than its own
+ * panel, and the document itself gained 9px of horizontal scroll. These widths
+ * are the ones that failed.
+ */
+for (const width of [761, 800]) {
+  test(`at ${width}px nothing overflows and every row stays full`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto("/");
+    await page
+      .getByLabel("What do you want to monitor?")
+      .fill("Compare river conditions and air quality near Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      "River and Air quality — combined conditions",
+    );
+
+    // The page does not scroll sideways.
+    const document = await page.evaluate(() => ({
+      scrollWidth: window.document.documentElement.scrollWidth,
+      clientWidth: window.document.documentElement.clientWidth,
+    }));
+    expect(document.scrollWidth).toBe(document.clientWidth);
+
+    const panels = await panelBoxes(page);
+    const grid = await gridBox(page);
+
+    // No panel's content is wider than the panel.
+    for (const panel of panels) {
+      expect(panel.overflow).toBeLessThanOrEqual(0);
+    }
+
+    // The map is not squeezed into a half of a narrow grid.
+    const map = panels.find((panel) => panel.title === "Gauge map");
+    expect(map).toBeDefined();
+    expect(Math.abs(map!.width - (grid.right - grid.left))).toBeLessThanOrEqual(
+      TOLERANCE,
+    );
+
+    expectFullRows(rowsOf(panels), grid);
+  });
+}
