@@ -429,10 +429,29 @@ main {
   font-weight: 800;
 }
 .dashboard-grid {
+  /*
+   * Six columns, not three. Three cannot express halves, so a map beside a
+   * ranking had to be 2 + 1. Six divides into halves and thirds, which is the
+   * whole vocabulary packing v1 needs. Widths arrive as `data-span` from the
+   * packer; nothing here decides how wide a kind is.
+   */
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 16px;
-  align-items: start;
+  /*
+   * `start` left a short card floating above a hole beside a taller one. Peers
+   * on the same row now share that row's height.
+   */
+  align-items: stretch;
+}
+.dashboard-grid > [data-span="2"] {
+  grid-column: span 2;
+}
+.dashboard-grid > [data-span="3"] {
+  grid-column: span 3;
+}
+.dashboard-grid > [data-span="6"] {
+  grid-column: span 6;
 }
 .panel {
   /*
@@ -446,12 +465,6 @@ main {
   padding: var(--s5);
   box-shadow: var(--shadow);
 }
-.span-full {
-  grid-column: 1 / -1;
-}
-.span-two {
-  grid-column: span 2;
-}
 .summary-panel {
   /*
    * This panel carries the dashboard's headline claim, so it stays visually
@@ -459,7 +472,6 @@ main {
    * blob rotating behind serif text, which read as marketing rather than as
    * a finding. One flat ink field, and the words do the work.
    */
-  grid-column: 1 / -1;
   overflow: hidden;
   position: relative;
   padding: var(--s6) var(--s6) var(--s5);
@@ -1181,12 +1193,6 @@ footer {
   .executive-brief-item:nth-last-child(-n + 2) {
     border-bottom: 0;
   }
-  .dashboard-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .span-two {
-    grid-column: 1 / -1;
-  }
   .architecture-connections {
     grid-template-columns: 1fr;
   }
@@ -1290,9 +1296,7 @@ footer {
   .dashboard-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .span-full,
-  .span-two,
-  .summary-panel {
+  .dashboard-grid > [data-span] {
     grid-column: auto;
   }
   .panel {

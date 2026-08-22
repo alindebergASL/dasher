@@ -190,9 +190,14 @@ Each of these is in the precedent-library note's stage-1 sketch and is left out
 for the same reason: nothing would read it, and a field nothing reads is an
 unverified claim sitting next to verified ones.
 
-- **Layout constraints** (shape, spans, placement, density). Nothing in the app
-  does layout — the shell renders components in plan order in one column. These
-  arrive with packing v1, which is the next slice and their only consumer.
+- ~~**Layout constraints** (shape, spans, placement, density).~~ Superseded by
+  ADR-011. Two things this entry said were wrong when it was written: the shell
+  did do layout — a three-column grid, with each kind's width hardcoded in
+  renderer JSX — and packing v1 turned out not to be a consumer of a _registry_
+  field at all. The constraints landed in `@dasher/dashboard-schema`, keyed by
+  component kind, because that is what the packer operates on and what the
+  browser bundle already contains. The reasoning in this section still holds;
+  it is the prediction about where the field would land that did not.
 - **Exemplars.** A canonical plan fragment for a single section, in `plan-v1`'s
   vocabulary, _is_ the section's name — sections are a flat enum with no
   parameters. There is nothing for an exemplar to hold until the plan vocabulary
