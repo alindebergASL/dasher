@@ -123,6 +123,69 @@ describe("findSmuggledText: measurements", () => {
   });
 });
 
+describe("findSmuggledText: air-quality measurements", () => {
+  /**
+   * The unit list was river-shaped, and nothing noticed because the only
+   * planner was a fake that never wrote a reading. Every title below reached
+   * the reader untouched before the air units were added; each is a reading
+   * Dasher computes and displays elsewhere, asserted in the one place it has
+   * no evidence record behind it.
+   */
+  it.each([
+    ["a PM2.5 reading", "Sacramento at 21 µg/m³"],
+    // Two codepoints render as the same glyph, and a model writes either.
+    ["the other micro sign", "Sacramento at 21 μg/m³"],
+    ["the ASCII spelling", "Sacramento at 21 ug/m3"],
+    [
+      "a written-out concentration",
+      "Sacramento at 21 micrograms per cubic meter",
+    ],
+    ["parts per billion", "Ozone at 41 ppb"],
+    ["parts per million", "Ozone at 3 ppm"],
+  ])("catches %s", (_label, title) => {
+    const found = findSmuggledText(withText({ title }));
+
+    expect(found.map((item) => item.kind)).toContain("measurement");
+    expect(found[0]?.path).toBe("title");
+  });
+
+  /**
+   * AQI is not merely a reading restated — Dasher never computes one. The air
+   * domain reports PM2.5, so a plan that states an index has invented a number
+   * outright. Its number also comes second, which is why it needs a pattern of
+   * its own rather than a row in the unit list.
+   */
+  it.each([
+    ["an index reading", "Sacramento AQI 84"],
+    ["an index with a preposition", "Sacramento, an AQI of 84"],
+    ["an index written out", "Sacramento at an AQI of eighty-four"],
+  ])("catches %s", (_label, title) => {
+    expect(
+      findSmuggledText(withText({ title })).map((item) => item.kind),
+    ).toContain("measurement");
+  });
+
+  it.each([
+    ["the domain's own subject", "Air quality across Sacramento"],
+    ["the pollutant named without a value", "PM2.5 monitors near Sacramento"],
+    ["a monitor count", "Top 3 monitors by one-hour rise"],
+    ["a window", "PM2.5 movement over the last 24 hours"],
+  ])("does not fire on %s", (_label, framing) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
+  });
+
+  it("reports a concentration once, not twice, when it carries a decimal", () => {
+    // The bare-decimal rule caught "20.6 µg/m³" before the unit existed here.
+    // Now both patterns see it, and the reader should still get one finding.
+    const found = findSmuggledText(
+      withText({ title: "Sacramento at 20.6 µg/m³" }),
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.excerpt).toBe("20.6 µg/m³");
+  });
+});
+
 describe("findSmuggledText: directives", () => {
   it.each([
     "Evacuate now",

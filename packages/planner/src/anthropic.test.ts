@@ -3,7 +3,12 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
+import {
+  parseUsgsInstantaneousValues,
+  RIVER_WORDS,
+} from "@dasher/river-domain";
+
+import { AIR_WORDS } from "@dasher/air-domain";
 
 import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 import { AnthropicPlanningProvider } from "./anthropic";
@@ -113,14 +118,15 @@ async function serve(bodies: readonly string[]) {
 
 describe("AnthropicPlanningProvider construction", () => {
   it.each([
-    ["an empty key", { apiKey: "  ", model: "m" }],
-    ["an empty model", { apiKey: "k", model: " " }],
+    ["an empty key", { words: RIVER_WORDS, apiKey: "  ", model: "m" }],
+    ["an empty model", { words: RIVER_WORDS, apiKey: "k", model: " " }],
   ])("refuses %s rather than failing at the first request", (_label, opts) => {
     expect(() => new AnthropicPlanningProvider(opts)).toThrow();
   });
 
   it("names the model in its id, which reaches the evidence record", () => {
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "some-model-id",
     });
@@ -134,6 +140,7 @@ describe("the request the provider actually sends", () => {
   it("carries the model, the system prompt, and the request text", async () => {
     const stub = await serve([messageWith(JSON.stringify(plan))]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -159,6 +166,7 @@ describe("the request the provider actually sends", () => {
   it("shows the model site labels and never a reading", async () => {
     const stub = await serve([messageWith(JSON.stringify(plan))]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -196,6 +204,7 @@ describe("the request the provider actually sends", () => {
     // because the alternative is discovering it as a 400 on a paid call.
     const stub = await serve([messageWith(JSON.stringify(plan))]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -220,6 +229,7 @@ describe("the request the provider actually sends", () => {
   it("gives the model each section's purpose, not just its name", async () => {
     const stub = await serve([messageWith(JSON.stringify(plan))]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -246,6 +256,7 @@ describe("the request the provider actually sends", () => {
       messageWith(JSON.stringify(plan)),
     ]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -273,6 +284,7 @@ describe("what the provider does with a bad response", () => {
       messageWith(JSON.stringify(plan)),
     ]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -295,6 +307,7 @@ describe("what the provider does with a bad response", () => {
       messageWith(JSON.stringify(plan)),
     ]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -318,6 +331,7 @@ describe("what the dashboard says about a model-composed plan", () => {
   it("attributes the layout to a model, because one made it", async () => {
     const stub = await serve([messageWith(JSON.stringify(plan))]);
     const provider = new AnthropicPlanningProvider({
+      words: RIVER_WORDS,
       apiKey: "k",
       model: "stub-model",
       baseURL: stub.baseURL,
@@ -341,5 +355,104 @@ describe("what the dashboard says about a model-composed plan", () => {
       run.dashboard.evidence.find((item) => item.id === "planner-composition")
         ?.sourceName,
     ).toContain("anthropic:stub-model");
+  });
+});
+
+describe("the system prompt speaks the domain's words", () => {
+  /**
+   * The prompt was written when the river was the only domain with a planner,
+   * and it said so in literals: "river-conditions dashboard", "USGS
+   * observations", "the USGS site IDs". Wiring this provider to the air domain
+   * without changing that would have handed a model air monitors and told it
+   * they were river gauges.
+   *
+   * Asserted on what actually goes over the wire, not on the template. A
+   * template test would pass while the provider sent a prompt built once at
+   * module load from whichever domain constructed first.
+   */
+  async function systemSentFor(words: typeof RIVER_WORDS): Promise<string> {
+    const stub = await serve([messageWith(JSON.stringify(plan))]);
+    const provider = new AnthropicPlanningProvider({
+      words,
+      apiKey: "k",
+      model: "m",
+      baseURL: stub.baseURL,
+    });
+
+    await provider.plan({
+      requestText: "Something to plan",
+      availableSites: [{ siteId: "1", name: "A place", river: "A grouping" }],
+    });
+
+    return String(stub.requests[0]?.["system"] ?? "");
+  }
+
+  it("uses the river's nouns and source for the river", async () => {
+    const system = await systemSentFor(RIVER_WORDS);
+
+    expect(system).toContain("gauge identifiers");
+    expect(system).toContain("available gauges");
+    expect(system).toContain("USGS-format observations");
+    expect(system).toContain("river gauge readings");
+    // Nothing from the domain next door. Note what is NOT asserted: the bare
+    // words "gauge" and "monitor" appear in every domain's prompt regardless,
+    // because `gauge-map` and `gauge-table` are the plan contract's section
+    // names (ADR-007 keeps "gauge" in the plan vocabulary) and `attention`'s
+    // registry guidance says "monitoring". Those are shared vocabulary, not
+    // leakage. What would be leakage is the other domain's SOURCE.
+    expect(system).not.toContain("OpenAQ");
+    expect(system).not.toContain("PM2.5");
+    expect(system.toLowerCase()).not.toContain("air-quality monitor readings");
+  });
+
+  it("uses the air domain's nouns and source for air quality", async () => {
+    const system = await systemSentFor(AIR_WORDS);
+
+    expect(system).toContain("monitor identifiers");
+    expect(system).toContain("available monitors");
+    expect(system).toContain("OpenAQ-format observations");
+    expect(system).toContain("air-quality monitor readings");
+    // And nothing from the river. "gauge" is exempt for the reason above; a
+    // river SOURCE in an air prompt is the thing that would be wrong.
+    expect(system).not.toContain("USGS");
+    expect(system).not.toContain("water-level");
+    expect(system.toLowerCase()).not.toContain("river gauge readings");
+  });
+
+  it("names the measurement units of every domain, not just one", async () => {
+    // The free-text gate is one list for all domains, so the prompt describing
+    // it has to be too. An air unit missing here would be a prompt that quietly
+    // permits what the gate then rejects, spending a revision round every time.
+    const system = await systemSentFor(RIVER_WORDS);
+
+    for (const unit of ["cfs", "µg/m³", "ppb", "%"]) {
+      expect(system).toContain(unit);
+    }
+    expect(system).toContain("air-quality index");
+  });
+
+  it("does not call a station's grouping a river when it is not one", async () => {
+    const stub = await serve([messageWith(JSON.stringify(plan))]);
+    const provider = new AnthropicPlanningProvider({
+      words: AIR_WORDS,
+      apiKey: "k",
+      model: "m",
+      baseURL: stub.baseURL,
+    });
+
+    await provider.plan({
+      requestText: "Air quality near Sacramento",
+      availableSites: [
+        { siteId: "678", name: "Sacramento", river: "Sacramento Valley" },
+      ],
+    });
+
+    const messages = stub.requests[0]?.["messages"] as Array<{
+      content: string;
+    }>;
+    const sent = messages[0]?.content ?? "";
+
+    expect(sent).toContain('"group": "Sacramento Valley"');
+    expect(sent).not.toContain('"river"');
   });
 });

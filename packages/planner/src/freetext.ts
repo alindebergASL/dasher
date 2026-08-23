@@ -57,6 +57,16 @@ export interface SmuggledText {
  *     composition language, and reading it as three inches would spend a
  *     revision round on a sentence that never asserted anything. The written-out
  *     forms are kept, and river stage is in feet regardless.
+ *
+ * THIS LIST WAS RIVER-SHAPED, and the shape was invisible while the only
+ * planner was a fake that never wrote a reading. Measured against the detector
+ * before the air units below were added: "Sacramento at 12 ft" was caught, and
+ * "Sacramento at 21 µg/m³", "21 ppb", "21 ppm", and "21 micrograms per cubic
+ * meter" all passed into the dashboard's title. "20.6 µg/m³" was caught, but by
+ * the bare-decimal rule underneath — the unit contributed nothing, so an
+ * integer reading in air's own unit went through. A gate that holds for one
+ * domain and not another is not a gate; it is a coincidence of which domain
+ * shipped first.
  */
 const MEASUREMENT_UNITS = [
   "ft3/s",
@@ -74,6 +84,21 @@ const MEASUREMENT_UNITS = [
   "metres",
   "mph",
   "kph",
+  // Air quality. `µ` and `μ` are different codepoints that render alike, and a
+  // model will produce either; both are listed rather than normalised, so what
+  // the gate matches is what a reader would see.
+  "µg/m³",
+  "μg/m³",
+  "µg/m3",
+  "μg/m3",
+  "ug/m³",
+  "ug/m3",
+  "micrograms per cubic meter",
+  "micrograms per cubic metre",
+  "microgram per cubic meter",
+  "microgram per cubic metre",
+  "ppm",
+  "ppb",
   "%",
 ] as const;
 
@@ -126,17 +151,43 @@ const NUMBER_WORDS = [
 const NUMBER_WORD = `(?:${NUMBER_WORDS.join("|")})`;
 
 /**
+ * An index whose number comes second: "AQI 84", "an AQI of 84".
+ *
+ * Every other unit is written after its number, so `QUANTITY` below reads
+ * number-then-unit and cannot express this one. It earns a pattern of its own
+ * rather than an exclusion, because AQI is a reading Dasher does not compute at
+ * all — the air domain reports PM2.5 — so a plan stating one has invented it
+ * outright rather than restating something already on the page.
+ */
+const INDEX_QUANTITY = new RegExp(
+  String.raw`\bAQI\b(?:\s+of)?\s?[-–]?\s?(?:(?:${NUMBER})(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)`,
+  "giu",
+);
+
+/**
  * A quantity: digits, then an optional space or hyphen, then a unit. Word units
  * are followed by a boundary, so "3 minutes" cannot read as three metres; `%`
  * needs no boundary because it is not a word character.
  */
-const WORD_UNITS = MEASUREMENT_UNITS.filter((unit) => unit !== "%")
+/**
+ * Units that end in a word character, so a trailing `\b` distinguishes "3
+ * minutes" from three metres. The symbol-terminated units below cannot use one:
+ * `%` and `µg/m³` do not end in a word character, and `\b` after them never
+ * matches.
+ */
+const SYMBOL_TERMINATED = (unit: string): boolean => !/\w$/u.test(unit);
+
+const WORD_UNITS = MEASUREMENT_UNITS.filter((unit) => !SYMBOL_TERMINATED(unit))
+  .map(escape)
+  .join("|");
+
+const SYMBOL_UNITS = MEASUREMENT_UNITS.filter(SYMBOL_TERMINATED)
   .map(escape)
   .join("|");
 
 const QUANTITY = new RegExp(
   String.raw`(?:${NUMBER})(?:\.\d+)?\s?[-–]?\s?(?:${WORD_UNITS})\b` +
-    String.raw`|(?:${NUMBER})(?:\.\d+)?\s?%` +
+    String.raw`|(?:${NUMBER})(?:\.\d+)?\s?(?:${SYMBOL_UNITS})` +
     // Spelled out: one or more number words, hyphen- or space-joined, then a
     // unit. "twenty-eight and a half feet" is not covered and is not pretended
     // to be; what is covered is the plain form a model actually reaches for.
@@ -249,7 +300,10 @@ export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
   const found: SmuggledText[] = [];
 
   for (const { path, text } of planFreeText(plan)) {
-    const quantities = matches(text, QUANTITY);
+    const quantities = [
+      ...matches(text, QUANTITY),
+      ...matches(text, INDEX_QUANTITY),
+    ];
     const decimals = matches(text, DECIMAL).filter(
       // A decimal inside a quantity is the same offence reported twice.
       (decimal) => !quantities.some((quantity) => quantity.includes(decimal)),
