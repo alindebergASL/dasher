@@ -60,9 +60,9 @@ the field to avoid.
 
 ## Consequences
 
-- A ragged trailing row is now impossible by construction, at any width above
-  the 760px breakpoint. Below it the grid is a single column, where the
-  invariant holds trivially.
+- A ragged trailing row is now impossible by construction. Above 1260px the
+  packer's rows are what the reader sees; at or below it every component takes
+  the full row, where the invariant holds trivially.
 - The grid stretches peers to a shared row height, so a short card no longer
   hangs above a hole. The cost is the mirror image: a panel with one item beside
   a tall map now has empty space _inside_ its border rather than beside it. On
@@ -75,30 +75,48 @@ the field to avoid.
   item count a divisor of six, and so keeps spans whole. A kind admitted at one
   would let five share a row and produce a 1.2-column span. A unit test asserts
   it on every entry rather than leaving it to the next person to notice.
-- **Below 1050px every component takes the full row.** The first version of this
-  ADR said six columns "hold down to 760px". That was false, and measuring it
-  disproved it: at 761px the map and the ranking came out 214.6px each, the
-  ranking's content was 40px wider than its own panel, and the document gained
-  9px of horizontal scroll. CSS cannot rescue this by narrowing spans, because
-  the packer fixed the rows at six columns — mapping a half to a third leaves a
-  row summing to nine, which wraps ragged. So the 1050px breakpoint keeps a
-  rule, and that rule gives every component the full row. Measured widths for
-  the map, base against this branch:
+- **At or below 1260px every component takes the full row.** An earlier revision
+  of this branch had no rule here and claimed six columns "hold down to 760px".
+  That was false, and measuring it disproved it: at 761px the map and the ranking
+  came out 214.6px each, the ranking's content was 40px wider than its own panel,
+  and the document gained 9px of horizontal scroll. CSS cannot rescue this by
+  narrowing spans, because the packer fixed the rows at six columns — mapping a
+  half to a third leaves a row summing to nine, which wraps ragged. Panel widths
+  for the map, base against this branch:
 
-  | Viewport | Base `73ff42c` | Without the rule | With the rule |
-  | -------- | -------------- | ---------------- | ------------- |
-  | 761px    | 445.1px        | 214.6px          | 445.1px       |
-  | 800px    | 481px          | 232.5px          | 481px         |
-  | 900px    | 573px          | 278.5px          | 573px         |
-  | 1049px   | 710.1px        | 347.0px          | 710.1px       |
+  | Viewport | Base `73ff42c` | Branch, no rule | Branch, with the rule |
+  | -------- | -------------- | --------------- | --------------------- |
+  | 761px    | 445.1px        | 214.6px         | 445.1px               |
+  | 800px    | 481px          | 232.5px         | 481px                 |
+  | 900px    | 573px          | 278.5px         | 573px                 |
+  | 1049px   | 710.1px        | 347.0px         | 710.1px               |
+  | 1051px   | 711.9px        | 348.0px         | 711.9px               |
+  | 1260px   | 904.2px        | 444.1px         | 904.2px               |
 
-- **Between 1051px and roughly 1260px the map is narrower than it was.** It
-  takes a half of the grid — 348px at 1051px, 444px at 1260px — where the base
-  stylesheet gave it the full width up to 1050px and two of three columns above
-  that. Nothing overflows and every row stays full, but 348px is the width this
-  file calls too small for a third at 1440px, and it is honest to say the same
-  number is tight here. Moving the collapse to ~1260px would fix it and is a
-  breakpoint change, deliberately out of this slice.
+  **1260px is measured, not chosen.** It is the widest viewport at which half the
+  grid is narrower than 445px — the map width the base stylesheet gave at its own
+  narrowest point. Above it a half is 445px or more. A first attempt put the rule
+  at the existing 1050px query, which left the map at 348px between 1051px and
+  1260px; that is the width this repository elsewhere calls too small for a map,
+  and it was the wrong place to stop.
+
+- **The station-detail card no longer intercepts the markers underneath it.**
+  `.map-selection` is absolutely positioned inside the map, so selecting one
+  station laid an opaque card over its neighbours — and those neighbours then
+  could not be clicked at all. This is not a packing bug and not a new one: it
+  reproduced on `73ff42c` at 1051px, where the map was 419px. What packing v1 did
+  was narrow the map, which carried the same failure up to 1261px. Width was the
+  symptom; an interactive overlay sitting on interactive controls was the cause,
+  so the fix is at the cause: the card takes `pointer-events: none` and its one
+  control opts back in. Every marker is now reachable at every width measured,
+  390px to 1920px, including the 390px and 1051px cases that failed on the base.
+
+  What this does not do is stop the card covering a marker. At 1300px it sits
+  over one of the three completely. That marker stays reachable — a click lands
+  on it through the card, and it takes focus and Enter like any other button,
+  both measured — but it is not visible while another station is selected.
+  Moving the card outside the map, or placing it away from the markers, is a
+  design change this slice does not make.
 
 ## What this does not do
 

@@ -699,6 +699,19 @@ td .item-evidence {
   /* Opaque for the same reason as `.map-city`. */
   background: var(--card);
   box-shadow: 0 8px 24px rgba(20, 32, 28, 0.14);
+  /*
+   * The card sits on top of the markers, and a marker under it could not be
+   * clicked: selecting one station made a neighbour unreachable until you
+   * selected something else first. That is true at any width where the card is
+   * wide relative to the map -- it was reachable on the base stylesheet at
+   * 1051px, and packing v1 made the map narrower, so it reached further up.
+   * Width is the symptom; an interactive overlay over interactive markers is
+   * the cause. The card carries one control, and that control opts back in.
+   */
+  pointer-events: none;
+}
+.map-selection .item-evidence {
+  pointer-events: auto;
 }
 .map-selection strong {
   font-size: 11px;
@@ -1180,19 +1193,28 @@ footer {
   font-weight: 700;
 }
 
-@media (max-width: 1050px) {
-  /*
-   * The packer works in six columns and decides rows there, so CSS cannot
-   * re-pack them narrower — mapping a half to a third here would leave a row
-   * summing to nine and wrap it ragged. Below this width every component takes
-   * the full row instead: rows stay full by construction, and nothing is asked
-   * to render at a width it cannot hold. Removing this rule was measured at
-   * 761px as a 214.6px map and ranking, a ranking overflowing its own panel by
-   * 40px, and 9px of horizontal scroll on the document.
-   */
+/*
+ * Where the component grid collapses, which is not where the rest of the page
+ * does -- so it gets its own query rather than riding on the 1050px one.
+ *
+ * The packer works in six columns and decides rows there, so CSS cannot re-pack
+ * them narrower: mapping a half to a third leaves a row summing to nine and
+ * wraps it ragged. Below this width every component takes the full row instead.
+ *
+ * 1260px is measured, not chosen. It is the widest viewport at which half the
+ * grid is narrower than 445px -- the map width the base stylesheet gave at its
+ * own narrowest point, and near the width below which the map stops being a map.
+ * Above it a half is 445px or more. An earlier revision of this branch had no
+ * rule here at all: at 761px that left a 214.6px map and ranking, content 40px
+ * wider than its own panel, and 9px of horizontal scroll on the document.
+ */
+@media (max-width: 1260px) {
   .dashboard-grid > [data-span] {
     grid-column: 1 / -1;
   }
+}
+
+@media (max-width: 1050px) {
   .executive-brief-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

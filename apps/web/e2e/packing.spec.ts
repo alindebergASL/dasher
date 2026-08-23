@@ -228,3 +228,48 @@ for (const width of [761, 800]) {
     expectFullRows(rowsOf(panels), grid);
   });
 }
+
+/**
+ * A selected station must never make its neighbour unreachable.
+ *
+ * `.map-selection` is an absolutely positioned card inside the map, so it sits
+ * on top of the markers. Selecting one station put that card over a neighbour,
+ * and the neighbour then could not be clicked at all. This is a function of how
+ * wide the card is relative to the map, not of the viewport: it reproduced on
+ * the base stylesheet at 1051px, and packing v1 narrowed the map, which carried
+ * the same failure up to 1261px.
+ *
+ * 1200px is the width the failure was reported at. 1300px is the narrowest
+ * viewport on this branch where the map is a half rather than a full row, so it
+ * is the one that still exercises the overlap after the grid's collapse point
+ * moved; a run with `pointer-events` removed from the card fails there and
+ * passes at 1200px.
+ */
+for (const width of [1200, 1300]) {
+  test(`at ${width}px a second marker can be selected after the first`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto("/");
+    await page
+      .getByLabel("What do you want to monitor?")
+      .fill("Compare river conditions and air quality near Sacramento");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      "River and Air quality — combined conditions",
+    );
+
+    const markers = page.locator(".map-marker");
+    await expect(markers.first()).toBeVisible();
+    expect(await markers.count()).toBeGreaterThan(1);
+
+    await markers.nth(0).click();
+    await expect(markers.nth(0)).toHaveAttribute("aria-pressed", "true");
+
+    // An ordinary click, not a forced one: a forced click would pass straight
+    // through the card and prove nothing about what a reader can reach.
+    await markers.nth(1).click();
+    await expect(markers.nth(1)).toHaveAttribute("aria-pressed", "true");
+    await expect(markers.nth(0)).toHaveAttribute("aria-pressed", "false");
+  });
+}
