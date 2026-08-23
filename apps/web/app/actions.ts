@@ -37,6 +37,11 @@ import {
   type DomainSnapshot,
   type SourceMode,
 } from "./source-runtime";
+import {
+  combinedProvenance,
+  provenanceOf,
+  type PlannerProvenance,
+} from "./provenance";
 import { readSessionCredential } from "./session";
 
 import {
@@ -107,6 +112,34 @@ async function persist(
 }
 
 /**
+ * Which planner to name in the persisted record.
+ *
+ * The sensor branches ask the provider that actually ran rather than restating
+ * a literal beside it. The enrollment branch stays a literal on purpose: no
+ * planner runs there at all — a builder reads an official snapshot and compiles
+ * it directly — so naming the snapshot's own source is the true answer rather
+ * than a stand-in for a missing one.
+ */
+function plannerProvenance(decision: DomainDecision): PlannerProvenance {
+  switch (decision.kind) {
+    case "known-source":
+      return {
+        provider: "ucr-institutional-research",
+        model: "deterministic-enrollment-v1",
+      };
+    case "domain":
+      return provenanceOf(decision.domain.provider);
+    case "domains":
+      return combinedProvenance(
+        decision.domains.map((domain) => domain.provider),
+      );
+    default:
+      // A refusal never reaches persistence; the caller returns before here.
+      return { provider: "none", model: "none" };
+  }
+}
+
+/**
  * Plan, then persist — in that order, and in separate failure domains.
  *
  * They were briefly one `try`, which was wrong in a way worth recording: a
@@ -142,12 +175,7 @@ async function planAndPersist(
       requestText,
       planned.dashboard,
       planned.dashboard.title,
-      decision.kind === "known-source"
-        ? {
-            provider: "ucr-institutional-research",
-            model: "deterministic-enrollment-v1",
-          }
-        : { provider: "fake", model: "fake-planner" },
+      plannerProvenance(decision),
     );
     return dashboardId === undefined ? planned : { ...planned, dashboardId };
   } catch {
