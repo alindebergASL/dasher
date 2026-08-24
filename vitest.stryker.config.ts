@@ -22,6 +22,11 @@ import { defineConfig } from "vitest/config";
  * deliberately NOT included — those tests do not touch composition, and
  * `generated-code-gate.test.ts` walks the whole repository on every run.
  *
+ * `layout.ts` is the same shape as `compose.ts`: one pure function with its
+ * own unit suite, named here, and nothing else in the package's suite touches
+ * it. Its callers are React components, which the mutation run does not load;
+ * what the score measures is the packer's arithmetic, not the rendering.
+ *
  * `registry.ts` needs no new entry here: the planner glob already covers
  * `registry.test.ts`. What it does need saying is what its score MEANS. The
  * registry is mostly a static object literal, and `ignoreStatic` in
@@ -38,6 +43,7 @@ export default defineConfig({
       "packages/river-domain/src/**/*.test.ts",
       "packages/station-domain/src/**/*.test.ts",
       "packages/dashboard-schema/src/compose.test.ts",
+      "packages/dashboard-schema/src/layout.test.ts",
     ],
   },
 });

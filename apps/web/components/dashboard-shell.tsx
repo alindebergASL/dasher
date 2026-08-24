@@ -1,6 +1,10 @@
 "use client";
 
-import type { DashboardSpec, Evidence } from "@dasher/dashboard-schema";
+import {
+  packComponents,
+  type DashboardSpec,
+  type Evidence,
+} from "@dasher/dashboard-schema";
 import { useMemo, useState } from "react";
 
 import { ArchitectureDialog } from "./architecture-dialog";
@@ -602,11 +606,16 @@ export function DashboardShell({
               <ExecutiveBrief dashboard={dashboard} onEvidence={openEvidence} />
             ) : null}
             <div className="dashboard-grid">
-              {page.components.map((component) => (
+              {/*
+                Widths come from the packer, not from each component deciding
+                for itself. Order is untouched — the packer only says how wide.
+              */}
+              {packComponents(page.components).map(({ component, span }) => (
                 <ComponentRenderer
                   component={component}
                   key={component.id}
                   onEvidence={openEvidence}
+                  span={span}
                 />
               ))}
             </div>
