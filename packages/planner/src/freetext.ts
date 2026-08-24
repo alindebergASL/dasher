@@ -191,9 +191,43 @@ const INDEX_QUANTITY = new RegExp(
  * says.
  */
 const POLLUTANT = String.raw`(?:PM\s?-?\s?(?:2\.5|10)|ozone|NO2|SO2|CO2?)`;
+/** ":", "=", a copula or preposition, or plain adjacency. */
+const POLLUTANT_LINK = String.raw`(?:\s*[:=]\s*|\s+(?:is|was|are|were|of|at|reads|reading|measured)\s+|\s?[-–]?\s+)`;
+/**
+ * One to three digits, or the same number spelled out.
+ *
+ * The digit bound is doing the same job it does for the index above, and it was
+ * missing here in the revision that introduced this pattern: bare adjacency
+ * plus an unbounded number meant "PM2.5 2024 reporting overview" and "CO2 2024
+ * monitoring plan" were reported as smuggled readings. A concentration in µg/m³
+ * runs to three digits in the readings this product shows; a fourth is a year.
+ *
+ * Spelled numbers are here because the unit patterns already close that route —
+ * "twenty-eight feet" has never passed — and a pollutant with a spelled value
+ * asserts exactly as much as one with digits.
+ */
+const POLLUTANT_VALUE = String.raw`(?:\d{1,3}(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)`;
 const POLLUTANT_READING = new RegExp(
-  String.raw`\b${POLLUTANT}\b(?:\s*[:=]\s*|\s+(?:is|of|at|reads|reading)\s+|\s+)` +
-    String.raw`(?:${NUMBER})(?:\.\d+)?\b`,
+  String.raw`\b${POLLUTANT}\b${POLLUTANT_LINK}${POLLUTANT_VALUE}\b` +
+    String.raw`|\b${POLLUTANT_VALUE}\s?\b${POLLUTANT}\b`,
+  "giu",
+);
+
+/**
+ * A concentration written the way SI actually gets typed.
+ *
+ * The unit list holds literals, and literals cannot express optional whitespace
+ * around a solidus or the middle-dot-and-negative-exponent form. All of these
+ * are the same reading: `21 µg/m³`, `21 µg / m³`, `21 ug/m3`, `21 µg·m⁻³`. Both
+ * micro signs are accepted for the reason the literal list gives, and `u` is
+ * accepted because a plain-ASCII keyboard produces it.
+ */
+const MICRO = String.raw`[µμu]`;
+const PER = String.raw`\s*[/·⋅.]\s*`;
+const CUBIC_METRE = String.raw`m\s*(?:⁻³|³|\^-3|-3|3)`;
+const CONCENTRATION = new RegExp(
+  String.raw`(?:(?:${NUMBER})(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)` +
+    String.raw`\s?[-–]?\s?${MICRO}g${PER}${CUBIC_METRE}`,
   "giu",
 );
 
@@ -414,6 +448,7 @@ export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
       ...matches(text, QUANTITY),
       ...matches(text, INDEX_QUANTITY),
       ...matches(text, POLLUTANT_READING),
+      ...matches(text, CONCENTRATION),
       ...matches(text, DECIMAL).filter((decimal) => !inExcluded(decimal)),
     ]);
 

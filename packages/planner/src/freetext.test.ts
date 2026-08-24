@@ -230,6 +230,58 @@ describe("findSmuggledText: air-quality measurements", () => {
     expect(findSmuggledText(withText({ title }))).toStrictEqual([]);
   });
 
+  /**
+   * A second review pass over the same family. Adding the connector list and a
+   * digit value closed the shapes a model reaches for first; these are the
+   * neighbours of those shapes, and each reached the reader's title on
+   * `40af3bf138925f3933283d7c13cfbe708021c713`.
+   *
+   * "was" was simply missing from a connector list I wrote. The spelled forms
+   * were already closed for units — "twenty-eight feet" has never passed — so
+   * leaving them open for a pollutant was an inconsistency rather than a
+   * judgement.
+   */
+  it.each([
+    ["a spelled value", "Sacramento PM2.5 at twenty-one"],
+    ["a copula the list missed", "Sacramento PM2.5 was 21"],
+    ["the value first", "Sacramento at twenty-one PM2.5"],
+  ])("catches a pollutant reading with %s", (_label, title) => {
+    expect(
+      findSmuggledText(withText({ title })).map((item) => item.kind),
+    ).toContain("measurement");
+  });
+
+  /**
+   * A literal unit list cannot express optional whitespace around a solidus, or
+   * the middle-dot-and-negative-exponent form. All of these are one reading.
+   */
+  it.each([
+    ["spaces around the solidus", "Sacramento at 21 µg / m³"],
+    ["the middle dot and inverse exponent", "Sacramento at 21 µg·m⁻³"],
+    ["no spaces at all", "Sacramento at 21 µg/m³"],
+    ["the ASCII spelling", "Sacramento at 21 ug/m3"],
+    ["a spelled value", "Sacramento at twenty-one µg/m³"],
+  ])("catches a concentration written with %s", (_label, title) => {
+    expect(
+      findSmuggledText(withText({ title })).map((item) => item.kind),
+    ).toContain("measurement");
+  });
+
+  /**
+   * The mirror of the AQI bound, which this pattern was missing. Bare adjacency
+   * plus an unbounded number read a year as a concentration, so three ordinary
+   * titles were reported as smuggled readings. A concentration this product
+   * displays runs to three digits; a fourth is a date.
+   */
+  it.each([
+    ["a year after PM2.5", "PM2.5 2024 reporting overview"],
+    ["a year after PM10", "PM10 2024 monitoring plan"],
+    ["a year after CO2", "CO2 2024 reporting overview"],
+    ["a pollutant named alone", "Ozone monitors near Sacramento"],
+  ])("does not fire on %s", (_label, title) => {
+    expect(findSmuggledText(withText({ title }))).toStrictEqual([]);
+  });
+
   it("still reports a decimal that precedes the excluded name", () => {
     // The mask must cover the exclusion's own characters and no others. An
     // exclusion that appears AFTER a real reading still ends after it, so a
