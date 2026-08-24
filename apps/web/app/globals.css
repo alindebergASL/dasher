@@ -429,10 +429,29 @@ main {
   font-weight: 800;
 }
 .dashboard-grid {
+  /*
+   * Six columns, not three. Three cannot express halves, so a map beside a
+   * ranking had to be 2 + 1. Six divides into halves and thirds, which is the
+   * whole vocabulary packing v1 needs. Widths arrive as `data-span` from the
+   * packer; nothing here decides how wide a kind is.
+   */
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 16px;
-  align-items: start;
+  /*
+   * `start` left a short card floating above a hole beside a taller one. Peers
+   * on the same row now share that row's height.
+   */
+  align-items: stretch;
+}
+.dashboard-grid > [data-span="2"] {
+  grid-column: span 2;
+}
+.dashboard-grid > [data-span="3"] {
+  grid-column: span 3;
+}
+.dashboard-grid > [data-span="6"] {
+  grid-column: span 6;
 }
 .panel {
   /*
@@ -446,12 +465,6 @@ main {
   padding: var(--s5);
   box-shadow: var(--shadow);
 }
-.span-full {
-  grid-column: 1 / -1;
-}
-.span-two {
-  grid-column: span 2;
-}
 .summary-panel {
   /*
    * This panel carries the dashboard's headline claim, so it stays visually
@@ -459,7 +472,6 @@ main {
    * blob rotating behind serif text, which read as marketing rather than as
    * a finding. One flat ink field, and the words do the work.
    */
-  grid-column: 1 / -1;
   overflow: hidden;
   position: relative;
   padding: var(--s6) var(--s6) var(--s5);
@@ -581,6 +593,10 @@ td .item-evidence {
   color: var(--muted);
 }
 
+.map-stack {
+  display: grid;
+  gap: 12px;
+}
 .map-panel {
   height: 325px;
   border-radius: 13px;
@@ -674,17 +690,13 @@ td .item-evidence {
   gap: 4px;
 }
 .map-selection {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 2;
   display: grid;
   gap: 2px;
-  max-width: min(300px, calc(100% - 24px));
+  width: fit-content;
+  max-width: 100%;
   padding: 10px 12px;
   border: 1px solid rgba(23, 108, 82, 0.22);
   border-radius: 10px;
-  /* Opaque for the same reason as `.map-city`. */
   background: var(--card);
   box-shadow: 0 8px 24px rgba(20, 32, 28, 0.14);
 }
@@ -1168,6 +1180,27 @@ footer {
   font-weight: 700;
 }
 
+/*
+ * Where the component grid collapses, which is not where the rest of the page
+ * does -- so it gets its own query rather than riding on the 1050px one.
+ *
+ * The packer works in six columns and decides rows there, so CSS cannot re-pack
+ * them narrower: mapping a half to a third leaves a row summing to nine and
+ * wraps it ragged. Below this width every component takes the full row instead.
+ *
+ * 1260px is measured, not chosen. It is the widest viewport at which half the
+ * grid is narrower than 445px -- the map width the base stylesheet gave at its
+ * own narrowest point, and near the width below which the map stops being a map.
+ * Above it a half is 445px or more. An earlier revision of this branch had no
+ * rule here at all: at 761px that left a 214.6px map and ranking, content 40px
+ * wider than its own panel, and 9px of horizontal scroll on the document.
+ */
+@media (max-width: 1260px) {
+  .dashboard-grid > [data-span] {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 1050px) {
   .executive-brief-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1180,12 +1213,6 @@ footer {
   }
   .executive-brief-item:nth-last-child(-n + 2) {
     border-bottom: 0;
-  }
-  .dashboard-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .span-two {
-    grid-column: 1 / -1;
   }
   .architecture-connections {
     grid-template-columns: 1fr;
@@ -1290,9 +1317,7 @@ footer {
   .dashboard-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .span-full,
-  .span-two,
-  .summary-panel {
+  .dashboard-grid > [data-span] {
     grid-column: auto;
   }
   .panel {
