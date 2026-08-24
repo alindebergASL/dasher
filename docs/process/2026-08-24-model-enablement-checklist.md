@@ -32,12 +32,12 @@ reader can re-run it rather than trust it. See "Re-checking this file" below.
 
 ### Repository gates — these hold today and must keep holding
 
-| #   | Control                                                                                                  | Status             | Where the answer lives                                                                                                                     |
-| --- | -------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | Exactly one module may reach `@dasher/planner/anthropic`, and the app is not it                          | **holds**          | `apps/web/no-model-calls.test.ts`                                                                                                          |
-| 2   | `@anthropic-ai/sdk` is a devDependency of `@dasher/planner`, so a production install cannot call a model | **holds**          | `packages/planner/package.json`                                                                                                            |
-| 3   | No dynamic import anywhere in first-party source                                                         | **holds**          | `generated-code-gate.test.ts`, `forbiddenPatterns`                                                                                         |
-| 4   | Any product planning credential is read only inside a `server-only` module                               | **not applicable** | the product reads none; the eval CLI reads `DASHER_EVAL_API_KEY` or `ANTHROPIC_API_KEY`, then passes the value to the provider constructor |
+| #   | Control                                                                                                                        | Status             | Where the answer lives                                                                                                                     |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | The web app imports neither `@dasher/planner/anthropic` nor `@anthropic-ai/sdk`, and constructs only the deterministic planner | **holds**          | `apps/web/no-model-calls.test.ts`                                                                                                          |
+| 2   | `@anthropic-ai/sdk` is a devDependency of `@dasher/planner`, so a production install cannot call a model                       | **holds**          | `packages/planner/package.json`                                                                                                            |
+| 3   | No dynamic import anywhere in first-party source                                                                               | **holds**          | `generated-code-gate.test.ts`, `forbiddenPatterns`                                                                                         |
+| 4   | Any product planning credential is read only inside a `server-only` module                                                     | **not applicable** | the product reads none; the eval CLI reads `DASHER_EVAL_API_KEY` or `ANTHROPIC_API_KEY`, then passes the value to the provider constructor |
 
 Gate 3 is the one that blocks wiring. Loading the provider lazily — which is
 what keeps gate 2 true — is a dynamic import, and the tripwire has no allowance
@@ -66,9 +66,12 @@ deployment".
   `DashboardPlanSchema`, refinement and revision handling, and a credential
   constructor argument. The eval CLI, not the provider class, reads that
   credential from its environment.
-- Provider output is untrusted end to end. `runPlanner` parses it, checks it
-  against observations that exist, compiles it with trusted code, and validates
-  the result. Nothing on the model path is load-bearing for correctness.
+- Provider output is untrusted end to end. `runPlanner` parses it, checks its
+  selections against observations that exist, compiles numeric values with
+  trusted code, and validates the result. Those boundaries protect structure and
+  computed values. Planner-written free text still reaches the reader verbatim:
+  the bounded detector catches its enumerated measurement and directive shapes,
+  not general semantic claims.
 - The free-text gate covers measurements and directives in the five fields that
   reach a reader verbatim, for both sensor domains as of PR #49.
 - `eval/adversarial.ts` already contacts a real model, with an explicit key and
@@ -82,12 +85,13 @@ ADR-005 gates a live provider **on a deployment**. Everything in rows 5–9 is
 about running a model where a customer's request reaches it and a bill accrues.
 
 That is not the same question as whether a developer can run one locally to find
-out what the envelope does under real output. The second is answerable today,
-and answering it is worth more than another slice of envelope: the pattern
-registry, packing v1, the composition rules and the free-text gate were all
-designed for a generator's output, and none of them has ever seen any. PR #49
-found a hole in the free-text gate wide enough for an air-quality reading, by
-reading rather than by design. There are likely others.
+out what the envelope does under real output. The second is answerable today.
+The recorded 2026-08-15 sweep exercised 135 river-domain generations through
+`AnthropicPlanningProvider`; it produced both free-text and duplicate-section
+findings and supplied regression strings that remain in `freetext.test.ts`.
+What has not been rerun live is the current combination: domain-parameterised
+prompts including air, the pattern registry, packing v1, and the detector after
+PR #49. That combined run is worth more than another unmeasured envelope slice.
 
 Conflating the two questions is what makes "wire up generation" look like it
 needs five unbuilt controls. It needs one decision (gate 3) to be answerable in
