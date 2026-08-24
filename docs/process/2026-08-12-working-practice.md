@@ -87,6 +87,47 @@ The asymmetry that matters is context, not model identity. A fresh reviewer with
 no memory of how the code came to be is a genuinely different observer, even
 running the same weights.
 
+## 4a. A claim about behaviour carries its measurement, in the same commit
+
+Added 2026-08-24, from three review rounds on one PR.
+
+The recurring defect in this repository's agent work has one shape: **a claim
+written beside the code instead of derived from it.** It is not carelessness and
+it does not look like a bug. Four instances, all of which passed every gate:
+
+- ADR-011 stated that a six-column grid "holds down to 760px". Nobody measured.
+  In a browser it produced a 214.6px map, content 40px wider than its own panel,
+  and 9px of horizontal scroll on the document.
+- The persistence call site recorded `{ provider: "fake", model: "fake-planner" }`
+  as a literal. It named no provider in this repository, and could not change
+  when a different one ran.
+- `MEASUREMENT_UNITS` in the free-text gate listed ft, cfs, inches and `%`, with
+  a comment explaining its deliberate exclusions. It had no air-quality units at
+  all, so `21 µg/m³` reached the reader's title. The comment made the list look
+  considered.
+- A test named "does not absorb its neighbours" chose the one arrangement in
+  which no two flexible components were adjacent — so it could not have
+  exhibited absorption, and passed while the property was broken.
+
+Each was found by outside review or by the mutation gate. None by rereading.
+
+**The rule.** Any statement about measurable behaviour — in an ADR, a README, a
+PR body, or a comment — needs its measurement in the same commit: a test that
+fails without it, a recorded number with the viewport or input that produced it,
+or a command a reader can re-run. A statement that cannot carry one is written
+as an open question, not as a fact.
+
+**The corollary for absence.** "There is no X" is the claim most likely to be
+wrong, because the evidence for it is a search that returned nothing, and a
+search returning nothing is indistinguishable from a search that was aimed
+wrong. Record the command. Read its matches. Writing
+`docs/process/2026-08-24-model-enablement-checklist.md`, the first grep reported
+zero matches for five controls and the second reported thirty-six — and all
+thirty-six turned out to be prose. Both were "evidence"; one was checked.
+
+This is deliberately narrower than "write good docs". It applies only to claims
+that could be checked and were not.
+
 ## 5. Keep a register of what is deliberately not verified
 
 Every gate here lists what must pass. None lists what is knowingly accepted as
