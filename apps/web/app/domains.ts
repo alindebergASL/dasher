@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { AIR_COMPUTATION, AIR_WORDS } from "@dasher/air-domain";
 import {
   FakePlanningProvider,

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { DashboardComponent, Evidence } from "@dasher/dashboard-schema";
 
 /**

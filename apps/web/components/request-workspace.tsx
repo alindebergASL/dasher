@@ -1,4 +1,3 @@
-// @ts-nocheck
 "use client";
 
 import type { DashboardSpec } from "@dasher/dashboard-schema";

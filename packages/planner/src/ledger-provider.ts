@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   LEDGER_SECTION_KINDS,
   LedgerPlanSchema,

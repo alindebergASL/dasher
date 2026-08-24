@@ -11,7 +11,6 @@
  * Nothing here opens a network connection, reads a credential, executes
  * generated code, or persists anything.
  */
-// @ts-nocheck
 
 export {
   DashboardPlanSchema,

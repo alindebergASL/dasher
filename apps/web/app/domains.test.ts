@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, it } from "vitest";
 
 import { classifyRequest, DOMAIN_CATALOG } from "./domains";

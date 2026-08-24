@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/ledger/operating-spend.json";
@@ -101,7 +100,11 @@ describe("deriveLedgerFacts", () => {
   it("treats a line with no budget as not compared, not as zero", () => {
     // A missing budget read as zero would put every unbudgeted line over.
     const unbudgeted = withLines(
-      snapshot.lines.map(({ budgetPerPeriod: _budget, ...line }) => line),
+      snapshot.lines.map((line) => {
+        const withoutBudget = { ...line };
+        delete withoutBudget.budgetPerPeriod;
+        return withoutBudget;
+      }),
     );
 
     expect(deriveLedgerFacts(unbudgeted).overBudget).toStrictEqual([]);

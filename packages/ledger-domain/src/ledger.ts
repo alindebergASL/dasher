@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Evidence } from "@dasher/dashboard-schema";
 import { z } from "zod";
 

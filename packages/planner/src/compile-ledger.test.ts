@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { canonicalSpecBytes } from "@dasher/dashboard-schema";
 import { LedgerSnapshotSchema } from "@dasher/ledger-domain";
 import { describe, expect, it } from "vitest";

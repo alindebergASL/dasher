@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   parseDashboardSpec,
   type DashboardComponent,
