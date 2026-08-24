@@ -13,6 +13,7 @@ import {
   runPlanner,
   type DashboardPlan,
   type PlannerRunOptions,
+  type PlanningProvider,
 } from "@dasher/planner";
 import { withDashboardRepository } from "@dasher/control-plane";
 import {
@@ -43,6 +44,7 @@ import {
   type DomainSnapshot,
   type SourceMode,
 } from "./source-runtime";
+import { combinedProvenance, type PlannerProvenance } from "./provenance";
 import { readSessionCredential } from "./session";
 
 import {
@@ -113,26 +115,60 @@ async function persist(
 }
 
 /**
+ * A plan, plus the planners that actually produced it.
+ *
+ * The second half exists because the first is not enough to say who built the
+ * dashboard. A combined request names two domains; a combined dashboard may be
+ * built from one of them, when the other source is down. Deriving the record
+ * from the REQUEST rather than from what ran meant a partial dashboard was
+ * persisted as the work of a planner that never executed — the same defect
+ * `provenanceOf` was introduced to remove, one layer up, and introduced by the
+ * same reflex: reading a fact off the thing beside the work instead of off the
+ * work.
+ *
+ * `planners` is built in the same expression that runs each planner, so it
+ * cannot be a second channel that drifts from the first.
+ */
+interface Planned {
+  readonly result: PlanResult;
+  readonly planners: readonly PlannerIdentity[];
+}
+
+type PlannerIdentity = Pick<PlanningProvider, "id" | "usesModel">;
+
+/** A refusal, or a path where no planner runs. */
+function planless(result: PlanResult): Planned {
+  return { result, planners: [] };
+}
+
+/**
  * Which planner to name in the persisted record.
  *
- * A second known source made the previous two literals wrong rather than merely
- * incomplete: a ledger dashboard would have been recorded as the work of UC
- * Riverside institutional research. Each known source names what actually built
- * it, and the sensor branch names the planner it constructed.
+ * Every branch that runs a planner asks the provider that actually ran rather
+ * than restating a literal beside it. Enrollment is the single exception, and
+ * it is one on purpose: no planner runs there at all — a builder reads an
+ * official snapshot and compiles it directly — so naming the snapshot's own
+ * source is the true answer rather than a stand-in for a missing one.
+ *
+ * The ledger is a known source too, but a PLANNED one, so it answers from the
+ * list like the sensor branches do. Naming it with a literal would have been
+ * correct today and wrong on the day its planner changes — which is the whole
+ * failure this function was rewritten to stop.
  */
-function plannerProvenance(decision: DomainDecision): {
-  provider: string;
-  model: string;
-} {
-  if (decision.kind === "known-source") {
-    return decision.source === "operating-ledger"
-      ? { provider: "deterministic", model: DETERMINISTIC_LEDGER_PLANNER.id }
-      : {
-          provider: "ucr-institutional-research",
-          model: "deterministic-enrollment-v1",
-        };
+function plannerProvenance(
+  decision: DomainDecision,
+  planners: readonly PlannerIdentity[],
+): PlannerProvenance {
+  if (
+    decision.kind === "known-source" &&
+    decision.source !== "operating-ledger"
+  ) {
+    return {
+      provider: "ucr-institutional-research",
+      model: "deterministic-enrollment-v1",
+    };
   }
-  return { provider: "fake", model: "fake-planner" };
+  return combinedProvenance(planners);
 }
 
 /**
@@ -154,32 +190,33 @@ async function planAndPersist(
 ): Promise<PlanResult> {
   const decision = classifyRequest(requestText);
   const planned = await plan(requestText, decision, refine);
+  const result = planned.result;
   if (
     !persistThis ||
-    !planned.ok ||
-    planned.dashboard === undefined ||
+    !result.ok ||
+    result.dashboard === undefined ||
     refine !== undefined
   ) {
     // Only fresh generations get a durable identity in this slice. A refinement
     // produces a new version of a dashboard already on screen, and versioning
     // on refine needs the head revision it saw — the update path, not this one.
-    return planned;
+    return result;
   }
 
   try {
     const dashboardId = await persist(
       requestText,
-      planned.dashboard,
-      planned.dashboard.title,
-      plannerProvenance(decision),
+      result.dashboard,
+      result.dashboard.title,
+      plannerProvenance(decision, planned.planners),
     );
-    return dashboardId === undefined ? planned : { ...planned, dashboardId };
+    return dashboardId === undefined ? result : { ...result, dashboardId };
   } catch {
     // The dashboard stands; only its durability failed. Saying so is the point
     // — a persistence slice whose failure mode is "the page looked fine" would
     // be indistinguishable from not having built it.
     return {
-      ...planned,
+      ...result,
       error: "This dashboard was built but could not be saved.",
     };
   }
@@ -286,17 +323,17 @@ function didLoad(
 async function planCombined(
   requestText: string,
   domains: readonly [DomainEntry, DomainEntry],
-): Promise<PlanResult> {
+): Promise<Planned> {
   const attempts = await loadSources(domains);
   const present = attempts.filter(didLoad);
 
   if (present.length === 0) {
     // Nothing loaded, so there is no dashboard to be partial about. This is the
     // same refusal the single-source path gives, for the same reason.
-    return {
+    return planless({
       ok: false,
       error: `Live ${domains.map((domain) => domain.label).join(" and ")} data is temporarily unavailable; try again.`,
-    };
+    });
   }
 
   const shown = present.map((entry) => readerLabel(entry.domain));
@@ -315,12 +352,19 @@ async function planCombined(
     // composer's separate `absent` list made unavoidable: a reader who asked
     // for river and air quality with the river down got a dashboard whose every
     // attributed line began "Air quality:".
-    const members: CompositionMember[] = await Promise.all(
+    // Each entry carries the member AND the planner that produced it, from the
+    // same expression, so "who planned this" cannot drift from "what is on the
+    // page". An absent source contributes a member and no planner, which is
+    // exactly the distinction the persisted record needs.
+    const built = await Promise.all(
       attempts.map(async (attempt) => {
         if (!didLoad(attempt)) {
           return {
-            key: attempt.domain.key,
-            label: readerLabel(attempt.domain),
+            member: {
+              key: attempt.domain.key,
+              label: readerLabel(attempt.domain),
+            } satisfies CompositionMember,
+            planner: undefined,
           };
         }
         const run = await runPlanner({
@@ -334,35 +378,45 @@ async function planCombined(
           dataMode: dataModeOf(attempt.snapshot),
         });
         return {
-          key: attempt.domain.key,
-          label: readerLabel(attempt.domain),
-          dashboard: run.dashboard,
+          member: {
+            key: attempt.domain.key,
+            label: readerLabel(attempt.domain),
+            dashboard: run.dashboard,
+          } satisfies CompositionMember,
+          planner: attempt.domain.provider,
         };
       }),
     );
+    const members: CompositionMember[] = built.map((one) => one.member);
+    const planners = built
+      .map((one) => one.planner)
+      .filter((planner) => planner !== undefined);
 
     return {
-      ok: true,
-      dashboard: composeDashboards(members, {
-        id: `combined-${domains.map((domain) => domain.key).join("-")}-conditions`,
-        // THE TITLE NAMES WHAT IS ON THE PAGE. A partial that kept the whole
-        // request's title would be the silent partial with extra steps: the
-        // one line a reader reads before anything else would still promise a
-        // subject the page does not contain.
-        title: composedTitle(shown, absent),
-        audience: `Readers tracking ${domains.map((domain) => domain.label).join(" and ")} together`,
-        notice: composedNotice(shown, absent),
-      }),
-      attempts: 1,
-      noRefinement: "combined-sources",
+      planners,
+      result: {
+        ok: true,
+        dashboard: composeDashboards(members, {
+          id: `combined-${domains.map((domain) => domain.key).join("-")}-conditions`,
+          // THE TITLE NAMES WHAT IS ON THE PAGE. A partial that kept the whole
+          // request's title would be the silent partial with extra steps: the
+          // one line a reader reads before anything else would still promise a
+          // subject the page does not contain.
+          title: composedTitle(shown, absent),
+          audience: `Readers tracking ${domains.map((domain) => domain.label).join(" and ")} together`,
+          notice: composedNotice(shown, absent),
+        }),
+        attempts: 1,
+        noRefinement: "combined-sources",
+      },
     };
   } catch (error) {
     if (error instanceof PlanRejected) {
-      return {
+      return planless({
         ok: false,
         error:
           `Dasher could not build a dashboard it could stand behind for that request. ${error.findings[0]?.message ?? ""}`.trim(),
-      };
+      });
     }
     if (error instanceof DashboardCompositionError) {
       // Every source that loaded built; the SET is what could not be shown
@@ -375,15 +429,15 @@ async function planCombined(
       const subjects = domains
         .map((domain) => domain.label.replaceAll("-", " "))
         .join(" or ");
-      return {
+      return planless({
         ok: false,
         error: `Dasher built what it could for that request but could not combine the results into one dashboard it could stand behind. Ask for ${subjects} on its own.`,
-      };
+      });
     }
-    return {
+    return planless({
       ok: false,
       error: "Something went wrong building that dashboard. Try rewording it.",
-    };
+    });
   }
 }
 
@@ -433,40 +487,40 @@ async function plan(
   requestText: string,
   decision: DomainDecision,
   refine?: PlannerRunOptions["refine"],
-): Promise<PlanResult> {
+): Promise<Planned> {
   // Deterministic routing, closed on failure. Nothing falls back to the river,
   // and a known official snapshot is not forced through the sensor compiler.
   if (decision.kind === "unsupported") {
-    return {
+    return planless({
       ok: false,
       error:
         "Dasher currently builds dashboards for river conditions, air quality, and UC Riverside enrollment. Try naming one of those subjects.",
-    };
+    });
   }
   if (decision.kind === "ambiguous") {
-    return {
+    return planless({
       ok: false,
       error:
         "That asks about more than one supported subject. Ask for one dashboard at a time, and you can build the other one next.",
-    };
+    });
   }
   if (decision.kind === "domains") {
     if (refine !== undefined) {
-      return {
+      return planless({
         ok: false,
         error:
           "A combined dashboard cannot be refined yet. Build a new one instead.",
-      };
+      });
     }
     return planCombined(requestText, decision.domains);
   }
   if (decision.kind === "known-source") {
     if (refine !== undefined) {
-      return {
+      return planless({
         ok: false,
         error:
           "This snapshot cannot be refined yet. Build a new dashboard instead.",
-      };
+      });
     }
     if (decision.source === "operating-ledger") {
       // The second PLANNED source, and the first that is not a station. It
@@ -477,42 +531,51 @@ async function plan(
       try {
         const snapshot = LedgerSnapshotSchema.parse(ledgerSnapshot);
         return {
-          ok: true,
-          dashboard: compileLedgerPlan(
-            planLedgerDashboard(
-              requestText,
-              snapshot.lines.map((line) => line.id),
+          result: {
+            ok: true,
+            dashboard: compileLedgerPlan(
+              planLedgerDashboard(
+                requestText,
+                snapshot.lines.map((line) => line.id),
+              ),
+              snapshot,
+              {
+                asOf: new Date().toISOString(),
+                planner: DETERMINISTIC_LEDGER_PLANNER,
+              },
             ),
-            snapshot,
-            {
-              asOf: new Date().toISOString(),
-              planner: DETERMINISTIC_LEDGER_PLANNER,
-            },
-          ),
-          attempts: 1,
-          noRefinement: "official-snapshot",
+            attempts: 1,
+            noRefinement: "official-snapshot",
+          },
+          // Named from the planner that just ran, not from a literal beside
+          // it. The compile call above is the same expression, so the two
+          // cannot drift.
+          planners: [DETERMINISTIC_LEDGER_PLANNER],
         };
       } catch {
-        return {
+        return planless({
           ok: false,
           error: "The operating ledger snapshot could not be verified.",
-        };
+        });
       }
     }
     try {
       const snapshot = EnrollmentSnapshotSchema.parse(ucrEnrollmentSnapshot);
-      return {
+      // No planner runs here at all, which is why `planners` is empty and why
+      // `plannerProvenance` answers this case from the snapshot rather than
+      // from the list.
+      return planless({
         ok: true,
         dashboard: buildUcrEnrollmentDashboard(snapshot),
         attempts: 1,
         noRefinement: "official-snapshot",
-      };
+      });
     } catch {
-      return {
+      return planless({
         ok: false,
         error:
           "The official UC Riverside enrollment snapshot could not be verified.",
-      };
+      });
     }
   }
   const domain: DomainEntry = decision.domain;
@@ -530,10 +593,10 @@ async function plan(
       // fixture when the live source is down — would present yesterday's
       // sample as current conditions, which is the one failure this product
       // cannot have.
-      return {
+      return planless({
         ok: false,
         error: `Live ${domain.label} data is temporarily unavailable; try again.`,
-      };
+      });
     }
     throw error;
   }
@@ -555,43 +618,46 @@ async function plan(
       refine !== undefined &&
       JSON.stringify(run.plan) === JSON.stringify(refine.previousPlan);
     return {
-      ok: true,
-      dashboard: run.dashboard,
-      plan: run.plan,
-      attempts: run.attempts.length,
-      // An identical plan has two very different causes. Reporting both as
-      // "not understood" tells a reader their working request failed — the
-      // shipped "Add the history chart" chip does exactly that on the default
-      // dashboard, which already has one.
-      ...(same
-        ? {
-            refinement: isUninterpretable(
-              readRefinementIntent(
-                refine.instruction,
-                gauges.map((gauge) => ({
-                  siteId: gauge.siteId,
-                  name: gauge.name,
-                  river: gauge.group,
-                })),
-              ),
-            )
-              ? ("not-understood" as const)
-              : ("already-satisfied" as const),
-          }
-        : {}),
+      planners: [domain.provider],
+      result: {
+        ok: true,
+        dashboard: run.dashboard,
+        plan: run.plan,
+        attempts: run.attempts.length,
+        // An identical plan has two very different causes. Reporting both as
+        // "not understood" tells a reader their working request failed — the
+        // shipped "Add the history chart" chip does exactly that on the default
+        // dashboard, which already has one.
+        ...(same
+          ? {
+              refinement: isUninterpretable(
+                readRefinementIntent(
+                  refine.instruction,
+                  gauges.map((gauge) => ({
+                    siteId: gauge.siteId,
+                    name: gauge.name,
+                    river: gauge.group,
+                  })),
+                ),
+              )
+                ? ("not-understood" as const)
+                : ("already-satisfied" as const),
+            }
+          : {}),
+      },
     };
   } catch (error) {
     if (error instanceof PlanRejected) {
-      return {
+      return planless({
         ok: false,
         error:
           `Dasher could not build a dashboard it could stand behind for that request. ${error.findings[0]?.message ?? ""}`.trim(),
-      };
+      });
     }
-    return {
+    return planless({
       ok: false,
       error: "Something went wrong building that dashboard. Try rewording it.",
-    };
+    });
   }
 }
 
