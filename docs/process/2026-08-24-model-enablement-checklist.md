@@ -5,9 +5,9 @@ Occasioned by: PR #49, and the two hours before it
 
 ## Why this file exists
 
-Scoping "replace the keyword planner with real generation" ran into three
-repository gates and one ADR sequencing rule. Each is sound. None of them is
-visible from any of the others:
+Scoping "replace the keyword planner with real generation" ran into six
+constraints: three repository gates, two ADRs, and a line in the README. Each is
+sound. None of them is visible from any of the others:
 
 | Where the constraint lives                                   | What it says                                  |
 | ------------------------------------------------------------ | --------------------------------------------- |
