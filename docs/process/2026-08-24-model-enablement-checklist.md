@@ -32,12 +32,12 @@ reader can re-run it rather than trust it. See "Re-checking this file" below.
 
 ### Repository gates — these hold today and must keep holding
 
-| #   | Control                                                                                                  | Status             | Where the answer lives                               |
-| --- | -------------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------- |
-| 1   | Exactly one module may reach `@dasher/planner/anthropic`, and the app is not it                          | **holds**          | `apps/web/no-model-calls.test.ts`                    |
-| 2   | `@anthropic-ai/sdk` is a devDependency of `@dasher/planner`, so a production install cannot call a model | **holds**          | `packages/planner/package.json`                      |
-| 3   | No dynamic import anywhere in first-party source                                                         | **holds**          | `generated-code-gate.test.ts`, `forbiddenPatterns`   |
-| 4   | The planning credential is never read outside a `server-only` module                                     | **not yet needed** | no module reads it; the eval takes it as an argument |
+| #   | Control                                                                                                  | Status             | Where the answer lives                                                                                                                     |
+| --- | -------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Exactly one module may reach `@dasher/planner/anthropic`, and the app is not it                          | **holds**          | `apps/web/no-model-calls.test.ts`                                                                                                          |
+| 2   | `@anthropic-ai/sdk` is a devDependency of `@dasher/planner`, so a production install cannot call a model | **holds**          | `packages/planner/package.json`                                                                                                            |
+| 3   | No dynamic import anywhere in first-party source                                                         | **holds**          | `generated-code-gate.test.ts`, `forbiddenPatterns`                                                                                         |
+| 4   | Any product planning credential is read only inside a `server-only` module                               | **not applicable** | the product reads none; the eval CLI reads `DASHER_EVAL_API_KEY` or `ANTHROPIC_API_KEY`, then passes the value to the provider constructor |
 
 Gate 3 is the one that blocks wiring. Loading the provider lazily — which is
 what keeps gate 2 true — is a dynamic import, and the tripwire has no allowance
@@ -54,17 +54,18 @@ deployment".
 
 | #   | Control          | Status                         | What was found                                                                                                                                                                                                              |
 | --- | ---------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 5   | Gateway          | **absent**                     | Only a seam: `anthropic.ts` accepts a `baseURL` "for pointing the eval at a gateway or a recording proxy". Nothing routes through one.                                                                                      |
+| 5   | Gateway          | **absent**                     | The relevant implementation match is a seam: `anthropic.ts` accepts a `baseURL` "for pointing the eval at a gateway or a recording proxy". Nothing routes product calls through one.                                        |
 | 6   | Secret redaction | **absent**                     | Zero matches for `redact` in first-party source. `packages/control-plane/src/secrets.ts` is HMAC and token handling, not log redaction — a different thing with a similar name.                                             |
-| 7   | Spend budget     | **absent**                     | Every match for "budget" in first-party source is prose — a revision budget, a byte budget. No spend accounting exists.                                                                                                     |
+| 7   | Spend budget     | **absent**                     | Matches for "budget" refer to revision, complexity, or byte limits and to gate prose. No provider-spend accounting or enforcement exists.                                                                                   |
 | 8   | Revocation       | **absent for provider access** | The control plane revokes _session tokens_ (`request-context.ts`, and an integration test for a revoked session). That is tenant auth, not provider access, and reusing the word for both is how a checklist ends up lying. |
 | 9   | Kill switch      | **absent**                     | Matches only inside `gate-contracts.test.ts`, which asserts the _text_ of gate documents. No switch.                                                                                                                        |
 
 ### What is already true and worth not re-deriving
 
-- The provider itself is finished: structured output derived from
-  `DashboardPlanSchema`, refinement and revision handling, a credential that is
-  a constructor argument rather than an environment read.
+- The provider envelope already implements structured output derived from
+  `DashboardPlanSchema`, refinement and revision handling, and a credential
+  constructor argument. The eval CLI, not the provider class, reads that
+  credential from its environment.
 - Provider output is untrusted end to end. `runPlanner` parses it, checks it
   against observations that exist, compiles it with trusted code, and validates
   the result. Nothing on the model path is load-bearing for correctness.
@@ -97,9 +98,18 @@ development.
 The absence claims are the ones that rot. Each was produced by a command:
 
 ```sh
-# Rows 5-9, one at a time. A non-empty result means the row is stale.
-grep -rniE "kill.?switch|revocation|redact|gateway" --include=*.ts packages apps \
-  | grep -v node_modules
+# Rows 5-9 are separate discovery probes. Read every match: neither an empty
+# result nor a non-empty one proves whether the named control is implemented.
+grep -rniE "model.?gateway|provider.?gateway|baseURL" \
+  --include='*.ts' packages apps | grep -v node_modules || true
+grep -rniE "redact|secret.?(mask|scrub)" \
+  --include='*.ts' packages apps | grep -v node_modules || true
+grep -rniE "spend|cost|token.?budget|budget" \
+  --include='*.ts' packages apps | grep -v node_modules || true
+grep -rniE "provider.?revoc|revoke.*provider|revocation" \
+  --include='*.ts' packages apps | grep -v node_modules || true
+grep -rniE "kill.?switch|disable.*provider|provider.*disable" \
+  --include='*.ts' packages apps | grep -v node_modules || true
 
 # Row 2. Must print False for dependencies and True for devDependencies.
 python3 -c "import json;d=json.load(open('packages/planner/package.json'));\
