@@ -1,5 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import Anthropic from "@anthropic-ai/sdk";
+import { headingCase, type StationWords } from "@dasher/station-domain";
 
 import {
   DashboardPlanSchema,
@@ -47,6 +48,17 @@ import { offeredEntries, PATTERN_ENTRIES } from "./registry";
 export interface AnthropicPlanningProviderOptions {
   /** Closed over by the instance. Never read from the environment. */
   apiKey: string;
+  /**
+   * The domain this provider plans for, in that domain's own words.
+   *
+   * Required, and required for the same reason `model` is. The prompt used to
+   * say "river-conditions dashboard", "USGS observations", and "USGS site IDs"
+   * as literals, which was true of the only domain that had a planner and
+   * false of the one beside it: an air-quality request would have been planned
+   * by a model told it was looking at a river. A default here would be the
+   * river again, silently, so there is none.
+   */
+  words: StationWords;
   /** Required and pinned: an unnamed model makes a run unreproducible. */
   model: string;
   /** Defaults to 8000. A plan is roughly 1.5 KB of JSON. */
@@ -56,14 +68,16 @@ export interface AnthropicPlanningProviderOptions {
   baseURL?: string;
 }
 
-const SYSTEM_PROMPT = `You are Dasher's dashboard planner.
+function systemPrompt(words: StationWords): string {
+  const { noun, nounPlural, reading, source } = words;
+  return `You are Dasher's dashboard planner.
 
-You choose how a river-conditions dashboard is composed. You do not report
-conditions. Every number, direction, freshness state, ranking, alert, and
-evidence link on the finished dashboard is computed by Dasher itself from USGS
-observations that you never see. Your output is validated before anything
-renders; a plan that breaks any rule below is rejected and returned to you with
-structured findings to repair.
+You choose how a dashboard of ${source.label.toLowerCase()} is composed. You do
+not report conditions. Every number, direction, freshness state, ranking, alert,
+and evidence link on the finished dashboard is computed by Dasher itself from
+${source.format} observations that you never see. Your output is validated
+before anything renders; a plan that breaks any rule below is rejected and
+returned to you with structured findings to repair.
 
 You emit one JSON object and nothing else:
 
@@ -71,8 +85,9 @@ You emit one JSON object and nothing else:
 - audience: who it is for.
 - framing: one sentence describing how the dashboard is organised. It becomes
   the summary subtitle.
-- siteIds: the USGS site IDs to include, in display order. Choose only from the
-  available sites given to you. A site you were not given does not exist.
+- siteIds: the ${noun} identifiers to include, in display order. Choose only
+  from the available ${nounPlural} given to you. A ${noun} you were not given
+  does not exist.
 - pages: at most ${PLAN_MAX_PAGES}, each with an id (lowercase kebab-case), a
   title, a description, and up to ${PLAN_MAX_SECTIONS_PER_PAGE} sections.
 
@@ -87,17 +102,19 @@ Rules for the free-text fields — title, audience, framing, and the page titles
 and descriptions. These are shown to the reader exactly as you write them, so
 they are the one place where you could assert something Dasher cannot support:
 
-1. No measurements. Never write a quantity with a unit (feet, ft, cfs, ft3/s,
-   inches, %) and never write a decimal number. You have not been shown a single
-   reading, so any number you write would be invented. Naming a time window
-   ("the last 24 hours", "six-hour change") is fine — a window is a composition
-   choice, not a reading.
+1. No measurements. Never write a quantity with a unit — ft, feet, cfs, ft3/s,
+   inches, mph, µg/m³, ppm, ppb, % and the like. Never write an air-quality index.
+   Never write a decimal number, in digits or spelled out. You have not been
+   shown a single reading, so any number you write would be invented.
+   Naming a time window ("the last 24 hours", "six-hour change") is fine — a
+   window is a composition choice, not a reading — and so is naming the
+   ${reading} itself without a value.
 2. No instructions to act. Never tell the reader to evacuate, seek higher
    ground, take shelter, call emergency services, or avoid a road. Dasher has no
    basis for a safety instruction and no evidence record that could support one.
 3. Describe the composition, not the conditions. "Ordered by rate of change,
-   fastest first" is a framing. "The river is rising dangerously" is a claim you
-   are not entitled to make.
+   fastest first" is a framing. "${headingCase(reading)} is rising dangerously"
+   is a claim you are not entitled to make.
 
 When you are given a previous plan and a change the reader asked for, edit that
 plan rather than composing a new one. They are looking at the parts they did not
@@ -113,12 +130,18 @@ Choose a composition that genuinely fits the request. Different requests should
 produce different dashboards: an emergency-response request should lead with
 what needs attention, a homeowner request should be short and plain, a
 comparison request should lead with the table or the ranking.`;
+}
 
 function requestMessage(request: PlanningRequest): string {
   const sites = request.availableSites.map((site) => ({
     siteId: site.siteId,
     name: site.name,
-    river: site.river,
+    // `AvailableSite.river` is the plan contract's field name and stays that
+    // way (ADR-007); what it holds is the station's grouping, which for the air
+    // domain is a basin. Handing a model a key called "river" beside an air
+    // monitor is a small lie with an obvious consequence, so the payload the
+    // model reads uses the neutral word.
+    group: site.river,
   }));
 
   const parts = [
@@ -155,6 +178,7 @@ export class AnthropicPlanningProvider implements PlanningProvider {
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly effort: AnthropicPlanningProviderOptions["effort"];
+  private readonly systemPrompt: string;
 
   constructor(options: AnthropicPlanningProviderOptions) {
     if (options.apiKey.trim() === "") {
@@ -171,6 +195,7 @@ export class AnthropicPlanningProvider implements PlanningProvider {
     this.model = options.model;
     this.maxTokens = options.maxTokens ?? 8_000;
     this.effort = options.effort;
+    this.systemPrompt = systemPrompt(options.words);
     // Written into the dashboard's own evidence record, so it names what ran.
     this.id = `anthropic:${options.model}`;
   }
@@ -179,7 +204,7 @@ export class AnthropicPlanningProvider implements PlanningProvider {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: this.maxTokens,
-      system: SYSTEM_PROMPT,
+      system: this.systemPrompt,
       messages: [{ role: "user", content: requestMessage(request) }],
       output_config: {
         ...(this.effort === undefined ? {} : { effort: this.effort }),
