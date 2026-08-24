@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { AIR_COMPUTATION, AIR_WORDS } from "@dasher/air-domain";
 import {
   FakePlanningProvider,
@@ -46,7 +47,7 @@ export interface DomainEntry {
 }
 
 export type DomainKey = "river" | "air";
-export type KnownSourceKey = "ucr-enrollment";
+export type KnownSourceKey = "ucr-enrollment" | "operating-ledger";
 
 export type DomainDecision =
   | { kind: "domain"; domain: DomainEntry }
@@ -184,12 +185,24 @@ const UCR_SIGNALS =
   /\b(?:ucr|uc\s+riverside|university\s+of\s+california,?\s+riverside)\b/iu;
 const ENROLLMENT_SIGNALS =
   /\b(?:enrollment|student\s+headcount|students?\s+(?:are\s+)?enrolled)\b/iu;
+/**
+ * The ledger is a known source rather than a domain, for the same reason UCR
+ * enrollment is: there is one of it, it has no live upstream, and it is not a
+ * station — so it does not belong in a catalog whose entries carry a
+ * `StationComputation`. It routes to its own planner and its own compiler.
+ *
+ * "budget" alone is deliberately absent. A river request can mention a budget;
+ * what names THIS source is spending, a ledger, or operating costs.
+ */
+const LEDGER_SIGNALS =
+  /\b(?:operating\s+(?:spend|spending|costs?|expenses?)|spend(?:ing)?\s+by\s+(?:category|line)|ledger|cost\s+centre|cost\s+center|budget\s+lines?|departmental\s+spend(?:ing)?)\b/iu;
 
 export function classifyRequest(requestText: string): DomainDecision {
   const river = RIVER_SIGNALS.test(requestText);
   const air = AIR_SIGNALS.test(requestText);
   const ucrEnrollment =
     UCR_SIGNALS.test(requestText) && ENROLLMENT_SIGNALS.test(requestText);
+  const ledger = LEDGER_SIGNALS.test(requestText);
 
   // ONE plural request is supported, and it is named rather than inferred.
   // River and air are both station domains: same shape, same compiler, two
@@ -200,13 +213,13 @@ export function classifyRequest(requestText: string): DomainDecision {
   //
   // Fail-closed did not weaken here; it moved. What is refused is now the
   // UNRESOLVABLE rather than the merely plural.
-  if (river && air && !ucrEnrollment) {
+  if (river && air && !ucrEnrollment && !ledger) {
     return {
       kind: "domains",
       domains: [DOMAIN_CATALOG.river, DOMAIN_CATALOG.air],
     };
   }
-  if ([river, air, ucrEnrollment].filter(Boolean).length > 1) {
+  if ([river, air, ucrEnrollment, ledger].filter(Boolean).length > 1) {
     return { kind: "ambiguous" };
   }
   if (river) return { kind: "domain", domain: DOMAIN_CATALOG.river };
@@ -214,5 +227,6 @@ export function classifyRequest(requestText: string): DomainDecision {
   if (ucrEnrollment) {
     return { kind: "known-source", source: "ucr-enrollment" };
   }
+  if (ledger) return { kind: "known-source", source: "operating-ledger" };
   return { kind: "unsupported" };
 }

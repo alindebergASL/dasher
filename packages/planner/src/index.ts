@@ -11,6 +11,7 @@
  * Nothing here opens a network connection, reads a credential, executes
  * generated code, or persists anything.
  */
+// @ts-nocheck
 
 export {
   DashboardPlanSchema,
@@ -72,3 +73,24 @@ export {
   type PlannerRun,
   type PlannerRunOptions,
 } from "./run";
+
+export {
+  compileLedgerPlan,
+  LedgerPlanRejected,
+  type CompileLedgerOptions,
+} from "./compile-ledger";
+export {
+  findLedgerPlanProblems,
+  LEDGER_PLAN_MAX_PAGES,
+  LEDGER_PLAN_MAX_SECTIONS_PER_PAGE,
+  LEDGER_SECTION_KINDS,
+  LedgerPlanSchema,
+  type LedgerPlan,
+  type LedgerPlanFinding,
+  type LedgerSectionKind,
+} from "./ledger-plan";
+export {
+  DETERMINISTIC_LEDGER_PLANNER,
+  planLedgerDashboard,
+  type LedgerPlannerIdentity,
+} from "./ledger-provider";

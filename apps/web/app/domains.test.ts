@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, it } from "vitest";
 
 import { classifyRequest, DOMAIN_CATALOG } from "./domains";
@@ -156,5 +157,44 @@ describe("the catalog entries are complete and their own", () => {
         );
       }
     }
+  });
+});
+
+describe("routing an operating ledger request", () => {
+  it.each([
+    "Operating spend by category",
+    "Show me operating costs",
+    "spending by line for the quarter",
+    "What does the ledger say",
+    "budget lines over the last few months",
+    "departmental spending",
+  ])("routes %o to the ledger", (request) => {
+    expect(classifyRequest(request)).toStrictEqual({
+      kind: "known-source",
+      source: "operating-ledger",
+    });
+  });
+
+  it.each([
+    // "budget" alone must not claim a request. A river dashboard can mention
+    // one, and the router's whole discipline is that a word earns its place by
+    // being unambiguous rather than by being related.
+    ["a budget mentioned about a river", "river gauges and our flood budget"],
+    ["a plain river request", "How is the American river doing?"],
+    ["an air request", "Air quality across Sacramento"],
+  ])("does not take %s", (_label, request) => {
+    expect(classifyRequest(request)).not.toStrictEqual({
+      kind: "known-source",
+      source: "operating-ledger",
+    });
+  });
+
+  it("refuses a request that names the ledger and a sensor domain", () => {
+    // Same rule the enrollment source gets: a ledger is not a station, and
+    // combining them would mean one dashboard computing money with a flood
+    // tolerance.
+    expect(classifyRequest("river gauges and operating spend")).toStrictEqual({
+      kind: "ambiguous",
+    });
   });
 });

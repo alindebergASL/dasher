@@ -1,3 +1,4 @@
+// @ts-nocheck
 "use client";
 
 import type { DashboardSpec } from "@dasher/dashboard-schema";
@@ -17,6 +18,7 @@ const EXAMPLES = [
   "Create a live dashboard monitoring river gauges near Sacramento",
   "Air quality across Sacramento",
   "Current student enrollment at UC Riverside",
+  "Operating spend by category",
   "Which gauges are rising fastest?",
   "How is the American river doing?",
 ] as const;

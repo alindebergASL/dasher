@@ -9,6 +9,10 @@
   "ignoreStatic": true,
   "timeoutMS": 20000,
   "mutate": [
+    "packages/dashboard-schema/src/compose.ts",
+    "packages/dashboard-schema/src/layout.ts",
+    "packages/ledger-domain/src/ledger.ts",
+    "packages/planner/src/compile-ledger.ts",
     "packages/planner/src/compile.ts",
     "packages/planner/src/freetext.ts",
     "packages/planner/src/plan.ts",
@@ -16,9 +20,7 @@
     "packages/planner/src/registry.ts",
     "packages/planner/src/run.ts",
     "packages/station-domain/src/facts.ts",
-    "packages/station-domain/src/metrics.ts",
-    "packages/dashboard-schema/src/compose.ts",
-    "packages/dashboard-schema/src/layout.ts"
+    "packages/station-domain/src/metrics.ts"
   ],
   "vitest": {
     "related": false,

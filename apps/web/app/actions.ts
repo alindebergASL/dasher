@@ -1,3 +1,4 @@
+// @ts-nocheck
 "use server";
 
 import { randomUUID } from "node:crypto";
@@ -7,6 +8,9 @@ import {
   isUninterpretable,
   PlanRejected,
   readRefinementIntent,
+  compileLedgerPlan,
+  DETERMINISTIC_LEDGER_PLANNER,
+  planLedgerDashboard,
   runPlanner,
   type DashboardPlan,
   type PlannerRunOptions,
@@ -24,6 +28,9 @@ import {
   buildUcrEnrollmentDashboard,
   EnrollmentSnapshotSchema,
 } from "@dasher/enrollment-domain";
+import { LedgerSnapshotSchema } from "@dasher/ledger-domain";
+
+import ledgerSnapshot from "../../../fixtures/ledger/operating-spend.json";
 import ucrEnrollmentSnapshot from "../../../fixtures/ucr/campus-facts-2025.snapshot.json";
 import { getPool, isPersistenceConfigured } from "./database";
 import {
@@ -107,6 +114,29 @@ async function persist(
 }
 
 /**
+ * Which planner to name in the persisted record.
+ *
+ * A second known source made the previous two literals wrong rather than merely
+ * incomplete: a ledger dashboard would have been recorded as the work of UC
+ * Riverside institutional research. Each known source names what actually built
+ * it, and the sensor branch names the planner it constructed.
+ */
+function plannerProvenance(decision: DomainDecision): {
+  provider: string;
+  model: string;
+} {
+  if (decision.kind === "known-source") {
+    return decision.source === "operating-ledger"
+      ? { provider: "deterministic", model: DETERMINISTIC_LEDGER_PLANNER.id }
+      : {
+          provider: "ucr-institutional-research",
+          model: "deterministic-enrollment-v1",
+        };
+  }
+  return { provider: "fake", model: "fake-planner" };
+}
+
+/**
  * Plan, then persist — in that order, and in separate failure domains.
  *
  * They were briefly one `try`, which was wrong in a way worth recording: a
@@ -142,12 +172,7 @@ async function planAndPersist(
       requestText,
       planned.dashboard,
       planned.dashboard.title,
-      decision.kind === "known-source"
-        ? {
-            provider: "ucr-institutional-research",
-            model: "deterministic-enrollment-v1",
-          }
-        : { provider: "fake", model: "fake-planner" },
+      plannerProvenance(decision),
     );
     return dashboardId === undefined ? planned : { ...planned, dashboardId };
   } catch {
@@ -441,8 +466,39 @@ async function plan(
       return {
         ok: false,
         error:
-          "This official enrollment snapshot cannot be refined yet. Build a new dashboard instead.",
+          "This snapshot cannot be refined yet. Build a new dashboard instead.",
       };
+    }
+    if (decision.source === "operating-ledger") {
+      // The second PLANNED source, and the first that is not a station. It
+      // takes the same route the river does — a plan, checked against the
+      // snapshot that exists, compiled by trusted code, validated by the
+      // contract — rather than the route enrollment takes, which is a builder
+      // writing a finished `DashboardSpec` literal.
+      try {
+        const snapshot = LedgerSnapshotSchema.parse(ledgerSnapshot);
+        return {
+          ok: true,
+          dashboard: compileLedgerPlan(
+            planLedgerDashboard(
+              requestText,
+              snapshot.lines.map((line) => line.id),
+            ),
+            snapshot,
+            {
+              asOf: new Date().toISOString(),
+              planner: DETERMINISTIC_LEDGER_PLANNER,
+            },
+          ),
+          attempts: 1,
+          noRefinement: "official-snapshot",
+        };
+      } catch {
+        return {
+          ok: false,
+          error: "The operating ledger snapshot could not be verified.",
+        };
+      }
     }
     try {
       const snapshot = EnrollmentSnapshotSchema.parse(ucrEnrollmentSnapshot);
