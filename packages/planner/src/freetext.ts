@@ -19,19 +19,39 @@ import type { DashboardPlan } from "./plan";
  * WHAT THIS GATE COVERS, AND WHAT IT DOES NOT. Two categories, both deliberately
  * narrow:
  *
- *   * a MEASUREMENT — a quantity with a physical unit, or a decimal number. This
- *     is the category the contract's own docstring claimed was impossible, so it
- *     is the one made true here.
+ *   * a MEASUREMENT — a number written next to a unit, a pollutant, or an index
+ *     name, in the shapes enumerated below.
  *   * a DIRECTIVE — a short list of emergency imperatives. Dasher must not tell
  *     a reader to evacuate; it has no basis for that instruction and no evidence
  *     record that could support one.
  *
+ * THIS IS A DETECTOR, NOT A DECIDER, and the wording above was narrowed to say
+ * so. It used to claim the measurement category was "made true here" and
+ * describe the result as two "hard edges". Three rounds of review disproved
+ * that, each by reading rather than by running anything: the first found air
+ * units missing entirely, the second found `AQI: 84` and `PM2.5 at 21`, the
+ * third found `PM2.5 was 21`, `twenty-one PM2.5` and `21 µg·m⁻³`. Every round
+ * closed real holes. None of them could establish that the next round would
+ * find nothing, because a pattern list cannot be complete over a natural
+ * language and claiming otherwise invites exactly that loop.
+ *
+ * So the guarantee this file offers is bounded, and it is this: the enumerated
+ * shapes below are caught, and each has a test. What protects a reader is not
+ * this file alone — it is that every value on a rendered dashboard is computed
+ * by Dasher from source observations, and nothing a planner writes in free text
+ * is ever one of those values. This gate is defence in depth behind the
+ * system prompt, which states the rule broadly on purpose, and behind that
+ * arithmetic. It is not the reason a reader can trust a number.
+ *
  * It does not attempt to catch a general claim. "Conditions are dangerous" is a
  * claim, is not caught, and a wordlist that tried would be a filter pretending
- * to be a boundary. The honest position is that free text is a judgement surface
- * with two hard edges, not a sanitized one; `packages/planner/eval/adversarial.ts`
- * measures what actually comes through so the next edge is drawn from evidence
- * rather than from imagination.
+ * to be a boundary.
+ *
+ * WHERE THE NEXT SHAPE SHOULD COME FROM. `packages/planner/eval/adversarial.ts`
+ * measures what a real model actually writes. It has never been run against the
+ * air domain, so every air shape in this file was imagined by a reviewer rather
+ * than observed. Adding more imagined shapes has a poor stopping rule; running
+ * the eval has an obvious one.
  *
  * These become `PlanFinding`s, so the first cost of a false positive is one
  * revision round-trip, not a rejected dashboard. That budget is what allows the
