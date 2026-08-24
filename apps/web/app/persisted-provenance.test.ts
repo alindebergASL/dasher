@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DETERMINISTIC_LEDGER_PLANNER } from "@dasher/planner";
+
 import { planDashboard } from "./actions";
 import { clearSourceCache } from "./source-runtime";
 // Static, type-only namespace imports for the mock factories. The
@@ -160,6 +162,22 @@ describe("the persisted record names the planners that ran", () => {
 
     expect(saved).toStrictEqual([
       { provider: "deterministic", model: "planner-river" },
+    ]);
+  });
+
+  it("names the planner, not the snapshot, for the operating ledger", async () => {
+    // The ledger and enrollment are both `known-source` decisions, and the two
+    // answer differently on purpose. Enrollment has no planner to ask; the
+    // ledger runs one, so it derives its record like every other planned path.
+    // Naming it with a literal was correct on the day it was written and would
+    // have gone stale silently the day the ledger planner changed.
+    await planDashboard("Operating spend by category");
+
+    expect(saved).toStrictEqual([
+      // `provider` comes from `usesModel: false`, and `model` from the
+      // planner's own id — read from the planner here rather than restated, so
+      // this follows a rename instead of outliving one.
+      { provider: "deterministic", model: DETERMINISTIC_LEDGER_PLANNER.id },
     ]);
   });
 

@@ -21,6 +21,12 @@ import {
 } from "@dasher/station-domain";
 import { RIVER_COMPUTATION, RIVER_WORDS } from "@dasher/river-domain";
 
+import {
+  assemblePages,
+  composerSentence,
+  plannerEvidence,
+} from "./planned-spec";
+
 import type { DashboardPlan, PlanSectionKind } from "./plan";
 
 /**
@@ -78,26 +84,7 @@ export interface CompileOptions {
 
 type CompiledSpec = Extract<DashboardSpec, { schemaVersion: "1.2" }>;
 
-const PLANNER_EVIDENCE_ID = "planner-composition";
-
 type Facts = StationFacts;
-
-/**
- * Names what chose the composition, in the reader's terms.
- *
- * A deterministic planner and a model are different claims about the system,
- * and the difference is exactly what a reader of the architecture panel wants
- * to know. Saying "model" when none ran overstates Dasher's role; saying
- * nothing leaves the layout unattributed.
- */
-function composerSentence(
-  planner: CompileOptions["planner"],
-  words: StationWords,
-): string {
-  return planner.usesModel
-    ? `A planning model chose this dashboard's title, audience, framing, ${words.noun} selection, and page layout.`
-    : `A deterministic planner chose this dashboard's title, audience, framing, ${words.noun} selection, and page layout; no model was called.`;
-}
 
 function deriveFacts(
   metrics: StationMetrics[],
@@ -115,15 +102,7 @@ function deriveFacts(
     materialRiseTolerance: computation.materialRiseTolerance,
     thresholds: options.thresholds,
     additionalEvidence: [
-      {
-        id: PLANNER_EVIDENCE_ID,
-        kind: "interpreted",
-        label: "Dashboard composition",
-        sourceName: `Dasher planner (${options.planner.id})`,
-        retrievedAt: options.asOf,
-        detail: `${composerSentence(options.planner, words)} It did not produce any reading, calculation, or claim: every value shown here is computed by Dasher from the source observations and validated against the dashboard contract before display.`,
-        confidence: "medium",
-      },
+      plannerEvidence(options.planner, words.noun, options.asOf),
     ],
   });
 }
@@ -348,19 +327,9 @@ export function compilePlan(
   );
   const facts = deriveFacts(metrics, options, computation, words);
 
-  const pages = plan.pages
-    .map((page) => ({
-      id: page.id,
-      title: page.title,
-      description: page.description,
-      components: page.sections
-        .map((section) => buildSection(section, plan, facts, words))
-        .filter(
-          (component): component is DashboardComponent =>
-            component !== undefined,
-        ),
-    }))
-    .filter((page) => page.components.length > 0);
+  const pages = assemblePages(plan.pages, (section) =>
+    buildSection(section, plan, facts, words),
+  );
 
   const firstAttention = facts.metrics.find(
     (item) => item.dataIssues.length > 0,
@@ -455,7 +424,7 @@ export function compilePlan(
     evidence: facts.evidence,
     architecture: {
       title: "How this dashboard works",
-      summary: `${composerSentence(options.planner, words)} Dasher computed every number from ${words.source.format} readings and validated the result against the dashboard contract before rendering.`,
+      summary: `${composerSentence(options.planner, words.noun)} Dasher computed every number from ${words.source.format} readings and validated the result against the dashboard contract before rendering.`,
       nodes: [
         {
           id: "request",

@@ -7,6 +7,9 @@ import {
   isUninterpretable,
   PlanRejected,
   readRefinementIntent,
+  compileLedgerPlan,
+  DETERMINISTIC_LEDGER_PLANNER,
+  planLedgerDashboard,
   runPlanner,
   type DashboardPlan,
   type PlannerRunOptions,
@@ -25,6 +28,9 @@ import {
   buildUcrEnrollmentDashboard,
   EnrollmentSnapshotSchema,
 } from "@dasher/enrollment-domain";
+import { LedgerSnapshotSchema } from "@dasher/ledger-domain";
+
+import ledgerSnapshot from "../../../fixtures/ledger/operating-spend.json";
 import ucrEnrollmentSnapshot from "../../../fixtures/ucr/campus-facts-2025.snapshot.json";
 import { getPool, isPersistenceConfigured } from "./database";
 import {
@@ -138,21 +144,25 @@ function planless(result: PlanResult): Planned {
 /**
  * Which planner to name in the persisted record.
  *
- * The sensor branches ask the provider that actually ran rather than restating
- * a literal beside it. The enrollment branch stays a literal on purpose: no
- * planner runs there at all — a builder reads an official snapshot and compiles
- * it directly — so naming the snapshot's own source is the true answer rather
- * than a stand-in for a missing one.
+ * Every branch that runs a planner asks the provider that actually ran rather
+ * than restating a literal beside it. Enrollment is the single exception, and
+ * it is one on purpose: no planner runs there at all — a builder reads an
+ * official snapshot and compiles it directly — so naming the snapshot's own
+ * source is the true answer rather than a stand-in for a missing one.
+ *
+ * The ledger is a known source too, but a PLANNED one, so it answers from the
+ * list like the sensor branches do. Naming it with a literal would have been
+ * correct today and wrong on the day its planner changes — which is the whole
+ * failure this function was rewritten to stop.
  */
 function plannerProvenance(
   decision: DomainDecision,
   planners: readonly PlannerIdentity[],
 ): PlannerProvenance {
-  // The enrollment branch is the one case with no planner to ask: a builder
-  // reads an official snapshot and compiles it directly, so naming the
-  // snapshot's own source is the true answer rather than a stand-in for a
-  // missing one.
-  if (decision.kind === "known-source") {
+  if (
+    decision.kind === "known-source" &&
+    decision.source !== "operating-ledger"
+  ) {
     return {
       provider: "ucr-institutional-research",
       model: "deterministic-enrollment-v1",
@@ -509,8 +519,45 @@ async function plan(
       return planless({
         ok: false,
         error:
-          "This official enrollment snapshot cannot be refined yet. Build a new dashboard instead.",
+          "This snapshot cannot be refined yet. Build a new dashboard instead.",
       });
+    }
+    if (decision.source === "operating-ledger") {
+      // The second PLANNED source, and the first that is not a station. It
+      // takes the same route the river does — a plan, checked against the
+      // snapshot that exists, compiled by trusted code, validated by the
+      // contract — rather than the route enrollment takes, which is a builder
+      // writing a finished `DashboardSpec` literal.
+      try {
+        const snapshot = LedgerSnapshotSchema.parse(ledgerSnapshot);
+        return {
+          result: {
+            ok: true,
+            dashboard: compileLedgerPlan(
+              planLedgerDashboard(
+                requestText,
+                snapshot.lines.map((line) => line.id),
+              ),
+              snapshot,
+              {
+                asOf: new Date().toISOString(),
+                planner: DETERMINISTIC_LEDGER_PLANNER,
+              },
+            ),
+            attempts: 1,
+            noRefinement: "official-snapshot",
+          },
+          // Named from the planner that just ran, not from a literal beside
+          // it. The compile call above is the same expression, so the two
+          // cannot drift.
+          planners: [DETERMINISTIC_LEDGER_PLANNER],
+        };
+      } catch {
+        return planless({
+          ok: false,
+          error: "The operating ledger snapshot could not be verified.",
+        });
+      }
     }
     try {
       const snapshot = EnrollmentSnapshotSchema.parse(ucrEnrollmentSnapshot);
