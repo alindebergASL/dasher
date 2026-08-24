@@ -181,7 +181,7 @@ test("the river dashboard renders in reading order at full width", async ({
 });
 
 /**
- * Below 1050px the six-column grid gives every component the full row.
+ * At or below 1260px the six-column grid gives every component the full row.
  *
  * The first version of this slice deleted the base stylesheet's 1050px rule and
  * claimed six columns held down to 760px. They do not: at 761px the map and the
@@ -230,23 +230,19 @@ for (const width of [761, 800]) {
 }
 
 /**
- * A selected station must never make its neighbour unreachable.
+ * A selected station must never hide or make its neighbour unreachable.
  *
- * `.map-selection` is an absolutely positioned card inside the map, so it sits
- * on top of the markers. Selecting one station put that card over a neighbour,
- * and the neighbour then could not be clicked at all. This is a function of how
- * wide the card is relative to the map, not of the viewport: it reproduced on
- * the base stylesheet at 1051px, and packing v1 narrowed the map, which carried
- * the same failure up to 1261px.
+ * `.map-selection` was an absolutely positioned card inside the map, so it sat
+ * on top of the markers. Letting pointer events pass through the opaque card
+ * made a locator click succeed, but it did not give a reader a visible target:
+ * one neighbour remained 100% covered at 390px, 1261px, and 1300px.
  *
- * 1200px is the width the failure was reported at. 1300px is the narrowest
- * viewport on this branch where the map is a half rather than a full row, so it
- * is the one that still exercises the overlap after the grid's collapse point
- * moved; a run with `pointer-events` removed from the card fails there and
- * passes at 1200px.
+ * 390px covers the mobile case. 1200px confirms the full-row desktop layout.
+ * 1300px is the narrowest viewport in this test where the map is a half rather
+ * than a full row, and is where packing v1 introduced total visual occlusion.
  */
-for (const width of [1200, 1300]) {
-  test(`at ${width}px a second marker can be selected after the first`, async ({
+for (const width of [390, 1200, 1300]) {
+  test(`at ${width}px markers stay visible and selectable after a selection`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
@@ -266,10 +262,45 @@ for (const width of [1200, 1300]) {
     await markers.nth(0).click();
     await expect(markers.nth(0)).toHaveAttribute("aria-pressed", "true");
 
-    // An ordinary click, not a forced one: a forced click would pass straight
-    // through the card and prove nothing about what a reader can reach.
+    // Reachability starts with a visible target. Playwright's `toBeVisible`
+    // does not account for an opaque sibling painted on top, so measure the
+    // rendered rectangles and require no card/marker intersection.
+    const markerOverlap = await page.locator(".map-panel").evaluate((map) => {
+      const card = map.parentElement?.querySelector(".map-selection");
+      if (!card) throw new Error("Selected-station detail is missing");
+      const cardBox = card.getBoundingClientRect();
+      return [
+        ...map.querySelectorAll<HTMLElement>(".map-marker:not(.selected)"),
+      ].map((marker) => {
+        const markerBox = marker.getBoundingClientRect();
+        const width = Math.max(
+          0,
+          Math.min(markerBox.right, cardBox.right) -
+            Math.max(markerBox.left, cardBox.left),
+        );
+        const height = Math.max(
+          0,
+          Math.min(markerBox.bottom, cardBox.bottom) -
+            Math.max(markerBox.top, cardBox.top),
+        );
+        return width * height;
+      });
+    });
+    expect(markerOverlap).toEqual(markerOverlap.map(() => 0));
+
+    // An ordinary click, not a forced one: the second visible marker remains
+    // directly operable after the first selection.
     await markers.nth(1).click();
     await expect(markers.nth(1)).toHaveAttribute("aria-pressed", "true");
     await expect(markers.nth(0)).toHaveAttribute("aria-pressed", "false");
+
+    // Moving the details card out of the map must not strand its real control.
+    await page
+      .getByRole("button", { name: /Evidence for .* map reading/ })
+      .click();
+    await expect(
+      page.getByRole("dialog", { name: "Sources and evidence" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Close evidence" }).click();
   });
 }

@@ -90,8 +90,8 @@ the field to avoid.
   | 800px    | 481px          | 232.5px         | 481px                 |
   | 900px    | 573px          | 278.5px         | 573px                 |
   | 1049px   | 710.1px        | 347.0px         | 710.1px               |
-  | 1051px   | 711.9px        | 348.0px         | 711.9px               |
-  | 1260px   | 904.2px        | 444.1px         | 904.2px               |
+  | 1051px   | 469.3px        | 348.0px         | 711.9px               |
+  | 1260px   | 597.5px        | 444.1px         | 904.2px               |
 
   **1260px is measured, not chosen.** It is the widest viewport at which half the
   grid is narrower than 445px — the map width the base stylesheet gave at its own
@@ -100,23 +100,15 @@ the field to avoid.
   1260px; that is the width this repository elsewhere calls too small for a map,
   and it was the wrong place to stop.
 
-- **The station-detail card no longer intercepts the markers underneath it.**
-  `.map-selection` is absolutely positioned inside the map, so selecting one
-  station laid an opaque card over its neighbours — and those neighbours then
-  could not be clicked at all. This is not a packing bug and not a new one: it
-  reproduced on `73ff42c` at 1051px, where the map was 419px. What packing v1 did
-  was narrow the map, which carried the same failure up to 1261px. Width was the
-  symptom; an interactive overlay sitting on interactive controls was the cause,
-  so the fix is at the cause: the card takes `pointer-events: none` and its one
-  control opts back in. Every marker is now reachable at every width measured,
-  390px to 1920px, including the 390px and 1051px cases that failed on the base.
-
-  What this does not do is stop the card covering a marker. At 1300px it sits
-  over one of the three completely. That marker stays reachable — a click lands
-  on it through the card, and it takes focus and Enter like any other button,
-  both measured — but it is not visible while another station is selected.
-  Moving the card outside the map, or placing it away from the markers, is a
-  design change this slice does not make.
+- **The station-detail card no longer covers the markers.** `.map-selection`
+  used to be absolutely positioned inside the map, so selecting one station laid
+  an opaque card over its neighbours. Letting pointer events pass through that
+  card made automated clicks succeed, but it did not give a reader a visible
+  target: one marker remained completely hidden at 390px, 1261px, and 1300px.
+  Packing v1 introduced the desktop cases by narrowing the map, while the mobile
+  case also reproduced on `73ff42c`. The card now renders after the map in normal
+  flow. Every marker therefore remains both visible and directly operable after
+  a selection, and the evidence control in the card remains ordinarily clickable.
 
 ## What this does not do
 

@@ -128,41 +128,44 @@ function StationMap({
   const minLon = Math.min(...longitudes);
   const maxLon = Math.max(...longitudes);
   return (
-    <div className="map-panel" aria-label={label}>
-      <div className="map-river river-one" />
-      <div className="map-river river-two" />
-      <span className="map-city">Sacramento</span>
-      {stations.map((station) => {
-        const left =
-          12 + ((station.longitude - minLon) / (maxLon - minLon || 1)) * 76;
-        const top =
-          12 + (1 - (station.latitude - minLat) / (maxLat - minLat || 1)) * 70;
-        const reading = `${station.primary.value ?? "missing"} ${station.primary.unit}`;
-        return (
-          <button
-            aria-label={`${station.name}, station ${station.id}: ${reading}, ${station.direction}`}
-            aria-pressed={selectedId === station.id}
-            className={`map-marker marker-${station.direction}${selectedId === station.id ? " selected" : ""}`}
-            key={station.id}
-            onClick={() => setSelectedId(station.id)}
-            style={{ left: `${left}%`, top: `${top}%` }}
-            title={`${station.name}: ${reading}, ${station.direction}`}
-            type="button"
-          >
-            <span className="sr-only">{station.name}</span>
-          </button>
-        );
-      })}
-      <div className="map-legend">
-        <span>
-          <i className="legend-dot rising" /> Rising
-        </span>
-        <span>
-          <i className="legend-dot falling" /> Falling
-        </span>
-        <span>
-          <i className="legend-dot steady" /> Steady
-        </span>
+    <div className="map-stack">
+      <div className="map-panel" aria-label={label}>
+        <div className="map-river river-one" />
+        <div className="map-river river-two" />
+        <span className="map-city">Sacramento</span>
+        {stations.map((station) => {
+          const left =
+            12 + ((station.longitude - minLon) / (maxLon - minLon || 1)) * 76;
+          const top =
+            12 +
+            (1 - (station.latitude - minLat) / (maxLat - minLat || 1)) * 70;
+          const reading = `${station.primary.value ?? "missing"} ${station.primary.unit}`;
+          return (
+            <button
+              aria-label={`${station.name}, station ${station.id}: ${reading}, ${station.direction}`}
+              aria-pressed={selectedId === station.id}
+              className={`map-marker marker-${station.direction}${selectedId === station.id ? " selected" : ""}`}
+              key={station.id}
+              onClick={() => setSelectedId(station.id)}
+              style={{ left: `${left}%`, top: `${top}%` }}
+              title={`${station.name}: ${reading}, ${station.direction}`}
+              type="button"
+            >
+              <span className="sr-only">{station.name}</span>
+            </button>
+          );
+        })}
+        <div className="map-legend">
+          <span>
+            <i className="legend-dot rising" /> Rising
+          </span>
+          <span>
+            <i className="legend-dot falling" /> Falling
+          </span>
+          <span>
+            <i className="legend-dot steady" /> Steady
+          </span>
+        </div>
       </div>
       {selected ? (
         <aside aria-live="polite" className="map-selection">
