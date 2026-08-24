@@ -2,7 +2,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { argv, env, exit, stdout } from "node:process";
 
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
+import {
+  parseUsgsInstantaneousValues,
+  RIVER_WORDS,
+} from "@dasher/river-domain";
 
 import { AnthropicPlanningProvider } from "../src/anthropic";
 import {
@@ -163,6 +166,7 @@ const generations: Generation[] = [];
 
 for (const model of models) {
   const provider = new AnthropicPlanningProvider({
+    words: RIVER_WORDS,
     apiKey,
     model,
     ...(options.effort === undefined ? {} : { effort: options.effort }),

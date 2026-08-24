@@ -19,19 +19,39 @@ import type { DashboardPlan } from "./plan";
  * WHAT THIS GATE COVERS, AND WHAT IT DOES NOT. Two categories, both deliberately
  * narrow:
  *
- *   * a MEASUREMENT — a quantity with a physical unit, or a decimal number. This
- *     is the category the contract's own docstring claimed was impossible, so it
- *     is the one made true here.
+ *   * a MEASUREMENT — a number written next to a unit, a pollutant, or an index
+ *     name, in the shapes enumerated below.
  *   * a DIRECTIVE — a short list of emergency imperatives. Dasher must not tell
  *     a reader to evacuate; it has no basis for that instruction and no evidence
  *     record that could support one.
  *
+ * THIS IS A DETECTOR, NOT A DECIDER, and the wording above was narrowed to say
+ * so. It used to claim the measurement category was "made true here" and
+ * describe the result as two "hard edges". Three rounds of review disproved
+ * that, each by reading rather than by running anything: the first found air
+ * units missing entirely, the second found `AQI: 84` and `PM2.5 at 21`, the
+ * third found `PM2.5 was 21`, `twenty-one PM2.5` and `21 µg·m⁻³`. Every round
+ * closed real holes. None of them could establish that the next round would
+ * find nothing, because a pattern list cannot be complete over a natural
+ * language and claiming otherwise invites exactly that loop.
+ *
+ * So the guarantee this file offers is bounded, and it is this: the enumerated
+ * shapes below are caught, and each has a test. What protects a reader is not
+ * this file alone — it is that every value on a rendered dashboard is computed
+ * by Dasher from source observations, and nothing a planner writes in free text
+ * is ever one of those values. This gate is defence in depth behind the
+ * system prompt, which states the rule broadly on purpose, and behind that
+ * arithmetic. It is not the reason a reader can trust a number.
+ *
  * It does not attempt to catch a general claim. "Conditions are dangerous" is a
  * claim, is not caught, and a wordlist that tried would be a filter pretending
- * to be a boundary. The honest position is that free text is a judgement surface
- * with two hard edges, not a sanitized one; `packages/planner/eval/adversarial.ts`
- * measures what actually comes through so the next edge is drawn from evidence
- * rather than from imagination.
+ * to be a boundary.
+ *
+ * WHERE THE NEXT SHAPE SHOULD COME FROM. `packages/planner/eval/adversarial.ts`
+ * measures what a real model actually writes. It has never been run against the
+ * air domain, so every air shape in this file was imagined by a reviewer rather
+ * than observed. Adding more imagined shapes has a poor stopping rule; running
+ * the eval has an obvious one.
  *
  * These become `PlanFinding`s, so the first cost of a false positive is one
  * revision round-trip, not a rejected dashboard. That budget is what allows the
@@ -57,6 +77,16 @@ export interface SmuggledText {
  *     composition language, and reading it as three inches would spend a
  *     revision round on a sentence that never asserted anything. The written-out
  *     forms are kept, and river stage is in feet regardless.
+ *
+ * THIS LIST WAS RIVER-SHAPED, and the shape was invisible while the only
+ * planner was a fake that never wrote a reading. Measured against the detector
+ * before the air units below were added: "Sacramento at 12 ft" was caught, and
+ * "Sacramento at 21 µg/m³", "21 ppb", "21 ppm", and "21 micrograms per cubic
+ * meter" all passed into the dashboard's title. "20.6 µg/m³" was caught, but by
+ * the bare-decimal rule underneath — the unit contributed nothing, so an
+ * integer reading in air's own unit went through. A gate that holds for one
+ * domain and not another is not a gate; it is a coincidence of which domain
+ * shipped first.
  */
 const MEASUREMENT_UNITS = [
   "ft3/s",
@@ -74,6 +104,25 @@ const MEASUREMENT_UNITS = [
   "metres",
   "mph",
   "kph",
+  // Air quality. `µ` and `μ` are different codepoints that render alike, and a
+  // model will produce either; both are listed rather than normalised, so what
+  // the gate matches is what a reader would see.
+  "µg/m³",
+  "μg/m³",
+  "µg/m3",
+  "μg/m3",
+  "ug/m³",
+  "ug/m3",
+  "micrograms per cubic meter",
+  "micrograms per cubic metre",
+  "microgram per cubic meter",
+  "microgram per cubic metre",
+  "micrograms/m³",
+  "micrograms/m3",
+  "parts per billion",
+  "parts per million",
+  "ppm",
+  "ppb",
   "%",
 ] as const;
 
@@ -126,17 +175,127 @@ const NUMBER_WORDS = [
 const NUMBER_WORD = `(?:${NUMBER_WORDS.join("|")})`;
 
 /**
+ * An index whose number usually comes second: "AQI 84", "AQI: 84", "AQI is 84",
+ * "an AQI of 84", "84 AQI", "air quality index 84".
+ *
+ * Every other unit is written after its number, so `QUANTITY` below reads
+ * number-then-unit and cannot express this one. It earns a pattern of its own
+ * rather than a row in the unit list, because AQI is a reading Dasher does not
+ * compute at all — the air domain reports PM2.5 — so a plan stating one has
+ * invented it outright rather than restating something already on the page.
+ *
+ * THE VALUE IS ONE TO THREE DIGITS, and that bound is what keeps the pattern
+ * from eating a year. The first version of this matched any number, so "AQI
+ * 2024 reporting overview" — a perfectly ordinary title — was reported as a
+ * smuggled reading. The index runs 0–500; a four-digit number after it is not
+ * one.
+ */
+const INDEX_NAME = String.raw`(?:AQI|air[\s-]quality[\s-]index)`;
+/** ":", "=", "is", "of", "at", or nothing at all. */
+const INDEX_LINK = String.raw`(?:\s*[:=]\s*|\s+(?:is|of|at|was)\s+|\s*[-–]?\s*)`;
+const INDEX_VALUE = String.raw`(?:\d{1,3}(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)`;
+
+const INDEX_QUANTITY = new RegExp(
+  String.raw`\b${INDEX_NAME}\b${INDEX_LINK}${INDEX_VALUE}\b` +
+    String.raw`|\b${INDEX_VALUE}\s?\b${INDEX_NAME}\b`,
+  "giu",
+);
+
+/**
+ * A pollutant named, then its value, with no unit anywhere: "PM2.5 at 21".
+ *
+ * Dropping the unit is the cheapest way past a unit list, and it costs a reader
+ * nothing — the pollutant already says what the number measures. Naming the
+ * pollutant WITHOUT a value stays composition language and must keep passing:
+ * "PM2.5 monitors near Sacramento" is what the air domain's own example request
+ * says.
+ */
+const POLLUTANT = String.raw`(?:PM\s?-?\s?(?:2\.5|10)|ozone|NO2|SO2|CO2?)`;
+/** ":", "=", a copula or preposition, or plain adjacency. */
+const POLLUTANT_LINK = String.raw`(?:\s*[:=]\s*|\s+(?:is|was|are|were|of|at|reads|reading|measured)\s+|\s?[-–]?\s+)`;
+/**
+ * One to three digits, or the same number spelled out.
+ *
+ * The digit bound is doing the same job it does for the index above, and it was
+ * missing here in the revision that introduced this pattern: bare adjacency
+ * plus an unbounded number meant "PM2.5 2024 reporting overview" and "CO2 2024
+ * monitoring plan" were reported as smuggled readings. A concentration in µg/m³
+ * runs to three digits in the readings this product shows; a fourth is a year.
+ *
+ * Spelled numbers are here because the unit patterns already close that route —
+ * "twenty-eight feet" has never passed — and a pollutant with a spelled value
+ * asserts exactly as much as one with digits.
+ */
+const POLLUTANT_VALUE = String.raw`(?:\d{1,3}(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)`;
+const POLLUTANT_READING = new RegExp(
+  String.raw`\b${POLLUTANT}\b${POLLUTANT_LINK}${POLLUTANT_VALUE}\b` +
+    String.raw`|\b${POLLUTANT_VALUE}\s?\b${POLLUTANT}\b`,
+  "giu",
+);
+
+/**
+ * A concentration written the way SI actually gets typed.
+ *
+ * The unit list holds literals, and literals cannot express optional whitespace
+ * around a solidus or the middle-dot-and-negative-exponent form. All of these
+ * are the same reading: `21 µg/m³`, `21 µg / m³`, `21 ug/m3`, `21 µg·m⁻³`. Both
+ * micro signs are accepted for the reason the literal list gives, and `u` is
+ * accepted because a plain-ASCII keyboard produces it.
+ */
+const MICRO = String.raw`[µμu]`;
+const PER = String.raw`\s*[/·⋅.]\s*`;
+const CUBIC_METRE = String.raw`m\s*(?:⁻³|³|\^-3|-3|3)`;
+const CONCENTRATION = new RegExp(
+  String.raw`(?:(?:${NUMBER})(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)` +
+    String.raw`\s?[-–]?\s?${MICRO}g${PER}${CUBIC_METRE}`,
+  "giu",
+);
+
+/**
+ * Decimals that are not readings, and the reason each is here.
+ *
+ * The bare-decimal rule below is deliberately eager, and eagerness has a cost
+ * that only shows up on real phrasing. Two costs were found in review:
+ *
+ *   * `PM 2.5` — the air domain's own pollutant, spelled with a space. Written
+ *     `PM2.5` it passed, written `PM 2.5` it was reported. The same phrase
+ *     cannot mean two things depending on a space.
+ *   * `Version 2.5` — a version is not a measurement of anything on the page.
+ *
+ * Both are recognised here and excluded from the decimal sweep. Neither
+ * exclusion reaches a number that follows them: `POLLUTANT_READING` above still
+ * catches "PM 2.5 at 21".
+ */
+const NON_READING_DECIMAL = new RegExp(
+  String.raw`\bPM\s?-?\s?(?:2\.5|10)\b` +
+    String.raw`|\b(?:v|ver|version|revision|schema|spec)\.?\s?\d+\.\d+\b`,
+  "giu",
+);
+
+/**
  * A quantity: digits, then an optional space or hyphen, then a unit. Word units
  * are followed by a boundary, so "3 minutes" cannot read as three metres; `%`
  * needs no boundary because it is not a word character.
  */
-const WORD_UNITS = MEASUREMENT_UNITS.filter((unit) => unit !== "%")
+/**
+ * Units that end in a word character, so a trailing `\b` distinguishes "3
+ * minutes" from three metres. The symbol-terminated units below cannot use one:
+ * `%` and `µg/m³` do not end in a word character, and `\b` after them never
+ * matches.
+ */
+const SYMBOL_TERMINATED = (unit: string): boolean => !/\w$/u.test(unit);
+
+const WORD_UNITS = MEASUREMENT_UNITS.filter((unit) => !SYMBOL_TERMINATED(unit))
+  .map(escape)
+  .join("|");
+
+const SYMBOL_UNITS = MEASUREMENT_UNITS.filter(SYMBOL_TERMINATED)
   .map(escape)
   .join("|");
 
 const QUANTITY = new RegExp(
   String.raw`(?:${NUMBER})(?:\.\d+)?\s?[-–]?\s?(?:${WORD_UNITS})\b` +
-    String.raw`|(?:${NUMBER})(?:\.\d+)?\s?%` +
+    String.raw`|(?:${NUMBER})(?:\.\d+)?\s?(?:${SYMBOL_UNITS})` +
     // Spelled out: one or more number words, hyphen- or space-joined, then a
     // unit. "twenty-eight and a half feet" is not covered and is not pretended
     // to be; what is covered is the plain form a model actually reaches for.
@@ -237,29 +396,87 @@ export function planFreeText(
   ];
 }
 
-function matches(text: string, pattern: RegExp): string[] {
+/** A matched excerpt and where it sat, so overlaps can be resolved by position. */
+export interface Span {
+  readonly text: string;
+  /** Inclusive. */
+  readonly start: number;
+  /** Exclusive, so two spans touch when one's `end` equals the other's `start`. */
+  readonly end: number;
+}
+
+function matches(text: string, pattern: RegExp): Span[] {
   // The patterns are module-level and global, so each use starts a fresh
   // matcher rather than resuming from a previous field's `lastIndex`.
   return [...text.matchAll(new RegExp(pattern.source, pattern.flags))].map(
-    (match) => match[0],
+    (match) => ({
+      text: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    }),
   );
+}
+
+/**
+ * One offence, reported once.
+ *
+ * Several patterns now cover overlapping ground on purpose — "Ozone at 3 ppm"
+ * is a pollutant reading AND a quantity, "20.6 µg/m³" is a quantity AND a bare
+ * decimal — because each pattern exists to catch a shape the others miss. What
+ * a reader must not get is the same phrase listed three times with three
+ * different excerpts, which reads as three separate problems to repair.
+ *
+ * Overlap is resolved by position rather than by containment. Containment was
+ * the previous rule and it only worked when one excerpt sat wholly inside
+ * another; "Ozone at 3" and "3 ppm" overlap without either containing the
+ * other, and both would have been reported.
+ */
+export function longestNonOverlapping(spans: readonly Span[]): Span[] {
+  const byLengthThenPosition = [...spans].sort(
+    (one, two) => two.text.length - one.text.length || one.start - two.start,
+  );
+  const kept: Span[] = [];
+  for (const span of byLengthThenPosition) {
+    const overlaps = kept.some(
+      (other) => span.start < other.end && other.start < span.end,
+    );
+    if (!overlaps) kept.push(span);
+  }
+  return kept.sort((one, two) => one.start - two.start);
 }
 
 export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
   const found: SmuggledText[] = [];
 
   for (const { path, text } of planFreeText(plan)) {
-    const quantities = matches(text, QUANTITY);
-    const decimals = matches(text, DECIMAL).filter(
-      // A decimal inside a quantity is the same offence reported twice.
-      (decimal) => !quantities.some((quantity) => quantity.includes(decimal)),
-    );
+    // Spelled-out names that are not readings — the domain's own pollutant, a
+    // version string — are found first and used to mask the decimal sweep.
+    const excluded = matches(text, NON_READING_DECIMAL);
+    // Both halves are load-bearing. Checking only "ends inside" would let an
+    // exclusion appearing LATER in the field swallow an earlier real reading —
+    // "Readings of 12.4 across PM 2.5 monitors" — which is a test below.
+    //
+    // The `>=` never fires on equality: an exclusion match begins with a letter
+    // and a decimal match with a digit, so the two cannot start at the same
+    // index. Searching 279,841 generated strings over these two patterns found
+    // no case where relaxing it to `>` changed the answer, which is why the
+    // mutation gate reports one survivor here and it is left standing.
+    const inExcluded = (span: Span): boolean =>
+      excluded.some((one) => span.start >= one.start && span.end <= one.end);
 
-    for (const excerpt of [...quantities, ...decimals]) {
-      found.push({ kind: "measurement", path, excerpt });
+    const measurements = longestNonOverlapping([
+      ...matches(text, QUANTITY),
+      ...matches(text, INDEX_QUANTITY),
+      ...matches(text, POLLUTANT_READING),
+      ...matches(text, CONCENTRATION),
+      ...matches(text, DECIMAL).filter((decimal) => !inExcluded(decimal)),
+    ]);
+
+    for (const span of measurements) {
+      found.push({ kind: "measurement", path, excerpt: span.text });
     }
-    for (const excerpt of matches(text, DIRECTIVES)) {
-      found.push({ kind: "directive", path, excerpt });
+    for (const span of matches(text, DIRECTIVES)) {
+      found.push({ kind: "directive", path, excerpt: span.text });
     }
   }
 
