@@ -47,6 +47,11 @@ export function provenanceOf(
 export function combinedProvenance(
   planners: readonly Pick<PlanningProvider, "id" | "usesModel">[],
 ): PlannerProvenance {
+  // No planner ran. Reachable only from a path that persists nothing — the
+  // official-snapshot branch answers before this, and a refusal has no
+  // dashboard to save — but a pure function that silently returned two empty
+  // strings for it would be one more place a record could lie quietly.
+  if (planners.length === 0) return { provider: "none", model: "none" };
   const each = planners.map(provenanceOf);
   const join = (pick: (one: PlannerProvenance) => string): string =>
     [...new Set(each.map(pick))].join("+");

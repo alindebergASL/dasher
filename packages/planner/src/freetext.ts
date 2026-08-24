@@ -97,6 +97,10 @@ const MEASUREMENT_UNITS = [
   "micrograms per cubic metre",
   "microgram per cubic meter",
   "microgram per cubic metre",
+  "micrograms/m³",
+  "micrograms/m3",
+  "parts per billion",
+  "parts per million",
   "ppm",
   "ppb",
   "%",
@@ -151,16 +155,66 @@ const NUMBER_WORDS = [
 const NUMBER_WORD = `(?:${NUMBER_WORDS.join("|")})`;
 
 /**
- * An index whose number comes second: "AQI 84", "an AQI of 84".
+ * An index whose number usually comes second: "AQI 84", "AQI: 84", "AQI is 84",
+ * "an AQI of 84", "84 AQI", "air quality index 84".
  *
  * Every other unit is written after its number, so `QUANTITY` below reads
  * number-then-unit and cannot express this one. It earns a pattern of its own
- * rather than an exclusion, because AQI is a reading Dasher does not compute at
- * all — the air domain reports PM2.5 — so a plan stating one has invented it
- * outright rather than restating something already on the page.
+ * rather than a row in the unit list, because AQI is a reading Dasher does not
+ * compute at all — the air domain reports PM2.5 — so a plan stating one has
+ * invented it outright rather than restating something already on the page.
+ *
+ * THE VALUE IS ONE TO THREE DIGITS, and that bound is what keeps the pattern
+ * from eating a year. The first version of this matched any number, so "AQI
+ * 2024 reporting overview" — a perfectly ordinary title — was reported as a
+ * smuggled reading. The index runs 0–500; a four-digit number after it is not
+ * one.
  */
+const INDEX_NAME = String.raw`(?:AQI|air[\s-]quality[\s-]index)`;
+/** ":", "=", "is", "of", "at", or nothing at all. */
+const INDEX_LINK = String.raw`(?:\s*[:=]\s*|\s+(?:is|of|at|was)\s+|\s*[-–]?\s*)`;
+const INDEX_VALUE = String.raw`(?:\d{1,3}(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)`;
+
 const INDEX_QUANTITY = new RegExp(
-  String.raw`\bAQI\b(?:\s+of)?\s?[-–]?\s?(?:(?:${NUMBER})(?:\.\d+)?|${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*)`,
+  String.raw`\b${INDEX_NAME}\b${INDEX_LINK}${INDEX_VALUE}\b` +
+    String.raw`|\b${INDEX_VALUE}\s?\b${INDEX_NAME}\b`,
+  "giu",
+);
+
+/**
+ * A pollutant named, then its value, with no unit anywhere: "PM2.5 at 21".
+ *
+ * Dropping the unit is the cheapest way past a unit list, and it costs a reader
+ * nothing — the pollutant already says what the number measures. Naming the
+ * pollutant WITHOUT a value stays composition language and must keep passing:
+ * "PM2.5 monitors near Sacramento" is what the air domain's own example request
+ * says.
+ */
+const POLLUTANT = String.raw`(?:PM\s?-?\s?(?:2\.5|10)|ozone|NO2|SO2|CO2?)`;
+const POLLUTANT_READING = new RegExp(
+  String.raw`\b${POLLUTANT}\b(?:\s*[:=]\s*|\s+(?:is|of|at|reads|reading)\s+|\s+)` +
+    String.raw`(?:${NUMBER})(?:\.\d+)?\b`,
+  "giu",
+);
+
+/**
+ * Decimals that are not readings, and the reason each is here.
+ *
+ * The bare-decimal rule below is deliberately eager, and eagerness has a cost
+ * that only shows up on real phrasing. Two costs were found in review:
+ *
+ *   * `PM 2.5` — the air domain's own pollutant, spelled with a space. Written
+ *     `PM2.5` it passed, written `PM 2.5` it was reported. The same phrase
+ *     cannot mean two things depending on a space.
+ *   * `Version 2.5` — a version is not a measurement of anything on the page.
+ *
+ * Both are recognised here and excluded from the decimal sweep. Neither
+ * exclusion reaches a number that follows them: `POLLUTANT_READING` above still
+ * catches "PM 2.5 at 21".
+ */
+const NON_READING_DECIMAL = new RegExp(
+  String.raw`\bPM\s?-?\s?(?:2\.5|10)\b` +
+    String.raw`|\b(?:v|ver|version|revision|schema|spec)\.?\s?\d+\.\d+\b`,
   "giu",
 );
 
@@ -288,32 +342,86 @@ export function planFreeText(
   ];
 }
 
-function matches(text: string, pattern: RegExp): string[] {
+/** A matched excerpt and where it sat, so overlaps can be resolved by position. */
+export interface Span {
+  readonly text: string;
+  /** Inclusive. */
+  readonly start: number;
+  /** Exclusive, so two spans touch when one's `end` equals the other's `start`. */
+  readonly end: number;
+}
+
+function matches(text: string, pattern: RegExp): Span[] {
   // The patterns are module-level and global, so each use starts a fresh
   // matcher rather than resuming from a previous field's `lastIndex`.
   return [...text.matchAll(new RegExp(pattern.source, pattern.flags))].map(
-    (match) => match[0],
+    (match) => ({
+      text: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    }),
   );
+}
+
+/**
+ * One offence, reported once.
+ *
+ * Several patterns now cover overlapping ground on purpose — "Ozone at 3 ppm"
+ * is a pollutant reading AND a quantity, "20.6 µg/m³" is a quantity AND a bare
+ * decimal — because each pattern exists to catch a shape the others miss. What
+ * a reader must not get is the same phrase listed three times with three
+ * different excerpts, which reads as three separate problems to repair.
+ *
+ * Overlap is resolved by position rather than by containment. Containment was
+ * the previous rule and it only worked when one excerpt sat wholly inside
+ * another; "Ozone at 3" and "3 ppm" overlap without either containing the
+ * other, and both would have been reported.
+ */
+export function longestNonOverlapping(spans: readonly Span[]): Span[] {
+  const byLengthThenPosition = [...spans].sort(
+    (one, two) => two.text.length - one.text.length || one.start - two.start,
+  );
+  const kept: Span[] = [];
+  for (const span of byLengthThenPosition) {
+    const overlaps = kept.some(
+      (other) => span.start < other.end && other.start < span.end,
+    );
+    if (!overlaps) kept.push(span);
+  }
+  return kept.sort((one, two) => one.start - two.start);
 }
 
 export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
   const found: SmuggledText[] = [];
 
   for (const { path, text } of planFreeText(plan)) {
-    const quantities = [
+    // Spelled-out names that are not readings — the domain's own pollutant, a
+    // version string — are found first and used to mask the decimal sweep.
+    const excluded = matches(text, NON_READING_DECIMAL);
+    // Both halves are load-bearing. Checking only "ends inside" would let an
+    // exclusion appearing LATER in the field swallow an earlier real reading —
+    // "Readings of 12.4 across PM 2.5 monitors" — which is a test below.
+    //
+    // The `>=` never fires on equality: an exclusion match begins with a letter
+    // and a decimal match with a digit, so the two cannot start at the same
+    // index. Searching 279,841 generated strings over these two patterns found
+    // no case where relaxing it to `>` changed the answer, which is why the
+    // mutation gate reports one survivor here and it is left standing.
+    const inExcluded = (span: Span): boolean =>
+      excluded.some((one) => span.start >= one.start && span.end <= one.end);
+
+    const measurements = longestNonOverlapping([
       ...matches(text, QUANTITY),
       ...matches(text, INDEX_QUANTITY),
-    ];
-    const decimals = matches(text, DECIMAL).filter(
-      // A decimal inside a quantity is the same offence reported twice.
-      (decimal) => !quantities.some((quantity) => quantity.includes(decimal)),
-    );
+      ...matches(text, POLLUTANT_READING),
+      ...matches(text, DECIMAL).filter((decimal) => !inExcluded(decimal)),
+    ]);
 
-    for (const excerpt of [...quantities, ...decimals]) {
-      found.push({ kind: "measurement", path, excerpt });
+    for (const span of measurements) {
+      found.push({ kind: "measurement", path, excerpt: span.text });
     }
-    for (const excerpt of matches(text, DIRECTIVES)) {
-      found.push({ kind: "directive", path, excerpt });
+    for (const span of matches(text, DIRECTIVES)) {
+      found.push({ kind: "directive", path, excerpt: span.text });
     }
   }
 

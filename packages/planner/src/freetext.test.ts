@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { findSmuggledText, freeTextWithDigits, planFreeText } from "./freetext";
+import {
+  findSmuggledText,
+  freeTextWithDigits,
+  longestNonOverlapping,
+  planFreeText,
+} from "./freetext";
 import type { DashboardPlan } from "./plan";
 
 const base: DashboardPlan = {
@@ -174,6 +179,92 @@ describe("findSmuggledText: air-quality measurements", () => {
     expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
   });
 
+  /**
+   * Every case below reached the reader's title on
+   * `e3a8d5dd2b79a57b0e10e5d148e2030551cb7f68`, the head that closed the unit
+   * list. Adding air units caught the shapes that name a unit; these are the
+   * shapes that do not need one — ordinary punctuation, a copula, the reversed
+   * order, the written-out index name, and a pollutant whose value carries no
+   * unit at all because the pollutant already says what is being measured.
+   */
+  it.each([
+    ["a colon", "Sacramento AQI: 84"],
+    ["a copula", "Sacramento AQI is 84"],
+    ["an equals sign", "Sacramento AQI = 84"],
+    ["the reversed order", "Sacramento at 84 AQI"],
+    ["the written-out name", "Air quality index 84"],
+    ["the written-out name with a preposition", "Air quality index of 84"],
+  ])("catches an index reading written with %s", (_label, title) => {
+    expect(
+      findSmuggledText(withText({ title })).map((item) => item.kind),
+    ).toContain("measurement");
+  });
+
+  it.each([
+    ["no unit at all", "Sacramento PM2.5 at 21"],
+    ["a slashed unit", "Sacramento PM2.5 at 21 micrograms/m3"],
+    ["a written-out unit", "Sacramento PM2.5 at 21 parts per billion"],
+    ["a spaced pollutant name", "Sacramento PM 2.5 at 21"],
+    ["a colon", "Sacramento PM2.5: 21"],
+  ])("catches a pollutant reading written with %s", (_label, title) => {
+    expect(
+      findSmuggledText(withText({ title })).map((item) => item.kind),
+    ).toContain("measurement");
+  });
+
+  /**
+   * The other half of the same review. Each of these was a FALSE POSITIVE on
+   * that head: the first AQI pattern matched any number, so it ate a year, and
+   * the bare-decimal rule fired on the air domain's own pollutant whenever it
+   * was written with a space — so `PM2.5 monitors` passed while `PM 2.5
+   * monitors` did not, which is the same phrase treated two ways.
+   */
+  it.each([
+    ["the pollutant spelled with a space", "PM 2.5 monitors"],
+    ["a year after the index name", "AQI 2024 reporting overview"],
+    ["a version number", "Version 2.5 layout"],
+    ["the index named without a value", "Air quality index overview"],
+    ["the index named in a trend", "AQI trends this season"],
+    ["the pollutant named without a value", "PM2.5 monitors near Sacramento"],
+  ])("does not fire on %s", (_label, title) => {
+    expect(findSmuggledText(withText({ title }))).toStrictEqual([]);
+  });
+
+  it("still reports a decimal that precedes the excluded name", () => {
+    // The mask must cover the exclusion's own characters and no others. An
+    // exclusion that appears AFTER a real reading still ends after it, so a
+    // rule checking only "ends inside" would swallow the reading. Found by
+    // searching 14,739 generated strings for a case where dropping the
+    // start-position half changed the answer, after I had reasoned — wrongly —
+    // that it could not.
+    const found = findSmuggledText(
+      withText({ title: "Readings of 12.4 across PM 2.5 monitors" }),
+    );
+
+    expect(found.map((item) => item.excerpt)).toStrictEqual(["12.4"]);
+  });
+
+  it("still reports a real decimal beside an excluded one", () => {
+    // The exclusion must mask the pollutant's own "2.5" and nothing else. A
+    // mask that swallowed the whole field would pass every test that only ever
+    // put one number in it.
+    const found = findSmuggledText(
+      withText({ title: "PM 2.5 monitors reading 12.4" }),
+    );
+
+    expect(found.map((item) => item.excerpt)).toStrictEqual(["12.4"]);
+  });
+
+  it("reports one offence once when several patterns see it", () => {
+    // "Ozone at 3 ppm" is a pollutant reading and a quantity; the two overlap
+    // without either containing the other, which the previous containment rule
+    // could not resolve. A reader repairing this should see one problem.
+    const found = findSmuggledText(withText({ title: "Ozone at 3 ppm" }));
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.excerpt).toBe("Ozone at 3");
+  });
+
   it("reports a concentration once, not twice, when it carries a decimal", () => {
     // The bare-decimal rule caught "20.6 µg/m³" before the unit existed here.
     // Now both patterns see it, and the reader should still get one finding.
@@ -302,5 +393,104 @@ describe("findSmuggledText: the directive rule the prompt already states", () =>
         withText({ framing: "Check back frequently for updates." }),
       ),
     ).toStrictEqual([]);
+  });
+});
+
+describe("longestNonOverlapping", () => {
+  /**
+   * The overlap arithmetic, tested directly.
+   *
+   * It was reachable only through plan titles at first, and the mutation gate
+   * said so: fourteen mutants in these few lines survived, because ordinary
+   * prose does not produce spans that touch exactly, tie on length, or arrive
+   * out of order. A boundary that real text cannot reach is still a boundary
+   * this function has to get right, and testing it beside itself is the defect
+   * this repository keeps finding.
+   */
+  const span = (text: string, start: number) => ({
+    text,
+    start,
+    end: start + text.length,
+  });
+
+  it("keeps a single span", () => {
+    expect(longestNonOverlapping([span("12 ft", 3)])).toStrictEqual([
+      span("12 ft", 3),
+    ]);
+  });
+
+  it("keeps the longer of two overlapping spans", () => {
+    // "Ozone at 3" and "3 ppm" overlap on the 3, and neither contains the
+    // other — the case the previous containment rule could not resolve.
+    const longer = span("Ozone at 3", 0);
+    const shorter = span("3 ppm", 9);
+
+    expect(longestNonOverlapping([shorter, longer])).toStrictEqual([longer]);
+  });
+
+  it.each([
+    // Both directions. Only one of them exercises the first half of the
+    // overlap test: whichever span sorts first becomes the keeper, and the
+    // other is then compared against it. Testing one direction left the
+    // boundary half-checked, and the mutation gate said so.
+    ["the shorter span second", span("12 ft", 0), span("40%", 5)],
+    ["the shorter span first", span("40%", 0), span("12 ft", 3)],
+  ])("keeps both when spans merely touch, with %s", (_label, one, two) => {
+    // `end` is exclusive, so abutting spans do not overlap. Reported
+    // separately because they are separate offences sharing no character.
+    expect(longestNonOverlapping([one, two])).toStrictEqual([one, two]);
+    expect(longestNonOverlapping([two, one])).toStrictEqual([one, two]);
+  });
+
+  it("keeps both when spans are disjoint", () => {
+    const first = span("12 ft", 0);
+    const second = span("40%", 20);
+
+    expect(longestNonOverlapping([second, first])).toStrictEqual([
+      first,
+      second,
+    ]);
+  });
+
+  it("returns spans in reading order whatever order they arrived in", () => {
+    const first = span("12 ft", 2);
+    const second = span("40%", 30);
+    const third = span("3 cfs", 60);
+
+    expect(
+      longestNonOverlapping([third, first, second]).map((one) => one.text),
+    ).toStrictEqual(["12 ft", "40%", "3 cfs"]);
+  });
+
+  it("breaks a length tie by position, so the result is deterministic", () => {
+    // Same length, overlapping: without the tie-break the survivor depends on
+    // input order, and two runs over the same title could differ.
+    const earlier = span("12 ft", 0);
+    const later = span("t 3 f", 4);
+
+    expect(longestNonOverlapping([earlier, later])).toStrictEqual([earlier]);
+    expect(longestNonOverlapping([later, earlier])).toStrictEqual([earlier]);
+  });
+
+  it("drops every span an earlier keeper covers, not just the first", () => {
+    const wide = span("Ozone at 3 ppm today", 0);
+
+    expect(
+      longestNonOverlapping([wide, span("3 ppm", 9), span("at 3", 6)]),
+    ).toStrictEqual([wide]);
+  });
+
+  it("keeps nothing from nothing", () => {
+    expect(longestNonOverlapping([])).toStrictEqual([]);
+  });
+});
+
+describe("findSmuggledText: several offences in one field", () => {
+  it("reports each in reading order", () => {
+    const found = findSmuggledText(
+      withText({ title: "Sacramento at 12 ft, running 40% above normal" }),
+    );
+
+    expect(found.map((item) => item.excerpt)).toStrictEqual(["12 ft", "40%"]);
   });
 });
