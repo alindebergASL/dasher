@@ -3,20 +3,54 @@
 Date: 2026-08-24
 Occasioned by: PR #51, and the arithmetic in it
 
-## The finding
+## Correction, before the finding
 
-`@dasher/calculation-engine` and `@dasher/extraction-spike` are depended on by no
-package in this repository. Verified across every manifest:
+The first version of this note opened by announcing that two packages are
+reachable from nothing, as though that were news. **The repository already knew,
+and had instrumented it.** `reachability.json` declares both, each with a reason
+and a date, and `@dasher/repo-graph` fails the build in both directions — on an
+orphan nobody declared, and on a declaration that has gone stale because the
+package got wired up.
 
-```sh
-grep -rn "@dasher/calculation-engine\|@dasher/extraction-spike" \
-  --include=package.json packages apps | grep -v node_modules
-# only their own name fields
+That gate's own docstring names the exact failure it exists to stop: control-plane
+reaching 71,748 lines and calculation-engine 17,372 "with nothing importing
+either, while every gate stayed green."
+
+I found the absence by grepping `package.json` manifests and stopped there. The
+working practice I wrote two days ago says an absence claim carries the command
+that produced it _and_ that the command's matches get read — and a manifest grep
+was the wrong command, because the declaration does not live in a manifest. So
+this note is not the discovery it first claimed to be. What follows is what it
+actually adds: what the packages contain, what the arithmetic already costs, and
+which declaration has gone quietly out of date.
+
+## What the declarations say
+
+```json
+{ "name": "@dasher/calculation-engine",
+  "reason": "Its only importer was the integration test cross-checking the
+             PL/pgSQL evaluator that the baseline squash deleted. Wiring it into
+             @dasher/planner is step 4 of the restructure proposal and is the
+             next visible change.",
+  "since": "2026-08-14" }
 ```
 
-Between them they carry **372 tests** through every CI run. That is not the
-problem. The problem is that both were built for work this repository is about
-to do again by hand.
+"The next visible change" was ten days ago, and four slices have shipped since.
+The declaration is not false — nothing imports it — but its _reason_ has become
+a plan nobody is executing, which is the softer version of the rot the gate was
+built to catch.
+
+```json
+{ "name": "@dasher/extraction-spike",
+  "reason": "...must not be importable by product code while ADR-008 is Proposed
+             and the extracted tier is undecided...",
+  "since": "2026-08-19" }
+```
+
+That one is doing its job exactly as written, and it **overrules** the
+recommendation this note originally made for it. See below.
+
+Between them the two packages carry **372 tests** through every CI run.
 
 ## `@dasher/calculation-engine` — the calculation envelope, already built
 
@@ -95,15 +129,25 @@ saying which cell a figure came from and standing behind it, which is this
 package's entire subject — one representation away. Its locators are text
 coordinates in a document; a workbook's are sheet, row, and column.
 
-### Recommendation
+### Recommendation, corrected
 
-Keep, and treat it as the provenance model the workbook path extends rather than
-as a spike to be superseded. Do not rebuild coordinate verification for
-spreadsheets. The wrongness taxonomy in particular is the thing that would
-otherwise be reinvented badly: `reporting-period` and `denominator` are exactly
-how a spending figure goes wrong.
+The first version of this note said to "treat it as the provenance model the
+workbook path extends". **That is not available.** Its declaration says it must
+not be importable by product code while ADR-008 is Proposed and the extracted
+tier is undecided, and importing it into a workbook path is precisely what that
+forbids. The boundary is deliberate and the note was wrong to route around it.
 
-The name should change if it stops being a spike. It is currently accurate.
+What is available, and what this note recommends instead: when the workbook path
+needs coordinate-level provenance, the decision to make is **ADR-008's** — accept
+or reject the extracted tier — and the spike is the evidence for that decision
+rather than a library to import. Its wrongness taxonomy (`subject`, `field`,
+`reporting-period`, `unit`, `denominator`, `section`, `fragment`) is worth
+reading before designing workbook evidence, because `reporting-period` and
+`denominator` are exactly how a spending figure goes wrong. Reading it is not
+importing it.
+
+So: leave it alone, and do not treat its isolation as debt. Unlike the
+calculation engine, its declaration is current and its reason still holds.
 
 ## What this is an instance of
 
