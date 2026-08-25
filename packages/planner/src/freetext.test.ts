@@ -673,3 +673,48 @@ describe("findSmuggledText: money, adversarially", () => {
     expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
   });
 });
+
+/**
+ * A second attack, run as the review of this change rather than in place of one.
+ *
+ * Sixteen probes on angles the first list did not use — per-unit money, ranges,
+ * a figure split across a clause, spelled magnitudes, non-ASCII digits. Thirteen
+ * were caught. One was the ungrouped-integer gap already recorded. The two below
+ * were new, and the second is the reason a second pass was worth running: a
+ * planner writing "10 percent" is not exotic at all.
+ */
+describe("findSmuggledText: the spelled forms of a percentage", () => {
+  it.each([
+    ["Cloud took 10 percent of spend", "10 percent"],
+    ["Cloud took 10 per cent of spend", "10 per cent"],
+    ["Cloud took 10 pct of spend", "10 pct"],
+    // The spelled number and the spelled unit together.
+    ["Cloud rose seven percent", "seven percent"],
+  ])("catches %j", (framing, excerpt) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt },
+    ]);
+  });
+
+  it("leaves the word alone when no value is attached to it", () => {
+    // A unit without a value is composition language, exactly as a currency
+    // without one is.
+    expect(
+      findSmuggledText(
+        withText({ framing: "Percentage change against the previous period" }),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("is known not to catch a figure in non-ASCII digits", () => {
+    // `\d` under the `u` flag is ASCII 0-9. The fix is `\p{Nd}`, which covers
+    // every decimal script at once and changes what every pattern in the file
+    // matches; adding fullwidth alone would leave Arabic-Indic and Devanagari
+    // out and look like coverage. Recorded rather than half-done.
+    const fullwidth = "Cloud spend was \uFF14\uFF19\uFF18\uFF17\uFF15 USD";
+
+    expect(findSmuggledText(withText({ framing: fullwidth }))).toStrictEqual(
+      [],
+    );
+  });
+});

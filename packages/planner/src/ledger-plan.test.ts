@@ -124,7 +124,10 @@ describe("the gate does not depend on which plan contract carries the text", () 
       "$12,400",
       "Evacuate",
       "twelve thousand dollars",
-      "12.4",
+      // "12.4 percent" rather than "12.4": once `percent` became a unit, the
+      // quantity pattern claims the whole phrase and the bare-decimal rule no
+      // longer has to. The excerpt a reader is shown is the better one.
+      "12.4 percent",
     ]);
     // Same excerpts, reached through the other contract.
     for (const excerpt of station) {

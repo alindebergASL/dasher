@@ -142,6 +142,13 @@ const MEASUREMENT_UNITS = [
   "ppm",
   "ppb",
   "%",
+  // The spelled forms of `%`. A second attack on the money gate found
+  // "Cloud took 10 percent of spend" passing while "10%" was caught — the same
+  // omission the spelled-out numbers above already exist to close, one level
+  // along. `per cent` is the British spelling and `pct` the abbreviation.
+  "percent",
+  "per cent",
+  "pct",
 ] as const;
 
 const NUMBER = String.raw`\d{1,3}(?:,\d{3})+|\d+`;
@@ -398,6 +405,14 @@ const CURRENCY_QUANTITY = new RegExp(
  * carry a fractional number. The same is true of a grouped one, and leaving it
  * out was the largest hole in the money gate: the ledger dashboard's own total,
  * written without a currency, passed cleanly.
+ *
+ * NON-ASCII DIGITS ARE NOT COVERED, and deliberately so. `\d` under the `u`
+ * flag is ASCII 0-9, so "４９８７５ USD" in fullwidth digits passes. The fix is
+ * not to add fullwidth: it is `\p{Nd}`, which covers every decimal script at
+ * once, and switching to it changes what every pattern in this file matches.
+ * That is its own change with its own probe pass, and adding one script while
+ * leaving Arabic-Indic and Devanagari out would be the half-coverage this file
+ * keeps warning about.
  *
  * ONLY THE GROUPED FORM. An ungrouped run of digits is not safe to read as a
  * magnitude here — `11446500` is a USGS site id, and a river plan naming one in
