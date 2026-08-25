@@ -615,3 +615,61 @@ describe("findSmuggledText: money", () => {
     ]);
   });
 });
+
+/**
+ * Money, attacked rather than demonstrated.
+ *
+ * The air-quality version of this gate shipped with nine bypasses that outside
+ * review found, so this list was written by trying to get a figure past the
+ * money version rather than by showing that the intended forms work. Eight got
+ * through on the first pass; six are closed below and three are named as gaps
+ * with the reason, because a bypass nobody has written down reads as coverage.
+ */
+describe("findSmuggledText: money, adversarially", () => {
+  it.each([
+    // A sign belongs to the amount.
+    ["Cloud spend was $-1,200", "$-1,200"],
+    // Accounting negatives, and the dashboard's own total written bare.
+    ["Cloud came to (49,875)", "49,875"],
+    ["Total was 474,855", "474,855"],
+    // Symbols outside the first four.
+    ["Cloud spend was ₹49875", "₹49875"],
+    // A qualifier between the number and its unit.
+    ["Cloud spend was 49875 US dollars", "49875 US dollars"],
+    // A currency code with no space at all.
+    ["Cloud spend was USD49875", "USD49875"],
+  ])("catches %j", (framing, excerpt) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt },
+    ]);
+  });
+
+  it("does not read a USGS site id as an amount", () => {
+    // The reason the grouped-integer rule requires the separator. Losing this
+    // would trade a money bypass for a river false positive.
+    expect(
+      findSmuggledText(
+        withText({ framing: "Sacramento River at Freeport (11446500)" }),
+      ),
+    ).toStrictEqual([]);
+    expect(
+      findSmuggledText(withText({ framing: "Reported on August 24, 2026" })),
+    ).toStrictEqual([]);
+  });
+
+  it.each([
+    // An ungrouped run of digits. Deliberate: see GROUPED_INTEGER — a site id
+    // is the same shape, and a river plan naming one in prose is legitimate.
+    "Cloud spend: 49875",
+    // A magnitude spelled without a numeral. `NUMBER_WORDS` has no "half" and
+    // no bare "million", and adding them reaches into general English.
+    "Spend of half a million dollars",
+    // A European decimal comma with the symbol trailing. This product formats
+    // en-US, and a planner writing this is not a case anyone has seen.
+    "Cloud spend was 1,2 M€",
+  ])("is known not to catch %j", (framing) => {
+    // These pass today. The test exists so the gap is a recorded fact rather
+    // than something a later reader has to rediscover by being caught out.
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
+  });
+});

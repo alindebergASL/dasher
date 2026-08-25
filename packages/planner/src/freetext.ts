@@ -347,15 +347,21 @@ const QUANTITY = new RegExp(
  * planner writing about this product's ledger could plausibly reach for; a new
  * one is a one-line diff when a snapshot needs it.
  */
-const CURRENCY_SYMBOL = String.raw`[$€£¥]`;
+const CURRENCY_SYMBOL = String.raw`[$€£¥₹¢￥＄]`;
 const CURRENCY_CODE = String.raw`(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|SEK|NOK|DKK|NZD)`;
-const CURRENCY_WORD = String.raw`(?:dollars?|euros?|pounds?|cents?|pence)`;
+/**
+ * A qualifier is optional and bounded to one word, because "49875 US dollars"
+ * asserts exactly what "49875 dollars" does. Unbounded intervening words would
+ * reach across a clause and start matching sentences that are not amounts.
+ */
+const CURRENCY_WORD = String.raw`(?:[A-Za-z]{2,3}\s)?(?:dollars?|euros?|pounds?|cents?|pence)`;
 /**
  * `$1.2M`, `250k`, `3.5bn` — the scale letter is part of the amount, so leaving
  * it out would report `$1.2` and quote an excerpt that is not what was written.
  */
 const SCALE_SUFFIX = String.raw`(?:\s?(?:k|m|bn|b))?`;
-const MONEY_NUMBER = String.raw`(?:${NUMBER})(?:\.\d+)?`;
+/** A sign belongs to the amount: `$-1,200` is a figure, not a symbol and a dash. */
+const MONEY_NUMBER = String.raw`[-−]?(?:${NUMBER})(?:\.\d+)?`;
 const SPELLED_NUMBER = String.raw`${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*`;
 
 /**
@@ -384,6 +390,23 @@ const CURRENCY_QUANTITY = new RegExp(
     String.raw`|\b(?:${MONEY_NUMBER}|${SPELLED_NUMBER})\s?[-–]?\s?${CURRENCY_WORD}\b`,
   "giu",
 );
+
+/**
+ * A comma-grouped integer, with no unit and no currency: "Total was 474,855".
+ *
+ * The bare-decimal rule below reasons that composition language has no reason to
+ * carry a fractional number. The same is true of a grouped one, and leaving it
+ * out was the largest hole in the money gate: the ledger dashboard's own total,
+ * written without a currency, passed cleanly.
+ *
+ * ONLY THE GROUPED FORM. An ungrouped run of digits is not safe to read as a
+ * magnitude here — `11446500` is a USGS site id, and a river plan naming one in
+ * prose would be reported as a smuggled reading. The grouping separator is what
+ * distinguishes a number written for a reader from an identifier, and a planner
+ * that drops the commas to get past this is writing "474855", which the next
+ * probe list should carry rather than this comment pretending otherwise.
+ */
+const GROUPED_INTEGER = new RegExp(String.raw`\b\d{1,3}(?:,\d{3})+\b`, "gu");
 
 /**
  * A bare decimal, with no unit attached. "12.4" in a sentence about a river is
@@ -553,6 +576,7 @@ export function findSmuggledText(plan: PlanFreeText): SmuggledText[] {
       ...matches(text, CONCENTRATION),
       ...matches(text, CURRENCY_QUANTITY),
       ...matches(text, SCALED_AMOUNT),
+      ...matches(text, GROUPED_INTEGER),
       ...matches(text, DECIMAL).filter((decimal) => !inExcluded(decimal)),
     ]);
 
