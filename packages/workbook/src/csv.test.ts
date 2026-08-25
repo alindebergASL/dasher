@@ -31,6 +31,38 @@ describe("the shapes real exporters produce", () => {
     expect(table.headers).toStrictEqual(["a", "b"]);
   });
 
+  it("strips it before deciding whether the first header is quoted", () => {
+    // The case that makes the stripping do any work. Trimming the header
+    // already removes a leading mark, because U+FEFF is whitespace to `trim` —
+    // so the test above passes with the stripping removed entirely, and both
+    // mutants of that line survived it.
+    //
+    // A quoted first header is where it matters: with the mark still in front,
+    // the opening quote is no longer the first character of the cell, so it is
+    // read as a literal quote and the header keeps them.
+    const table = parseCsv('﻿"line id","label"\n1,2\n');
+
+    expect(table.headers).toStrictEqual(["line id", "label"]);
+  });
+
+  it("keeps a quote that is not the first character as a quote", () => {
+    // A height in feet and inches, an initial in quotes, a stray one an
+    // exporter did not escape. Only a quote opening a cell begins a quoted
+    // cell; anywhere else
+    // it is a character. Reading it as an opener swallows the rest of the file.
+    expect(parseCsv('a,b\nx"y,2\n').rows).toStrictEqual([['x"y', "2"]]);
+  });
+
+  it("keeps a last row whose first cell is empty", () => {
+    // A row of data and a blank line are both "a record", and only the second
+    // is dropped. Told apart by the cell count, so an unbudgeted first column
+    // does not make the row look like the end of the file.
+    expect(parseCsv("a,b\n1,2\n,4\n").rows).toStrictEqual([
+      ["1", "2"],
+      ["", "4"],
+    ]);
+  });
+
   it.each([
     ["LF", "a,b\n1,2\n"],
     ["CRLF", "a,b\r\n1,2\r\n"],
@@ -119,6 +151,116 @@ describe("what it refuses", () => {
     expect(() => parseCsv("a,b\nlonger,2\n", tiny)).toThrow(/cell_too_long/u);
   });
 
+  /**
+   * Each limit at the value it states, which is the case a test written around
+   * a limit never reaches: "past the limit is refused" holds just as well when
+   * the limit is off by one, and every one of these four comparisons survived
+   * being weakened from `>` to `>=`.
+   *
+   * The row limit was the one that mattered. A file of exactly `maxRows` rows
+   * ending in the newline every editor writes was refused as having too many —
+   * at the shipping limit, every ten-thousand-row export.
+   */
+  describe("a file that sits exactly on a limit is inside it", () => {
+    // Only the row limit is tight here; the others are out of the way so that
+    // a file testing the row count is not refused for its size first.
+    const at = { ...CSV_LIMITS, maxRows: 2 };
+
+    it.each([
+      ["maxBytes", "a,b\n1,2\n", { ...CSV_LIMITS, maxBytes: 8 }],
+      ["maxColumns", "a,b\n1,2\n", { ...CSV_LIMITS, maxColumns: 2 }],
+      ["maxCellLength", "a,b\nabcd,2\n", { ...CSV_LIMITS, maxCellLength: 4 }],
+      ["maxRows", "a,b\n1,2\n3,4\n", { ...CSV_LIMITS, maxRows: 2 }],
+    ])("accepts a file exactly at %s", (_name, text, limits) => {
+      expect(() => parseCsv(text, limits)).not.toThrow();
+    });
+
+    it.each([
+      ["with the trailing newline every editor writes", "a,b\n1,2\n3,4\n"],
+      ["without one", "a,b\n1,2\n3,4"],
+      ["with several blank lines after it", "a,b\n1,2\n3,4\n\n\n\n"],
+    ])("counts %s as two rows, not more", (_name, text) => {
+      expect(parseCsv(text, at).rows).toStrictEqual([
+        ["1", "2"],
+        ["3", "4"],
+      ]);
+    });
+
+    it("refuses the row after the limit, and says how many it found", () => {
+      expect(() => parseCsv("a,b\n1,2\n3,4\n5,6\n", at)).toThrow(
+        /3 rows exceeds 2/u,
+      );
+    });
+  });
+
+  /**
+   * The detail beside the reason, which is the half a person can act on.
+   *
+   * Every one of these strings could be emptied without a test noticing. The
+   * reason alone says a file was refused; the detail says which column, which
+   * row, or which count, and an upload path has nothing else to show an author
+   * who needs to go and fix their file.
+   */
+  it.each([
+    [
+      "too_large",
+      "a,b\n€€€,2\n",
+      { ...CSV_LIMITS, maxBytes: 12 },
+      /1[0-9] bytes exceeds 12/u,
+    ],
+    [
+      "too_many_columns",
+      "a,b,c\n1,2,3\n",
+      { ...CSV_LIMITS, maxColumns: 2 },
+      /3 columns exceeds 2/u,
+    ],
+    [
+      "cell_too_long",
+      "a,b\nlonger,2\n",
+      { ...CSV_LIMITS, maxCellLength: 4 },
+      /6 characters exceeds 4/u,
+    ],
+    ["blank_header", "a,,b\n1,2,3\n", CSV_LIMITS, /column 2 has no name/u],
+    ["duplicate_header", "a,a\n1,2\n", CSV_LIMITS, /"a" appears twice/u],
+    ["empty", "", CSV_LIMITS, /holds no records/u],
+    [
+      "unclosed_quote",
+      'a,b\n"x,2\n',
+      CSV_LIMITS,
+      /quoted cell is never closed/u,
+    ],
+  ])(
+    "says what is wrong, not only that something is (%s)",
+    (_reason, text, limits, detail) => {
+      expect(() => parseCsv(text, limits)).toThrow(detail);
+    },
+  );
+
+  it("names itself, so a refusal in a log says which one it was", () => {
+    // `instanceof` is how code tells these apart and how every test above does
+    // it, which leaves the class name checked by nothing — and the name is the
+    // whole of what an operator reading a log line has to go on.
+    const error = (() => {
+      try {
+        parseCsv("");
+        return undefined;
+      } catch (thrown) {
+        return thrown as Error;
+      }
+    })();
+
+    expect(String(error)).toBe(
+      "CsvRefused: The file was refused (empty): the file holds no records",
+    );
+  });
+
+  it("numbers a blank header from one, the way a spreadsheet does", () => {
+    // Column 2, not column 1 and not column 3. An author reading this goes and
+    // looks at a specific cell.
+    expect(() => parseCsv(",b\n1,2\n")).toThrow(/column 1 has no name/u);
+    expect(() => parseCsv("a,,b\n1,2,3\n")).toThrow(/column 2 has no name/u);
+  });
+
   it("counts bytes rather than characters for the size limit", () => {
     // A file of multi-byte characters is larger on disk than its length
     // suggests, and the limit exists to bound memory rather than glyphs.
@@ -139,5 +281,19 @@ describe("columnIndexes", () => {
     expect(() =>
       columnIndexes(table, ["line_id", "period", "currency"]),
     ).toThrow(/"period", "currency"/u);
+  });
+
+  it("refuses it as a missing column, not as a blank header", () => {
+    // Two different problems used to arrive under one reason. A file whose
+    // columns are all perfectly well named was telling its author to go and
+    // look for an unnamed one, and the reasons are a closed set precisely so
+    // that the layer above can turn each into a sentence.
+    try {
+      columnIndexes(table, ["period"]);
+      expect.unreachable("a missing column should be refused");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CsvRefused);
+      expect((error as CsvRefused).reason).toBe("missing_column");
+    }
   });
 });
