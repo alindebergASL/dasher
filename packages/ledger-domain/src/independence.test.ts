@@ -21,13 +21,15 @@ describe("@dasher/ledger-domain", () => {
     ) as { dependencies: Record<string, string> };
 
     // Pinned rather than filtered, so adding a dependency is a decision
-    // someone sees. `@dasher/calculation-engine` joined the list when the
-    // ledger's arithmetic moved onto it; it is domain-neutral by construction —
-    // its own docstring says it has no database, network, clock, or provider,
-    // and it knows nothing about stations or ledgers.
+    // someone sees. `@dasher/calculation-engine` joined when the ledger's
+    // arithmetic moved onto it and `@dasher/workbook` when its export became a
+    // CSV. Both are domain-neutral by construction: one runs a calculation
+    // graph, the other splits characters on delimiters, and neither knows what
+    // a station or a budget line is.
     expect(Object.keys(manifest.dependencies).sort()).toStrictEqual([
       "@dasher/calculation-engine",
       "@dasher/dashboard-schema",
+      "@dasher/workbook",
       "zod",
     ]);
   });

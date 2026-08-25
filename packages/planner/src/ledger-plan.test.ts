@@ -1,7 +1,7 @@
-import { LedgerSnapshotSchema } from "@dasher/ledger-domain";
 import { describe, expect, it } from "vitest";
 
-import fixture from "../../../fixtures/ledger/operating-spend.json";
+import { operatingSpendFixture } from "@dasher/ledger-domain/fixture";
+
 import { compileLedgerPlan, LedgerPlanRejected } from "./compile-ledger";
 import { findSmuggledText } from "./freetext";
 import { findLedgerPlanProblems, type LedgerPlan } from "./ledger-plan";
@@ -23,7 +23,7 @@ import { findPlanProblems, type DashboardPlan } from "./plan";
  * happening.
  */
 
-const snapshot = LedgerSnapshotSchema.parse(fixture);
+const snapshot = operatingSpendFixture();
 const lineIds = snapshot.lines.map((line) => line.id);
 const options = {
   asOf: "2026-08-24T12:00:00.000Z",

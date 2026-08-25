@@ -28,9 +28,8 @@ import {
   buildUcrEnrollmentDashboard,
   EnrollmentSnapshotSchema,
 } from "@dasher/enrollment-domain";
-import { LedgerSnapshotSchema } from "@dasher/ledger-domain";
+import { operatingSpendFixture } from "@dasher/ledger-domain/fixture";
 
-import ledgerSnapshot from "../../../fixtures/ledger/operating-spend.json";
 import ucrEnrollmentSnapshot from "../../../fixtures/ucr/campus-facts-2025.snapshot.json";
 import { getPool, isPersistenceConfigured } from "./database";
 import {
@@ -529,7 +528,10 @@ async function plan(
       // contract — rather than the route enrollment takes, which is a builder
       // writing a finished `DashboardSpec` literal.
       try {
-        const snapshot = LedgerSnapshotSchema.parse(ledgerSnapshot);
+        // Parsed from the committed CSV export by trusted code, so the file
+        // the product reads is the shape an exporter writes rather than one
+        // already normalized for it.
+        const snapshot = operatingSpendFixture();
         return {
           result: {
             ok: true,
