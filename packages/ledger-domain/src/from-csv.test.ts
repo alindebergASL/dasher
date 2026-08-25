@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { LedgerSourceSchema, ledgerFromCsv } from "./from-csv";
 import { operatingSpendFixture } from "./fixture";
+import exportFile from "../../../fixtures/ledger/operating-spend.csv.json";
 
 /**
  * The pivot from the shape a spreadsheet writes to the shape the engine wants.
@@ -114,6 +115,19 @@ describe("ledgerFromCsv", () => {
 });
 
 describe("the committed export", () => {
+  it("still looks like a file an exporter wrote", () => {
+    // Carried inside a JSON file so the bundler can see it, which is a
+    // packaging decision and must not become a licence to hand-write something
+    // that is not a CSV. CRLF endings and a header row are what the format is.
+    //
+    // This assertion has already earned itself: an earlier attempt kept the
+    // text in a `.ts` module and Prettier normalised the CRLF endings away.
+    expect(exportFile.csv).toMatch(/\r\n/u);
+    expect(exportFile.csv.split("\r\n")[0]).toBe(
+      "line_id,label,budget_per_period,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08",
+    );
+  });
+
   it("is a CSV, and the product reads it through this parser", () => {
     const snapshot = operatingSpendFixture();
 
