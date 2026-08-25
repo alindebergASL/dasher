@@ -23,6 +23,33 @@ import {
  * that has to be aligned before two values can be compared, a rounding rule
  * that is not the one JavaScript gives away free — rather than against a list
  * of operations.
+ *
+ * THE MUTATION SURVIVORS WERE TRACED RATHER THAN DISMISSED, which is the whole
+ * reason two of the cases here exist. Eight mutants survived the first version.
+ * Two were real gaps and are now covered: `/[1-9]/` flipped to `/[^1-9]/` drops
+ * the minus from a negative that reduces to a whole number, reachable through
+ * `subtract("1.5", "2.5")`; and `"0".repeat` emptied stops `toFixed` padding a
+ * fraction shorter than the width asked for. One was an unasserted error
+ * message. Score went 93.70% to 96.06%.
+ *
+ * The five that remain are equivalent, and here is the reason for each rather
+ * than the assertion that they are:
+ *
+ *   * `if (scale === 0) return units.toString(10)` removed — the fast path is a
+ *     pure optimisation; at scale 0 the general path takes all digits as the
+ *     whole part and an empty fraction, producing the same text.
+ *   * `units < 0n` → `<= 0n` in `fromParts` — differs only at zero, where the
+ *     body renders as "0" and the sign guard drops the minus regardless.
+ *   * `one.scale >= 2` → `> 2` in `ratioToPercent` — at exactly 2 the other
+ *     branch multiplies by `10 ** 0`, which is the same call.
+ *   * `one.scale <= places` → `<` in `round` — at equality the general path
+ *     divides by `10 ** 0` with a zero remainder and returns the input.
+ *   * `one.units < 0n` → `<= 0n` in `round` — differs only at zero, where the
+ *     magnitude is zero and `fromParts(-0n, places)` renders "0".
+ *
+ * The last time survivors in this repository were called equivalent without
+ * being traced, the claim was wrong and disproving it took 2,208 differences
+ * over 14,739 generated strings.
  */
 
 describe("canonical form", () => {
@@ -33,6 +60,12 @@ describe("canonical form", () => {
     [6662881571n, 10, "0.6662881571"],
     [1230n, 2, "12.3"],
     [100n, 2, "1"],
+    // The sign has to survive a negative that reduces to a whole number. The
+    // guard against `-0` is a test on the rendered body, and every body it had
+    // ever been given contained a "." or a digit outside 1-9; one that does not
+    // — "1", from -100 scaled by 2 — is the case where a wrong guard drops the
+    // minus and reports a fall as a rise.
+    [-100n, 2, "-1"],
     [-500n, 3, "-0.5"],
   ])("renders %s scaled by %i as %j", (units, scale, expected) => {
     expect(fromParts(units, scale)).toBe(expected);
@@ -66,6 +99,9 @@ describe("reading a value in", () => {
     // `toString` switches to exponent notation at these magnitudes, and the
     // decimal grammar below it does not accept one. Refusing is the point: a
     // silent approximation here would be the original defect, moved.
+    // The message names the value, so a reader of the failure knows which
+    // amount was refused rather than only that one was.
+    expect(() => fromNumber(1e21)).toThrow(/1e\+21 is not a decimal/u);
     expect(() => fromNumber(1e21)).toThrow(RangeError);
     expect(() => fromNumber(1e-7)).toThrow(RangeError);
     expect(() => fromNumber(Number.NaN)).toThrow(RangeError);
@@ -78,6 +114,14 @@ describe("arithmetic that does not drift", () => {
     expect(add("0.1", "0.2")).toBe("0.3");
     expect(add("49875", "0.25")).toBe("49875.25");
     expect(add("1.5", "-1.25")).toBe("0.25");
+  });
+
+  it("keeps the sign when a subtraction lands on a whole number", () => {
+    // The reachable route to the case above: aligning 1.5 and 2.5 gives -10
+    // scaled by 1, whose body renders as "1" with nothing but the sign guard to
+    // say it is negative.
+    expect(subtract("1.5", "2.5")).toBe("-1");
+    expect(subtract("2.5", "1.5")).toBe("1");
   });
 
   it("sums a hundred hundredths to exactly one", () => {
@@ -135,6 +179,11 @@ describe("percentages and display", () => {
     expect(toFixed("7.6", 1)).toBe("7.6");
     expect(toFixed("8", 1)).toBe("8.0");
     expect(toFixed("8", 0)).toBe("8");
+    // Padding a fraction that is shorter than the width asked for. Every case
+    // above either had the exact width already or no decimal point at all, so
+    // the padding itself was never run with anything to add.
+    expect(toFixed("7.6", 2)).toBe("7.60");
+    expect(toFixed("-1.5", 3)).toBe("-1.500");
     // Rounds to nothing, and shows as a plain zero rather than "-0.0": the
     // sign is dropped when the magnitude is, so a reader is never shown a
     // negative zero.
