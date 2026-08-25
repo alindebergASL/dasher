@@ -11,10 +11,12 @@
   "mutate": [
     "packages/dashboard-schema/src/compose.ts",
     "packages/dashboard-schema/src/layout.ts",
+    "packages/ledger-domain/src/exact.ts",
     "packages/ledger-domain/src/ledger.ts",
     "packages/planner/src/compile-ledger.ts",
     "packages/planner/src/compile.ts",
     "packages/planner/src/freetext.ts",
+    "packages/planner/src/ledger-plan.ts",
     "packages/planner/src/plan.ts",
     "packages/planner/src/provider.ts",
     "packages/planner/src/registry.ts",

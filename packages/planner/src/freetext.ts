@@ -1,4 +1,22 @@
-import type { DashboardPlan } from "./plan";
+/**
+ * The shape the gate reads, rather than one plan type it happens to have been
+ * written against.
+ *
+ * `findSmuggledText` took `DashboardPlan`, so it could only ever run on station
+ * plans. `LedgerPlanSchema` declares the same five reader-facing strings and was
+ * not covered by anything — a gate typed to one source is a gate for one source.
+ * Naming the fields it actually reads means a third plan contract is covered by
+ * satisfying an interface rather than by someone remembering this file exists.
+ */
+export interface PlanFreeText {
+  readonly title: string;
+  readonly audience: string;
+  readonly framing: string;
+  readonly pages: readonly {
+    readonly title: string;
+    readonly description: string;
+  }[];
+}
 
 /**
  * The free-text hole in the plan contract, and the narrow gate over it.
@@ -124,6 +142,13 @@ const MEASUREMENT_UNITS = [
   "ppm",
   "ppb",
   "%",
+  // The spelled forms of `%`. A second attack on the money gate found
+  // "Cloud took 10 percent of spend" passing while "10%" was caught — the same
+  // omission the spelled-out numbers above already exist to close, one level
+  // along. `per cent` is the British spelling and `pct` the abbreviation.
+  "percent",
+  "per cent",
+  "pct",
 ] as const;
 
 const NUMBER = String.raw`\d{1,3}(?:,\d{3})+|\d+`;
@@ -304,6 +329,101 @@ const QUANTITY = new RegExp(
 );
 
 /**
+ * Money, which the unit list cannot express and the ledger made unavoidable.
+ *
+ * `MEASUREMENT_UNITS` is read number-then-unit, and currency is the one quantity
+ * routinely written the other way round: `$49,875` far more often than
+ * `49,875 USD`. So it earns a pattern of its own, for the same reason `AQI 84`
+ * did.
+ *
+ * WHY MONEY COUNTS AS A MEASUREMENT AT ALL. The rule the gate enforces is that
+ * Dasher computes every figure itself from the source and the planner describes
+ * the composition. On a ledger dashboard the figures ARE money, so an invented
+ * dollar amount is not a lesser version of `21 µg/m³` — it is the same defect in
+ * the domain where it matters most. Nothing about the rule was ever river-
+ * specific; only the unit list was.
+ *
+ * WHAT IS DELIBERATELY EXCLUDED. A currency named without a value stays
+ * composition language: "Amounts are in USD" tells a reader how to read the
+ * dashboard and asserts nothing, exactly as "PM2.5 monitors near Sacramento"
+ * does. Only a currency joined to a number is a reading.
+ *
+ * The code list is short on purpose rather than being ISO 4217 entire. That
+ * register contains `ALL`, `TOP`, `CUP` and `BOB`, and matching all 180 codes
+ * would report "ALL budget lines" as a smuggled amount. These are the codes a
+ * planner writing about this product's ledger could plausibly reach for; a new
+ * one is a one-line diff when a snapshot needs it.
+ */
+const CURRENCY_SYMBOL = String.raw`[$€£¥₹¢￥＄]`;
+const CURRENCY_CODE = String.raw`(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|SEK|NOK|DKK|NZD)`;
+/**
+ * A qualifier is optional and bounded to one word, because "49875 US dollars"
+ * asserts exactly what "49875 dollars" does. Unbounded intervening words would
+ * reach across a clause and start matching sentences that are not amounts.
+ */
+const CURRENCY_WORD = String.raw`(?:[A-Za-z]{2,3}\s)?(?:dollars?|euros?|pounds?|cents?|pence)`;
+/**
+ * `$1.2M`, `250k`, `3.5bn` — the scale letter is part of the amount, so leaving
+ * it out would report `$1.2` and quote an excerpt that is not what was written.
+ */
+const SCALE_SUFFIX = String.raw`(?:\s?(?:k|m|bn|b))?`;
+/** A sign belongs to the amount: `$-1,200` is a figure, not a symbol and a dash. */
+const MONEY_NUMBER = String.raw`[-−]?(?:${NUMBER})(?:\.\d+)?`;
+const SPELLED_NUMBER = String.raw`${NUMBER_WORD}(?:[\s-]${NUMBER_WORD})*`;
+
+/**
+ * A scaled amount with no currency marker at all: "250k in salaries".
+ *
+ * `k` and `bn` only, and the omissions are the point. A bare `m` is already
+ * excluded from the unit list because "Top 3 in the ranking" is composition
+ * language and three metres is not what it means; `b` collides with ordinary
+ * section labels — "2b" — in the same way. So "$1.2M" is caught by the currency
+ * pattern above, where the symbol supplies the missing evidence, while a bare
+ * "1.2m" is left alone and said so here rather than quietly half-covered.
+ */
+const SCALED_AMOUNT = new RegExp(
+  String.raw`\b(?:${NUMBER})(?:\.\d+)?\s?(?:k|bn)\b`,
+  "giu",
+);
+
+const CURRENCY_QUANTITY = new RegExp(
+  // $49,875 · £950 · $1.2M
+  String.raw`${CURRENCY_SYMBOL}\s?${MONEY_NUMBER}${SCALE_SUFFIX}\b` +
+    // USD 12,000
+    String.raw`|\b${CURRENCY_CODE}\s?${MONEY_NUMBER}${SCALE_SUFFIX}\b` +
+    // 49,875 USD · 1.2M USD
+    String.raw`|\b${MONEY_NUMBER}${SCALE_SUFFIX}\s?${CURRENCY_CODE}\b` +
+    // 12,000 dollars · twelve thousand dollars · 50 cents
+    String.raw`|\b(?:${MONEY_NUMBER}|${SPELLED_NUMBER})\s?[-–]?\s?${CURRENCY_WORD}\b`,
+  "giu",
+);
+
+/**
+ * A comma-grouped integer, with no unit and no currency: "Total was 474,855".
+ *
+ * The bare-decimal rule below reasons that composition language has no reason to
+ * carry a fractional number. The same is true of a grouped one, and leaving it
+ * out was the largest hole in the money gate: the ledger dashboard's own total,
+ * written without a currency, passed cleanly.
+ *
+ * NON-ASCII DIGITS ARE NOT COVERED, and deliberately so. `\d` under the `u`
+ * flag is ASCII 0-9, so "４９８７５ USD" in fullwidth digits passes. The fix is
+ * not to add fullwidth: it is `\p{Nd}`, which covers every decimal script at
+ * once, and switching to it changes what every pattern in this file matches.
+ * That is its own change with its own probe pass, and adding one script while
+ * leaving Arabic-Indic and Devanagari out would be the half-coverage this file
+ * keeps warning about.
+ *
+ * ONLY THE GROUPED FORM. An ungrouped run of digits is not safe to read as a
+ * magnitude here — `11446500` is a USGS site id, and a river plan naming one in
+ * prose would be reported as a smuggled reading. The grouping separator is what
+ * distinguishes a number written for a reader from an identifier, and a planner
+ * that drops the commas to get past this is writing "474855", which the next
+ * probe list should carry rather than this comment pretending otherwise.
+ */
+const GROUPED_INTEGER = new RegExp(String.raw`\b\d{1,3}(?:,\d{3})+\b`, "gu");
+
+/**
  * A bare decimal, with no unit attached. "12.4" in a sentence about a river is
  * a reading whether or not the planner wrote "ft" after it, and composition
  * language has no reason to carry a fractional number.
@@ -383,7 +503,7 @@ function escape(text: string): string {
 
 /** Every field of a plan whose text reaches the reader unchanged. */
 export function planFreeText(
-  plan: DashboardPlan,
+  plan: PlanFreeText,
 ): ReadonlyArray<{ path: string; text: string }> {
   return [
     { path: "title", text: plan.title },
@@ -445,7 +565,7 @@ export function longestNonOverlapping(spans: readonly Span[]): Span[] {
   return kept.sort((one, two) => one.start - two.start);
 }
 
-export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
+export function findSmuggledText(plan: PlanFreeText): SmuggledText[] {
   const found: SmuggledText[] = [];
 
   for (const { path, text } of planFreeText(plan)) {
@@ -469,6 +589,9 @@ export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
       ...matches(text, INDEX_QUANTITY),
       ...matches(text, POLLUTANT_READING),
       ...matches(text, CONCENTRATION),
+      ...matches(text, CURRENCY_QUANTITY),
+      ...matches(text, SCALED_AMOUNT),
+      ...matches(text, GROUPED_INTEGER),
       ...matches(text, DECIMAL).filter((decimal) => !inExcluded(decimal)),
     ]);
 
@@ -489,7 +612,7 @@ export function findSmuggledText(plan: DashboardPlan): SmuggledText[] {
  * let through in order to decide where the next edge belongs.
  */
 export function freeTextWithDigits(
-  plan: DashboardPlan,
+  plan: PlanFreeText,
 ): ReadonlyArray<{ path: string; text: string }> {
   return planFreeText(plan).filter((field) => /\d/u.test(field.text));
 }

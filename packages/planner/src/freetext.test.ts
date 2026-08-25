@@ -546,3 +546,175 @@ describe("findSmuggledText: several offences in one field", () => {
     expect(found.map((item) => item.excerpt)).toStrictEqual(["12 ft", "40%"]);
   });
 });
+
+/**
+ * Money, added when the ledger became the second planned source.
+ *
+ * The unit list was river-shaped once and air-shaped after PR #49; a finance
+ * dashboard is the case where every figure on the page is an amount, so an
+ * invented one is the reading that matters most. These are the forms a planner
+ * actually reaches for, and the negative controls below are the sentences the
+ * shipping ledger planner and the request vocabulary already produce.
+ */
+describe("findSmuggledText: money", () => {
+  it.each([
+    ["Cloud spend at 49875 USD", "49875 USD"],
+    ["Cloud is $49,875 this period", "$49,875"],
+    ["Software at $1.2M", "$1.2M"],
+    ["Spend of twelve thousand dollars", "twelve thousand dollars"],
+    ["Travel came to 12,000 dollars", "12,000 dollars"],
+    ["£950 over budget", "£950"],
+    ["€1,200 on facilities", "€1,200"],
+    ["USD 12,000 across the period", "USD 12,000"],
+    ["A shortfall of 50 cents", "50 cents"],
+    ["Budget is ¥1000000", "¥1000000"],
+    ["3.5bn EUR in the group", "3.5bn EUR"],
+    ["250k in salaries", "250k"],
+  ])("reads %j as a measurement", (framing, excerpt) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt },
+    ]);
+  });
+
+  it.each([
+    // The shipping ledger planner's own sentence. A count of the lines the plan
+    // selected is derived from the plan, not asserted about the ledger, and a
+    // gate that refused it would refuse the product's own dashboard.
+    "Current period spending across 6 budget lines.",
+    "Operating spend by category",
+    "Lines over budget this period",
+    "Cost centre summary",
+    "Spending by category, ranked",
+    "Top 3 in the ranking",
+    "Three pages of budget lines",
+    "Compounding across 12 periods",
+    // A currency named without a value states how to read the dashboard and
+    // asserts nothing, exactly as naming a pollutant without a value does.
+    "Amounts are in USD",
+    "Reported in dollars",
+    "2026 budget planning",
+    "Q3 2026 review",
+    "A recent change",
+    "Section 2b of the plan",
+  ])("leaves %j alone", (framing) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
+  });
+
+  it("does not read a bare magnitude that could be metres or a label", () => {
+    // `m` and `b` are deliberately outside `SCALED_AMOUNT`. A bare `m` is
+    // already excluded from the unit list because "Top 3 in the ranking" is
+    // composition language, and `b` collides with section labels like "2b".
+    // "$1.2M" is still caught, because the symbol supplies what is missing.
+    expect(
+      findSmuggledText(withText({ framing: "1.2m in travel" })),
+    ).toStrictEqual([]);
+    expect(
+      findSmuggledText(withText({ framing: "Software at $1.2M" })),
+    ).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt: "$1.2M" },
+    ]);
+  });
+});
+
+/**
+ * Money, attacked rather than demonstrated.
+ *
+ * The air-quality version of this gate shipped with nine bypasses that outside
+ * review found, so this list was written by trying to get a figure past the
+ * money version rather than by showing that the intended forms work. Eight got
+ * through on the first pass; six are closed below and three are named as gaps
+ * with the reason, because a bypass nobody has written down reads as coverage.
+ */
+describe("findSmuggledText: money, adversarially", () => {
+  it.each([
+    // A sign belongs to the amount.
+    ["Cloud spend was $-1,200", "$-1,200"],
+    // Accounting negatives, and the dashboard's own total written bare.
+    ["Cloud came to (49,875)", "49,875"],
+    ["Total was 474,855", "474,855"],
+    // Symbols outside the first four.
+    ["Cloud spend was ₹49875", "₹49875"],
+    // A qualifier between the number and its unit.
+    ["Cloud spend was 49875 US dollars", "49875 US dollars"],
+    // A currency code with no space at all.
+    ["Cloud spend was USD49875", "USD49875"],
+  ])("catches %j", (framing, excerpt) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt },
+    ]);
+  });
+
+  it("does not read a USGS site id as an amount", () => {
+    // The reason the grouped-integer rule requires the separator. Losing this
+    // would trade a money bypass for a river false positive.
+    expect(
+      findSmuggledText(
+        withText({ framing: "Sacramento River at Freeport (11446500)" }),
+      ),
+    ).toStrictEqual([]);
+    expect(
+      findSmuggledText(withText({ framing: "Reported on August 24, 2026" })),
+    ).toStrictEqual([]);
+  });
+
+  it.each([
+    // An ungrouped run of digits. Deliberate: see GROUPED_INTEGER — a site id
+    // is the same shape, and a river plan naming one in prose is legitimate.
+    "Cloud spend: 49875",
+    // A magnitude spelled without a numeral. `NUMBER_WORDS` has no "half" and
+    // no bare "million", and adding them reaches into general English.
+    "Spend of half a million dollars",
+    // A European decimal comma with the symbol trailing. This product formats
+    // en-US, and a planner writing this is not a case anyone has seen.
+    "Cloud spend was 1,2 M€",
+  ])("is known not to catch %j", (framing) => {
+    // These pass today. The test exists so the gap is a recorded fact rather
+    // than something a later reader has to rediscover by being caught out.
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
+  });
+});
+
+/**
+ * A second attack, run as the review of this change rather than in place of one.
+ *
+ * Sixteen probes on angles the first list did not use — per-unit money, ranges,
+ * a figure split across a clause, spelled magnitudes, non-ASCII digits. Thirteen
+ * were caught. One was the ungrouped-integer gap already recorded. The two below
+ * were new, and the second is the reason a second pass was worth running: a
+ * planner writing "10 percent" is not exotic at all.
+ */
+describe("findSmuggledText: the spelled forms of a percentage", () => {
+  it.each([
+    ["Cloud took 10 percent of spend", "10 percent"],
+    ["Cloud took 10 per cent of spend", "10 per cent"],
+    ["Cloud took 10 pct of spend", "10 pct"],
+    // The spelled number and the spelled unit together.
+    ["Cloud rose seven percent", "seven percent"],
+  ])("catches %j", (framing, excerpt) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt },
+    ]);
+  });
+
+  it("leaves the word alone when no value is attached to it", () => {
+    // A unit without a value is composition language, exactly as a currency
+    // without one is.
+    expect(
+      findSmuggledText(
+        withText({ framing: "Percentage change against the previous period" }),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("is known not to catch a figure in non-ASCII digits", () => {
+    // `\d` under the `u` flag is ASCII 0-9. The fix is `\p{Nd}`, which covers
+    // every decimal script at once and changes what every pattern in the file
+    // matches; adding fullwidth alone would leave Arabic-Indic and Devanagari
+    // out and look like coverage. Recorded rather than half-done.
+    const fullwidth = "Cloud spend was \uFF14\uFF19\uFF18\uFF17\uFF15 USD";
+
+    expect(findSmuggledText(withText({ framing: fullwidth }))).toStrictEqual(
+      [],
+    );
+  });
+});

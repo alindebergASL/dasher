@@ -5,8 +5,15 @@ import {
   type Evidence,
 } from "@dasher/dashboard-schema";
 import {
+  ZERO,
+  abs,
+  compare,
   deriveLedgerFacts,
   periodStart,
+  sign,
+  subtract,
+  toFixed,
+  type Exact,
   type LedgerFacts,
   type LedgerLineFacts,
   type LedgerSnapshot,
@@ -18,6 +25,7 @@ import {
   uniqueIds,
   type PlannerIdentity,
 } from "./planned-spec";
+import { findLedgerPlanProblems } from "./ledger-plan";
 import type { LedgerPlan, LedgerSectionKind } from "./ledger-plan";
 
 /**
@@ -54,23 +62,48 @@ export class LedgerPlanRejected extends Error {
   }
 }
 
-function money(amount: number, currency: string): string {
+/**
+ * Every figure the ledger displays is an exact decimal, so every formatter here
+ * reads one rather than a `number`.
+ *
+ * `Intl.NumberFormat` is given the decimal as a STRING on purpose. It accepts
+ * one and formats it at arbitrary precision; passing `Number(amount)` instead
+ * would round the value back through a double on its way to the reader, which
+ * is the defect this whole path was moved off.
+ */
+function money(amount: Exact, currency: string): string {
   // Whole units. A dashboard that reports operating spend to the cent is
   // reporting noise, and the contract's short-text fields are for a reader.
-  return new Intl.NumberFormat("en-US", {
+  const formatter = new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
     maximumFractionDigits: 0,
-  }).format(amount);
+  });
+  /*
+   * The cast is over a real capability with a stale declaration, not over a
+   * doubt. `Intl.NumberFormat` has accepted a decimal string since ES2023 and
+   * formats it at arbitrary precision; this repository's `lib` is ES2022, whose
+   * signature predates that. Verified on this Node: formatting the string
+   * "474855" gives "$474,855". Passing `Number(amount)` would type cleanly and
+   * put the value back through a double on its way to the reader, which is the
+   * one thing this path was moved off.
+   */
+  return (formatter.format as unknown as (value: string) => string)(amount);
 }
 
-function signedPercent(value: number | null): string {
+function signedPercent(value: Exact | null): string {
   if (value === null) return "no prior period";
-  return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+  // `toFixed` already carries the minus sign; only the plus has to be added.
+  return `${sign(value) < 0 ? "" : "+"}${toFixed(value, 1)}%`;
 }
 
-function directionOf(change: number): "up" | "down" | "steady" {
-  return change > 0 ? "up" : change < 0 ? "down" : "steady";
+function percent(value: Exact): string {
+  return `${toFixed(value, 1)}%`;
+}
+
+function directionOf(change: Exact): "up" | "down" | "steady" {
+  const which = sign(change);
+  return which > 0 ? "up" : which < 0 ? "down" : "steady";
 }
 
 function buildSection(
@@ -103,7 +136,7 @@ function buildSection(
             ? []
             : [
                 {
-                  text: `${facts.movers[0].label} moved most, ${directionOf(facts.movers[0].change) === "down" ? "down" : "up"} ${money(Math.abs(facts.movers[0].change), facts.currency)}.`,
+                  text: `${facts.movers[0].label} moved most, ${directionOf(facts.movers[0].change) === "down" ? "down" : "up"} ${money(abs(facts.movers[0].change), facts.currency)}.`,
                   evidenceIds: uniqueIds(
                     [facts.movers[0].evidenceId],
                     [facts.calculationEvidenceId],
@@ -135,7 +168,7 @@ function buildSection(
             label: `Total, ${facts.latestPeriod}`,
             value: money(facts.total, facts.currency),
             change: signedPercent(facts.totalChangePercent),
-            direction: directionOf(facts.total - facts.previousTotal),
+            direction: directionOf(subtract(facts.total, facts.previousTotal)),
             evidenceIds: everything,
           },
           {
@@ -153,7 +186,11 @@ function buildSection(
             value:
               lines[0] === undefined
                 ? "—"
-                : `${[...lines].sort((one, two) => two.share - one.share)[0]!.share.toFixed(1)}%`,
+                : percent(
+                    [...lines].sort((one, two) =>
+                      compare(two.share, one.share),
+                    )[0]!.share,
+                  ),
             evidenceIds: everything,
           },
         ],
@@ -171,8 +208,8 @@ function buildSection(
         items: movers.map((line) => ({
           id: line.id,
           label: line.label,
-          value: `${line.change >= 0 ? "+" : "−"}${money(Math.abs(line.change), facts.currency)}`,
-          note: `${signedPercent(line.changePercent)} · ${line.share.toFixed(1)}% of total`,
+          value: `${sign(line.change) < 0 ? "−" : "+"}${money(abs(line.change), facts.currency)}`,
+          note: `${signedPercent(line.changePercent)} · ${percent(line.share)} of total`,
           evidenceIds: uniqueIds(
             [line.evidenceId],
             [facts.calculationEvidenceId],
@@ -223,7 +260,7 @@ function buildSection(
           id: `over-${line.id}`,
           severity: "attention" as const,
           title: line.label,
-          detail: `${money(line.latest, facts.currency)} against a ${money(line.budgetPerPeriod ?? 0, facts.currency)} budget, over by ${money(line.overBudgetBy ?? 0, facts.currency)}.`,
+          detail: `${money(line.latest, facts.currency)} against a ${money(line.budgetPerPeriod ?? ZERO, facts.currency)} budget, over by ${money(line.overBudgetBy ?? ZERO, facts.currency)}.`,
           evidenceIds: uniqueIds(
             [line.evidenceId],
             [facts.calculationEvidenceId],
@@ -239,6 +276,31 @@ export function compileLedgerPlan(
   snapshot: LedgerSnapshot,
   options: CompileLedgerOptions,
 ): CompiledSpec {
+  /**
+   * VALIDATE BEFORE COMPILING, HERE RATHER THAN AT THE CALL SITE.
+   *
+   * `findLedgerPlanProblems` was written, exported, and called by nothing — not
+   * by the server action, not by a test. The action went straight from
+   * `planLedgerDashboard` to this function, so an invented budget line was
+   * silently dropped by the filter below instead of refused, a duplicated
+   * section was never reported, and no free-text field was read at all. The
+   * comment at that call site said the ledger "takes the same route the river
+   * does — a plan, checked against the snapshot that exists"; the checking step
+   * did not exist.
+   *
+   * Putting it inside the compiler rather than beside it is what makes that
+   * unrepeatable. There is no longer a way to compile a ledger plan without
+   * validating it, so the next source cannot inherit the same omission by
+   * forgetting a line.
+   */
+  const problems = findLedgerPlanProblems(
+    plan,
+    snapshot.lines.map((line) => line.id),
+  );
+  if (problems.length > 0) {
+    throw new LedgerPlanRejected(problems.map((problem) => problem.message));
+  }
+
   /**
    * THE PLAN'S SELECTION NARROWS THE LEDGER BEFORE ANY FIGURE IS COMPUTED, and
    * that order matters more than it looks. Deriving over the whole snapshot and
@@ -285,7 +347,9 @@ export function compileLedgerPlan(
     selected.map((line) => line.evidenceId),
     [facts.calculationEvidenceId],
   );
-  const biggest = [...selected].sort((one, two) => two.share - one.share)[0]!;
+  const biggest = [...selected].sort((one, two) =>
+    compare(two.share, one.share),
+  )[0]!;
   const evidence: Evidence[] = [
     ...facts.evidence,
     plannerEvidence(options.planner, "budget line", options.asOf),
@@ -332,7 +396,7 @@ export function compileLedgerPlan(
         detail:
           facts.overBudget.length > 0
             ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.`
-            : `${biggest.label} accounts for ${biggest.share.toFixed(1)}% of spending in ${facts.latestPeriod}.`,
+            : `${biggest.label} accounts for ${percent(biggest.share)} of spending in ${facts.latestPeriod}.`,
         evidenceIds: everything,
       },
     },
