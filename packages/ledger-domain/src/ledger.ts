@@ -1,6 +1,19 @@
 import type { Evidence } from "@dasher/dashboard-schema";
 import { z } from "zod";
 
+import {
+  type LedgerCell as LedgerCellOf,
+  calculateLedger,
+} from "./calculation";
+import {
+  type Exact,
+  abs,
+  compare,
+  fromNumber,
+  ratioToPercent,
+  subtract,
+} from "./exact";
+
 /**
  * A normalized ledger snapshot, and the facts Dasher derives from one.
  *
@@ -78,20 +91,30 @@ export const LedgerSnapshotSchema = z
 
 export type LedgerSnapshot = z.infer<typeof LedgerSnapshotSchema>;
 
+/**
+ * EVERY FIGURE HERE IS AN EXACT DECIMAL, NOT A `number`.
+ *
+ * These were all `number`, and the cost was visible in the repository before
+ * anyone went looking for it: the committed fixture's shares summed to
+ * 99.99999999999999, and the test written for that property asserted
+ * `toBeCloseTo(100, 6)`. They are now computed by `@dasher/calculation-engine`,
+ * which routes no value through a JavaScript number at all, and read out as
+ * decimal text. `./exact` holds the comparison and formatting they need.
+ */
 export interface LedgerLineFacts {
   readonly id: string;
   readonly label: string;
-  readonly latest: number;
-  readonly previous: number;
+  readonly latest: Exact;
+  readonly previous: Exact;
   /** Absolute change over the last period. Negative means it fell. */
-  readonly change: number;
+  readonly change: Exact;
   /** Percent change, or `null` when the previous period was zero. */
-  readonly changePercent: number | null;
+  readonly changePercent: Exact | null;
   /** Share of the latest period's total, as a percentage. */
-  readonly share: number;
-  readonly budgetPerPeriod: number | undefined;
+  readonly share: Exact;
+  readonly budgetPerPeriod: Exact | undefined;
   /** `undefined` when the line has no budget to be over. */
-  readonly overBudgetBy: number | undefined;
+  readonly overBudgetBy: Exact | undefined;
   readonly evidenceId: string;
 }
 
@@ -102,9 +125,9 @@ export interface LedgerFacts {
   readonly latestPeriod: string;
   readonly previousPeriod: string;
   readonly lines: readonly LedgerLineFacts[];
-  readonly total: number;
-  readonly previousTotal: number;
-  readonly totalChangePercent: number | null;
+  readonly total: Exact;
+  readonly previousTotal: Exact;
+  readonly totalChangePercent: Exact | null;
   /** Largest absolute movers, biggest first. */
   readonly movers: readonly LedgerLineFacts[];
   readonly overBudget: readonly LedgerLineFacts[];
@@ -121,45 +144,72 @@ export function periodStart(period: string): string {
   return `${period}-01T00:00:00.000Z`;
 }
 
-function percentChange(latest: number, previous: number): number | null {
-  return previous === 0 ? null : ((latest - previous) / previous) * 100;
-}
-
 /**
  * Every number a ledger dashboard displays is computed here, from the snapshot,
  * exactly as station facts are. A plan chooses which lines and which sections;
  * it never supplies a value.
+ *
+ * NOTHING IN THIS FUNCTION DOES ARITHMETIC ON MONEY. Totals, changes, shares
+ * and their percentages all come back from `calculateLedger`, which runs them
+ * through the calculation engine on exact decimals. What is left here is
+ * selection, ordering, and the one comparison the engine has no opinion about:
+ * whether a line exceeded a budget the snapshot recorded.
  */
 export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
   const parsed = LedgerSnapshotSchema.parse(snapshot);
   const last = parsed.periods.length - 1;
-  const total = parsed.lines.reduce(
-    (sum, line) => sum + line.amounts[last]!,
-    0,
+  const latestPeriod = parsed.periods[last] as string;
+  const previousPeriod = parsed.periods[last - 1] as string;
+
+  const calculated = calculateLedger(parsed);
+  const at = new Map(
+    calculated.cells.map((cell) => [
+      `${cell.lineId}\u0000${cell.period}`,
+      cell,
+    ]),
   );
-  const previousTotal = parsed.lines.reduce(
-    (sum, line) => sum + line.amounts[last - 1]!,
-    0,
-  );
+  const cellFor = (lineId: string, period: string): LedgerCellOf => {
+    const found = at.get(`${lineId}\u0000${period}`);
+    if (found === undefined) {
+      throw new Error(
+        `the calculation returned no ${period} row for ${lineId}`,
+      );
+    }
+    return found;
+  };
+
+  const anchor = cellFor(parsed.lines[0]!.id, latestPeriod);
+  const total = anchor.periodTotal;
+  const previousTotal = cellFor(
+    parsed.lines[0]!.id,
+    previousPeriod,
+  ).periodTotal;
 
   const lines: LedgerLineFacts[] = parsed.lines.map((line) => {
-    const latest = line.amounts[last]!;
-    const previous = line.amounts[last - 1]!;
+    const now = cellFor(line.id, latestPeriod);
+    const budget =
+      line.budgetPerPeriod === undefined
+        ? undefined
+        : fromNumber(line.budgetPerPeriod);
+    // The one comparison left in JavaScript, and it is a comparison rather than
+    // arithmetic on a computed value: both sides are exact, and `subtract` is
+    // exact by construction.
     const over =
-      line.budgetPerPeriod !== undefined && latest > line.budgetPerPeriod
-        ? latest - line.budgetPerPeriod
+      budget !== undefined && compare(now.amount, budget) > 0
+        ? subtract(now.amount, budget)
         : undefined;
     return {
       id: line.id,
       label: line.label,
-      latest,
-      previous,
-      change: latest - previous,
-      changePercent: percentChange(latest, previous),
-      // Zero total would make every share meaningless rather than zero, so it
-      // is reported as zero share and the summary says the total instead.
-      share: total === 0 ? 0 : (latest / total) * 100,
-      budgetPerPeriod: line.budgetPerPeriod,
+      latest: now.amount,
+      previous: cellFor(line.id, previousPeriod).amount,
+      change: now.change ?? "0",
+      changePercent: now.changePercent,
+      // The engine returns a ratio; a share of nothing is not a share, and the
+      // summary says the total instead rather than printing a fabricated zero
+      // as though it were measured.
+      share: now.share === null ? "0" : ratioToPercent(now.share),
+      budgetPerPeriod: budget,
       overBudgetBy: over,
       evidenceId: `ledger-line-${line.id}`,
     };
@@ -193,24 +243,25 @@ export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
     currency: parsed.currency,
     periodLabel: parsed.periodLabel,
     periods: parsed.periods,
-    latestPeriod: parsed.periods[last]!,
-    previousPeriod: parsed.periods[last - 1]!,
+    latestPeriod,
+    previousPeriod,
     lines,
     total,
     previousTotal,
-    totalChangePercent: percentChange(total, previousTotal),
+    totalChangePercent: anchor.totalChangePercent,
     // Sorted by size of move, then by id so two equal moves order the same way
     // on every run rather than by whatever order the source happened to use.
     movers: [...lines].sort(
       (one, two) =>
-        Math.abs(two.change) - Math.abs(one.change) ||
+        compare(abs(two.change), abs(one.change)) ||
         one.id.localeCompare(two.id),
     ),
     overBudget: lines
       .filter((line) => line.overBudgetBy !== undefined)
       .sort(
         (one, two) =>
-          two.overBudgetBy! - one.overBudgetBy! || one.id.localeCompare(two.id),
+          compare(two.overBudgetBy as Exact, one.overBudgetBy as Exact) ||
+          one.id.localeCompare(two.id),
       ),
     evidence,
     lineEvidenceIds: lines.map((line) => line.evidenceId),

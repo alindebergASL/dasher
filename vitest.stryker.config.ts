@@ -27,6 +27,11 @@ import { defineConfig } from "vitest/config";
  * it. Its callers are React components, which the mutation run does not load;
  * what the score measures is the packer's arithmetic, not the rendering.
  *
+ * `exact.ts` is here because it is arithmetic and nothing else — the decimal
+ * comparison, rounding and formatting every ledger figure passes through on its
+ * way to a reader. A surviving mutant in it is a way for money to be shown
+ * wrong while every test still passes.
+ *
  * The ledger pair follows the same rule. `compile-ledger.ts` is exercised from
  * `packages/planner/src/compile-ledger.test.ts`, already inside the planner glob
  * above; `packages/ledger-domain/src/ledger.ts` needs its own suite named here,
@@ -48,6 +53,7 @@ export default defineConfig({
       "packages/river-domain/src/**/*.test.ts",
       "packages/station-domain/src/**/*.test.ts",
       "packages/dashboard-schema/src/compose.test.ts",
+      "packages/ledger-domain/src/exact.test.ts",
       "packages/ledger-domain/src/ledger.test.ts",
       "packages/dashboard-schema/src/layout.test.ts",
     ],

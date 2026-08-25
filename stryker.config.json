@@ -11,6 +11,7 @@
   "mutate": [
     "packages/dashboard-schema/src/compose.ts",
     "packages/dashboard-schema/src/layout.ts",
+    "packages/ledger-domain/src/exact.ts",
     "packages/ledger-domain/src/ledger.ts",
     "packages/planner/src/compile-ledger.ts",
     "packages/planner/src/compile.ts",

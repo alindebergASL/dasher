@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest";
 
+import * as exact from "./exact";
+
+/**
+ * An independent oracle for the engine's percentages, in exact integer
+ * arithmetic.
+ *
+ * These assertions used to compare against the same float expression the code
+ * under test used, which made the float the definition of correct — and the
+ * comparison only passed because `toBeCloseTo` allowed the disagreement. This
+ * computes the ratio as a rational, scales it, and rounds half-even, which is
+ * what the engine says it does. Agreeing with it is evidence; agreeing with a
+ * double is not.
+ */
+function percentAt8(numerator: bigint, denominator: bigint): string {
+  // One rounding, at the eighth place. The first version scaled to nine digits
+  // and rounded twice, which put the last digit one below the engine's — and
+  // the engine was right: -4600/44200 is -10.408723981|9004…, and a tail above
+  // a half rounds the eighth digit up.
+  const scaled = numerator * 100n * 10n ** 8n;
+  const negative = scaled < 0n !== denominator < 0n;
+  const top = scaled < 0n ? -scaled : scaled;
+  const bottom = denominator < 0n ? -denominator : denominator;
+  let quotient = top / bottom;
+  const twice = (top % bottom) * 2n;
+  // Half-even: ties go to the even neighbour, everything else to the nearer.
+  if (twice > bottom || (twice === bottom && quotient % 2n === 1n)) {
+    quotient += 1n;
+  }
+  const digits = quotient.toString(10).padStart(9, "0");
+  const whole = digits.slice(0, digits.length - 8);
+  const fraction = digits.slice(digits.length - 8).replace(/0+$/u, "");
+  const body = fraction.length === 0 ? whole : `${whole}.${fraction}`;
+  return negative && /[1-9]/u.test(body) ? `-${body}` : body;
+}
+
 import fixture from "../../../fixtures/ledger/operating-spend.json";
 import {
   deriveLedgerFacts,
@@ -56,22 +91,31 @@ describe("deriveLedgerFacts", () => {
       0,
     );
 
-    expect(facts.total).toBe(expected);
+    expect(facts.total).toBe(String(expected));
     expect(facts.latestPeriod).toBe("2026-08");
     expect(facts.previousPeriod).toBe("2026-07");
   });
 
-  it("computes shares that sum to a hundred", () => {
-    const sum = facts.lines.reduce((total, line) => total + line.share, 0);
+  it("computes shares that sum to a hundred, exactly", () => {
+    /**
+     * This asserted `toBeCloseTo(100, 6)`, and the tolerance was not a judgement
+     * about display precision — it was there because the float sum was
+     * 99.99999999999999. Now the shares come back from the calculation engine as
+     * exact decimals and the column a reader could add up by hand adds up.
+     */
+    const sum = facts.lines.reduce(
+      (total, line) => exact.add(total, line.share),
+      exact.ZERO,
+    );
 
-    expect(sum).toBeCloseTo(100, 6);
+    expect(sum).toBe("100");
   });
 
   it("ranks movers by size of change, not by direction", () => {
     // Contractors fell by more than anything rose. A ranking that sorted by
     // signed change would bury the largest movement in the ledger.
     expect(facts.movers[0]?.id).toBe("contractors");
-    expect(facts.movers[0]?.change).toBeLessThan(0);
+    expect(exact.sign(facts.movers[0]?.change as string)).toBe(-1);
   });
 
   it("breaks a tie between equal moves by id, so runs agree", () => {
@@ -94,7 +138,7 @@ describe("deriveLedgerFacts", () => {
       "cloud",
       "software",
     ]);
-    expect(facts.overBudget[0]?.overBudgetBy).toBe(49875 - 42000);
+    expect(facts.overBudget[0]?.overBudgetBy).toBe(String(49875 - 42000));
   });
 
   it("treats a line with no budget as not compared, not as zero", () => {
@@ -156,47 +200,61 @@ describe("the values deriveLedgerFacts computes", () => {
   const raw = (id: string) => snapshot.lines.find((one) => one.id === id)!;
 
   it("takes each line's latest and previous from the last two periods", () => {
-    expect(line("cloud").latest).toBe(raw("cloud").amounts.at(-1));
-    expect(line("cloud").previous).toBe(raw("cloud").amounts.at(-2));
+    expect(line("cloud").latest).toBe(String(raw("cloud").amounts.at(-1)));
+    expect(line("cloud").previous).toBe(String(raw("cloud").amounts.at(-2)));
   });
 
   it("computes change as latest minus previous, keeping the sign", () => {
     expect(line("cloud").change).toBe(
-      raw("cloud").amounts.at(-1)! - raw("cloud").amounts.at(-2)!,
+      String(raw("cloud").amounts.at(-1)! - raw("cloud").amounts.at(-2)!),
     );
-    expect(line("contractors").change).toBeLessThan(0);
+    expect(exact.sign(line("contractors").change)).toBe(-1);
   });
 
   it("computes percent change against the previous period", () => {
     const one = line("contractors");
 
-    expect(one.changePercent).toBeCloseTo(
-      ((one.latest - one.previous) / one.previous) * 100,
-      9,
+    expect(one.changePercent).toBe(
+      percentAt8(
+        BigInt(raw("contractors").amounts.at(-1)!) -
+          BigInt(raw("contractors").amounts.at(-2)!),
+        BigInt(raw("contractors").amounts.at(-2)!),
+      ),
     );
+    // The value the engine actually returned, pinned so a scale or rounding
+    // change has to be looked at rather than absorbed by the oracle too.
+    expect(one.changePercent).toBe("-10.40723982");
   });
 
   it("computes share against the period total, not against a budget", () => {
-    expect(line("salaries").share).toBeCloseTo(
-      (line("salaries").latest / facts.total) * 100,
-      9,
+    // Ten fractional digits on the ratio, so the percentage carries eight.
+    expect(line("salaries").share).toBe(
+      percentAt8(
+        BigInt(raw("salaries").amounts.at(-1)!),
+        BigInt(
+          snapshot.lines.reduce((sum, one) => sum + one.amounts.at(-1)!, 0),
+        ),
+      ),
     );
+    expect(line("salaries").share).toBe("65.15673206");
   });
 
   it("computes how far over budget a line is, not merely that it is", () => {
     expect(line("cloud").overBudgetBy).toBe(
-      line("cloud").latest - raw("cloud").budgetPerPeriod!,
+      String(Number(line("cloud").latest) - raw("cloud").budgetPerPeriod!),
     );
     expect(line("facilities").overBudgetBy).toBeUndefined();
   });
 
   it("carries the previous total so a change can be shown, not just computed", () => {
     expect(facts.previousTotal).toBe(
-      snapshot.lines.reduce((sum, one) => sum + one.amounts.at(-2)!, 0),
+      String(snapshot.lines.reduce((sum, one) => sum + one.amounts.at(-2)!, 0)),
     );
-    expect(facts.totalChangePercent).toBeCloseTo(
-      ((facts.total - facts.previousTotal) / facts.previousTotal) * 100,
-      9,
+    expect(facts.totalChangePercent).toBe(
+      percentAt8(
+        BigInt(facts.total) - BigInt(facts.previousTotal),
+        BigInt(facts.previousTotal),
+      ),
     );
   });
 
@@ -226,7 +284,7 @@ describe("the values deriveLedgerFacts computes", () => {
   it("orders over-budget lines by how far over they are", () => {
     expect(facts.overBudget.map((one) => one.id)).toStrictEqual(
       [...facts.overBudget]
-        .sort((a, b) => b.overBudgetBy! - a.overBudgetBy!)
+        .sort((a, b) => exact.compare(b.overBudgetBy!, a.overBudgetBy!))
         .map((one) => one.id),
     );
   });
@@ -237,8 +295,12 @@ describe("the values deriveLedgerFacts computes", () => {
     ]);
     const derived = deriveLedgerFacts(empty);
 
-    expect(derived.total).toBe(0);
-    expect(derived.lines[0]?.share).toBe(0);
+    expect(derived.total).toBe("0");
+    // The engine refuses to divide by zero, so no share was computed at all;
+    // what reaches the reader is a zero share and a summary that says the
+    // total, which is what the float version produced by testing for it.
+    expect(derived.lines[0]?.share).toBe("0");
+    expect(derived.lines[0]?.changePercent).toBeNull();
   });
 
   it("keeps the period vocabulary the source supplied", () => {

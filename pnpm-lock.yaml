@@ -210,6 +210,9 @@ importers:
 
   packages/ledger-domain:
     dependencies:
+      "@dasher/calculation-engine":
+        specifier: workspace:*
+        version: link:../calculation-engine
       "@dasher/dashboard-schema":
         specifier: workspace:*
         version: link:../dashboard-schema

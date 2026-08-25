@@ -3,11 +3,6 @@
   "roots": ["@dasher/web", "@dasher/repo-graph"],
   "unreachable": [
     {
-      "name": "@dasher/calculation-engine",
-      "reason": "Its only importer was the integration test cross-checking the PL/pgSQL evaluator that the baseline squash deleted. Wiring it into @dasher/planner is step 4 of the restructure proposal and is the next visible change.",
-      "since": "2026-08-14"
-    },
-    {
       "name": "@dasher/extraction-spike",
       "reason": "Deliberately reachable from nothing. It is the offline ADR-008 coordinate-verification spike: it reads two captured fixtures, reports what a lexical verifier accepts and refuses, and must not be importable by product code while ADR-008 is Proposed and the extracted tier is undecided. Wiring it in is a decision the ADR has not taken; see docs/process/2026-08-19-coordinate-verification-spike.md.",
       "since": "2026-08-19"

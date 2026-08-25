@@ -165,6 +165,47 @@ export {
   outputTypesEqual,
 } from "./schema";
 
+/**
+ * The document constructors.
+ *
+ * These build the four canonical documents a run needs — input table, field
+ * catalog, graph, contract set — computing the row-id preimages, derived field
+ * UUIDs, canonical orderings and digests that the validator then checks. They
+ * were reachable only from this package's own tests, which is part of why
+ * nothing outside it ever called `runCalculation`: a consumer would have had to
+ * reimplement every one of those digests to produce a document the engine
+ * accepts.
+ *
+ * THE FILE IS STILL CALLED `fixture-builder.ts`, and that name is now wrong.
+ * Renaming it touches thirteen test files and this change is already large;
+ * what matters first is that the engine has a caller. The rename is a separate,
+ * mechanical diff.
+ */
+export {
+  type BuildInputOptions,
+  type BuiltCatalog,
+  type BuiltGraph,
+  type BuiltInput,
+  type CellSpec,
+  type FieldSpec,
+  type InputScalar,
+  type Json,
+  type NodeSpec,
+  buildCatalog,
+  buildGraph,
+  buildInput,
+  canonical,
+  decimal,
+  fieldOut,
+  groupFieldId,
+  groupGrain,
+  literalValue,
+  rowsetOut,
+  scalarOut,
+  selectFieldId,
+  uuid,
+} from "./fixture-builder";
+
 export {
   type FreshnessTrio,
   type StaticMeter,
