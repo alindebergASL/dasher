@@ -830,6 +830,23 @@ CREATE TABLE dasher.dashboard_versions (
   canonical_spec_sha256 bytea NOT NULL,
   validation_state varchar(16) NOT NULL,
   run_id uuid,
+  -- The retrieved bytes this version's figures were computed from, when the
+  -- source was a file rather than a live endpoint.
+  --
+  -- Nullable because most versions have none: a river or air-quality dashboard
+  -- reads an API at request time and keeps no file, and the enrollment snapshot
+  -- is committed to the repository. An uploaded workbook is the case this
+  -- exists for, and for that case the reference is what makes the file durable
+  -- evidence rather than a transient input — the foreign key means the bytes
+  -- cannot be dropped while a version still cites them, so the file outlives
+  -- the request that carried it and stops being needed only when the dashboard
+  -- built from it is gone.
+  --
+  -- One snapshot, not many, because a version in this product is compiled from
+  -- one source. When a dashboard composes two, this becomes the join table that
+  -- says which figure came from which, and the column is the honest shape until
+  -- then rather than an empty table pretending to be ready.
+  source_snapshot_id uuid,
   created_by_user_id uuid NOT NULL,
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
   CONSTRAINT dashboard_versions_pkey PRIMARY KEY (
@@ -856,6 +873,12 @@ CREATE TABLE dasher.dashboard_versions (
     organization_id,
     created_by_user_id
   ) REFERENCES dasher.memberships (organization_id, user_id),
+  -- Composite, like every other reference here: a version cannot cite bytes
+  -- retrieved by another organization even if it somehow learns their id.
+  CONSTRAINT dashboard_versions_source_snapshot_fkey FOREIGN KEY (
+    organization_id,
+    source_snapshot_id
+  ) REFERENCES dasher.source_snapshots (organization_id, snapshot_id),
   -- Not merely 32 bytes: the digest must actually summarise the bytes stored
   -- beside it, so a row cannot claim a hash unrelated to its content.
   CONSTRAINT dashboard_versions_spec_sha256_check CHECK (
@@ -868,6 +891,13 @@ CREATE TABLE dasher.dashboard_versions (
     parent_version_id IS NULL OR parent_version_id <> version_id
   )
 );
+
+-- The question a retention pass asks: is any version still citing these bytes?
+-- Partial, because the column is null on every version built from a live source
+-- and those rows are not answers to it.
+CREATE INDEX dashboard_versions_source_snapshot_idx
+  ON dasher.dashboard_versions USING btree (organization_id, source_snapshot_id)
+  WHERE source_snapshot_id IS NOT NULL;
 
 CREATE INDEX dashboard_versions_dashboard_created_idx
   ON dasher.dashboard_versions USING btree (
@@ -2163,7 +2193,12 @@ CREATE FUNCTION dasher_api.finalize_run(
   p_claims jsonb,
   p_expected_revision bigint,
   p_request_id uuid,
-  p_deployment_revision text
+  p_deployment_revision text,
+  -- No default. A caller that has an uploaded file behind its figures and a
+  -- caller that read a live API are making different statements about where the
+  -- numbers came from, and a default would let the first silently become the
+  -- second. Every call site names it, including the ones that pass NULL.
+  p_source_snapshot_id uuid
 )
 RETURNS uuid
 LANGUAGE plpgsql
@@ -2197,12 +2232,13 @@ BEGIN
 
   INSERT INTO dasher.dashboard_versions (
     organization_id, dashboard_id, version_id, canonical_spec_bytes,
-    canonical_spec_sha256, validation_state, run_id, created_by_user_id
+    canonical_spec_sha256, validation_state, run_id, source_snapshot_id,
+    created_by_user_id
   )
   VALUES (
     actor.organization_id, run_row.dashboard_id, new_version,
     p_canonical_spec_bytes, pg_catalog.sha256(p_canonical_spec_bytes),
-    'valid', p_run_id, actor.user_id
+    'valid', p_run_id, p_source_snapshot_id, actor.user_id
   );
 
   FOR claim_entry IN
@@ -2307,7 +2343,8 @@ GRANT EXECUTE ON FUNCTION
 GRANT EXECUTE ON FUNCTION
   dasher_api.fail_run(uuid, text, uuid, text) TO dasher_app;
 GRANT EXECUTE ON FUNCTION
-  dasher_api.finalize_run(uuid, bytea, jsonb, bigint, uuid, text) TO dasher_app;
+  dasher_api.finalize_run(uuid, bytea, jsonb, bigint, uuid, text, uuid)
+  TO dasher_app;
 GRANT EXECUTE ON FUNCTION
   dasher_api.resolve_external_identity(text, text) TO dasher_app;
 GRANT EXECUTE ON FUNCTION

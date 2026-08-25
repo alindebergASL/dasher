@@ -51,6 +51,12 @@ import {
   REQUEST_MAX_LENGTH,
   type PlanResult,
 } from "./planning";
+import {
+  readUploadFields,
+  snapshotFromUpload,
+  uploadRefusalMessage,
+  UPLOAD_MAX_BYTES,
+} from "./upload";
 
 /**
  * Nothing here trusts its arguments. A server action is a public endpoint —
@@ -728,4 +734,193 @@ export async function refineDashboard(
     previousPlan: base,
     instruction: trimmedInstruction,
   });
+}
+
+/**
+ * Build a dashboard from a file the reader uploaded, and keep the file.
+ *
+ * WHY THIS IS A SEPARATE ENTRY POINT. `planDashboard` starts by asking the
+ * router what subject a sentence is about. An upload has already answered that:
+ * the reader chose the ledger reader by choosing this form, and running the
+ * classifier over their brief could only refuse a file they had explicitly
+ * handed over. The brief still matters — it decides what the dashboard shows —
+ * but not what it is about.
+ *
+ * WHY PERSISTENCE IS REQUIRED HERE AND OPTIONAL EVERYWHERE ELSE. Every other
+ * source can be read again: a river gauge answers the same question tomorrow,
+ * and the enrollment snapshot is committed to the repository. An uploaded file
+ * exists once, in the request that carried it. A dashboard built from it and
+ * not stored would state figures whose only source had been discarded — it
+ * would look identical to one whose evidence is intact, and nothing afterwards
+ * could tell them apart. So an upload with nowhere durable to go is refused
+ * rather than served, which is the opposite of the rule for a live source and
+ * for the same underlying reason: never present a claim as better evidenced
+ * than it is.
+ *
+ * ORDER, AND WHY IT IS THIS ONE. Read and parse first, store second, save
+ * third. Storing first would leave the bytes of every unreadable file behind;
+ * storing last would build a dashboard and then discover it cannot be kept. The
+ * store and the save share one transaction, so a failure in either leaves
+ * neither — there is no state in which a version cites bytes that were never
+ * written, or bytes sit with nothing pointing at them.
+ */
+export async function uploadLedgerDashboard(
+  formData: FormData,
+): Promise<PlanResult> {
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false, error: uploadRefusalMessage({ kind: "no_file" }) };
+  }
+  if (file.size > UPLOAD_MAX_BYTES) {
+    // Checked before reading it, so an oversized file is refused without being
+    // pulled into memory first.
+    return {
+      ok: false,
+      error: uploadRefusalMessage({ kind: "too_large", bytes: file.size }),
+    };
+  }
+
+  const parsedFields = readUploadFields(
+    {
+      request: formData.get("request"),
+      sourceName: formData.get("sourceName"),
+      currency: formData.get("currency"),
+      periodLabel: formData.get("periodLabel"),
+      exportedOn: formData.get("exportedOn"),
+    },
+    new Date(),
+  );
+  if (!parsedFields.ok) {
+    return { ok: false, error: uploadRefusalMessage(parsedFields.refusal) };
+  }
+  const fields = parsedFields.fields;
+
+  // Persistence is checked before the file is read, so a deployment that cannot
+  // keep it says so instead of doing the work and then refusing.
+  if (!isPersistenceConfigured()) {
+    return { ok: false, error: NO_DURABLE_HOME };
+  }
+  const credential = await readSessionCredential();
+  if (credential === undefined) {
+    return { ok: false, error: NO_DURABLE_HOME };
+  }
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const read = snapshotFromUpload(bytes, fields);
+  if (!read.ok) {
+    return { ok: false, error: read.message };
+  }
+  const snapshot = read.snapshot;
+
+  let dashboard: DashboardSpec;
+  try {
+    dashboard = compileLedgerPlan(
+      planLedgerDashboard(
+        fields.request,
+        snapshot.lines.map((line) => line.id),
+      ),
+      snapshot,
+      { asOf: new Date().toISOString(), planner: DETERMINISTIC_LEDGER_PLANNER },
+    );
+  } catch {
+    // The same refusal the committed export gets when it fails to compile. The
+    // file was readable and the ledger did not survive planning, which is a
+    // different failure from a malformed file and reads as one.
+    return {
+      ok: false,
+      error:
+        "That export read correctly but no dashboard could be built from it.",
+    };
+  }
+
+  try {
+    const dashboardId = await withDashboardRepository(
+      getPool(),
+      credential,
+      async (repository) => {
+        const requestId = randomUUID();
+        const deploymentRevision =
+          process.env["DASHER_DEPLOYMENT_REVISION"] ?? "dev";
+        const sourceSnapshotId = await repository.recordSourceSnapshot({
+          sourceKind: UPLOAD_SOURCE_KIND,
+          // The browser's claim about what the file is called, stored as a
+          // claim. Nothing opens, names, or routes anything by it.
+          sourceRef: uploadReference(file.name),
+          bytes,
+          // What the reader declared, not the clock. The database stamps the
+          // arrival itself, so the row carries both facts and neither is a
+          // stand-in for the other.
+          observedAt: new Date(snapshot.retrievedAt),
+          requestId,
+          deploymentRevision,
+        });
+
+        // Both fields from the same derivation, which is what `provenance.ts`
+        // exists for: taking `provider` from the planner's id and `model` from
+        // the derived pair would be two answers to one question, and they would
+        // disagree on the day a model-backed ledger planner lands.
+        const provenance = combinedProvenance([DETERMINISTIC_LEDGER_PLANNER]);
+        const saved = await repository.save({
+          title: dashboard.title,
+          requestText: fields.request,
+          provider: provenance.provider,
+          model: provenance.model,
+          canonicalSpecBytes: canonicalSpecBytes(dashboard),
+          sourceSnapshotId,
+          requestId,
+          deploymentRevision,
+        });
+        return saved.dashboardId;
+      },
+    );
+
+    return {
+      ok: true,
+      dashboard,
+      attempts: 1,
+      // Its own reason, not the official-snapshot one. An uploaded file is the
+      // opposite of an official source — it is whatever the reader had on their
+      // laptop — and this said `official-snapshot` until it was read back,
+      // which is the same mislabelling `combined-sources` was added to stop.
+      //
+      // There is no refinement path yet because a refinement would have to read
+      // the file again. The stored bytes make that possible later; nothing
+      // reads them back yet, so saying more here would describe a product that
+      // does not exist.
+      noRefinement: "uploaded-file",
+      dashboardId,
+    };
+  } catch {
+    // Unlike the typed path, this does NOT return the dashboard with a warning.
+    // The file is the evidence; a dashboard shown after its evidence failed to
+    // store is the exact state this action exists to prevent.
+    return {
+      ok: false,
+      error:
+        "That export could not be stored, so no dashboard was built from it. Try again.",
+    };
+  }
+}
+
+/** Kept identical across both ways of having nowhere to put the file. */
+const NO_DURABLE_HOME =
+  "Uploads are kept as the evidence behind their dashboard, and this deployment has nowhere to keep them. Nothing was built.";
+
+/** Which reader was applied, which is what a later reader needs to know. */
+const UPLOAD_SOURCE_KIND = "csv-upload";
+
+/**
+ * A filename, reduced to something a record can hold.
+ *
+ * The schema refuses control characters and bounds the length; a name that
+ * survives neither is replaced rather than the upload being refused, because
+ * what the file was called on somebody's laptop is not a reason to reject their
+ * ledger.
+ */
+function uploadReference(name: string): string {
+  const cleaned = name
+    .replaceAll(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim()
+    .slice(0, 200);
+  return cleaned === "" ? "uploaded.csv" : cleaned;
 }

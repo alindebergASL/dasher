@@ -43,6 +43,41 @@ export interface SaveDashboardInput {
   readonly model: string;
   /** The compiled spec, canonicalised by the caller. Opaque here. */
   readonly canonicalSpecBytes: Uint8Array;
+  /**
+   * The stored bytes these figures were computed from, when there are any.
+   *
+   * `undefined` is the ordinary case and says something specific: this
+   * dashboard was built from a source that keeps no file — an API read at
+   * request time, or a snapshot committed to the repository. Present, it names
+   * a `source_snapshots` row, and the schema's foreign key then keeps those
+   * bytes alive for as long as this version exists.
+   */
+  readonly sourceSnapshotId?: string;
+  readonly requestId: string;
+  readonly deploymentRevision: string;
+}
+
+/** Bytes as they were received, plus the little a file cannot say about itself. */
+export interface RecordSourceSnapshotInput {
+  /**
+   * What kind of thing was retrieved — `csv-upload`, and later `xlsx-upload` or
+   * an API's name. Not a MIME type: the point is which reader was applied.
+   */
+  readonly sourceKind: string;
+  /**
+   * How this source is referred to. For an upload that is the filename the
+   * browser reported, which is a claim by the client and is stored as one
+   * rather than trusted for anything.
+   */
+  readonly sourceRef: string;
+  /** Exactly what arrived. The digest is computed by the seam, not accepted. */
+  readonly bytes: Uint8Array;
+  /**
+   * When the source says its contents were true, which is not when they were
+   * received. The schema requires `retrieved_at >= observed_at` and stamps the
+   * retrieval itself, so a caller cannot backdate the arrival.
+   */
+  readonly observedAt: Date;
   readonly requestId: string;
   readonly deploymentRevision: string;
 }
@@ -102,6 +137,17 @@ export interface DashboardRepository {
    * transaction, so a failure at any point leaves none of them.
    */
   save(input: SaveDashboardInput): Promise<SavedDashboard>;
+
+  /**
+   * Store retrieved bytes, and return the id a version can cite.
+   *
+   * Separate from `save` and called before it, because the two answer to
+   * different failures: bytes that cannot be stored must stop the dashboard
+   * being built at all, where a dashboard that cannot be saved is still a
+   * dashboard. Both run inside one request transaction, so a failure at either
+   * point leaves neither.
+   */
+  recordSourceSnapshot(input: RecordSourceSnapshotInput): Promise<string>;
 
   /**
    * Read a dashboard and its head version by id.
@@ -170,7 +216,7 @@ export function createDashboardRepository(
       // touched it; a later update path has to read the revision it saw.
       const finalized = await handle
         .query<{ version_id: string }>(
-          "SELECT dasher_api.finalize_run($1, $2, $3::jsonb, $4, $5, $6) AS version_id",
+          "SELECT dasher_api.finalize_run($1, $2, $3::jsonb, $4, $5, $6, $7) AS version_id",
           [
             runId,
             input.canonicalSpecBytes,
@@ -178,6 +224,10 @@ export function createDashboardRepository(
             FIRST_REVISION,
             input.requestId,
             input.deploymentRevision,
+            // Named even when there is nothing to name. The seam takes no
+            // default for this, so a version built from a live source says so
+            // rather than inheriting an answer.
+            input.sourceSnapshotId ?? null,
           ],
         )
         .catch((error: unknown) => {
@@ -203,6 +253,39 @@ export function createDashboardRepository(
       }
 
       return { dashboardId, versionId, runId };
+    },
+
+    async recordSourceSnapshot(
+      input: RecordSourceSnapshotInput,
+    ): Promise<string> {
+      const stored = await handle.query<{ snapshot_id: string }>(
+        "SELECT dasher_api.record_source_snapshot($1, $2, $3, $4, $5, $6) AS snapshot_id",
+        [
+          input.sourceKind,
+          input.sourceRef,
+          // `pg` sends a `Buffer` as `bytea`. A `Uint8Array` that is not one
+          // goes over as an array literal and arrives as something else
+          // entirely, so the conversion is here rather than left to each
+          // caller to remember.
+          Buffer.from(
+            input.bytes.buffer,
+            input.bytes.byteOffset,
+            input.bytes.byteLength,
+          ),
+          input.observedAt.toISOString(),
+          input.requestId,
+          input.deploymentRevision,
+        ],
+      );
+
+      const snapshotId = stored.rows[0]?.snapshot_id;
+      if (snapshotId === undefined) {
+        throw new DashboardRepositoryError(
+          "unexpected_shape",
+          "record_source_snapshot returned no identifier",
+        );
+      }
+      return snapshotId;
     },
 
     async listRecent(limit: number): Promise<readonly DashboardListEntry[]> {

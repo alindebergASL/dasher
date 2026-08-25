@@ -447,3 +447,213 @@ it("refuses an unbounded or malformed listing limit", async () => {
     ).rejects.toMatchObject({ code: "unexpected_shape" });
   }
 });
+
+/**
+ * Stored bytes, and the reference that makes them durable evidence.
+ *
+ * The decision these prove is a product one: a file someone uploads is kept for
+ * at least as long as the dashboard built from it, because the dashboard states
+ * figures and the file is what those figures came from. A dashboard whose
+ * source has been discarded still shows numbers, and there is then no way to
+ * check them against anything.
+ *
+ * The schema is what enforces it rather than a retention job's good intentions:
+ * a version cites a snapshot by foreign key, so the bytes cannot be deleted
+ * while the version exists.
+ */
+
+const UPLOAD: Uint8Array = Buffer.from(
+  "line_id,label,budget_per_period,2026-03,2026-04\r\ncloud,Cloud,100,10,20\r\n",
+  "utf8",
+);
+
+function uploadInput() {
+  return {
+    sourceKind: "csv-upload",
+    sourceRef: "operating-spend.csv",
+    bytes: UPLOAD,
+    observedAt: new Date("2026-08-24T09:00:00.000Z"),
+    requestId: randomUUID(),
+    deploymentRevision: "test",
+  };
+}
+
+it("stores uploaded bytes and hands back the id a version can cite", async () => {
+  const { snapshotId, stored } = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository, principal) => {
+      const id = await repository.recordSourceSnapshot(uploadInput());
+      void principal;
+      return { snapshotId: id, stored: id };
+    },
+  );
+
+  expect(snapshotId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+  );
+  expect(stored).toBe(snapshotId);
+});
+
+it("keeps the bytes exactly, and derives the digest from them rather than taking one", async () => {
+  const snapshotId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.recordSourceSnapshot(uploadInput()),
+  );
+
+  // Read through the owner, because the repository exposes no operation that
+  // reads a snapshot back — this is checking what the seam wrote, not adding a
+  // capability the application gets.
+  const row = await ownerPool.query<{
+    canonical_bytes: Buffer;
+    digest_matches: boolean;
+    source_kind: string;
+    source_ref: string;
+  }>(
+    `SELECT canonical_bytes,
+            content_sha256 = sha256(canonical_bytes) AS digest_matches,
+            source_kind,
+            source_ref
+       FROM dasher.source_snapshots
+      WHERE snapshot_id = $1`,
+    [snapshotId],
+  );
+
+  // Byte for byte, CRLF endings included. A reader that normalised them would
+  // be storing something the author did not upload.
+  expect(row.rows[0]?.canonical_bytes.equals(Buffer.from(UPLOAD))).toBe(true);
+  expect(row.rows[0]?.digest_matches).toBe(true);
+  expect(row.rows[0]?.source_kind).toBe("csv-upload");
+  expect(row.rows[0]?.source_ref).toBe("operating-spend.csv");
+});
+
+it("records on the version which stored bytes its figures came from", async () => {
+  const { snapshotId, dashboardId } = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => {
+      const id = await repository.recordSourceSnapshot(uploadInput());
+      const saved = await repository.save({
+        ...saveInput("uploaded ledger"),
+        sourceSnapshotId: id,
+      });
+      return { snapshotId: id, dashboardId: saved.dashboardId };
+    },
+  );
+
+  const row = await ownerPool.query<{ source_snapshot_id: string | null }>(
+    `SELECT v.source_snapshot_id
+       FROM dasher.dashboards AS d
+       JOIN dasher.dashboard_versions AS v
+         ON v.organization_id = d.organization_id
+        AND v.version_id = d.head_version_id
+      WHERE d.dashboard_id = $1`,
+    [dashboardId],
+  );
+
+  expect(row.rows[0]?.source_snapshot_id).toBe(snapshotId);
+});
+
+it("leaves it null for a dashboard built from a source that keeps no file", async () => {
+  // The ordinary case, and it has to stay distinguishable. A river dashboard
+  // reads an API at request time; saying it came from stored bytes would be a
+  // claim about evidence that does not exist.
+  const saved = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.save(saveInput("live river")),
+  );
+
+  const row = await ownerPool.query<{ source_snapshot_id: string | null }>(
+    `SELECT v.source_snapshot_id
+       FROM dasher.dashboards AS d
+       JOIN dasher.dashboard_versions AS v
+         ON v.organization_id = d.organization_id
+        AND v.version_id = d.head_version_id
+      WHERE d.dashboard_id = $1`,
+    [saved.dashboardId],
+  );
+
+  expect(row.rows[0]?.source_snapshot_id).toBeNull();
+});
+
+/**
+ * Written expecting a foreign-key violation on delete, which is not what
+ * happens and is worth recording. `source_snapshots` carries an immutability
+ * trigger, so a DELETE is rejected before the constraint is ever consulted —
+ * 55000, not 23503. Retention here is therefore stronger than the decision
+ * asked for: the bytes are kept, full stop, and no path in this schema removes
+ * them.
+ *
+ * That leaves the citation doing a different job than "blocks the delete". When
+ * a deletion path is eventually built — a privileged retention role, or an
+ * archival marker — the reference is what will tell it these bytes are still
+ * answering for a dashboard on somebody's screen. Both facts are asserted
+ * below, so that the day the trigger is relaxed the second one is already
+ * load-bearing and already tested.
+ */
+
+it("refuses to delete stored bytes, before any constraint is consulted", async () => {
+  const snapshotId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.recordSourceSnapshot(uploadInput()),
+  );
+
+  await expect(
+    ownerPool.query(
+      "DELETE FROM dasher.source_snapshots WHERE snapshot_id = $1",
+      [snapshotId],
+    ),
+    // Uncited bytes, and still refused: this is the immutability trigger, not
+    // the reference below.
+  ).rejects.toMatchObject({ code: "55000" });
+});
+
+it("holds the citation that a deletion path would have to consult", async () => {
+  const snapshotId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => {
+      const id = await repository.recordSourceSnapshot(uploadInput());
+      await repository.save({
+        ...saveInput("cites its source"),
+        sourceSnapshotId: id,
+      });
+      return id;
+    },
+  );
+
+  // "Is anything still answering for these bytes?" — the question a retention
+  // pass asks, answerable from the schema rather than from a spec document.
+  const citations = await ownerPool.query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM dasher.dashboard_versions
+      WHERE source_snapshot_id = $1`,
+    [snapshotId],
+  );
+
+  expect(citations.rows[0]?.count).toBe("1");
+});
+
+it("does not let one organization cite another's stored file", async () => {
+  // The composite foreign key, doing the job it is composite for. Carol
+  // learning Alice's snapshot id must not be enough to attach Alice's evidence
+  // to Carol's dashboard, and the failure is a constraint rather than a check
+  // somebody remembered to write in the application.
+  const alicesSnapshot = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.recordSourceSnapshot(uploadInput()),
+  );
+
+  await expect(
+    withDashboardRepository(appPool, credential(carol), async (repository) =>
+      repository.save({
+        ...saveInput("carol borrows evidence"),
+        sourceSnapshotId: alicesSnapshot,
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "23503" });
+});

@@ -67,6 +67,7 @@ export {
   type DashboardRepository,
   type DashboardRepositoryErrorCode,
   type LoadedDashboard,
+  type RecordSourceSnapshotInput,
   type SaveDashboardInput,
   type SavedDashboard,
 } from "./dashboard-repository";

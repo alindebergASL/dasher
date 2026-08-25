@@ -3,13 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import riverFixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
 
-import { planDashboard, refineDashboard } from "./actions";
+import {
+  planDashboard,
+  refineDashboard,
+  uploadLedgerDashboard,
+} from "./actions";
 import { clearSourceCache } from "./source-runtime";
 import {
   DEFAULT_REQUEST,
   REFINEMENT_MAX_LENGTH,
   REQUEST_MAX_LENGTH,
 } from "./planning";
+import { UPLOAD_MAX_BYTES } from "./upload";
 // A static type-only namespace import, deliberately, so the module's type is
 // named without the dynamic-import type form. The generated-code gate is a
 // text sweep: it forbids that form anywhere in first-party source and does not
@@ -625,5 +630,105 @@ describe("one request, two trusted sources", () => {
     });
     expect(refined.ok).toBe(false);
     expect(refined.error).toContain("combined dashboard cannot be refined");
+  });
+});
+
+/**
+ * The upload path, and the rule that separates it from every other source.
+ *
+ * A river gauge can be read again tomorrow and the enrollment snapshot is
+ * committed to this repository, so a dashboard built from either can be shown
+ * whether or not it was saved. An uploaded file exists once, inside the request
+ * that carried it. A dashboard built from one and not stored would state
+ * figures whose only source had been discarded, and would look identical to one
+ * whose evidence is intact — so the upload refuses instead.
+ *
+ * These run with no database configured, which is exactly the deployment that
+ * has nowhere to put the file. The path that does store it is proven against a
+ * real Postgres in `@dasher/control-plane` and end to end in the persistence
+ * job.
+ */
+describe("uploadLedgerDashboard", () => {
+  const CSV =
+    "line_id,label,budget_per_period,2026-03,2026-04\r\ncloud,Cloud,100,10,20\r\n";
+
+  const form = (
+    overrides: Record<string, string | File | undefined> = {},
+  ): FormData => {
+    const data = new FormData();
+    const fields: Record<string, string | File | undefined> = {
+      file: new File([CSV], "operating-spend.csv", { type: "text/csv" }),
+      request: "operating spend by category",
+      sourceName: "Finance export",
+      currency: "USD",
+      periodLabel: "month",
+      exportedOn: "2026-08-24",
+      ...overrides,
+    };
+    for (const [name, value] of Object.entries(fields)) {
+      if (value !== undefined) data.set(name, value);
+    }
+    return data;
+  };
+
+  it("refuses when there is nowhere durable to keep the file", async () => {
+    // The whole point of the slice, stated as a refusal: no database means no
+    // evidence, and no evidence means no dashboard. Note what does NOT happen —
+    // a dashboard is not returned with a warning beside it, which is what the
+    // typed path does when a save fails.
+    const result = await uploadLedgerDashboard(form());
+
+    expect(result.ok).toBe(false);
+    expect(result.dashboard).toBeUndefined();
+    expect(result.error).toMatch(/nowhere to keep them/u);
+  });
+
+  it("asks for a file before anything else", async () => {
+    const result = await uploadLedgerDashboard(form({ file: undefined }));
+
+    expect(result.error).toMatch(/Choose a CSV export/u);
+  });
+
+  it("treats an empty file as no file", async () => {
+    // A file input can hand over a zero-byte file, and "that file has no rows
+    // in it" is a worse answer than asking for one.
+    const result = await uploadLedgerDashboard(
+      form({ file: new File([], "empty.csv", { type: "text/csv" }) }),
+    );
+
+    expect(result.error).toMatch(/Choose a CSV export/u);
+  });
+
+  it("refuses a file past the limit without reading it", async () => {
+    const result = await uploadLedgerDashboard(
+      form({
+        file: new File([new Uint8Array(UPLOAD_MAX_BYTES + 1)], "huge.csv", {
+          type: "text/csv",
+        }),
+      }),
+    );
+
+    expect(result.error).toMatch(/bigger than the 4 MB/u);
+  });
+
+  it("checks the declared details before it reads the bytes", async () => {
+    // Ordering that matters: a file with a missing currency is refused for the
+    // missing currency, not parsed first and refused for it afterwards.
+    const result = await uploadLedgerDashboard(form({ currency: "" }));
+
+    expect(result.error).toMatch(/three letters/u);
+  });
+
+  it("does not run the domain router over the brief", async () => {
+    // The typed path asks what subject a sentence is about, and would refuse
+    // this one. Choosing the upload form has already answered that question —
+    // running the classifier could only refuse a file somebody explicitly
+    // handed over.
+    const result = await uploadLedgerDashboard(
+      form({ request: "show me the numbers" }),
+    );
+
+    expect(result.error).not.toMatch(/river conditions, air quality/u);
+    expect(result.error).toMatch(/nowhere to keep them/u);
   });
 });

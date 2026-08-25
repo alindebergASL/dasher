@@ -24,12 +24,22 @@ import { RequestWorkspace } from "./request-workspace";
  * keeps, which is exactly where a component test belongs.
  */
 
-const { planDashboard, refineDashboard } = vi.hoisted(() => ({
-  planDashboard: vi.fn(),
-  refineDashboard: vi.fn(),
-}));
+const { planDashboard, refineDashboard, uploadLedgerDashboard } = vi.hoisted(
+  () => ({
+    planDashboard: vi.fn(),
+    refineDashboard: vi.fn(),
+    // Named even though nothing here calls it. The workspace renders the upload
+    // panel, which imports it, and a mock missing an export the module graph
+    // reaches is a failure that surfaces somewhere unrelated.
+    uploadLedgerDashboard: vi.fn(),
+  }),
+);
 
-vi.mock("@/app/actions", () => ({ planDashboard, refineDashboard }));
+vi.mock("@/app/actions", () => ({
+  planDashboard,
+  refineDashboard,
+  uploadLedgerDashboard,
+}));
 
 const gauges = parseUsgsInstantaneousValues(fixture);
 

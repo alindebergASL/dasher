@@ -1552,6 +1552,106 @@ footer {
   color: var(--muted);
 }
 
+/*
+ * The upload disclosure, inside the request form's surface.
+ *
+ * Closed by default and quiet when closed: it is a second way to answer the
+ * question the bar above already asks, not a competing call to action. Open, it
+ * is six controls, and the notes between them are load-bearing rather than
+ * decorative — they are where the form says why it wants a currency and an
+ * export date instead of guessing them.
+ */
+.upload-bar {
+  font-size: var(--small);
+}
+
+/*
+ * It sits between the two forms rather than inside either, so it has to carry
+ * the band's own gutters — a direct child of the workspace is otherwise flush
+ * against the viewport with no edge, the same problem the note below it solves
+ * the same way.
+ */
+.request-workspace > .upload-bar {
+  padding: 0 clamp(var(--s4), 4vw, var(--s7)) var(--s2);
+  background: var(--card);
+}
+
+.upload-summary {
+  display: inline-block;
+  padding: var(--s1) 0;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.upload-summary:hover {
+  color: var(--ink);
+}
+
+.upload-summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+  border-radius: var(--radius);
+}
+
+.upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3) 0 var(--s2);
+}
+
+.upload-note {
+  margin: 0;
+  max-width: 68ch;
+  font-size: var(--small);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.upload-note code {
+  padding: 1px 4px;
+  font-size: 0.95em;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.upload-file {
+  font: inherit;
+  font-size: var(--small);
+  color: var(--ink);
+}
+
+.upload-file:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/*
+ * Four short declarations, side by side where there is room. They are one
+ * group — everything the file cannot say about itself — and stacking them into
+ * a column of four made the form read as longer than it is.
+ */
+.upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--s2) var(--s3);
+}
+
+.upload-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.upload-field .request-input {
+  flex: 1 1 auto;
+}
+
 @media (max-width: 640px) {
   /*
    * The executive brief must stay fully inside the first mobile viewport, so
@@ -1587,6 +1687,19 @@ footer {
     padding: 0.9rem 1rem 4.5rem;
     border-top: 1px solid var(--line);
     border-bottom: none;
+    background: var(--card);
+  }
+
+  /*
+   * Below the dashboard, for the same reason as the note above it. Added as a
+   * sibling in the flow, it pushed the executive brief 20px past the first
+   * viewport — the exact rule the pinning exists to satisfy, broken by a
+   * collapsed disclosure that looks like it occupies nothing.
+   */
+  .request-workspace > .upload-bar {
+    order: 1;
+    padding: 0.9rem 1rem;
+    border-top: 1px solid var(--line);
     background: var(--card);
   }
 
