@@ -1,8 +1,8 @@
 import { canonicalSpecBytes } from "@dasher/dashboard-schema";
-import { LedgerSnapshotSchema } from "@dasher/ledger-domain";
 import { describe, expect, it } from "vitest";
 
-import fixture from "../../../fixtures/ledger/operating-spend.json";
+import { operatingSpendFixture } from "@dasher/ledger-domain/fixture";
+
 import { compileLedgerPlan, LedgerPlanRejected } from "./compile-ledger";
 import { LedgerPlanSchema, type LedgerPlan } from "./ledger-plan";
 import {
@@ -10,7 +10,7 @@ import {
   planLedgerDashboard,
 } from "./ledger-provider";
 
-const snapshot = LedgerSnapshotSchema.parse(fixture);
+const snapshot = operatingSpendFixture();
 const lineIds = snapshot.lines.map((line) => line.id);
 const AS_OF = "2026-08-24T12:00:00.000Z";
 const options = { asOf: AS_OF, planner: DETERMINISTIC_LEDGER_PLANNER };
@@ -114,8 +114,12 @@ describe("compileLedgerPlan", () => {
 
     expect(trend).toBeDefined();
     const cloud = trend?.kind === "trend-list" ? trend.series[0] : undefined;
+    // Numbers, not the exact decimal text the snapshot carries. A trend point
+    // is a plot coordinate the renderer scales rather than a figure anyone
+    // reads, and the contract types it as a number — the one place a ledger
+    // amount deliberately becomes a double. Every STATED figure stays exact.
     expect(cloud?.points.map((point) => point.value)).toStrictEqual(
-      snapshot.lines[0]!.amounts,
+      snapshot.lines[0]!.amounts.map(Number),
     );
     expect(cloud?.points[0]?.at).toBe("2026-03-01T00:00:00.000Z");
   });
@@ -125,7 +129,9 @@ describe("compileLedgerPlan", () => {
       ...snapshot,
       lines: snapshot.lines.map((line) => ({
         ...line,
-        budgetPerPeriod: Math.max(...line.amounts) + 1,
+        // Above every amount, so no line is over budget. Compared as numbers
+        // only to pick the bound; the value handed back is decimal text.
+        budgetPerPeriod: String(Math.max(...line.amounts.map(Number)) + 1),
       })),
     };
     const plan = planLedgerDashboard("budget review", lineIds);
@@ -197,16 +203,26 @@ describe("the figures a ledger dashboard displays", () => {
   const find = <TKind extends string>(kind: TKind) =>
     components.find((component) => component.kind === kind);
 
+  /**
+   * Read as numbers on purpose, and only here.
+   *
+   * These tests assert the STRING a reader sees — a currency to whole units, a
+   * percentage to one decimal place. The exactness of the underlying figures is
+   * asserted in `@dasher/ledger-domain`, against the engine, with no tolerance.
+   * A float oracle at this precision could only disagree if a value sat on a
+   * rounding boundary, and none of this fixture's do: the shares are
+   * 65.15673206, 10.50…, 8.33… and the changes 7.69812136 and -10.40723982.
+   */
   const latest = (id: string) =>
-    snapshot.lines.find((line) => line.id === id)!.amounts.at(-1)!;
+    Number(snapshot.lines.find((line) => line.id === id)!.amounts.at(-1));
   const prior = (id: string) =>
-    snapshot.lines.find((line) => line.id === id)!.amounts.at(-2)!;
+    Number(snapshot.lines.find((line) => line.id === id)!.amounts.at(-2));
   const total = snapshot.lines.reduce(
-    (sum, line) => sum + line.amounts.at(-1)!,
+    (sum, line) => sum + Number(line.amounts.at(-1)),
     0,
   );
   const priorTotal = snapshot.lines.reduce(
-    (sum, line) => sum + line.amounts.at(-2)!,
+    (sum, line) => sum + Number(line.amounts.at(-2)),
     0,
   );
 
@@ -247,7 +263,7 @@ describe("the figures a ledger dashboard displays", () => {
     const grid = find("metric-grid");
     const metrics = grid?.kind === "metric-grid" ? grid.metrics : [];
     const biggest = Math.max(
-      ...snapshot.lines.map((line) => line.amounts.at(-1)!),
+      ...snapshot.lines.map((line) => Number(line.amounts.at(-1))),
     );
 
     expect(metrics[3]?.value).toBe(`${((biggest / total) * 100).toFixed(1)}%`);
@@ -294,7 +310,7 @@ describe("the figures a ledger dashboard displays", () => {
 
     expect(cloud?.title).toBe("Cloud infrastructure");
     expect(cloud?.detail).toContain(
-      `over by $${(latest("cloud") - budget).toLocaleString("en-US")}`,
+      `over by $${(latest("cloud") - Number(budget)).toLocaleString("en-US")}`,
     );
     expect(cloud?.severity).toBe("attention");
   });
@@ -322,7 +338,7 @@ describe("the figures a ledger dashboard displays", () => {
     const single = {
       ...snapshot,
       periods: ["2026-07", "2026-08"],
-      lines: [{ id: "only", label: "Only line", amounts: [0, 500] }],
+      lines: [{ id: "only", label: "Only line", amounts: ["0", "500"] }],
     };
     const grid = compileLedgerPlan(
       planLedgerDashboard("spending", ["only"]),
@@ -342,7 +358,9 @@ describe("the figures a ledger dashboard displays", () => {
       ...snapshot,
       lines: snapshot.lines.map((line) => ({
         ...line,
-        budgetPerPeriod: Math.max(...line.amounts) + 1,
+        // Above every amount, so no line is over budget. Compared as numbers
+        // only to pick the bound; the value handed back is decimal text.
+        budgetPerPeriod: String(Math.max(...line.amounts.map(Number)) + 1),
       })),
     };
     const brief = compileLedgerPlan(
@@ -389,7 +407,7 @@ describe("the prose a ledger dashboard carries", () => {
     // `> 0` are indistinguishable and the rule is not really tested.
     const flat = {
       ...snapshot,
-      lines: [{ id: "flat", label: "Flat line", amounts: [500, 500] }],
+      lines: [{ id: "flat", label: "Flat line", amounts: ["500", "500"] }],
       periods: ["2026-07", "2026-08"],
     };
     const grid = compileLedgerPlan(

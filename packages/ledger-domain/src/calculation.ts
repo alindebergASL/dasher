@@ -13,7 +13,7 @@ import {
   uuid,
 } from "@dasher/calculation-engine";
 
-import { type Exact, fromEngineDecimal, fromNumber } from "./exact";
+import { type Exact, fromEngineDecimal, fromText } from "./exact";
 import type { LedgerSnapshot } from "./ledger";
 
 /**
@@ -211,7 +211,7 @@ function runLedger(
   for (const line of snapshot.lines) {
     line.amounts.forEach((amount, index) => {
       const period = snapshot.periods[index] as string;
-      const exact = fromNumber(amount);
+      const exact = fromText(amount);
       const dot = exact.indexOf(".");
       rows.push({
         [FIELD_LINE]: { state: "present", value: line.id },

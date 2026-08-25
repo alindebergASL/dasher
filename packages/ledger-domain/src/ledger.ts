@@ -9,7 +9,7 @@ import {
   type Exact,
   abs,
   compare,
-  fromNumber,
+  fromText,
   ratioToPercent,
   subtract,
 } from "./exact";
@@ -35,6 +35,24 @@ import {
  * package's dependencies is asserted by a test rather than left to discipline.
  */
 
+/**
+ * AMOUNTS ARE DECIMAL TEXT, NOT `number`.
+ *
+ * They were `z.number()`, and the conversion into the calculation engine had to
+ * read each one back through `toString` to recover the decimal the author wrote.
+ * That was exact for a value a person types and it was a boundary rather than a
+ * fix, said so at the time, and named this slice as where it lands: a workbook
+ * carrying real cents has no reason to pass through a double on its way in.
+ *
+ * The grammar is the ordinary one rather than the canonical one, because a
+ * spreadsheet writes `49875.00` and `-0` and refusing those would mean refusing
+ * what exporters actually produce. `fromText` canonicalises on read.
+ */
+const DECIMAL_TEXT = z
+  .string()
+  .regex(/^-?\d+(?:\.\d+)?$/u, "amounts are decimal text, e.g. 49875 or 12.50")
+  .max(40);
+
 const LineSchema = z.strictObject({
   id: z
     .string()
@@ -47,8 +65,8 @@ const LineSchema = z.strictObject({
    * ledger has lines nobody budgeted, and a missing budget must read as "not
    * compared" rather than as a budget of zero.
    */
-  budgetPerPeriod: z.number().finite().nonnegative().optional(),
-  amounts: z.array(z.number().finite()).min(2).max(240),
+  budgetPerPeriod: DECIMAL_TEXT.optional(),
+  amounts: z.array(DECIMAL_TEXT).min(2).max(240),
 });
 
 export const LedgerSnapshotSchema = z
@@ -217,7 +235,7 @@ export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
     const budget =
       line.budgetPerPeriod === undefined
         ? undefined
-        : fromNumber(line.budgetPerPeriod);
+        : fromText(line.budgetPerPeriod);
     // The one comparison left in JavaScript, and it is a comparison rather than
     // arithmetic on a computed value: both sides are exact, and `subtract` is
     // exact by construction.

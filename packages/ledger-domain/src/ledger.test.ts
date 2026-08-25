@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { operatingSpendFixture } from "./fixture";
+
 import * as exact from "./exact";
 
 /**
@@ -35,7 +37,6 @@ function percentAt8(numerator: bigint, denominator: bigint): string {
   return negative && /[1-9]/u.test(body) ? `-${body}` : body;
 }
 
-import fixture from "../../../fixtures/ledger/operating-spend.json";
 import {
   deriveLedgerFacts,
   LedgerSnapshotSchema,
@@ -43,7 +44,7 @@ import {
   type LedgerSnapshot,
 } from "./ledger";
 
-const snapshot = LedgerSnapshotSchema.parse(fixture);
+const snapshot = operatingSpendFixture();
 
 function withLines(lines: LedgerSnapshot["lines"]): LedgerSnapshot {
   return { ...snapshot, lines };
@@ -59,7 +60,7 @@ describe("LedgerSnapshotSchema", () => {
     // The failure a normalized shape exists to exclude. Left through, it
     // surfaces much later as a trend line that quietly stops early.
     const ragged = withLines([
-      { ...snapshot.lines[0]!, amounts: [1, 2, 3] },
+      { ...snapshot.lines[0]!, amounts: ["1", "2", "3"] },
       ...snapshot.lines.slice(1),
     ]);
 
@@ -86,12 +87,15 @@ describe("deriveLedgerFacts", () => {
   const facts = deriveLedgerFacts(snapshot);
 
   it("totals the latest period from the lines rather than trusting a field", () => {
+    // Summed with the exact arithmetic rather than with `+`, now that the
+    // amounts are decimal text. Adding them as numbers would make the test's
+    // oracle the very thing the ledger stopped using.
     const expected = snapshot.lines.reduce(
-      (sum, line) => sum + line.amounts.at(-1)!,
-      0,
+      (sum, line) => exact.add(sum, line.amounts.at(-1) as string),
+      exact.ZERO,
     );
 
-    expect(facts.total).toBe(String(expected));
+    expect(facts.total).toBe(expected);
     expect(facts.latestPeriod).toBe("2026-08");
     expect(facts.previousPeriod).toBe("2026-07");
   });
@@ -123,7 +127,7 @@ describe("deriveLedgerFacts", () => {
       snapshot.lines.map((line, index) => ({
         ...line,
         id: index === 0 ? "aaa" : index === 1 ? "bbb" : line.id,
-        amounts: line.amounts.map(() => 100),
+        amounts: line.amounts.map(() => "100"),
       })),
     );
 
@@ -156,7 +160,11 @@ describe("deriveLedgerFacts", () => {
 
   it("reports no percent change when the previous period was zero", () => {
     const fromZero = withLines([
-      { id: "only", label: "Only line", amounts: [0, 0, 0, 0, 0, 500] },
+      {
+        id: "only",
+        label: "Only line",
+        amounts: ["0", "0", "0", "0", "0", "500"],
+      },
     ]);
 
     expect(deriveLedgerFacts(fromZero).totalChangePercent).toBeNull();
@@ -243,13 +251,16 @@ describe("the values deriveLedgerFacts computes", () => {
   const raw = (id: string) => snapshot.lines.find((one) => one.id === id)!;
 
   it("takes each line's latest and previous from the last two periods", () => {
-    expect(line("cloud").latest).toBe(String(raw("cloud").amounts.at(-1)));
-    expect(line("cloud").previous).toBe(String(raw("cloud").amounts.at(-2)));
+    expect(line("cloud").latest).toBe(raw("cloud").amounts.at(-1));
+    expect(line("cloud").previous).toBe(raw("cloud").amounts.at(-2));
   });
 
   it("computes change as latest minus previous, keeping the sign", () => {
     expect(line("cloud").change).toBe(
-      String(raw("cloud").amounts.at(-1)! - raw("cloud").amounts.at(-2)!),
+      exact.subtract(
+        raw("cloud").amounts.at(-1) as string,
+        raw("cloud").amounts.at(-2) as string,
+      ),
     );
     expect(exact.sign(line("contractors").change)).toBe(-1);
   });
@@ -259,9 +270,9 @@ describe("the values deriveLedgerFacts computes", () => {
 
     expect(one.changePercent).toBe(
       percentAt8(
-        BigInt(raw("contractors").amounts.at(-1)!) -
-          BigInt(raw("contractors").amounts.at(-2)!),
-        BigInt(raw("contractors").amounts.at(-2)!),
+        BigInt(raw("contractors").amounts.at(-1) as string) -
+          BigInt(raw("contractors").amounts.at(-2) as string),
+        BigInt(raw("contractors").amounts.at(-2) as string),
       ),
     );
     // The value the engine actually returned, pinned so a scale or rounding
@@ -273,9 +284,12 @@ describe("the values deriveLedgerFacts computes", () => {
     // Ten fractional digits on the ratio, so the percentage carries eight.
     expect(line("salaries").share).toBe(
       percentAt8(
-        BigInt(raw("salaries").amounts.at(-1)!),
+        BigInt(raw("salaries").amounts.at(-1) as string),
         BigInt(
-          snapshot.lines.reduce((sum, one) => sum + one.amounts.at(-1)!, 0),
+          snapshot.lines.reduce(
+            (sum, one) => exact.add(sum, one.amounts.at(-1) as string),
+            exact.ZERO,
+          ),
         ),
       ),
     );
@@ -284,14 +298,20 @@ describe("the values deriveLedgerFacts computes", () => {
 
   it("computes how far over budget a line is, not merely that it is", () => {
     expect(line("cloud").overBudgetBy).toBe(
-      String(Number(line("cloud").latest) - raw("cloud").budgetPerPeriod!),
+      exact.subtract(
+        line("cloud").latest,
+        raw("cloud").budgetPerPeriod as string,
+      ),
     );
     expect(line("facilities").overBudgetBy).toBeUndefined();
   });
 
   it("carries the previous total so a change can be shown, not just computed", () => {
     expect(facts.previousTotal).toBe(
-      String(snapshot.lines.reduce((sum, one) => sum + one.amounts.at(-2)!, 0)),
+      snapshot.lines.reduce(
+        (sum, one) => exact.add(sum, one.amounts.at(-2) as string),
+        exact.ZERO,
+      ),
     );
     expect(facts.totalChangePercent).toBe(
       percentAt8(
@@ -334,7 +354,11 @@ describe("the values deriveLedgerFacts computes", () => {
 
   it("reports zero share rather than a meaningless one when nothing was spent", () => {
     const empty = withLines([
-      { id: "only", label: "Only line", amounts: [0, 0, 0, 0, 0, 0] },
+      {
+        id: "only",
+        label: "Only line",
+        amounts: ["0", "0", "0", "0", "0", "0"],
+      },
     ]);
     const derived = deriveLedgerFacts(empty);
 

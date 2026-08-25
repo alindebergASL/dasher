@@ -95,6 +95,30 @@ export function fromNumber(value: number): Exact {
   return text;
 }
 
+/**
+ * The wire form a file or a fixture may carry, which is wider than canonical.
+ *
+ * A real export writes `49875.00`, `0.50` and `-0`, none of which are canonical
+ * here — canonical strips trailing fractional zeros and has no negative zero.
+ * Refusing them would mean refusing what spreadsheets actually produce, so the
+ * grammar accepted on the way in is the ordinary one and canonicalisation
+ * happens on read.
+ *
+ * A leading `+` and an exponent are refused rather than normalised: `1e21` is
+ * not a form anyone types into a budget, and accepting it would put the
+ * magnitude question back where `fromNumber` had to refuse it.
+ */
+const DECIMAL_TEXT = /^-?\d+(?:\.\d+)?$/u;
+
+export function fromText(value: string): Exact {
+  if (!DECIMAL_TEXT.test(value)) {
+    throw new RangeError(`${value} is not a decimal`);
+  }
+  const dot = value.indexOf(".");
+  const scale = dot === -1 ? 0 : value.length - dot - 1;
+  return fromParts(BigInt(value.replace(".", "")), scale);
+}
+
 /** Aligns two values to a common scale so their integers can be compared. */
 function align(
   left: Exact,

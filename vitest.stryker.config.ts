@@ -27,6 +27,10 @@ import { defineConfig } from "vitest/config";
  * it. Its callers are React components, which the mutation run does not load;
  * what the score measures is the packer's arithmetic, not the rendering.
  *
+ * `csv.ts` and `from-csv.ts` are here because they are the first code in the
+ * product that reads a file it did not author. A surviving mutant in either is
+ * a way for a malformed export to become a plausible dashboard.
+ *
  * `exact.ts` is here because it is arithmetic and nothing else — the decimal
  * comparison, rounding and formatting every ledger figure passes through on its
  * way to a reader. A surviving mutant in it is a way for money to be shown
@@ -54,6 +58,8 @@ export default defineConfig({
       "packages/station-domain/src/**/*.test.ts",
       "packages/dashboard-schema/src/compose.test.ts",
       "packages/ledger-domain/src/exact.test.ts",
+      "packages/ledger-domain/src/from-csv.test.ts",
+      "packages/workbook/src/csv.test.ts",
       "packages/ledger-domain/src/ledger.test.ts",
       "packages/dashboard-schema/src/layout.test.ts",
     ],

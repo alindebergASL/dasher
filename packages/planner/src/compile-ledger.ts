@@ -111,7 +111,7 @@ function buildSection(
   facts: LedgerFacts,
   lines: readonly LedgerLineFacts[],
   /** Each line's full series, straight from the snapshot. */
-  amounts: ReadonlyMap<string, readonly number[]>,
+  amounts: ReadonlyMap<string, readonly Exact[]>,
 ): DashboardComponent | undefined {
   const everything = uniqueIds(
     lines.map((line) => line.evidenceId),
@@ -235,7 +235,12 @@ function buildSection(
           // contract loudly instead, which is the honest failure.
           points: (amounts.get(line.id) ?? []).map((value, index) => ({
             at: periodStart(facts.periods[index]!),
-            value,
+            // The one place a ledger figure becomes a `number`, and the only
+            // one where that is harmless: a trend point is a plot coordinate
+            // the renderer scales, not a figure anyone reads or adds up. The
+            // contract types it as a number, and every STATED amount on the
+            // page — total, change, share, variance — stays exact text.
+            value: Number(value),
           })),
         })),
       };
@@ -329,7 +334,7 @@ export function compileLedgerPlan(
    * trend needs the selected lines' own series. Passed explicitly rather than
    * copied onto the facts, so there is one history rather than two that drift.
    */
-  const amounts = new Map<string, readonly number[]>(
+  const amounts = new Map<string, readonly Exact[]>(
     lines.map((line) => [line.id, line.amounts]),
   );
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import fixture from "../../../fixtures/ledger/operating-spend.json";
+import { operatingSpendFixture } from "./fixture";
+
 import { calculateLedger, engineTimestamp } from "./calculation";
 import { ZERO, abs, add, compare, ratioToPercent, subtract } from "./exact";
 import { LedgerSnapshotSchema, type LedgerSnapshot } from "./ledger";
@@ -14,7 +15,7 @@ import { LedgerSnapshotSchema, type LedgerSnapshot } from "./ledger";
  * coming back are attached to the lines they belong to.
  */
 
-const snapshot = LedgerSnapshotSchema.parse(fixture);
+const snapshot = operatingSpendFixture();
 const latest = snapshot.periods.at(-1) as string;
 const first = snapshot.periods[0] as string;
 
@@ -153,7 +154,7 @@ describe("the timestamp handed to the engine", () => {
       "2026-08-24T09:00:00+01:00",
       "2026-08-24T09:00:00.123456Z",
     ]) {
-      const shifted = LedgerSnapshotSchema.parse({ ...fixture, retrievedAt });
+      const shifted = LedgerSnapshotSchema.parse({ ...snapshot, retrievedAt });
 
       expect(calculateLedger(shifted).cells).toHaveLength(
         snapshot.lines.length * snapshot.periods.length,
@@ -174,7 +175,11 @@ describe("when a denominator is zero", () => {
    */
   const nothingSpent = calculateLedger(
     withLines([
-      { id: "only", label: "Only line", amounts: [0, 0, 0, 0, 0, 0] },
+      {
+        id: "only",
+        label: "Only line",
+        amounts: ["0", "0", "0", "0", "0", "0"],
+      },
     ]),
   );
 
@@ -201,7 +206,11 @@ describe("when a denominator is zero", () => {
     // so rather than leaving it to be discovered.
     const fromZero = calculateLedger(
       withLines([
-        { id: "only", label: "Only line", amounts: [0, 0, 0, 0, 0, 500] },
+        {
+          id: "only",
+          label: "Only line",
+          amounts: ["0", "0", "0", "0", "0", "500"],
+        },
       ]),
     );
     const last = fromZero.cells.find(
