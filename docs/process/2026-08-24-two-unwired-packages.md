@@ -1,4 +1,4 @@
-# Two packages nothing uses, and what they are for
+# Two packages nothing used, what they were for, and what happened next
 
 Date: 2026-08-24
 Occasioned by: PR #51, and the arithmetic in it
@@ -166,8 +166,43 @@ discovery inside one: **before adding a capability, grep the workspace for it.**
 It cost two hours on the model planner and would have changed the arithmetic in
 PR #51 had it been asked there.
 
+## What was decided, and what has been done
+
+Recorded 2026-08-25, so that this file describes the repository rather than a
+moment in it. **The audit above is what was true on 2026-08-24; it is no longer
+true of the first package, and this section is the reason.**
+
+**`@dasher/calculation-engine`: wired, starting with the ledger**, exactly as
+recommended. Every amount, change, share and budget variance the ledger displays
+is now computed by the engine on exact decimals, the snapshot is carried through
+`canonical-input-table-v1` and hashed at the boundary, and the package's entry in
+`reachability.json` is gone — the repo-graph gate passing without it is what
+proves the wiring is real rather than declared. That work is on
+`claude/ledger-free-text-gate` and is not merged at the time of writing, so a
+reader checking `main` may still find the exemption in place; check
+`reachability.json` rather than this paragraph.
+
+Three things the engine refused along the way, each of which changed the design
+and none of which the float version had to answer: arithmetic across two
+evaluation domains, division by zero, and the assumption that output rows come
+back in the order they were submitted. The last one silently attached one budget
+line's figures to another until a guard caught it.
+
+It also corrected the measurement in this file. The float shares summed to
+99.99999999999999, and the exact ones sum to 100 for the period the dashboard
+shows — but not for all six periods in the fixture, two of which land one unit in
+the last requested place away. Rounding residue is inherent; what changed is that
+it is now bounded by a precision someone asked for.
+
+**`@dasher/extraction-spike`: still unreachable, still declared, still
+undecided.** Its recommendation stands unactioned, and the tension named there is
+unresolved: extending it to workbook coordinates is the cheapest path for the
+parsing slice, and its `reachability.json` entry forbids product code importing
+it while ADR-008 is Proposed. That is an ADR decision, not an implementation
+choice, and nothing here takes it.
+
 ## What this file does not decide
 
-Whether to wire or delete. Both recommendations above are recommendations; the
-decision affects scope, CI time, and what the CSV slice is allowed to assume,
-and it belongs to whoever owns those.
+Anything about `@dasher/extraction-spike`. The recommendation above is a
+recommendation; the decision affects scope, CI time, and what the workbook slice
+is allowed to assume, and it belongs to whoever owns those.
