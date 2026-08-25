@@ -27,6 +27,11 @@ import { defineConfig } from "vitest/config";
  * it. Its callers are React components, which the mutation run does not load;
  * what the score measures is the packer's arithmetic, not the rendering.
  *
+ * The ledger pair follows the same rule. `compile-ledger.ts` is exercised from
+ * `packages/planner/src/compile-ledger.test.ts`, already inside the planner glob
+ * above; `packages/ledger-domain/src/ledger.ts` needs its own suite named here,
+ * because nothing else in the include list loads that package.
+ *
  * `registry.ts` needs no new entry here: the planner glob already covers
  * `registry.test.ts`. What it does need saying is what its score MEANS. The
  * registry is mostly a static object literal, and `ignoreStatic` in
@@ -43,6 +48,7 @@ export default defineConfig({
       "packages/river-domain/src/**/*.test.ts",
       "packages/station-domain/src/**/*.test.ts",
       "packages/dashboard-schema/src/compose.test.ts",
+      "packages/ledger-domain/src/ledger.test.ts",
       "packages/dashboard-schema/src/layout.test.ts",
     ],
   },

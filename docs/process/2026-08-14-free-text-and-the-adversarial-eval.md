@@ -47,12 +47,30 @@ rendered dashboard carrying the title `"Sacramento at 12.4 ft"` and the framing
 `packages/planner/src/freetext.ts`, called from `findPlanProblems`, so a caller
 cannot validate a plan and miss it. Two categories, both narrow on purpose:
 
-- **measurement** — a quantity with a physical unit, or any decimal number,
-  **written in digits or in words**. Raises `free_text_measurement`.
+- **measurement** — a number written next to a unit, a pollutant, or an index
+  name, **in the shapes `freetext.ts` enumerates**. Raises
+  `free_text_measurement`.
 - **directive** — the safety instructions the provider prompt already forbids:
   emergency imperatives (`evacuate`, `seek higher ground`, `call 911`,
   `do not drive`, …), **road avoidance**, and **referral to emergency services
   or emergency management for guidance**. Raises `free_text_directive`.
+
+> **Narrowed 2026-08-24, from three rounds of review.** This document said "a
+> quantity with a physical unit, or any decimal number, written in digits or in
+> words" — a promise about a language, made by a pattern list. Three review
+> rounds each found shapes it did not cover: air units entirely absent, then
+> `AQI: 84` and `PM2.5 at 21`, then `PM2.5 was 21`, `twenty-one PM2.5` and
+> `21 µg·m⁻³`. All were real holes and all are now closed. None of the rounds
+> could show the next one would find nothing, and a guarantee no mechanism here
+> can keep is an invitation to keep extending the mechanism instead of the
+> evidence. The category is now stated as what the code enumerates. What
+> protects a reader is that Dasher computes every displayed value and free text
+> is never one of them; this gate is defence in depth behind that and behind the
+> system prompt, which still states the rule broadly on purpose.
+>
+> Every air-domain shape in the list was imagined by a reviewer. The eval below
+> has never been run against the air domain, which is where the next shape
+> should come from.
 
 > **Widened 2026-08-17, from evidence.** Both categories were narrower than this
 > document claimed. `"Sacramento at twelve feet"` passed because every pattern

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@dasher/dashboard-schema": "workspace:*",
+    "@dasher/ledger-domain": "workspace:*",
     "@dasher/river-domain": "workspace:*",
     "@dasher/station-domain": "workspace:*",
     "zod": "^4.4.3"

@@ -1,0 +1,46 @@
+{
+  "sourceName": "Operating ledger export",
+  "sourceUrl": "https://example.invalid/ledger/operating-spend",
+  "retrievedAt": "2026-08-24T09:00:00.000Z",
+  "currency": "USD",
+  "periodLabel": "month",
+  "periods": ["2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08"],
+  "lines": [
+    {
+      "id": "cloud",
+      "label": "Cloud infrastructure",
+      "budgetPerPeriod": 42000,
+      "amounts": [38100, 39250, 41880, 44020, 46310, 49875]
+    },
+    {
+      "id": "salaries",
+      "label": "Salaries and benefits",
+      "budgetPerPeriod": 310000,
+      "amounts": [298400, 301200, 303950, 305100, 307800, 309400]
+    },
+    {
+      "id": "contractors",
+      "label": "Contractors",
+      "budgetPerPeriod": 60000,
+      "amounts": [72500, 68300, 55100, 49800, 44200, 39600]
+    },
+    {
+      "id": "travel",
+      "label": "Travel and events",
+      "budgetPerPeriod": 18000,
+      "amounts": [9400, 11200, 15600, 12800, 17400, 16950]
+    },
+    {
+      "id": "software",
+      "label": "Software licences",
+      "budgetPerPeriod": 24000,
+      "amounts": [21300, 21900, 22400, 23100, 23650, 24980]
+    },
+    {
+      "id": "facilities",
+      "label": "Facilities",
+      "budgetPerPeriod": 35000,
+      "amounts": [34100, 34050, 33900, 34200, 34400, 34050]
+    }
+  ]
+}
