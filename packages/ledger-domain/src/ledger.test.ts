@@ -194,6 +194,49 @@ describe("periodStart", () => {
  * ordering and counts but not the numbers or the sentences underneath them.
  * Every figure here is one a reader sees on a dashboard.
  */
+/**
+ * The period ordering the rest of the file assumes, now that two things depend
+ * on it: the facts read the latest period off the end of the array, and the
+ * calculation engine orders its rows by the period value.
+ */
+describe("periods must run oldest first, once each", () => {
+  const withPeriods = (periods: string[]) => ({
+    ...snapshot,
+    periods,
+    lines: snapshot.lines.map((line) => ({
+      ...line,
+      amounts: line.amounts.slice(0, periods.length),
+    })),
+  });
+
+  it("accepts the ascending order the fixture uses", () => {
+    expect(() =>
+      LedgerSnapshotSchema.parse(
+        withPeriods(["2026-03", "2026-04", "2026-05"]),
+      ),
+    ).not.toThrow();
+  });
+
+  it("refuses newest-first, which used to report a change of zero", () => {
+    // Unchecked, this produced a dashboard naming 2026-03 as the latest period
+    // and its change as 0, because the engine had correctly found nothing
+    // earlier to compare against while the reader saw a line that had fallen.
+    expect(() =>
+      LedgerSnapshotSchema.parse(
+        withPeriods(["2026-05", "2026-04", "2026-03"]),
+      ),
+    ).toThrow(/oldest first/u);
+  });
+
+  it("refuses a repeated period, which the engine could only call invalid_graph", () => {
+    expect(() =>
+      LedgerSnapshotSchema.parse(
+        withPeriods(["2026-03", "2026-03", "2026-04"]),
+      ),
+    ).toThrow(/appear once each/u);
+  });
+});
+
 describe("the values deriveLedgerFacts computes", () => {
   const facts = deriveLedgerFacts(snapshot);
   const line = (id: string) => facts.lines.find((one) => one.id === id)!;

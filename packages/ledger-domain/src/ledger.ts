@@ -79,6 +79,33 @@ export const LedgerSnapshotSchema = z
         });
       }
     }
+    /**
+     * PERIODS MUST STRICTLY INCREASE, and until now only the comment said so.
+     *
+     * "`YYYY-MM`, oldest first" was the documented contract and nothing checked
+     * it, which was survivable while every figure came from array positions. It
+     * stopped being survivable when the calculation engine started ordering rows
+     * by the period value: array order and sorted order can then disagree, and
+     * they disagree silently. Measured on a snapshot whose periods ran newest
+     * first, the dashboard named 2026-03 as the latest period and reported its
+     * change as 0 — the engine had correctly found no earlier period to compare
+     * against, while the reader was shown a line that had in fact fallen by 100.
+     *
+     * Strict increase is one rule covering both failures: a repeated period also
+     * produces two rows with the same stable key, which the engine rejects as
+     * `invalid_graph` — a closed code with nothing in it a reader could act on.
+     */
+    for (const [index, period] of snapshot.periods.entries()) {
+      const earlier = snapshot.periods[index - 1];
+      if (earlier !== undefined && earlier >= period) {
+        context.addIssue({
+          code: "custom",
+          path: ["periods", index],
+          message: `periods must run oldest first and appear once each; "${earlier}" is not before "${period}"`,
+        });
+      }
+    }
+
     const ids = snapshot.lines.map((line) => line.id);
     if (new Set(ids).size !== ids.length) {
       context.addIssue({

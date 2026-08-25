@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../../fixtures/ledger/operating-spend.json";
-import { calculateLedger } from "./calculation";
+import { calculateLedger, engineTimestamp } from "./calculation";
 import { ZERO, abs, add, compare, ratioToPercent, subtract } from "./exact";
 import { LedgerSnapshotSchema, type LedgerSnapshot } from "./ledger";
 
@@ -123,6 +123,47 @@ describe("calculateLedger", () => {
     // period and its change is therefore the same too.
     expect(answers.size).toBe(1);
     expect([...answers][0]).toBe("0.23112969");
+  });
+});
+
+/**
+ * The schema accepts more spellings of an instant than the committed fixture
+ * uses, and the first version of the conversion handled only that one.
+ */
+describe("the timestamp handed to the engine", () => {
+  it.each([
+    ["2026-08-24T09:00:00.000Z", "2026-08-24T09:00:00.000000Z"],
+    // No fractional seconds at all.
+    ["2026-08-24T09:00:00Z", "2026-08-24T09:00:00.000000Z"],
+    // An offset rather than Z, resolved to UTC in both directions.
+    ["2026-08-24T09:00:00+01:00", "2026-08-24T08:00:00.000000Z"],
+    ["2026-08-24T09:00:00-08:00", "2026-08-24T17:00:00.000000Z"],
+    // Already microseconds, and finer than the engine carries.
+    ["2026-08-24T09:00:00.123456Z", "2026-08-24T09:00:00.123456Z"],
+    ["2026-08-24T09:00:00.1234567Z", "2026-08-24T09:00:00.123456Z"],
+  ])("reads %j as %j", (given, expected) => {
+    expect(engineTimestamp(given)).toBe(expected);
+  });
+
+  it("runs the whole calculation on each of them", () => {
+    // `.replace("Z", "000Z")` produced `invalid_graph` on four of these six, so
+    // a snapshot stamped with an offset built no dashboard at all.
+    for (const retrievedAt of [
+      "2026-08-24T09:00:00Z",
+      "2026-08-24T09:00:00+01:00",
+      "2026-08-24T09:00:00.123456Z",
+    ]) {
+      const shifted = LedgerSnapshotSchema.parse({ ...fixture, retrievedAt });
+
+      expect(calculateLedger(shifted).cells).toHaveLength(
+        snapshot.lines.length * snapshot.periods.length,
+      );
+    }
+  });
+
+  it("refuses a string that is not an instant", () => {
+    expect(() => engineTimestamp("2026-08-24")).toThrow(/RFC3339/u);
+    expect(() => engineTimestamp("2026-13-45T99:00:00Z")).toThrow();
   });
 });
 

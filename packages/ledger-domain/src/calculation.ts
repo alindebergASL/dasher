@@ -104,6 +104,41 @@ export interface LedgerCalculation {
   readonly rowCount: number;
 }
 
+/**
+ * An RFC3339 timestamp as the engine's microsecond UTC form.
+ *
+ * The first version was `retrievedAt.replace("Z", "000Z")`, which is correct for
+ * exactly one spelling and wrong for every other one the schema accepts.
+ * `z.string().datetime({ offset: true })` also admits a timestamp with no
+ * fractional seconds, one already carrying microseconds, and one written against
+ * an offset rather than `Z` — and all three produced `invalid_graph`, so a
+ * snapshot recorded as `2026-08-24T09:00:00+01:00` would have built no dashboard
+ * at all. A string replacement that happens to fit the committed fixture is a
+ * claim about every other input, made without looking at one.
+ *
+ * The offset is resolved through `Date`, which is safe here because the whole
+ * seconds are shifted with the fraction stripped off first — no sub-millisecond
+ * digit passes through a `number`. Fractions longer than six digits are
+ * truncated rather than rounded: this stamps when a snapshot was read, and a
+ * nanosecond of it is not a fact anyone acts on.
+ */
+const RFC3339 =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/u;
+
+export function engineTimestamp(value: string): string {
+  const match = RFC3339.exec(value);
+  if (match === null) {
+    throw new LedgerCalculationFailed(`${value} is not an RFC3339 timestamp`);
+  }
+  const [, seconds, fraction = "", zone] = match;
+  const micros = `${fraction}000000`.slice(0, 6);
+  const utc = new Date(`${seconds as string}${zone as string}`);
+  if (Number.isNaN(utc.getTime())) {
+    throw new LedgerCalculationFailed(`${value} is not a real instant`);
+  }
+  return `${utc.toISOString().slice(0, 19)}.${micros}Z`;
+}
+
 function textField(
   id: string,
   name: string,
@@ -193,7 +228,7 @@ function runLedger(
   }
 
   const input = buildInput({ fields, rows });
-  const evaluatedAt = snapshot.retrievedAt.replace("Z", "000Z");
+  const evaluatedAt = engineTimestamp(snapshot.retrievedAt);
   const catalog = buildCatalog({ input, fields, evaluatedAt });
 
   const sortByPeriod = [
