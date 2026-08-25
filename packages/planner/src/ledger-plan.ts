@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { findSmuggledText } from "./freetext";
+
 /**
  * What a planner may say about a ledger dashboard.
  *
@@ -74,19 +76,32 @@ export const LedgerPlanSchema = z.strictObject({
 export type LedgerPlan = z.infer<typeof LedgerPlanSchema>;
 
 export interface LedgerPlanFinding {
-  code: "unknown_line" | "no_lines" | "duplicate_section";
+  code:
+    | "unknown_line"
+    | "no_lines"
+    | "duplicate_section"
+    | "free_text_measurement"
+    | "free_text_directive";
   message: string;
+  /** Which field, for the two findings that have one. */
+  path?: string;
 }
 
 /**
  * Check a plan against the ledger that actually exists.
  *
- * The station path calls this `findPlanProblems` and checks the same three
- * kinds of thing: that every selected subject exists, that at least one
- * survives, and that no section is asked for twice. A model that invents a
- * budget line is the ledger's version of one that invents a gauge, and it is
- * caught the same way — by comparing against the snapshot rather than by
- * trusting the plan.
+ * The station path calls this `findPlanProblems` and checks the same four kinds
+ * of thing: that every selected subject exists, that at least one survives,
+ * that no section is asked for twice, and that no free-text field carries a
+ * measurement or an instruction. A model that invents a budget line is the
+ * ledger's version of one that invents a gauge, and it is caught the same way —
+ * by comparing against the snapshot rather than by trusting the plan.
+ *
+ * THE FOURTH CHECK WAS MISSING AND THE COMMENT ABOVE ALREADY CLAIMED IT. This
+ * file's header said the free-text fields "go through the same gate the station
+ * plan's do" while `findSmuggledText` was typed to `DashboardPlan` and could not
+ * be called with a ledger plan at all. The same text that produced four findings
+ * on a station plan produced none here.
  */
 export function findLedgerPlanProblems(
   plan: LedgerPlan,
@@ -122,6 +137,22 @@ export function findLedgerPlanProblems(
       }
       seen.add(section);
     }
+  }
+
+  for (const smuggled of findSmuggledText(plan)) {
+    findings.push(
+      smuggled.kind === "measurement"
+        ? {
+            code: "free_text_measurement",
+            path: smuggled.path,
+            message: `Free text may not carry a measurement, and "${smuggled.excerpt}" is one. Dasher computes and displays every figure itself from the ledger; describe the composition instead and leave the amounts to the dashboard.`,
+          }
+        : {
+            code: "free_text_directive",
+            path: smuggled.path,
+            message: `Free text may not instruct the reader to act, and "${smuggled.excerpt}" does. Dasher has no basis for an instruction and no evidence record that could support one; describe what the dashboard shows instead.`,
+          },
+    );
   }
 
   return findings;

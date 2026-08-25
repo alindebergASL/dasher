@@ -546,3 +546,72 @@ describe("findSmuggledText: several offences in one field", () => {
     expect(found.map((item) => item.excerpt)).toStrictEqual(["12 ft", "40%"]);
   });
 });
+
+/**
+ * Money, added when the ledger became the second planned source.
+ *
+ * The unit list was river-shaped once and air-shaped after PR #49; a finance
+ * dashboard is the case where every figure on the page is an amount, so an
+ * invented one is the reading that matters most. These are the forms a planner
+ * actually reaches for, and the negative controls below are the sentences the
+ * shipping ledger planner and the request vocabulary already produce.
+ */
+describe("findSmuggledText: money", () => {
+  it.each([
+    ["Cloud spend at 49875 USD", "49875 USD"],
+    ["Cloud is $49,875 this period", "$49,875"],
+    ["Software at $1.2M", "$1.2M"],
+    ["Spend of twelve thousand dollars", "twelve thousand dollars"],
+    ["Travel came to 12,000 dollars", "12,000 dollars"],
+    ["£950 over budget", "£950"],
+    ["€1,200 on facilities", "€1,200"],
+    ["USD 12,000 across the period", "USD 12,000"],
+    ["A shortfall of 50 cents", "50 cents"],
+    ["Budget is ¥1000000", "¥1000000"],
+    ["3.5bn EUR in the group", "3.5bn EUR"],
+    ["250k in salaries", "250k"],
+  ])("reads %j as a measurement", (framing, excerpt) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt },
+    ]);
+  });
+
+  it.each([
+    // The shipping ledger planner's own sentence. A count of the lines the plan
+    // selected is derived from the plan, not asserted about the ledger, and a
+    // gate that refused it would refuse the product's own dashboard.
+    "Current period spending across 6 budget lines.",
+    "Operating spend by category",
+    "Lines over budget this period",
+    "Cost centre summary",
+    "Spending by category, ranked",
+    "Top 3 in the ranking",
+    "Three pages of budget lines",
+    "Compounding across 12 periods",
+    // A currency named without a value states how to read the dashboard and
+    // asserts nothing, exactly as naming a pollutant without a value does.
+    "Amounts are in USD",
+    "Reported in dollars",
+    "2026 budget planning",
+    "Q3 2026 review",
+    "A recent change",
+    "Section 2b of the plan",
+  ])("leaves %j alone", (framing) => {
+    expect(findSmuggledText(withText({ framing }))).toStrictEqual([]);
+  });
+
+  it("does not read a bare magnitude that could be metres or a label", () => {
+    // `m` and `b` are deliberately outside `SCALED_AMOUNT`. A bare `m` is
+    // already excluded from the unit list because "Top 3 in the ranking" is
+    // composition language, and `b` collides with section labels like "2b".
+    // "$1.2M" is still caught, because the symbol supplies what is missing.
+    expect(
+      findSmuggledText(withText({ framing: "1.2m in travel" })),
+    ).toStrictEqual([]);
+    expect(
+      findSmuggledText(withText({ framing: "Software at $1.2M" })),
+    ).toStrictEqual([
+      { kind: "measurement", path: "framing", excerpt: "$1.2M" },
+    ]);
+  });
+});

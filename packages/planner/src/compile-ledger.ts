@@ -18,6 +18,7 @@ import {
   uniqueIds,
   type PlannerIdentity,
 } from "./planned-spec";
+import { findLedgerPlanProblems } from "./ledger-plan";
 import type { LedgerPlan, LedgerSectionKind } from "./ledger-plan";
 
 /**
@@ -239,6 +240,31 @@ export function compileLedgerPlan(
   snapshot: LedgerSnapshot,
   options: CompileLedgerOptions,
 ): CompiledSpec {
+  /**
+   * VALIDATE BEFORE COMPILING, HERE RATHER THAN AT THE CALL SITE.
+   *
+   * `findLedgerPlanProblems` was written, exported, and called by nothing — not
+   * by the server action, not by a test. The action went straight from
+   * `planLedgerDashboard` to this function, so an invented budget line was
+   * silently dropped by the filter below instead of refused, a duplicated
+   * section was never reported, and no free-text field was read at all. The
+   * comment at that call site said the ledger "takes the same route the river
+   * does — a plan, checked against the snapshot that exists"; the checking step
+   * did not exist.
+   *
+   * Putting it inside the compiler rather than beside it is what makes that
+   * unrepeatable. There is no longer a way to compile a ledger plan without
+   * validating it, so the next source cannot inherit the same omission by
+   * forgetting a line.
+   */
+  const problems = findLedgerPlanProblems(
+    plan,
+    snapshot.lines.map((line) => line.id),
+  );
+  if (problems.length > 0) {
+    throw new LedgerPlanRejected(problems.map((problem) => problem.message));
+  }
+
   /**
    * THE PLAN'S SELECTION NARROWS THE LEDGER BEFORE ANY FIGURE IS COMPUTED, and
    * that order matters more than it looks. Deriving over the whole snapshot and
