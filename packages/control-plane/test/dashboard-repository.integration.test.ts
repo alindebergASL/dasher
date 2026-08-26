@@ -657,3 +657,289 @@ it("does not let one organization cite another's stored file", async () => {
     ),
   ).rejects.toMatchObject({ code: "23503" });
 });
+
+/**
+ * THE EVIDENCE CHAIN: retained bytes, the parts of them a figure came from, and
+ * the assertions that cite those parts.
+ *
+ * `claims`, `claim_evidence`, and `evidence_records` were fully modelled in the
+ * baseline — constraints, immutability triggers, seam functions, grants — and
+ * had never held a row, because `finalize_run`'s claims argument was the
+ * literal `"[]"` from the day it was written. Everything below is the first
+ * exercise any of the three has had against a real database.
+ */
+
+const ASSERTION_DIGEST = Buffer.from(
+  "d1b2c3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "hex",
+);
+
+function evidenceInput(snapshotId: string) {
+  return {
+    snapshotId,
+    evidenceKind: "observed",
+    coordinates: "ledger-line-salaries",
+    transformation: "Recorded as retrieved, without transformation.",
+    contentSha256: ASSERTION_DIGEST,
+    observedAt: new Date("2026-08-24T09:00:00.000Z"),
+    requestId: randomUUID(),
+    deploymentRevision: "test",
+  };
+}
+
+function claimInput(pointer: string, evidenceIds: readonly string[]) {
+  return {
+    pointer,
+    label: "observed" as const,
+    salience: "high" as const,
+    evidenceState:
+      evidenceIds.length === 0
+        ? ("unsupported" as const)
+        : ("complete" as const),
+    assertionSha256: ASSERTION_DIGEST.toString("hex"),
+    evidence: evidenceIds.map((evidenceId) => ({
+      evidenceId,
+      relation: "supports" as const,
+    })),
+  };
+}
+
+it("cites part of a stored file, and keeps the digest it was given", async () => {
+  const evidenceId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      repository.recordEvidence(
+        evidenceInput(await repository.recordSourceSnapshot(uploadInput())),
+      ),
+  );
+
+  const row = await ownerPool.query<{
+    evidence_kind: string;
+    coordinates: string;
+    transformation: string;
+    digest_matches: boolean;
+    observed_at: Date;
+    audited: string;
+  }>(
+    `SELECT record.evidence_kind,
+            record.coordinates,
+            record.transformation,
+            record.content_sha256 = $2 AS digest_matches,
+            record.observed_at,
+            (SELECT count(*)::text
+               FROM dasher.audit_events AS event
+              WHERE event.target_id = record.evidence_id
+                AND event.action = 'evidence_record.created') AS audited
+       FROM dasher.evidence_records AS record
+      WHERE record.evidence_id = $1`,
+    [evidenceId, ASSERTION_DIGEST],
+  );
+
+  expect(row.rows).toHaveLength(1);
+  expect(row.rows[0]?.coordinates).toBe("ledger-line-salaries");
+  expect(row.rows[0]?.evidence_kind).toBe("observed");
+  expect(row.rows[0]?.digest_matches).toBe(true);
+  expect(row.rows[0]?.observed_at.toISOString()).toBe(
+    "2026-08-24T09:00:00.000Z",
+  );
+  // An evidence record with nothing recording who put it there is the one
+  // thing an evidence table cannot afford, so the audit row is part of the
+  // assertion rather than a separate concern.
+  expect(row.rows[0]?.audited).toBe("1");
+});
+
+it("refuses to cite bytes that were never stored", async () => {
+  await expect(
+    withDashboardRepository(appPool, credential(alice), async (repository) =>
+      repository.recordEvidence(evidenceInput(randomUUID())),
+    ),
+  ).rejects.toMatchObject({ code: "23503" });
+});
+
+it("does not let one organization cite a part of another's stored file", async () => {
+  // The same composite key as the version citation above, one table down. A
+  // leaked evidence id must not be enough to hang Carol's claim on Alice's
+  // bytes.
+  const alicesEvidence = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      repository.recordEvidence(
+        evidenceInput(await repository.recordSourceSnapshot(uploadInput())),
+      ),
+  );
+
+  await expect(
+    withDashboardRepository(appPool, credential(carol), async (repository) =>
+      repository.save({
+        ...saveInput("carol borrows a citation"),
+        claims: [claimInput("/nextAction", [alicesEvidence])],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "23503" });
+});
+
+it("writes an assertion and the edge to the evidence behind it", async () => {
+  const { versionId, evidenceId } = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => {
+      const snapshotId = await repository.recordSourceSnapshot(uploadInput());
+      const evidence = await repository.recordEvidence(
+        evidenceInput(snapshotId),
+      );
+      const saved = await repository.save({
+        ...saveInput("cites its evidence"),
+        sourceSnapshotId: snapshotId,
+        claims: [
+          claimInput("/nextAction", [evidence]),
+          claimInput("/executiveBrief/known", [evidence]),
+        ],
+      });
+      return { versionId: saved.versionId, evidenceId: evidence };
+    },
+  );
+
+  const claims = await ownerPool.query<{
+    json_pointer: string;
+    label: string;
+    salience: string;
+    evidence_state: string;
+    digest_matches: boolean;
+    edges: string;
+  }>(
+    `SELECT claim.json_pointer,
+            claim.label,
+            claim.salience,
+            claim.evidence_state,
+            claim.assertion_sha256 = $2 AS digest_matches,
+            (SELECT count(*)::text
+               FROM dasher.claim_evidence AS edge
+              WHERE edge.claim_id = claim.claim_id
+                AND edge.evidence_id = $3
+                AND edge.relation = 'supports') AS edges
+       FROM dasher.claims AS claim
+      WHERE claim.version_id = $1
+      ORDER BY claim.json_pointer`,
+    [versionId, ASSERTION_DIGEST, evidenceId],
+  );
+
+  expect(claims.rows.map((row) => row.json_pointer)).toEqual([
+    "/executiveBrief/known",
+    "/nextAction",
+  ]);
+  for (const row of claims.rows) {
+    expect(row.label).toBe("observed");
+    expect(row.salience).toBe("high");
+    expect(row.evidence_state).toBe("complete");
+    expect(row.digest_matches).toBe(true);
+    expect(row.edges).toBe("1");
+  }
+});
+
+it("records an unsupported assertion as a claim with no edges", async () => {
+  // The live-source shape: the dashboard asserts things, and nothing durable
+  // stands behind them. Recorded as a claim rather than omitted, because "no
+  // claim" and "a claim nothing supports" are different statements and only
+  // the second is true of a gauge read.
+  const versionId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      (
+        await repository.save({
+          ...saveInput("asserts without evidence"),
+          claims: [claimInput("/nextAction", [])],
+        })
+      ).versionId,
+  );
+
+  const row = await ownerPool.query<{
+    evidence_state: string;
+    edges: string;
+  }>(
+    `SELECT claim.evidence_state,
+            (SELECT count(*)::text
+               FROM dasher.claim_evidence AS edge
+              WHERE edge.claim_id = claim.claim_id) AS edges
+       FROM dasher.claims AS claim
+      WHERE claim.version_id = $1`,
+    [versionId],
+  );
+
+  expect(row.rows).toHaveLength(1);
+  expect(row.rows[0]?.evidence_state).toBe("unsupported");
+  expect(row.rows[0]?.edges).toBe("0");
+});
+
+it("saves a version with no claims at all, as every caller did before", async () => {
+  // `claims` is optional, and omitting it has to keep meaning what it meant.
+  const versionId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      (await repository.save(saveInput("no claims"))).versionId,
+  );
+
+  const row = await ownerPool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM dasher.claims WHERE version_id = $1",
+    [versionId],
+  );
+  expect(row.rows[0]?.count).toBe("0");
+});
+
+it("refuses two assertions at the same place in one version", async () => {
+  // `claims_pointer_key`. A pointer is the address of an assertion, so two
+  // claims sharing one means the walk that produced them is visiting something
+  // twice — and a duplicate that inserted quietly would make the count of
+  // assertions on a page wrong forever after.
+  await expect(
+    withDashboardRepository(appPool, credential(alice), async (repository) =>
+      repository.save({
+        ...saveInput("two claims, one pointer"),
+        claims: [claimInput("/nextAction", []), claimInput("/nextAction", [])],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "23505" });
+});
+
+it("refuses a malformed pointer rather than storing an unusable address", async () => {
+  await expect(
+    withDashboardRepository(appPool, credential(alice), async (repository) =>
+      repository.save({
+        ...saveInput("bad pointer"),
+        claims: [claimInput("nextAction", [])],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "23514" });
+});
+
+it("refuses to edit or delete an assertion once it is recorded", async () => {
+  // The same immutability the stored bytes have. A claim that could be edited
+  // after the fact would be a record of what somebody currently says the
+  // dashboard asserted.
+  const versionId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      (
+        await repository.save({
+          ...saveInput("immutable claim"),
+          claims: [claimInput("/nextAction", [])],
+        })
+      ).versionId,
+  );
+
+  await expect(
+    ownerPool.query(
+      "UPDATE dasher.claims SET label = 'hypothesis' WHERE version_id = $1",
+      [versionId],
+    ),
+  ).rejects.toMatchObject({ code: "55000" });
+  await expect(
+    ownerPool.query("DELETE FROM dasher.claims WHERE version_id = $1", [
+      versionId,
+    ]),
+  ).rejects.toMatchObject({ code: "55000" });
+});

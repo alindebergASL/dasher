@@ -28,7 +28,20 @@ import type { DashboardSpec } from "./schema";
  * so nothing downstream needs the richer type.
  */
 export function canonicalSpecBytes(spec: DashboardSpec): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(sortKeys(spec)));
+  return canonicalBytes(spec);
+}
+
+/**
+ * The same canonicalisation, for a fragment rather than a whole spec.
+ *
+ * A claim's `assertion_sha256` is the digest of the sub-document its JSON
+ * pointer addresses, so the fragment has to serialise by exactly the rule the
+ * whole spec serialises by. Sharing the function is the only way that stays
+ * true: two sorters would be two answers to "what are these bytes", and the
+ * one place it matters is the comparison that is supposed to detect an edit.
+ */
+export function canonicalBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(sortKeys(value)));
 }
 
 function sortKeys(value: unknown): unknown {

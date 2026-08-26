@@ -67,6 +67,8 @@ export {
   type DashboardRepository,
   type DashboardRepositoryErrorCode,
   type LoadedDashboard,
+  type PersistedClaim,
+  type RecordEvidenceInput,
   type RecordSourceSnapshotInput,
   type SaveDashboardInput,
   type SavedDashboard,

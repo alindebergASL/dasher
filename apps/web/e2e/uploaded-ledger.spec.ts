@@ -238,6 +238,79 @@ test.describe("a dashboard built from an uploaded ledger", () => {
     }
   });
 
+  test("traces every assertion on the page to the stored bytes", async ({
+    page,
+  }) => {
+    // The evidence chain, end to end. `claims`, `claim_evidence` and
+    // `evidence_records` were fully modelled in the baseline and had never held
+    // a row, because `finalize_run`'s claims argument was a literal `"[]"`.
+    // What this asserts is the join actually closing: assertion -> citation ->
+    // retained bytes, with no step supplied by the test.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
+
+    await buildFromUpload(page);
+    await expect(
+      page.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toBeVisible();
+
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      const chain = await owner.query<{
+        json_pointer: string;
+        label: string;
+        evidence_state: string;
+        coordinates: string;
+      }>(
+        `SELECT claim.json_pointer,
+                claim.label,
+                claim.evidence_state,
+                record.coordinates
+           FROM dasher.dashboards AS dashboard
+           JOIN dasher.dashboard_versions AS version
+             ON version.organization_id = dashboard.organization_id
+            AND version.version_id = dashboard.head_version_id
+           JOIN dasher.claims AS claim
+             ON claim.organization_id = version.organization_id
+            AND claim.version_id = version.version_id
+           JOIN dasher.claim_evidence AS edge
+             ON edge.organization_id = claim.organization_id
+            AND edge.claim_id = claim.claim_id
+           JOIN dasher.evidence_records AS record
+             ON record.organization_id = edge.organization_id
+            AND record.evidence_id = edge.evidence_id
+            -- The step that makes this a chain rather than three tables: the
+            -- evidence has to belong to the snapshot this version cites.
+            AND record.snapshot_id = version.source_snapshot_id
+          WHERE dashboard.organization_id = $1
+          ORDER BY claim.json_pointer`,
+        [organizationId],
+      );
+
+      // Every assertion is supported, because an upload retains its bytes.
+      expect(chain.rows.length).toBeGreaterThan(0);
+      for (const row of chain.rows) {
+        expect(row.evidence_state, row.json_pointer).toBe("complete");
+      }
+
+      // The brief and the next action are the assertions a reader meets first,
+      // and each traces to a line of the file that was uploaded in this test.
+      const pointers = new Set(chain.rows.map((row) => row.json_pointer));
+      expect(pointers.has("/nextAction")).toBe(true);
+      expect(pointers.has("/executiveBrief/known")).toBe(true);
+
+      // `field-ops` is a line in QUARTERLY_LEDGER and in no committed fixture,
+      // so a citation naming it can only have come from the uploaded file.
+      expect(
+        chain.rows.some((row) => row.coordinates === "ledger-line-field-ops"),
+      ).toBe(true);
+    } finally {
+      await owner.end();
+    }
+  });
+
   test("reopens from stored bytes with the uploaded figures intact", async ({
     page,
   }) => {
