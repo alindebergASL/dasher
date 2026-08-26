@@ -54,6 +54,7 @@ import {
 import {
   readUploadFields,
   snapshotFromUpload,
+  uploadReference,
   uploadRefusalMessage,
   UPLOAD_MAX_BYTES,
 } from "./upload";
@@ -908,19 +909,3 @@ const NO_DURABLE_HOME =
 
 /** Which reader was applied, which is what a later reader needs to know. */
 const UPLOAD_SOURCE_KIND = "csv-upload";
-
-/**
- * A filename, reduced to something a record can hold.
- *
- * The schema refuses control characters and bounds the length; a name that
- * survives neither is replaced rather than the upload being refused, because
- * what the file was called on somebody's laptop is not a reason to reject their
- * ledger.
- */
-function uploadReference(name: string): string {
-  const cleaned = name
-    .replaceAll(/[\p{Cc}\p{Cf}]/gu, "")
-    .trim()
-    .slice(0, 200);
-  return cleaned === "" ? "uploaded.csv" : cleaned;
-}

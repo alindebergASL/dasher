@@ -280,14 +280,72 @@ export function snapshotFromUpload(
       return { ok: false, message: refusalMessage(error) };
     }
     if (error instanceof z.ZodError) {
-      // The snapshot contract refused what the reader handed it: a blank
-      // amount, a line id that is not kebab-case, periods out of order. Its
-      // messages are written for this and name the row.
-      return {
-        ok: false,
-        message: `That export does not read as a ledger. ${error.issues[0]?.message ?? "Check the values in it."}`,
-      };
+      return { ok: false, message: contractMessage(error) };
     }
     throw error;
   }
+}
+
+/**
+ * What the snapshot contract refused, said to somebody holding a spreadsheet.
+ *
+ * WHY THIS IS NOT JUST THE ZOD MESSAGE. The comment this replaced claimed the
+ * contract's "messages are written for this and name the row", and that was
+ * false for every per-row failure. `amounts are decimal text, e.g. 49875 or
+ * 12.50` is a good sentence with the one thing missing that a person needs: a
+ * ten-thousand-row export has ten thousand candidates for the cell it means.
+ * The row is in the issue's `path`, which the old message discarded.
+ *
+ * `lines[i]` is the (i + 2)th line of the file, because the header is line 1
+ * and `ledgerFromCsv` builds one entry per data row in file order.
+ */
+function contractMessage(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (issue === undefined) {
+    return "That export does not read as a ledger. Check the values in it.";
+  }
+
+  const path = issue.path;
+  // Too few period columns, reported by the contract as an array length. Zod's
+  // own wording for it — "Too small: expected array to have >=2 items" — names
+  // an internal shape rather than anything in the reader's file.
+  if (
+    issue.code === "too_small" &&
+    (path[0] === "periods" || path.includes("amounts"))
+  ) {
+    return "That export does not read as a ledger. It needs at least two period columns, named like 2026-03, so a change between periods can be computed.";
+  }
+
+  const line =
+    path[0] === "lines" && typeof path[1] === "number"
+      ? `Row ${String(path[1] + 2)}: `
+      : "";
+  return `That export does not read as a ledger. ${line}${issue.message}`;
+}
+
+/**
+ * A filename, reduced to something the evidence record can hold.
+ *
+ * The client's claim about what the file is called. It is stored as a claim and
+ * never used to open, name, or route anything.
+ *
+ * THE ORDER OF THESE IS LOAD-BEARING, which is not obvious and cost a defect.
+ * `source_ref` is CHECKed against `btrim(source_ref)`, so the value may not
+ * begin or end with a space. Trimming only BEFORE the cut let the cut put one
+ * back: a filename whose 200th character was a space produced a value the
+ * constraint rejected, which rolled back the whole upload and surfaced as "that
+ * export could not be stored, try again" — advice that could never work, about
+ * a cause nothing named. Hence the second trim.
+ *
+ * A name that survives none of this is replaced rather than the upload being
+ * refused, because what a file was called on somebody's laptop is not a reason
+ * to reject their ledger.
+ */
+export function uploadReference(name: string): string {
+  const cleaned = name
+    .replaceAll(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim()
+    .slice(0, 200)
+    .trim();
+  return cleaned === "" ? "uploaded.csv" : cleaned;
 }

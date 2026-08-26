@@ -53,14 +53,28 @@ const QUARTERLY_LEDGER = [
  * positions differently from value ones, so the inline form reads to it as a
  * dynamic import and fails the gate — which is how this comment came to exist.
  */
-async function buildFromUpload(page: Page): Promise<void> {
+/**
+ * A filename with a space at exactly the 200-character truncation point.
+ *
+ * `uploadReference` cuts a name to 200 characters, and `source_ref` is CHECKed
+ * against `btrim(source_ref)` — so trimming only before the cut let the cut put
+ * a space back on the end, the insert violated the constraint, and the whole
+ * upload rolled back with "could not be stored, try again". Every gate was
+ * green: the only filenames any test used were short ones.
+ */
+const AWKWARD_FILENAME = `${"a".repeat(199)} quarterly-operating-ledger.csv`;
+
+async function buildFromUpload(
+  page: Page,
+  filename = "q4-operating-ledger.csv",
+): Promise<void> {
   await page.goto("/");
   // Opened the way a reader opens it. The panel is a disclosure because the
   // upload path costs six controls and most readers will not take it.
   await page.getByText("Build one from your own ledger export").click();
 
   await page.getByLabel("Ledger export (CSV)").setInputFiles({
-    name: "q4-operating-ledger.csv",
+    name: filename,
     mimeType: "text/csv",
     buffer: Buffer.from(QUARTERLY_LEDGER, "utf8"),
   });
@@ -185,6 +199,43 @@ test.describe("a dashboard built from an uploaded ledger", () => {
     await expect(page.locator(".request-workspace")).not.toContainText(
       "official snapshot",
     );
+  });
+
+  test("builds from a file whose name lands awkwardly on the length cap", async ({
+    page,
+  }) => {
+    // The whole path, with the name that used to abort it. What is being
+    // checked is that a dashboard exists at all — and that the stored reference
+    // is a value the column's own CHECK accepts, read back from the row.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    const { organizationId } = (await bootstrap.json()) as {
+      organizationId: string;
+    };
+
+    await buildFromUpload(page, AWKWARD_FILENAME);
+
+    await expect(
+      page.getByRole("link", { name: "Open this dashboard by link" }),
+    ).toBeVisible();
+
+    const owner = new Pool({ connectionString: seedDsn, max: 1 });
+    try {
+      const stored = await owner.query<{
+        source_ref: string;
+        btrim_stable: boolean;
+      }>(
+        `SELECT source_ref, source_ref = btrim(source_ref) AS btrim_stable
+           FROM dasher.source_snapshots
+          WHERE organization_id = $1`,
+        [organizationId],
+      );
+
+      expect(stored.rows).toHaveLength(1);
+      expect(stored.rows[0]?.btrim_stable).toBe(true);
+      expect(stored.rows[0]?.source_ref.length).toBeLessThanOrEqual(200);
+    } finally {
+      await owner.end();
+    }
   });
 
   test("reopens from stored bytes with the uploaded figures intact", async ({

@@ -8,6 +8,7 @@ import {
   readUploadFields,
   snapshotFromUpload,
   sourceFromFields,
+  uploadReference,
   uploadRefusalMessage,
   type LedgerUploadFields,
 } from "./upload";
@@ -219,7 +220,11 @@ describe("reading the bytes", () => {
     [
       "a quote that is never closed",
       csv('cloud,"Cloud,100,10,20\r\n'),
-      /never closed/u,
+      // The PRODUCT's sentence, not the parser's detail. `/never closed/`
+      // matched the parenthesised detail csv.ts appends, so this row passed
+      // while `REFUSAL_SENTENCE.unclosed_quote` — the thing the block above
+      // calls "the product here" — was asserted by nothing at all.
+      /A quoted value in that file is never closed/u,
     ],
   ])("says what is wrong with %s", (_name, text, expected) => {
     const read = snapshotFromUpload(bytes(text), FIELDS);
@@ -365,10 +370,10 @@ describe("the parts a fragment of a message did not check", () => {
 });
 
 /**
- * The one survivor that was reachable, and a note on the seven that are not.
+ * The one survivor that was reachable, and a note on the rest.
  *
- * WHAT REMAINS UNKILLED, AND WHY IT IS LEFT. Seven mutants survive this file
- * and each one weakens a guard that cannot fire:
+ * WHAT REMAINS UNKILLED, AND WHY IT IS LEFT. Each surviving mutant weakens a
+ * guard that cannot fire, with one exception noted at the end:
  *
  *   - `first?.path` and `first?.message` — a Zod failure always carries at
  *     least one issue, so `issues[0]` is never absent. The optional chaining is
@@ -380,10 +385,25 @@ describe("the parts a fragment of a message did not check", () => {
  *     observe. It narrows a type; it does not decide anything. Tested below for
  *     the behaviour that IS observable, which is that such a complaint still
  *     produces a sentence.
- *   - the `instanceof ZodError` check becoming `true`, and its message
- *     fallback — `ledgerFromCsv` throws a `CsvRefused` or a `ZodError` and
- *     nothing else, so the branch that re-raises anything unexpected guards
- *     against a future third kind rather than a path that exists today.
+ *   - the `instanceof ZodError` check becoming `true` — `ledgerFromCsv` throws
+ *     a `CsvRefused` or a `ZodError` and nothing else, so the branch that
+ *     re-raises anything unexpected guards against a future third kind rather
+ *     than a path that exists today.
+ *   - `contractMessage`'s `issue === undefined` branch and its sentence. A
+ *     `ZodError` always carries at least one issue; the branch exists because
+ *     the index signature says it might not.
+ *   - `path.includes("amounts")` becoming `""`. Too few period columns is
+ *     reported by the contract as `periods` first and `lines[i].amounts`
+ *     after, so the first clause always decides and the second is a guard
+ *     against an ordering nobody promised.
+ *
+ * ONE REPORT THAT IS WRONG. Stryker also lists the `path[0] === "lines" &&
+ * typeof path[1] === "number"` condition as surviving. It does not: replacing
+ * it with `true` by hand turns "says nothing about a row when the fault is the
+ * whole file" red, because duplicate ids carry no row index and the message
+ * becomes "Row NaN". The tool's per-test coverage attributed the mutant to a
+ * subset that excludes that case. Recorded rather than chased, because the
+ * behaviour is pinned and re-running the tool would not change what is true.
  *
  * Writing tests that reach those would mean constructing errors this code
  * cannot receive, or asserting a difference no input produces. Recorded here
@@ -420,5 +440,213 @@ describe("the survivors that were reachable after all", () => {
     expect(read.ok).toBe(false);
     expect(read.ok === false && read.message).not.toMatch(/bigger than/u);
     expect(read.ok === false && read.message).toMatch(/not UTF-8 text/u);
+  });
+});
+
+/**
+ * The three refusal sentences that no test reached.
+ *
+ * `upload.test.ts` opens by claiming "one sentence per refusal reason, checked
+ * by triggering the reason rather than by reading the table back". That was
+ * true of seven of the ten. `too_many_rows`, `too_many_columns` and
+ * `cell_too_long` were triggered by nothing, so each could be emptied — or say
+ * the wrong thing entirely — without a failure.
+ *
+ * They need a file at the SHIPPING limits rather than a small injected one,
+ * because `snapshotFromUpload` reads through `ledgerFromCsv`, which uses the
+ * parser's defaults and takes no limits of its own. Each is built to be just
+ * past its limit and no larger.
+ */
+describe("the refusal sentences that only a real limit reaches", () => {
+  const header = "line_id,label,budget_per_period,2026-03,2026-04";
+
+  it("says a file has more budget lines than it can read", () => {
+    // Past `maxRows` (10,000) with non-blank records, so this is the stated row
+    // limit rather than the record ceiling beside it.
+    const rows = Array.from(
+      { length: CSV_LIMITS.maxRows + 5 },
+      (_unused, index) => `line-${String(index)},L,1,2,3`,
+    );
+    const read = snapshotFromUpload(
+      bytes(`${header}\r\n${rows.join("\r\n")}\r\n`),
+      FIELDS,
+    );
+
+    expect(read.ok === false && read.message).toBe(
+      "That file has more budget lines than this can read. (more than 10000 rows)",
+    );
+  });
+
+  it("says a file has more columns than it can read", () => {
+    const wide = Array.from(
+      { length: CSV_LIMITS.maxColumns + 1 },
+      (_unused, index) => `c${String(index)}`,
+    ).join(",");
+    const read = snapshotFromUpload(bytes(`${wide}\r\n`), FIELDS);
+
+    expect(read.ok === false && read.message).toBe(
+      "That file has more columns than this can read. (513 columns exceeds 512)",
+    );
+  });
+
+  it("says one cell is far longer than a value should be", () => {
+    const huge = "x".repeat(CSV_LIMITS.maxCellLength + 1);
+    const read = snapshotFromUpload(
+      bytes(`${header}\r\ncloud,${huge},100,10,20\r\n`),
+      FIELDS,
+    );
+
+    expect(read.ok === false && read.message).toBe(
+      "One cell in that file is far longer than a value should be. (a cell of 4097 characters exceeds 4096)",
+    );
+  });
+});
+
+/**
+ * A refusal has to say WHERE, not only what.
+ *
+ * The contract's own wording is good — "amounts are decimal text, e.g. 49875 or
+ * 12.50" — and useless on its own to somebody holding a ten-thousand-row
+ * export. The row is in the Zod issue's path, and the message that shipped
+ * discarded it while a comment two lines above claimed the opposite.
+ */
+describe("a bad cell is locatable", () => {
+  const header = "line_id,label,budget_per_period,2026-03,2026-04\r\n";
+
+  it.each([
+    ["a blank amount", `${header}a,A,1,2,3\r\nb,B,1,,3\r\n`, "Row 3"],
+    ["a word where an amount goes", `${header}a,A,1,oops,3\r\n`, "Row 2"],
+    [
+      "a line id that is not kebab-case",
+      `${header}a,A,1,2,3\r\nb,B,1,2,3\r\nCloud X,C,1,2,3\r\n`,
+      "Row 4",
+    ],
+  ])("names the file row for %s", (_name, text, where) => {
+    const read = snapshotFromUpload(bytes(text), FIELDS);
+
+    expect(read.ok).toBe(false);
+    expect(read.ok === false && read.message).toContain(where);
+  });
+
+  it("does not leak the contract's internal wording for too few periods", () => {
+    // Zod says "Too small: expected array to have >=2 items", which names a
+    // shape inside this program rather than anything in the reader's file.
+    const read = snapshotFromUpload(
+      bytes("line_id,label,budget_per_period,2026-03\r\na,A,1,2\r\n"),
+      FIELDS,
+    );
+
+    expect(read.ok === false && read.message).toBe(
+      "That export does not read as a ledger. It needs at least two period columns, named like 2026-03, so a change between periods can be computed.",
+    );
+  });
+
+  it("does not blame the period columns for a fault that is not theirs", () => {
+    // A blank label is reported by the contract the same way too few periods
+    // are — as a length — so a branch that routes every length complaint to the
+    // periods sentence would tell somebody with a missing label to go and add
+    // columns. The row is what they need.
+    const read = snapshotFromUpload(
+      bytes(`${header}a,A,1,2,3\r\nb,,1,2,3\r\n`),
+      FIELDS,
+    );
+
+    expect(read.ok).toBe(false);
+    expect(read.ok === false && read.message).toContain("Row 3");
+    expect(read.ok === false && read.message).not.toContain("period columns");
+  });
+
+  it("says nothing about a row when the fault is the whole file", () => {
+    // Duplicate ids are a property of the set, not of one line, and the
+    // contract reports them with no row index. Inventing one would be worse
+    // than omitting it.
+    const read = snapshotFromUpload(
+      bytes(`${header}a,A,1,2,3\r\na,B,1,2,3\r\n`),
+      FIELDS,
+    );
+
+    expect(read.ok === false && read.message).toBe(
+      "That export does not read as a ledger. line ids must be unique",
+    );
+  });
+});
+
+/**
+ * The filename, and the constraint on the far side of it.
+ *
+ * `source_snapshots.source_ref` is `varchar(512)` CHECKed against
+ * `source_ref = btrim(source_ref)` and against containing no control
+ * characters. Everything here is about producing a value that satisfies all
+ * three for any name an operating system will hand over, because failing the
+ * constraint does not refuse the upload politely — it aborts the transaction
+ * the snapshot and the dashboard share, and the reader is told to try again.
+ *
+ * The trailing-space case is the one that shipped broken. It was found by
+ * running the real function's output at the real constraint, not by reading
+ * either.
+ */
+describe("uploadReference", () => {
+  const SPACE = String.fromCharCode(32);
+  const btrimStable = (value: string) =>
+    value === value.replace(/^ +| +$/gu, "");
+
+  it("keeps an ordinary filename as it is", () => {
+    expect(uploadReference("q4-operating-ledger.csv")).toBe(
+      "q4-operating-ledger.csv",
+    );
+  });
+
+  it("never ends in a space, wherever the 200-character cut lands", () => {
+    // THE DEFECT. `.trim()` ran before `.slice(200)`, so a name whose 200th
+    // character was a space came back with the space on the end and failed
+    // `btrim(source_ref) = source_ref`.
+    const onTheCut = "a".repeat(199) + SPACE + "b".repeat(60) + ".csv";
+    const spanningTheCut = "a".repeat(195) + SPACE.repeat(20) + "b.csv";
+
+    for (const name of [onTheCut, spanningTheCut]) {
+      const ref = uploadReference(name);
+
+      expect(ref.length).toBeLessThanOrEqual(200);
+      expect(btrimStable(ref)).toBe(true);
+    }
+  });
+
+  it("holds every name to the column's rules", () => {
+    const names = [
+      "budget.csv",
+      "a".repeat(600),
+      SPACE.repeat(10),
+      "  padded  .csv",
+      "Finance export for the quarter ".repeat(9) + "final.csv",
+      "réservé — budget 2026.csv",
+      "\u0007\u0008ring.csv",
+      "",
+    ];
+
+    for (const name of names) {
+      const ref = uploadReference(name);
+
+      expect(ref.length).toBeGreaterThanOrEqual(1);
+      expect(ref.length).toBeLessThanOrEqual(512);
+      expect(btrimStable(ref)).toBe(true);
+      // The CHECK also forbids control characters.
+      expect(/\p{Cc}/u.test(ref)).toBe(false);
+    }
+  });
+
+  it("keeps the real characters of a name that is mostly padding", () => {
+    // Both trims earn their place. The FIRST one decides which 200 characters
+    // the cut keeps: without it, a name padded with 300 leading spaces would
+    // cut to 200 spaces and collapse to the fallback, throwing away a perfectly
+    // good filename. The SECOND is what guarantees the value the column will
+    // accept.
+    const padded = SPACE.repeat(300) + "quarterly-budget.csv";
+
+    expect(uploadReference(padded)).toBe("quarterly-budget.csv");
+  });
+
+  it("falls back rather than refusing when nothing survives", () => {
+    expect(uploadReference(SPACE.repeat(5))).toBe("uploaded.csv");
+    expect(uploadReference("\u0001\u0002")).toBe("uploaded.csv");
   });
 });

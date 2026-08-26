@@ -1648,7 +1648,15 @@ footer {
   min-width: 0;
 }
 
-.upload-field .request-input {
+/*
+ * `.request-input` carries `flex: 1 1 22rem`, which is a WIDTH basis in
+ * `.request-row` (a row-direction flex container) and a HEIGHT basis in
+ * `.upload-form` (a column one). Every `.request-input` inside this panel needs
+ * the basis neutralised, not only the four in the grid — `#upload-request` is a
+ * direct child of the form and rendered 352px tall until this selector stopped
+ * naming only `.upload-field`.
+ */
+.upload-form .request-input {
   flex: 1 1 auto;
 }
 
@@ -1726,6 +1734,18 @@ footer {
      reader just did. Hiding it left a phone with no answer at all, visually or
      to a screen reader, since it carries role="status". */
   .refine-bar .request-note {
+    display: block;
+  }
+
+  /*
+   * The upload panel's labels are the only thing naming its six controls, so
+   * the blanket `.request-label { display: none }` above left a phone with six
+   * inputs and no accessible name at all. The request bar can afford to hide
+   * its label because its single input has a placeholder saying the same
+   * thing; a currency box and a date box cannot.
+   */
+  .upload-form .request-label,
+  .upload-form .upload-note {
     display: block;
   }
 

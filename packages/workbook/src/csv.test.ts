@@ -186,10 +186,79 @@ describe("what it refuses", () => {
       ]);
     });
 
-    it("refuses the row after the limit, and says how many it found", () => {
+    it("refuses the row after the limit", () => {
       expect(() => parseCsv("a,b\n1,2\n3,4\n5,6\n", at)).toThrow(
-        /3 rows exceeds 2/u,
+        /more than 2 rows/u,
       );
+    });
+  });
+
+  /**
+   * THE DEFECT THIS SECTION EXISTS FOR, STATED AS IT WAS MEASURED.
+   *
+   * The row guard was rewritten to discount trailing blank records, so that a
+   * file of exactly `maxRows` rows ending in a newline stopped being refused.
+   * It made the guard blind to the one input that most needs bounding:
+   * `trailingBlanks` rises in lockstep with `records.length` across a RUN of
+   * blank records, so their difference never moves and the limit never trips.
+   *
+   * Measured against the shipping limits before the fix, a 4 MB file of
+   * newlines was ACCEPTED as zero rows after allocating 804 MB of heap and
+   * blocking the event loop for 1.9 seconds. It is reachable from an upload,
+   * which is a public endpoint.
+   *
+   * These cover it at a small limit, where the arithmetic is checkable, and the
+   * one below covers it at a size where the old code actually hurt.
+   */
+  describe("a file of blank lines is bounded like any other", () => {
+    const at = { ...CSV_LIMITS, maxRows: 2 };
+
+    it("refuses a file that is nothing but newlines", () => {
+      // Every record is blank, so the stated row limit never sees a row. The
+      // record ceiling is what refuses it.
+      expect(() => parseCsv("a\n" + "\n".repeat(500), at)).toThrow(
+        /more than 2 rows/u,
+      );
+    });
+
+    it("refuses blank lines that arrive after the data, past the allowance", () => {
+      expect(() => parseCsv("a,b\n1,2\n" + "\n".repeat(500), at)).toThrow(
+        /more than 2 rows/u,
+      );
+    });
+
+    it("still accepts the handful of blank lines a real file ends with", () => {
+      // The case the discount was introduced for, which must keep working: the
+      // limit is about rows, and a trailing newline is not a row.
+      expect(parseCsv("a,b\n1,2\n3,4\n\n\n\n", at).rows).toStrictEqual([
+        ["1", "2"],
+        ["3", "4"],
+      ]);
+    });
+
+    it("draws the record ceiling where it says it does", () => {
+      // The allowance is a stated policy — the row limit, plus the header, plus
+      // sixteen blank records for the newlines a real file ends with. Written
+      // out rather than computed from the constant, so that moving the constant
+      // is a deliberate diff here too.
+      //
+      // A text of N newlines produces N + 1 records, and every record after the
+      // header is blank, so `kept` stays at 1 and the ceiling is the only thing
+      // deciding. With maxRows 2 the ceiling is 2 + 1 + 16 = 19 records.
+      const withRecords = (count: number) => "a\n" + "\n".repeat(count - 2);
+
+      expect(() => parseCsv(withRecords(19), at)).not.toThrow();
+      expect(() => parseCsv(withRecords(20), at)).toThrow(/more than 2 rows/u);
+    });
+
+    it("holds a hostile file to a bounded number of records", () => {
+      // The property, at the size that made it matter. Not a timing assertion —
+      // those are flaky — but a bound on what the walk is allowed to build,
+      // measured through the refusal it now produces instead of the array it
+      // used to.
+      const newlines = "a\n" + "\n".repeat(200_000);
+
+      expect(() => parseCsv(newlines, CSV_LIMITS)).toThrow(/more than/u);
     });
   });
 
