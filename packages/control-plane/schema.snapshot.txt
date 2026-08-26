@@ -50,6 +50,7 @@ dasher.dashboard_versions.dashboard_id uuid NOT NULL
 dasher.dashboard_versions.organization_id uuid NOT NULL
 dasher.dashboard_versions.parent_version_id uuid
 dasher.dashboard_versions.run_id uuid
+dasher.dashboard_versions.source_snapshot_id uuid
 dasher.dashboard_versions.validation_state character varying(16) NOT NULL
 dasher.dashboard_versions.version_id uuid NOT NULL
 dasher.dashboards.archived_at timestamp with time zone
@@ -176,6 +177,7 @@ dasher.dashboard_versions dashboard_versions_org_version_key UNIQUE (organizatio
 dasher.dashboard_versions dashboard_versions_parent_check CHECK (((parent_version_id IS NULL) OR (parent_version_id <> version_id)))
 dasher.dashboard_versions dashboard_versions_parent_fkey FOREIGN KEY (organization_id, dashboard_id, parent_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)
 dasher.dashboard_versions dashboard_versions_pkey PRIMARY KEY (organization_id, dashboard_id, version_id)
+dasher.dashboard_versions dashboard_versions_source_snapshot_fkey FOREIGN KEY (organization_id, source_snapshot_id) REFERENCES dasher.source_snapshots(organization_id, snapshot_id)
 dasher.dashboard_versions dashboard_versions_spec_sha256_check CHECK ((canonical_spec_sha256 = sha256(canonical_spec_bytes)))
 dasher.dashboard_versions dashboard_versions_validation_state_check CHECK (((validation_state)::text = ANY ((ARRAY['valid'::character varying, 'invalid'::character varying])::text[])))
 dasher.dashboards dashboards_archived_at_check CHECK ((((lifecycle_state)::text = 'archived'::text) = (archived_at IS NOT NULL)))
@@ -268,6 +270,7 @@ CREATE INDEX audit_events_occurred_idx ON dasher.audit_events USING btree (organ
 CREATE INDEX claim_evidence_evidence_idx ON dasher.claim_evidence USING btree (organization_id, evidence_id)
 CREATE INDEX dashboard_versions_creator_idx ON dasher.dashboard_versions USING btree (organization_id, created_by_user_id)
 CREATE INDEX dashboard_versions_dashboard_created_idx ON dasher.dashboard_versions USING btree (organization_id, dashboard_id, created_at DESC)
+CREATE INDEX dashboard_versions_source_snapshot_idx ON dasher.dashboard_versions USING btree (organization_id, source_snapshot_id) WHERE (source_snapshot_id IS NOT NULL)
 CREATE INDEX dashboards_active_idx ON dasher.dashboards USING btree (organization_id, updated_at DESC) WHERE ((lifecycle_state)::text <> 'archived'::text)
 CREATE INDEX dashboards_creator_idx ON dasher.dashboards USING btree (organization_id, created_by_user_id)
 CREATE INDEX evidence_records_snapshot_idx ON dasher.evidence_records USING btree (organization_id, snapshot_id)
@@ -364,7 +367,7 @@ dasher_api.acting_principal(p_required_role text) -> record volatility=s securit
 dasher_api.begin_request(p_token_key_version smallint, p_token bytea) -> record volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.create_dashboard(p_title text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.fail_run(p_run_id uuid, p_failure_reason text, p_request_id uuid, p_deployment_revision text) -> void volatility=v security_definer=true search_path=search_path=pg_catalog
-dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text, p_source_snapshot_id uuid) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.record_evidence(p_snapshot_id uuid, p_evidence_kind text, p_coordinates text, p_transformation text, p_content_sha256 bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.record_source_snapshot(p_source_kind text, p_source_ref text, p_canonical_bytes bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.resolve_external_identity(p_issuer text, p_subject text) -> uuid volatility=s security_definer=true search_path=search_path=pg_catalog
@@ -388,7 +391,7 @@ dasher_api.acting_principal(p_required_role text) dasher_ci_owner=X/dasher_ci_ow
 dasher_api.begin_request(p_token_key_version smallint, p_token bytea) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.create_dashboard(p_title text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.fail_run(p_run_id uuid, p_failure_reason text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
-dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text, p_source_snapshot_id uuid) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.record_evidence(p_snapshot_id uuid, p_evidence_kind text, p_coordinates text, p_transformation text, p_content_sha256 bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.record_source_snapshot(p_source_kind text, p_source_ref text, p_canonical_bytes bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.resolve_external_identity(p_issuer text, p_subject text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner

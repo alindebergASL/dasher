@@ -228,9 +228,12 @@ jobs:
   #
   #   * schema-owner credentials stay out of the environment of the unit, build,
   #     and browser steps that do not need them;
-  #   * `verify` keeps proving the app runs with NO database, including the
-  #     five deliberate skips — that is a supported mode and it needs its own
-  #     run;
+  #   * `verify` keeps proving the app runs with NO database, including every
+  #     test that deliberately skips without one — that is a supported mode and
+  #     it needs its own run. Not a count: this said "five" while the number was
+  #     twelve, because a tally in prose is one more thing to keep in step and
+  #     nothing fails when it drifts. The suites that skip are named in the
+  #     steps below, which is what a reader actually needs;
   #   * "a saved dashboard survives a reload" becomes a nameable check that
   #     branch protection can require, instead of a few assertions inside a job
   #     named after something else.
@@ -353,6 +356,25 @@ jobs:
           pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
             e2e/persisted-dashboard.spec.ts
 
+      # The upload suite belongs to this job for the same reason as the one
+      # above: an upload with nowhere to store the file is refused by design, so
+      # its tests skip without a database exactly as the persistence ones do,
+      # and a skip is what this job exists to make impossible.
+      #
+      # A SEPARATE RUN AND A SEPARATE REPORT, not both spec files in one
+      # command. The checker asserts that every spec in a report belongs to the
+      # file it was given — which is how it catches a report describing a
+      # renamed or stale path — so a combined report fails against both names.
+      # Two runs keep that guarantee rather than weakening the checker to fit
+      # the workflow.
+      - name: Run the upload suite
+        env:
+          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+          PLAYWRIGHT_JSON_OUTPUT_FILE: /tmp/upload-results.json
+        run: |
+          pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
+            e2e/uploaded-ledger.spec.ts
+
       # Positive proof, not absence of a symptom. The preflight catches a
       # missing variable and the explicit path catches a missing file; this
       # catches a guard that quietly turned the tests off in place.
@@ -369,6 +391,16 @@ jobs:
             --report=/tmp/persistence-results.json \
             --spec-file=persisted-dashboard.spec.ts \
             --min-tests=6
+
+      # Its own floor, against its own report. A single combined count would be
+      # satisfied by either suite growing, and the subject of this check is that
+      # the UPLOAD tests ran.
+      - name: Assert the upload tests actually ran
+        run: |
+          pnpm --filter @dasher/repo-graph assert:playwright-report -- \
+            --report=/tmp/upload-results.json \
+            --spec-file=uploaded-ledger.spec.ts \
+            --min-tests=7
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()

@@ -81,7 +81,13 @@ importers:
       sharp:
         specifier: 0.35.3
         version: 0.35.3(@types/node@22.20.1)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
+      "@dasher/workbook":
+        specifier: workspace:*
+        version: link:../../packages/workbook
       "@playwright/test":
         specifier: 1.62.0
         version: 1.62.0

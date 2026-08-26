@@ -51,14 +51,22 @@ export interface PlanResult {
    *   there is no plan to edit.
    * - `combined-sources` — there are TWO plans behind the dashboard and no
    *   rule yet for which one an instruction addresses.
+   * - `uploaded-file` — the figures came from a file the reader supplied, and
+   *   a refinement would have to read it again.
    *
    * They read as the same missing field and need different sentences. The
    * workspace showed the official-snapshot wording for both until a combined
    * dashboard existed to prove it wrong: a river-and-air dashboard is not an
    * official snapshot, and telling a reader it is describes a different
    * product than the one they are looking at.
+   *
+   * `uploaded-file` was added for the same reason, and by making the same
+   * mistake first — the upload path shipped its dashboards as
+   * `official-snapshot` in review, which told readers that the CSV on their own
+   * laptop was an official source. A third value costs one sentence; the
+   * alternative is a product that describes itself wrongly to whoever built it.
    */
-  noRefinement?: "official-snapshot" | "combined-sources";
+  noRefinement?: "official-snapshot" | "combined-sources" | "uploaded-file";
   /**
    * Present when the dashboard was persisted and can be reopened at
    * `/d/{id}`. Absent when the app runs without a database or the browser has

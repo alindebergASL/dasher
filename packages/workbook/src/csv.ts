@@ -49,7 +49,18 @@ export type CsvRefusal =
   | "ragged_row"
   | "empty"
   | "duplicate_header"
-  | "blank_header";
+  | "blank_header"
+  /**
+   * A column the caller's mapping named is not in the file.
+   *
+   * Distinct from `blank_header`, which is a column in the file with no name.
+   * Both used to report `blank_header`, so a file whose columns are all
+   * perfectly well named told its author to go looking for an unnamed one. The
+   * reasons are a closed set precisely so that the layer above can turn each
+   * into a sentence, and two different problems sharing one reason means one of
+   * those sentences is wrong.
+   */
+  | "missing_column";
 
 export class CsvRefused extends Error {
   constructor(
@@ -139,13 +150,13 @@ export function parseCsv(
     seen.add(header);
   }
 
+  // No row-count check here. `splitRecords` applies it while walking, because
+  // by this point the whole file is already an array of arrays and refusing it
+  // then would be refusing something we have finished building. A check here as
+  // well was unreachable — the walk cannot hand back more rows than it allows —
+  // and the mutation run reported it as covered by nothing, which is how it was
+  // found.
   const rows = records.slice(1);
-  if (rows.length > limits.maxRows) {
-    throw new CsvRefused(
-      "too_many_rows",
-      `${String(rows.length)} rows exceeds ${String(limits.maxRows)}`,
-    );
-  }
   for (const [index, row] of rows.entries()) {
     if (row.length !== headers.length) {
       throw new CsvRefused(
@@ -160,6 +171,26 @@ export function parseCsv(
 
 function isBlank(record: readonly string[]): boolean {
   return record.length === 1 && record[0] === "";
+}
+
+/**
+ * How many records the walk may hold, blank ones included.
+ *
+ * The row limit alone cannot bound this, because blank records are excluded
+ * from it by design — see `endRecord`. So this is the row limit plus an
+ * allowance for the blank records a real file ends with, which is one for a
+ * trailing newline and a handful for a file somebody left blank lines at the
+ * end of. Sixteen is far more than any exporter writes and still holds the
+ * walk to `maxRows + 17` records.
+ *
+ * A file that exceeds it is refused as having too many rows, and for a file of
+ * blank lines that is the honest answer: a blank line is a record, and a
+ * million of them is a million records whatever they contain.
+ */
+const BLANK_RECORD_ALLOWANCE = 16;
+
+function recordCeiling(limits: CsvLimits): number {
+  return limits.maxRows + 1 + BLANK_RECORD_ALLOWANCE;
 }
 
 /**
@@ -181,6 +212,17 @@ function splitRecords(
   let cell = "";
   let quoted = false;
   let index = 0;
+  /**
+   * Blank records pushed since the last one that held anything.
+   *
+   * `parseCsv` drops these from the end before counting rows, so counting them
+   * against the row limit refuses files that are within it. `maxRows` data rows
+   * written with the trailing newline that every editor and exporter adds
+   * produced `maxRows + 2` records — header, rows, and the empty record after
+   * the last newline — and was refused as too many rows. At the shipping limit
+   * that is every ten-thousand-row export.
+   */
+  let trailingBlanks = 0;
 
   const endCell = (): void => {
     if (cell.length > limits.maxCellLength) {
@@ -195,8 +237,32 @@ function splitRecords(
   const endRecord = (): void => {
     endCell();
     records.push(record);
+    trailingBlanks = isBlank(record) ? trailingBlanks + 1 : 0;
     record = [];
-    if (records.length > limits.maxRows + 1) {
+
+    /*
+     * TWO BOUNDS, AND EACH EXISTS BECAUSE THE OTHER DOES NOT COVER IT.
+     *
+     * `kept` is the row limit as stated: records that will still be here after
+     * `parseCsv` drops the trailing blanks. It is the one a reader's file is
+     * judged by.
+     *
+     * `records.length` is the memory bound, and leaving it out was a defect in
+     * this file's own history worth stating plainly. `trailingBlanks` rises in
+     * lockstep with `records.length` across a RUN of blank records, so their
+     * difference never moves — which means a file that is nothing but newlines
+     * never trips `kept` at all. Measured on the shipping limits before this
+     * line existed: a 4 MB file of newlines was ACCEPTED as zero rows after
+     * allocating 804 MB of heap and blocking the event loop for 1.9 seconds.
+     * The text is bounded by `maxBytes`, but one byte of it becomes an array
+     * holding a string, and that amplification is what this stops.
+     */
+    const kept = records.length - trailingBlanks;
+    if (kept > limits.maxRows + 1 || records.length > recordCeiling(limits)) {
+      // Deliberately not a count. Refusing mid-walk means the true total is not
+      // known yet — the previous wording computed one from `kept` and was
+      // therefore always `maxRows + 1`, telling a fifty-thousand-row export it
+      // had ten thousand and one.
       throw new CsvRefused(
         "too_many_rows",
         `more than ${String(limits.maxRows)} rows`,
@@ -264,7 +330,7 @@ export function columnIndexes(
   const missing = wanted.filter((name) => !table.headers.includes(name));
   if (missing.length > 0) {
     throw new CsvRefused(
-      "blank_header",
+      "missing_column",
       `the file has no column named ${missing.map((name) => `"${name}"`).join(", ")}`,
     );
   }

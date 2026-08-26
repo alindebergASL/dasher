@@ -24,9 +24,11 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1",
-    "sharp": "0.35.3"
+    "sharp": "0.35.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@dasher/workbook": "workspace:*",
     "@playwright/test": "1.62.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",

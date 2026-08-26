@@ -22,6 +22,7 @@
     "packages/planner/src/provider.ts",
     "packages/planner/src/registry.ts",
     "packages/workbook/src/csv.ts",
+    "apps/web/app/upload.ts",
     "packages/planner/src/run.ts",
     "packages/station-domain/src/facts.ts",
     "packages/station-domain/src/metrics.ts"

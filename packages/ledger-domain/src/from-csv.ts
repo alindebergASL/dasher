@@ -73,7 +73,7 @@ export function ledgerFromCsv(
 
   if (periodColumns.length === 0) {
     throw new CsvRefused(
-      "blank_header",
+      "missing_column",
       "no column is named as a period, e.g. 2026-03",
     );
   }

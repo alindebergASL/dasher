@@ -31,6 +31,15 @@ import { defineConfig } from "vitest/config";
  * product that reads a file it did not author. A surviving mutant in either is
  * a way for a malformed export to become a plausible dashboard.
  *
+ * `apps/web/app/upload.ts` joins them for the same reason, one layer out: it
+ * decides how large a file may be, whether its bytes are text at all, what the
+ * reader must declare about it, and what each refusal says. A surviving mutant
+ * there is a way for a file nobody could read to be accepted, or for a person
+ * to be told the wrong thing about why theirs was not. It is the app's only
+ * mutated file, and its suite is the only one from `apps/web` in the list
+ * below — the rest of that package's tests render React, which this run does
+ * not load.
+ *
  * `exact.ts` is here because it is arithmetic and nothing else — the decimal
  * comparison, rounding and formatting every ledger figure passes through on its
  * way to a reader. A surviving mutant in it is a way for money to be shown
@@ -60,6 +69,7 @@ export default defineConfig({
       "packages/ledger-domain/src/exact.test.ts",
       "packages/ledger-domain/src/from-csv.test.ts",
       "packages/workbook/src/csv.test.ts",
+      "apps/web/app/upload.test.ts",
       "packages/ledger-domain/src/ledger.test.ts",
       "packages/dashboard-schema/src/layout.test.ts",
     ],

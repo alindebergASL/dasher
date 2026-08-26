@@ -177,7 +177,7 @@ async function publishThroughSeam(
     );
     const runId = run.rows[0]!.id;
     const version = await client.query<{ readonly id: string }>(
-      `SELECT dasher_api.finalize_run($1, $2, '[]'::jsonb, 1, $3, 'test') AS id`,
+      `SELECT dasher_api.finalize_run($1, $2, '[]'::jsonb, 1, $3, 'test', NULL) AS id`,
       [runId, Buffer.from('{"pages":[]}'), randomUUID()],
     );
     return { dashboardId, versionId: version.rows[0]!.id, runId };

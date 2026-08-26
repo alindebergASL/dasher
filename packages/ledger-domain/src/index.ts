@@ -14,6 +14,17 @@ export {
   type LedgerSource,
 } from "./from-csv";
 
+/**
+ * The refusal `ledgerFromCsv` throws, re-exported because it throws it.
+ *
+ * A caller could not name the error this package's own public function raises
+ * without depending on `@dasher/workbook` directly — so it either caught
+ * `unknown` and lost the reason, or acquired a dependency on the reader to
+ * describe the reader's failures. Neither is a choice anyone should have to
+ * make to handle a documented error.
+ */
+export { CsvRefused, type CsvRefusal } from "@dasher/workbook";
+
 export {
   calculateLedger,
   LedgerCalculationFailed,

@@ -12,6 +12,7 @@ import {
 } from "@/app/planning";
 
 import { DashboardShell } from "./dashboard-shell";
+import { LedgerUpload } from "./ledger-upload";
 
 const EXAMPLES = [
   "Create a live dashboard monitoring river gauges near Sacramento",
@@ -21,6 +22,25 @@ const EXAMPLES = [
   "Which gauges are rising fastest?",
   "How is the American river doing?",
 ] as const;
+
+/**
+ * One sentence per reason a dashboard cannot be changed.
+ *
+ * A table rather than a chain of conditionals, because the chain is how the
+ * combined dashboard came to be described as an official snapshot: a new reason
+ * that nobody added a branch for silently inherited the last `else`. Here a
+ * reason without a sentence does not compile.
+ */
+const NO_REFINEMENT_SENTENCE: Readonly<
+  Record<"official-snapshot" | "combined-sources" | "uploaded-file", string>
+> = {
+  "official-snapshot":
+    "This official snapshot has no refinement path yet. Build a new dashboard to ask a different question.",
+  "combined-sources":
+    "This combined dashboard has no refinement path yet, because a change would have to say which of its two sources it means. Build a new dashboard to ask a different question.",
+  "uploaded-file":
+    "This dashboard was built from a file you uploaded, and changing it would mean reading that file again — which this cannot do yet. Upload it again with a different brief to ask something else.",
+};
 
 const REFINEMENTS = [
   "Drop the map",
@@ -51,7 +71,7 @@ export function RequestWorkspace({
   >(undefined);
   const [savedId, setSavedId] = useState<string | undefined>(undefined);
   const [noRefinement, setNoRefinement] = useState<
-    "official-snapshot" | "combined-sources" | undefined
+    "official-snapshot" | "combined-sources" | "uploaded-file" | undefined
   >(undefined);
   const [pending, startTransition] = useTransition();
 
@@ -165,14 +185,27 @@ export function RequestWorkspace({
         </p>
       </form>
 
+      {/*
+        A SIBLING of the request form, not a child of it, and the difference is
+        not cosmetic: a form inside a form is invalid HTML, the parser drops the
+        inner one, and React's hydration then fails against a DOM that is
+        missing an element it rendered. The whole tree stops being interactive.
+        Nothing caught that except a real browser — jsdom builds the nested
+        form quite happily, so the component tests passed while the page was
+        dead.
+
+        `apply` is the same function the typed path uses, so an uploaded
+        dashboard reaches the shell, the saved link, and the no-refinement note
+        through exactly one code path.
+      */}
+      <LedgerUpload disabled={pending} onBuilt={apply} />
+
       {plan === undefined ? (
         // Same missing plan, two different reasons, two different sentences.
         // Calling a river-and-air dashboard an "official snapshot" described a
         // product the reader was not looking at.
         <p className="request-note" role="status">
-          {noRefinement === "combined-sources"
-            ? "This combined dashboard has no refinement path yet, because a change would have to say which of its two sources it means. Build a new dashboard to ask a different question."
-            : "This official snapshot has no refinement path yet. Build a new dashboard to ask a different question."}
+          {NO_REFINEMENT_SENTENCE[noRefinement ?? "official-snapshot"]}
         </p>
       ) : (
         <form

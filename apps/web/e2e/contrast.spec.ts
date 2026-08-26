@@ -212,6 +212,18 @@ const JOURNEYS = [
     },
   },
   {
+    // The upload panel, OPEN. Closed it paints one line of summary text, so a
+    // journey that only visited `/` would measure none of the six controls,
+    // two notes, and inline code inside it — which is the same blindness this
+    // guard was written for, one disclosure deeper.
+    name: "upload",
+    open: async (page: Page) => {
+      await page.goto("/");
+      await page.locator(".upload-summary").click();
+      await expect(page.locator("#upload-file")).toBeVisible();
+    },
+  },
+  {
     name: "dashboard-list",
     open: async (page: Page) => {
       await page.goto("/dashboards");
@@ -234,6 +246,8 @@ const MINIMUM_SAMPLES: Record<string, number> = {
   "river/390x844": 60,
   "enrollment/1440x1100": 25,
   "enrollment/390x844": 25,
+  "upload/1440x1100": 90,
+  "upload/390x844": 90,
   "dashboard-list/1440x1100": 3,
   "dashboard-list/390x844": 3,
 };
