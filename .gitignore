@@ -11,3 +11,6 @@ test-results/
 .DS_Store
 .stryker-tmp/
 reports/
+
+# Deployment secrets. `deploy/.env.example` is the contract and is committed.
+deploy/.env

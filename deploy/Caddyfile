@@ -1,0 +1,21 @@
+# TLS is not decoration here: the session cookie carries the `__Host-` prefix
+# and the `secure` attribute, so a browser will not send it over plain HTTP.
+# An IP-address deployment cannot hold a session at all — the hostname and the
+# certificate are what make sign-in possible, not what make it tidier.
+#
+# Caddy obtains and renews the certificate itself from Let's Encrypt, which
+# needs port 80 reachable for the challenge and the DNS record already pointing
+# at this instance.
+{$DASHER_PUBLIC_HOSTNAME} {
+	encode zstd gzip
+
+	# The upload path accepts a 4 MB CSV and Next bounds a server action body at
+	# 6 MB. This sits above both, so a file the product refuses is refused by
+	# the product with a sentence somebody wrote, rather than by the proxy with
+	# one nobody did.
+	request_body {
+		max_size 8MB
+	}
+
+	reverse_proxy web:3000
+}

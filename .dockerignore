@@ -1,0 +1,34 @@
+# What the deployment image must not receive from the build host.
+#
+# `node_modules` is the one that matters. The Dockerfile installs dependencies
+# from the lockfile and then copies the source over the top, so without this
+# line the host's `node_modules` — whose contents are symlinks into a pnpm store
+# at an absolute path that does not exist in the image — would land on top of
+# the install and break it. The failure is confusing rather than obvious: the
+# directory exists and has the right names in it.
+node_modules
+**/node_modules
+
+# Build output, regenerated inside the image.
+.next
+**/.next
+dist
+**/dist
+*.tsbuildinfo
+
+# Never in an image: history, secrets, local machine state.
+.git
+.github
+deploy/.env
+.env
+.env.*
+
+# Test and tooling artifacts that only inflate the build context.
+.stryker-tmp
+reports
+playwright-report
+**/playwright-report
+test-results
+**/test-results
+coverage
+**/coverage

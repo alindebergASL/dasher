@@ -1,0 +1,102 @@
+# One EC2 instance: a database, the application, and the only thing facing the
+# internet.
+#
+# WHY POSTGRES IS HERE RATHER THAN RDS. The schema is not a set of tables with
+# an application in front of it. It owns roles, `SECURITY DEFINER` functions in
+# a `dasher_api` schema, forced row-level security, and a migrator that checks
+# it owns the schema before it touches anything. All of that is easier to apply
+# and to reason about against a database whose superuser is genuinely a
+# superuser. Move to RDS when scheduled backups matter more than iteration
+# speed; nothing in the application changes when it does, because the
+# application only ever sees `DASHER_DATABASE_URL`.
+#
+# WHY THE APPLICATION PORT IS NOT PUBLISHED. Only the proxy binds a host port.
+# The application is reachable on the compose network and nowhere else, so a
+# security group mistake cannot expose it directly over plain HTTP — which
+# matters because the session cookie is `__Host-` prefixed and `secure`, and a
+# browser will simply not send it over an insecure origin.
+
+name: dasher
+
+services:
+  postgres:
+    image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DASHER_PG_SUPERUSER:?set in .env}
+      POSTGRES_PASSWORD: ${DASHER_PG_SUPERUSER_PASSWORD:?set in .env}
+      POSTGRES_DB: dasher
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Not published to the host. Nothing outside this compose file connects to
+    # the database, including psql from the instance — use `docker compose exec`.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DASHER_PG_SUPERUSER} -d dasher"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # A one-shot, not a service. `docker compose run --rm migrate` applies the
+  # baseline and exits; the migrator is idempotent and reports what it found
+  # against what it applied, so running it on every deploy is the intended use
+  # rather than a risk.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The SCHEMA OWNER's connection, which exists only for this command. The
+      # application never gets it: the app role cannot write `organizations`,
+      # `users`, or `memberships`, and that restriction is the schema working.
+      DASHER_MIGRATE_DSN: ${DASHER_MIGRATE_DSN:?set in .env}
+      DASHER_APP_LOGIN_ROLES: dasher_web_app
+    command: ["pnpm", "--filter", "@dasher/control-plane", "migrate"]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DASHER_DATABASE_URL: ${DASHER_DATABASE_URL:?set in .env}
+      DASHER_DEPLOYMENT_REVISION: ${DASHER_DEPLOYMENT_REVISION:?set in .env}
+      # `fixture` unless the live upstreams are deliberately turned on. A
+      # deployment that silently went live would be nondeterministic in a way
+      # that looks like flakiness, and would call an upstream on every request.
+      DASHER_SOURCE_MODE: ${DASHER_SOURCE_MODE:-fixture}
+      OPENAQ_API_KEY: ${OPENAQ_API_KEY:-}
+      # DASHER_DEV_BOOTSTRAP and DASHER_DEV_SEED_DSN are absent on purpose and
+      # must stay absent. See deploy/README.md — the first mints an
+      # authenticated session for anyone who can reach the URL, and the second
+      # is a schema-owner connection string.
+    expose:
+      - "3000"
+
+  proxy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DASHER_PUBLIC_HOSTNAME: ${DASHER_PUBLIC_HOSTNAME:?set in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+
+volumes:
+  pgdata:
+  caddydata:
+  caddyconfig:
