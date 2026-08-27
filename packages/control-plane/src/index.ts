@@ -75,6 +75,17 @@ export {
 } from "./dashboard-repository";
 
 export {
+  beginSignIn,
+  decodeSignInToken,
+  encodeSignInToken,
+  redeemSignIn,
+  SIGN_IN_LINK_MINUTES,
+  type IssuedSignInLink,
+  type RedeemedSignIn,
+  type SignInRequest,
+} from "./sign-in";
+
+export {
   seedDevPrincipal,
   type DevPrincipalSeed,
   type DevSeedOptions,

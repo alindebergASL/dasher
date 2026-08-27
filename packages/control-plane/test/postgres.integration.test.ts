@@ -280,15 +280,26 @@ describe("migration application", () => {
     }
   });
 
-  it("records the baseline in the journal with its file checksum", async () => {
+  it("records every migration in the journal with its file checksum", async () => {
     const result = await ownerPool.query<{
       readonly filename: string;
       readonly checksum_sha256: Uint8Array;
-    }>("SELECT filename, checksum_sha256 FROM dasher_meta.schema_migrations");
+    }>(
+      `SELECT filename, checksum_sha256
+         FROM dasher_meta.schema_migrations
+        ORDER BY filename`,
+    );
 
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]?.filename).toBe("0001_baseline.sql");
-    expect(result.rows[0]?.checksum_sha256).toHaveLength(32);
+    // Named in order rather than counted. The journal is what makes an edit to
+    // an applied migration detectable, so what matters is that each file is in
+    // it under its own name — a count still adds up when two are transposed.
+    expect(result.rows.map((row) => row.filename)).toEqual([
+      "0001_baseline.sql",
+      "0002_sign_in.sql",
+    ]);
+    for (const row of result.rows) {
+      expect(row.checksum_sha256, row.filename).toHaveLength(32);
+    }
   });
 });
 

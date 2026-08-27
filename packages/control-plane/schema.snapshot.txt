@@ -118,6 +118,16 @@ dasher.sessions.session_id uuid NOT NULL
 dasher.sessions.token_digest bytea NOT NULL
 dasher.sessions.token_key_version smallint NOT NULL
 dasher.sessions.user_id uuid NOT NULL
+dasher.sign_in_challenges.challenge_id uuid NOT NULL
+dasher.sign_in_challenges.consumed_at timestamp with time zone
+dasher.sign_in_challenges.consumed_session_id uuid
+dasher.sign_in_challenges.created_at timestamp with time zone NOT NULL DEFAULT transaction_timestamp()
+dasher.sign_in_challenges.expires_at timestamp with time zone NOT NULL
+dasher.sign_in_challenges.normalized_email character varying(320) NOT NULL
+dasher.sign_in_challenges.organization_id uuid NOT NULL
+dasher.sign_in_challenges.token_digest bytea NOT NULL
+dasher.sign_in_challenges.token_key_version smallint NOT NULL
+dasher.sign_in_challenges.user_id uuid NOT NULL
 dasher.source_snapshots.canonical_bytes bytea NOT NULL
 dasher.source_snapshots.content_sha256 bytea NOT NULL
 dasher.source_snapshots.created_at timestamp with time zone NOT NULL DEFAULT transaction_timestamp()
@@ -145,7 +155,7 @@ dasher.agent_runs agent_runs_state_check CHECK (((state)::text = ANY ((ARRAY['ru
 dasher.agent_runs agent_runs_success_check CHECK (((((state)::text = 'succeeded'::text) AND (produced_version_id IS NOT NULL) AND (dashboard_id IS NOT NULL) AND (failure_reason IS NULL)) OR (((state)::text = 'failed'::text) AND (produced_version_id IS NULL) AND (failure_reason IS NOT NULL)) OR (((state)::text = 'running'::text) AND (produced_version_id IS NULL) AND (failure_reason IS NULL))))
 dasher.agent_runs agent_runs_terminal_check CHECK (((((state)::text = 'running'::text) AND (finished_at IS NULL)) OR (((state)::text <> 'running'::text) AND (finished_at IS NOT NULL))))
 dasher.agent_runs agent_runs_version_fkey FOREIGN KEY (organization_id, dashboard_id, produced_version_id) REFERENCES dasher.dashboard_versions(organization_id, dashboard_id, version_id)
-dasher.audit_events audit_events_action_check CHECK (((action)::text = ANY ((ARRAY['membership.role_changed'::character varying, 'membership.revoked'::character varying, 'invitation.issued'::character varying, 'invitation.revoked'::character varying, 'invitation.accepted'::character varying, 'invitation.accepted_existing_membership'::character varying, 'session.issued'::character varying, 'session.rotated'::character varying, 'session.revoked'::character varying, 'source_snapshot.created'::character varying, 'evidence_record.created'::character varying, 'dashboard.created'::character varying, 'dashboard.archived'::character varying, 'dashboard.unarchived'::character varying, 'dashboard_version.created'::character varying, 'dashboard_head.promoted'::character varying, 'agent_run.started'::character varying, 'agent_run.finished'::character varying])::text[])))
+dasher.audit_events audit_events_action_check CHECK (((action)::text = ANY ((ARRAY['membership.role_changed'::character varying, 'membership.revoked'::character varying, 'invitation.issued'::character varying, 'invitation.revoked'::character varying, 'invitation.accepted'::character varying, 'invitation.accepted_existing_membership'::character varying, 'sign_in.requested'::character varying, 'session.issued'::character varying, 'session.rotated'::character varying, 'session.revoked'::character varying, 'source_snapshot.created'::character varying, 'evidence_record.created'::character varying, 'dashboard.created'::character varying, 'dashboard.archived'::character varying, 'dashboard.unarchived'::character varying, 'dashboard_version.created'::character varying, 'dashboard_head.promoted'::character varying, 'agent_run.started'::character varying, 'agent_run.finished'::character varying])::text[])))
 dasher.audit_events audit_events_actor_check CHECK (((((actor_kind)::text = 'user'::text) AND (actor_user_id IS NOT NULL) AND (actor_service IS NULL)) OR (((actor_kind)::text = 'service'::text) AND (actor_user_id IS NULL) AND (actor_service IS NOT NULL))))
 dasher.audit_events audit_events_actor_fkey FOREIGN KEY (organization_id, actor_user_id) REFERENCES dasher.memberships(organization_id, user_id)
 dasher.audit_events audit_events_actor_kind_check CHECK (((actor_kind)::text = ANY ((ARRAY['user'::character varying, 'service'::character varying])::text[])))
@@ -251,6 +261,16 @@ dasher.sessions sessions_rotated_from_fkey FOREIGN KEY (organization_id, rotated
 dasher.sessions sessions_token_digest_check CHECK ((octet_length(token_digest) = 32))
 dasher.sessions sessions_token_key UNIQUE (token_key_version, token_digest)
 dasher.sessions sessions_token_key_version_check CHECK (((token_key_version >= 1) AND (token_key_version <= 32767)))
+dasher.sign_in_challenges sign_in_challenges_consumed_fields_check CHECK (((consumed_at IS NULL) = (consumed_session_id IS NULL)))
+dasher.sign_in_challenges sign_in_challenges_consumed_window_check CHECK (((consumed_at IS NULL) OR ((consumed_at >= created_at) AND (consumed_at < expires_at))))
+dasher.sign_in_challenges sign_in_challenges_email_check CHECK ((((normalized_email)::text = btrim((normalized_email)::text)) AND ((normalized_email)::text = lower((normalized_email)::text)) AND ((char_length((normalized_email)::text) >= 1) AND (char_length((normalized_email)::text) <= 320)) AND ((normalized_email)::text !~ '[[:cntrl:]]'::text)))
+dasher.sign_in_challenges sign_in_challenges_expiry_check CHECK ((expires_at > created_at))
+dasher.sign_in_challenges sign_in_challenges_membership_fkey FOREIGN KEY (organization_id, user_id) REFERENCES dasher.memberships(organization_id, user_id)
+dasher.sign_in_challenges sign_in_challenges_pkey PRIMARY KEY (challenge_id)
+dasher.sign_in_challenges sign_in_challenges_session_fkey FOREIGN KEY (organization_id, consumed_session_id) REFERENCES dasher.sessions(organization_id, session_id)
+dasher.sign_in_challenges sign_in_challenges_token_digest_check CHECK ((octet_length(token_digest) = 32))
+dasher.sign_in_challenges sign_in_challenges_token_key UNIQUE (token_key_version, token_digest)
+dasher.sign_in_challenges sign_in_challenges_token_key_version_check CHECK (((token_key_version >= 1) AND (token_key_version <= 32767)))
 dasher.source_snapshots source_snapshots_content_sha256_check CHECK ((content_sha256 = sha256(canonical_bytes)))
 dasher.source_snapshots source_snapshots_organization_fkey FOREIGN KEY (organization_id) REFERENCES dasher.organizations(organization_id)
 dasher.source_snapshots source_snapshots_pkey PRIMARY KEY (organization_id, snapshot_id)
@@ -283,6 +303,9 @@ CREATE INDEX memberships_user_idx ON dasher.memberships USING btree (user_id)
 CREATE INDEX sessions_live_user_idx ON dasher.sessions USING btree (organization_id, user_id, revoked_at)
 CREATE INDEX sessions_replaced_by_idx ON dasher.sessions USING btree (organization_id, replaced_by_session_id)
 CREATE INDEX sessions_rotated_from_idx ON dasher.sessions USING btree (organization_id, rotated_from_session_id)
+CREATE INDEX sign_in_challenges_email_created_idx ON dasher.sign_in_challenges USING btree (normalized_email, created_at DESC)
+CREATE INDEX sign_in_challenges_membership_idx ON dasher.sign_in_challenges USING btree (organization_id, user_id)
+CREATE INDEX sign_in_challenges_session_idx ON dasher.sign_in_challenges USING btree (organization_id, consumed_session_id)
 CREATE UNIQUE INDEX agent_runs_pkey ON dasher.agent_runs USING btree (organization_id, run_id)
 CREATE UNIQUE INDEX agent_runs_produced_version_key ON dasher.agent_runs USING btree (organization_id, produced_version_id) WHERE (produced_version_id IS NOT NULL)
 CREATE UNIQUE INDEX audit_events_org_id_key ON dasher.audit_events USING btree (organization_id, audit_event_id)
@@ -308,6 +331,8 @@ CREATE UNIQUE INDEX sessions_csrf_key ON dasher.sessions USING btree (csrf_key_v
 CREATE UNIQUE INDEX sessions_org_id_key ON dasher.sessions USING btree (organization_id, session_id)
 CREATE UNIQUE INDEX sessions_pkey ON dasher.sessions USING btree (session_id)
 CREATE UNIQUE INDEX sessions_token_key ON dasher.sessions USING btree (token_key_version, token_digest)
+CREATE UNIQUE INDEX sign_in_challenges_pkey ON dasher.sign_in_challenges USING btree (challenge_id)
+CREATE UNIQUE INDEX sign_in_challenges_token_key ON dasher.sign_in_challenges USING btree (token_key_version, token_digest)
 CREATE UNIQUE INDEX source_snapshots_pkey ON dasher.source_snapshots USING btree (organization_id, snapshot_id)
 CREATE UNIQUE INDEX users_pkey ON dasher.users USING btree (user_id)
 
@@ -324,6 +349,7 @@ dasher.invitations rls=true force=false
 dasher.memberships rls=true force=false
 dasher.organizations rls=true force=false
 dasher.sessions rls=true force=false
+dasher.sign_in_challenges rls=true force=false
 dasher.source_snapshots rls=true force=false
 dasher.users rls=true force=false
 dasher_private.context_keys rls=false force=false
@@ -359,17 +385,20 @@ CREATE TRIGGER dashboard_versions_immutable BEFORE DELETE OR UPDATE ON dasher.da
 CREATE TRIGGER dashboards_guard BEFORE UPDATE ON dasher.dashboards FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_dashboard_update()
 CREATE TRIGGER evidence_records_immutable BEFORE DELETE OR UPDATE ON dasher.evidence_records FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 CREATE TRIGGER memberships_guard BEFORE UPDATE ON dasher.memberships FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_membership_update()
+CREATE TRIGGER sign_in_challenges_consume_once BEFORE DELETE OR UPDATE ON dasher.sign_in_challenges FOR EACH ROW EXECUTE FUNCTION dasher_private.guard_sign_in_challenge_update()
 CREATE TRIGGER source_snapshots_immutable BEFORE DELETE OR UPDATE ON dasher.source_snapshots FOR EACH ROW EXECUTE FUNCTION dasher_private.reject_immutable_mutation()
 
 -- functions
 dasher_api.accept_invitation(p_token_key_version smallint, p_token bytea, p_issuer text, p_subject text, p_verified_email text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.acting_principal(p_required_role text) -> record volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_api.begin_request(p_token_key_version smallint, p_token bytea) -> record volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.begin_sign_in(p_normalized_email text, p_token_key_version smallint, p_token_digest bytea, p_expires_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.create_dashboard(p_title text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.fail_run(p_run_id uuid, p_failure_reason text, p_request_id uuid, p_deployment_revision text) -> void volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text, p_source_snapshot_id uuid) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.record_evidence(p_snapshot_id uuid, p_evidence_kind text, p_coordinates text, p_transformation text, p_content_sha256 bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.record_source_snapshot(p_source_kind text, p_source_ref text, p_canonical_bytes bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
+dasher_api.redeem_sign_in(p_token_key_version smallint, p_token_digest bytea, p_session_token_key_version smallint, p_session_token_digest bytea, p_session_csrf_key_version smallint, p_session_csrf_digest bytea, p_idle_minutes integer, p_absolute_minutes integer, p_request_id uuid, p_deployment_revision text) -> record volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.resolve_external_identity(p_issuer text, p_subject text) -> uuid volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_api.set_dashboard_archived(p_dashboard_id uuid, p_expected_revision bigint, p_archived boolean, p_request_id uuid, p_deployment_revision text) -> bigint volatility=v security_definer=true search_path=search_path=pg_catalog
 dasher_api.start_run(p_dashboard_id uuid, p_request_text text, p_provider text, p_model text, p_request_id uuid, p_deployment_revision text) -> uuid volatility=v security_definer=true search_path=search_path=pg_catalog
@@ -377,23 +406,28 @@ dasher_private.context_allows(p_organization_id uuid, p_required_role text) -> b
 dasher_private.context_digest(p_user_id uuid, p_organization_id uuid, p_session_id uuid, p_authority_revision bigint, p_transaction_id text) -> bytea volatility=s security_definer=true search_path=search_path=pg_catalog
 dasher_private.context_organization_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
 dasher_private.context_user_id() -> uuid volatility=s security_definer=false search_path=search_path=pg_catalog
+dasher_private.email_link_issuer() -> text volatility=i security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_agent_run_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_claim_insert() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_claim_support() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_dashboard_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_membership_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.guard_sign_in_challenge_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.reject_immutable_mutation() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.sign_in_hourly_limit() -> integer volatility=i security_definer=false search_path=search_path=pg_catalog
 dasher_private.verified_context() -> record volatility=s security_definer=true search_path=search_path=pg_catalog
 
 -- routine grants
 dasher_api.accept_invitation(p_token_key_version smallint, p_token bytea, p_issuer text, p_subject text, p_verified_email text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.acting_principal(p_required_role text) dasher_ci_owner=X/dasher_ci_owner
 dasher_api.begin_request(p_token_key_version smallint, p_token bytea) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.begin_sign_in(p_normalized_email text, p_token_key_version smallint, p_token_digest bytea, p_expires_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.create_dashboard(p_title text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.fail_run(p_run_id uuid, p_failure_reason text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.finalize_run(p_run_id uuid, p_canonical_spec_bytes bytea, p_claims jsonb, p_expected_revision bigint, p_request_id uuid, p_deployment_revision text, p_source_snapshot_id uuid) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.record_evidence(p_snapshot_id uuid, p_evidence_kind text, p_coordinates text, p_transformation text, p_content_sha256 bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.record_source_snapshot(p_source_kind text, p_source_ref text, p_canonical_bytes bytea, p_observed_at timestamp with time zone, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_api.redeem_sign_in(p_token_key_version smallint, p_token_digest bytea, p_session_token_key_version smallint, p_session_token_digest bytea, p_session_csrf_key_version smallint, p_session_csrf_digest bytea, p_idle_minutes integer, p_absolute_minutes integer, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.resolve_external_identity(p_issuer text, p_subject text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.set_dashboard_archived(p_dashboard_id uuid, p_expected_revision bigint, p_archived boolean, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_api.start_run(p_dashboard_id uuid, p_request_text text, p_provider text, p_model text, p_request_id uuid, p_deployment_revision text) dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
@@ -401,12 +435,15 @@ dasher_private.context_allows(p_organization_id uuid, p_required_role text) dash
 dasher_private.context_digest(p_user_id uuid, p_organization_id uuid, p_session_id uuid, p_authority_revision bigint, p_transaction_id text) dasher_ci_owner=X/dasher_ci_owner
 dasher_private.context_organization_id() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 dasher_private.context_user_id() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
+dasher_private.email_link_issuer() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_agent_run_update() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_claim_insert() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_claim_support() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_dashboard_update() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_membership_update() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.guard_sign_in_challenge_update() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.reject_immutable_mutation() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.sign_in_hourly_limit() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.verified_context() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner
 
 -- grants
@@ -503,6 +540,13 @@ dasher.sessions dasher_ci_owner SELECT
 dasher.sessions dasher_ci_owner TRIGGER
 dasher.sessions dasher_ci_owner TRUNCATE
 dasher.sessions dasher_ci_owner UPDATE
+dasher.sign_in_challenges dasher_ci_owner DELETE
+dasher.sign_in_challenges dasher_ci_owner INSERT
+dasher.sign_in_challenges dasher_ci_owner REFERENCES
+dasher.sign_in_challenges dasher_ci_owner SELECT
+dasher.sign_in_challenges dasher_ci_owner TRIGGER
+dasher.sign_in_challenges dasher_ci_owner TRUNCATE
+dasher.sign_in_challenges dasher_ci_owner UPDATE
 dasher.source_snapshots dasher_app SELECT
 dasher.source_snapshots dasher_ci_owner DELETE
 dasher.source_snapshots dasher_ci_owner INSERT
