@@ -216,8 +216,9 @@ export function decodeSignInToken(raw: string): Buffer | undefined {
   // What that is NOT worth: redemption has no rate limit and writes no audit
   // row until it succeeds, so several spellings of one token could not consume
   // either. An earlier version of this comment said they could, which would
-  // have told a reader auditing whether `/sign-in/verify` is throttled that it
-  // is. It is not, and nothing in this module throttles it.
+  // have told a reader auditing whether redemption is throttled that it is.
+  // It is not — `POST /sign-in/confirm` is the endpoint that redeems, and
+  // nothing in this module throttles it.
   //
   // What it IS worth: one token has one representation, so a link cannot be
   // reshaped into a different-looking URL that still works.

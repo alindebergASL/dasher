@@ -7,8 +7,10 @@ export const metadata: Metadata = { title: "Sign in — Dasher" };
 /**
  * The sign-in page.
  *
- * `failed=1` is the only thing the verify route tells this page, and it means
- * exactly "that link did not work". Which of the five reasons it was is
+ * `failed=1` is the only thing the CONFIRM route tells this page, and it means
+ * exactly "that link did not work". (The verify route renders the confirm page
+ * and redirects nowhere; it was the redirecting one before redemption moved to
+ * a POST.) Which of the five reasons it was is
  * deliberately not carried: they are the same answer to somebody holding a link
  * they should not have, and the person who lost it already knows which.
  */

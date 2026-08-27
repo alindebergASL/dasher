@@ -24,16 +24,36 @@ set -euo pipefail
 #   postgresql://user:password@host:port/database
 # A DSN with no password is passed through untouched, which is what an instance
 # using a trust or IAM connection would supply.
-_credentials="${DASHER_BACKUP_DSN#*://}"
-_credentials="${_credentials%%@*}"
-if [ "${_credentials}" != "${DASHER_BACKUP_DSN}" ] && [ "${_credentials#*:}" != "${_credentials}" ]; then
-  DASHER_BACKUP_PASSWORD="${_credentials#*:}"
-  DASHER_BACKUP_URI="${DASHER_BACKUP_DSN%%://*}://${_credentials%%:*}@${DASHER_BACKUP_DSN#*@}"
-else
+_rest="${DASHER_BACKUP_DSN#*://}"
+if [ "${_rest}" = "${DASHER_BACKUP_DSN}" ] || [ "${_rest#*@}" = "${_rest}" ]; then
+  # No scheme separator, or no `@` at all — so there is no userinfo and nothing
+  # to split. Checking for the `@` FIRST is the whole correction: testing only
+  # for a `:` matched the port in `postgresql://host:5432/db`, took the password
+  # branch, set PGPASSWORD to "5432/db", and rebuilt the URI from a `${DSN#*@}`
+  # that expanded to the entire DSN. A passwordless DSN is exactly the shape an
+  # instance-role or trust connection supplies, so it silently broke the case
+  # the comment promised was untouched.
   DASHER_BACKUP_PASSWORD=""
   DASHER_BACKUP_URI="${DASHER_BACKUP_DSN}"
+else
+  _userinfo="${_rest%%@*}"
+  if [ "${_userinfo#*:}" = "${_userinfo}" ]; then
+    DASHER_BACKUP_PASSWORD=""
+    DASHER_BACKUP_URI="${DASHER_BACKUP_DSN}"
+  else
+    # `#*:` and `%%:*` rather than a split on every colon: a password may
+    # contain one, and only the FIRST colon separates user from password.
+    #
+    # The password is percent-decoded, because libpq decodes it out of a URI
+    # and does not out of PGPASSWORD — so a password written `p%40ss` in the
+    # DSN is `p@ss` to the server, and passing the raw form in the environment
+    # would authenticate with the wrong string.
+    DASHER_BACKUP_PASSWORD="$(printf '%b' "${_userinfo#*:}" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+    DASHER_BACKUP_PASSWORD="$(printf '%b' "${DASHER_BACKUP_PASSWORD}")"
+    DASHER_BACKUP_URI="${DASHER_BACKUP_DSN%%://*}://${_userinfo%%:*}@${_rest#*@}"
+  fi
 fi
-unset _credentials
+unset _rest _userinfo
 INTERVAL_SECONDS="${DASHER_BACKUP_INTERVAL_SECONDS:-86400}"
 
 log() { printf '%s backup: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -98,13 +118,16 @@ while true; do
   # should cost one backup, not every backup after it. The failure is logged
   # loudly and the loop continues.
   #
-  # NOT `if ! run_once`. Invoking a function in a condition disables `set -e`
-  # FOR THE WHOLE FUNCTION, so a failing `pg_dump` or a failing
-  # `pg_restore --list` would not stop the sequence: the upload would run
-  # anyway, a truncated dump would reach S3 under an ordinary timestamped
-  # name, the local copy would be deleted, and the log would read "done".
-  # Silent failure in the direction of "everything is fine" is the one thing a
-  # backup must never do. `|| rc=$?` keeps errexit live inside the function.
+  # `|| rc=$?` does NOT keep errexit live inside `run_once` — nothing does,
+  # from any call site. That is why every step in `run_once` carries its own
+  # `|| return 1`, and the reason this comment says so rather than the
+  # comfortable opposite: an earlier version claimed `|| rc=$?` restored
+  # errexit, which would have told the next person adding a step that they
+  # could leave the guard off. They cannot.
+  #
+  # What this construct IS for: capturing the exit status without `set -e`
+  # ending the script, so one failed backup costs one backup rather than every
+  # backup after it.
   rc=0
   run_once || rc=$?
   if [ "${rc}" -ne 0 ]; then

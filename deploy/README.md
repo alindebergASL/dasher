@@ -165,6 +165,12 @@ because an adversarial review asserted the opposite — that the route exports
 only POST and a secured deployment answers 405 — and acting on that would have
 inverted this check.
 
+What the measurement establishes and what it does not: switched off, both verbs
+answered 404, so a 404 here is consistent with the bootstrap being off. It is
+not proof on its own — a route that did not exist at all would answer 404 too,
+which is the point of answering 404. What a **405 does** prove is that the
+handler ran and found the switch on.
+
 Then sign in for real: open `/sign-in`, enter the address you provisioned, and
 follow the link. If no mail transport is configured the page says sign-in is
 unavailable rather than accepting the address and doing nothing — the one
@@ -218,7 +224,8 @@ throwaway database first — never over the live one:
 # 1. Fetch the dump into the backup container, which already has aws and the
 #    Postgres client tools.
 docker compose -f deploy/compose.yml --env-file deploy/.env \
-  run --rm --entrypoint sh backup -c \
+  run --rm --entrypoint sh \
+  -e PGPASSWORD="$DASHER_PG_SUPERUSER_PASSWORD" backup -c \
   'aws s3 cp "$DASHER_BACKUP_S3_URI/20260827T000000Z.dump" /tmp/r.dump &&
    createdb -h postgres -U '"$DASHER_PG_SUPERUSER"' dasher_restore_check &&
    pg_restore -h postgres -U '"$DASHER_PG_SUPERUSER"' -d dasher_restore_check \

@@ -421,7 +421,7 @@ jobs:
 
       # Its own floor again. The sign-in suite's whole point is the cases that
       # need a database, and a shared count would be satisfied by the six
-      # layout cases alone (two viewports x three tests). Twelve is what this
+      # layout cases alone (two viewports x three tests). Fourteen is what this
       # job actually runs, so the floor has no margin by design: a case that
       # stops running fails here rather than being absorbed.
       - name: Assert the sign-in tests actually ran
@@ -429,7 +429,7 @@ jobs:
           pnpm --filter @dasher/repo-graph assert:playwright-report -- \
             --report=/tmp/sign-in-results.json \
             --spec-file=sign-in.spec.ts \
-            --min-tests=12
+            --min-tests=14
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()

@@ -41,6 +41,7 @@ export function GET(request: NextRequest): NextResponse {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="origin">
 <title>Confirm sign-in — Dasher</title>
 <style>
   body { margin:0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -73,8 +74,12 @@ export function GET(request: NextRequest): NextResponse {
       "content-type": "text/html; charset=utf-8",
       // The token is in this page's form. Nothing should keep a copy.
       "cache-control": "no-store, no-cache, must-revalidate",
-      referrer: "no-referrer",
-      "referrer-policy": "no-referrer",
+      // `origin`, not `no-referrer`. Measured: under `no-referrer` a browser
+      // sends `Origin: null` even on a same-origin form post, which would make
+      // the confirm route's origin check reject the legitimate flow. `origin`
+      // sends a real Origin and a Referer that is just the origin — so the
+      // token in this page's URL still never leaves it.
+      "referrer-policy": "origin",
     },
   });
 }

@@ -38,12 +38,18 @@ import { Pool } from "pg";
  * cleanly, answers queries, and is missing the rows a dashboard's figures point
  * at.
  *
- * HOW FAR THAT WAS ACTUALLY TESTED, precisely. Each check below has been driven
- * red against a real database holding real rows, with the relevant foreign key
- * dropped and the rows deleted — which is the END STATE those restore paths
- * produce. `pg_restore` itself has never been run against this checker, so the
- * claim is "the checker notices these absences", not "these absences were
- * produced by a real partial restore".
+ * HOW FAR THAT WAS ACTUALLY TESTED, precisely. The four DANGLING checks have
+ * been driven red against a real database holding real rows, with the relevant
+ * foreign key dropped and the rows deleted — which is the END STATE those
+ * restore paths produce. `pg_restore` itself has never been run against this
+ * checker, so the claim is "the checker notices these absences", not "these
+ * absences were produced by a real partial restore".
+ *
+ * The DIGEST check has never been driven red at all, and cannot be through any
+ * ordinary route: `source_snapshots_content_sha256_check` refuses the write
+ * that would make it fire. It is carried as one cheap scan for a database
+ * assembled without that constraint, and it is not evidence of anything until
+ * such a database exists.
  *
  * WHY IT COUNTS AS WELL AS CHECKS. All three pass trivially on an empty
  * database. A restore that produced no rows is the worst outcome and the one

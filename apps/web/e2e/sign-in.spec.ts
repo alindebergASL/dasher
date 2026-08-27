@@ -135,6 +135,54 @@ test("opening a link does not sign anyone in until they confirm", async ({
   );
 });
 
+test("refuses a redemption submitted from another site", async ({ page }) => {
+  // LOGIN CSRF, and the reason POST-only was not enough.
+  //
+  // A cross-site auto-submitting form is a top-level navigation, so moving the
+  // token from the URL to a body changed nothing an attacker cannot control:
+  // they hand out a page instead of a link. Reproduced against the built app
+  // before this check existed — 303 with a `__Host-` session cookie set — and
+  // `SameSite=lax` does not help, because it governs whether a cookie is SENT,
+  // not whether one may be stored, and the redirect lands same-site.
+  //
+  // A real token is not needed: the origin is checked before the body is read,
+  // so a cross-site caller gets the same refusal whatever it carries.
+  const attacked = await page.context().request.post("/sign-in/confirm", {
+    headers: {
+      origin: "https://evil.example",
+      "sec-fetch-site": "cross-site",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    data: "token=anything",
+    maxRedirects: 0,
+  });
+
+  expect(attacked.status()).toBe(303);
+  expect(attacked.headers()["location"]).toContain("/sign-in?failed=1");
+  expect(attacked.headers()["set-cookie"]).toBeUndefined();
+});
+
+test("refuses a redemption whose origin is null", async ({ page }) => {
+  // The shape a `no-referrer` page produces. It is not evidence of a same-site
+  // request and must not be treated as one — and getting this wrong in the
+  // other direction is what the confirm page's `referrer: origin` exists for:
+  // under `no-referrer` a browser sends `Origin: null` even SAME-ORIGIN, so an
+  // origin check that accepted null would be no check, and one that rejected
+  // null without changing the policy would have broken the real flow.
+  const nulled = await page.context().request.post("/sign-in/confirm", {
+    headers: {
+      origin: "null",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    data: "token=anything",
+    maxRedirects: 0,
+  });
+
+  expect(nulled.status()).toBe(303);
+  expect(nulled.headers()["location"]).toContain("/sign-in?failed=1");
+  expect(nulled.headers()["set-cookie"]).toBeUndefined();
+});
+
 test("the confirm route refuses a GET", async ({ page }) => {
   // Belt and braces on the same property: if the redemption endpoint answered
   // GET, moving it would have bought nothing.

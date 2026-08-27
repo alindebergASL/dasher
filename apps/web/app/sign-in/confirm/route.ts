@@ -8,15 +8,27 @@ import {
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getPool, isPersistenceConfigured } from "../../database";
+import { publicOrigin } from "../../mailer";
 import { encodeSessionToken } from "../../session";
 
 /**
  * Redeem a confirmed sign-in link.
  *
- * POST ONLY, and the token comes from the body rather than the URL. Together
- * those are what stop a link from signing somebody in without their say-so: a
- * top-level navigation cannot reach this, and neither can a mail scanner
- * following the URL in the message.
+ * WHAT ACTUALLY STOPS LOGIN CSRF, and what does not.
+ *
+ * POST-only and a token in the body do NOT. A cross-site auto-submitting form
+ * is a top-level navigation, so an attacker hands out a page instead of a URL
+ * and the victim's browser posts here exactly as their own would. An earlier
+ * version of this file claimed the opposite in this docstring and in its commit
+ * message; the attack was reproduced against the built app, answering 303 with
+ * a `__Host-` session cookie set. `SameSite=lax` does not help: it governs
+ * whether a cookie is SENT, not whether one may be stored, and the 303 lands
+ * same-site so the new cookie rides the follow-up GET.
+ *
+ * What stops it is `assertSameOrigin` below. What POST-only DOES buy, and the
+ * reason the redemption still moved off GET, is that a mail scanner or a
+ * link-preview bot following the URL in the message can no longer spend a
+ * single-use link before its recipient clicks it.
  *
  * WHY IT REDIRECTS RATHER THAN RENDERING. The token was in the previous page's
  * form; nothing should keep it in an address bar, in history, or in the
@@ -38,6 +50,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   );
 
   if (!isPersistenceConfigured()) return failed;
+
+  // Refused BEFORE the body is read, so a cross-site submission costs nothing
+  // and learns nothing: it gets the same redirect a bad token gets.
+  if (!isSameOrigin(request)) return failed;
 
   let raw: string | undefined;
   try {
@@ -77,4 +93,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     maxAge: cookie.maxAge,
   });
   return response;
+}
+
+/**
+ * Is this submission from our own page, or from somebody else's?
+ *
+ * `Sec-Fetch-Site` FIRST, and it is the reliable one. The browser computes it
+ * and will not send `same-origin` for a cross-site form, and — unlike `Origin`
+ * — it is unaffected by the referrer policy and by whatever a reverse proxy
+ * does to the Host header.
+ *
+ * `Origin` is the fallback for a browser too old to send `Sec-Fetch-Site`, and
+ * it is compared against the CONFIGURED public origin rather than the request's
+ * own, because behind Caddy the request's origin is the container's, not the
+ * one the browser saw.
+ *
+ * A measured trap worth recording: with `Referrer-Policy: no-referrer` — which
+ * the confirm page carried until this was written — a browser sends
+ * `Origin: null` even on a SAME-ORIGIN form post. An Origin-only check would
+ * therefore have rejected the legitimate flow while looking correct in review.
+ * The page now sets `referrer: origin`, which sends a real Origin and a Referer
+ * carrying no token.
+ */
+function isSameOrigin(request: NextRequest): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site !== null) return site === "same-origin";
+
+  const origin = request.headers.get("origin");
+  if (origin === null || origin === "null") return false;
+  try {
+    return origin === publicOrigin();
+  } catch {
+    // No configured origin means nothing can be compared against, and guessing
+    // from the request is what this check exists to avoid.
+    return false;
+  }
 }
