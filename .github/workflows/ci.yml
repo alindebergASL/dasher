@@ -419,15 +419,17 @@ jobs:
             --spec-file=uploaded-ledger.spec.ts \
             --min-tests=8
 
-      # Its own floor again. The sign-in suite's whole point is the case that
-      # needs a database, and a report where only the seven layout cases ran
-      # would satisfy any shared count.
+      # Its own floor again. The sign-in suite's whole point is the cases that
+      # need a database, and a shared count would be satisfied by the six
+      # layout cases alone (two viewports x three tests). Twelve is what this
+      # job actually runs, so the floor has no margin by design: a case that
+      # stops running fails here rather than being absorbed.
       - name: Assert the sign-in tests actually ran
         run: |
           pnpm --filter @dasher/repo-graph assert:playwright-report -- \
             --report=/tmp/sign-in-results.json \
             --spec-file=sign-in.spec.ts \
-            --min-tests=10
+            --min-tests=12
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()

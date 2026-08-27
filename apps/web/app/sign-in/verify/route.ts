@@ -1,67 +1,96 @@
-import { randomUUID } from "node:crypto";
-
-import {
-  createSessionCookieMetadata,
-  decodeSignInToken,
-  redeemSignIn,
-} from "@dasher/control-plane";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { getPool, isPersistenceConfigured } from "../../database";
-import { encodeSessionToken } from "../../session";
+/**
+ * A sign-in link is CONFIRMED before it is redeemed.
+ *
+ * WHY GET DOES NOT SIGN ANYBODY IN. It used to, and that was two defects at
+ * once. A GET that mints a session is a login-CSRF primitive: an attacker with
+ * a pilot account requests a link for their OWN address and puts the URL where
+ * a victim will follow it, and the victim's browser silently stores a session
+ * for the attacker's organization — anything the victim then uploads lands in
+ * the attacker's tenant, with the attacker's own audit trail recording it as
+ * their work. Nothing in the token binds the browser that asked for the link to
+ * the browser that presents it, and nothing can: opening a link on a second
+ * device is the point of a magic link.
+ *
+ * The same GET also let a link be spent by something that was never a person.
+ * Mail scanners, link-preview bots and antivirus proxies follow URLs in email;
+ * every one of those would consume a single-use link before the recipient
+ * clicked it, and the reader would be told their link did not work.
+ *
+ * So GET renders a page with a button, and only the POST redeems. That is one
+ * extra click for the reader and it removes both: a top-level navigation
+ * cannot redeem, and neither can a prefetch.
+ *
+ * The redemption itself lives in `confirm/route.ts` — a separate module,
+ * because a route file may export a GET and a POST but the POST here would be
+ * reachable cross-site from a form, and the confirm route can require the token
+ * in the body rather than in a URL an attacker can hand out.
+ */
+export function GET(request: NextRequest): NextResponse {
+  const token = request.nextUrl.searchParams.get("token");
+
+  // Nothing is validated here. Telling somebody their link is malformed before
+  // they confirm would answer "is this a real token?" at a lower cost than
+  // redeeming it, and every failure has to look the same anyway.
+  const safeToken = token === null ? "" : token;
+
+  const page = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Confirm sign-in — Dasher</title>
+<style>
+  body { margin:0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display:flex; min-height:100dvh; align-items:center; justify-content:center;
+         background:#f6f5f1; color:#1a2420; }
+  main { max-width:34rem; padding:2rem; background:#fff; border:1px solid #dcdad2;
+         border-radius:12px; }
+  h1 { margin:0 0 .75rem; font-size:1.35rem; }
+  p { margin:0 0 1rem; color:#5a625d; }
+  button { font:inherit; padding:.6rem 1.1rem; border:0; border-radius:8px;
+           background:#1f6f4f; color:#fff; cursor:pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sign in to Dasher</h1>
+  <p>This link signs you in and can only be used once. Confirm that you asked
+     for it — if it arrived unexpectedly, close this page instead.</p>
+  <form method="post" action="/sign-in/confirm">
+    <input type="hidden" name="token" value="${escapeHtml(safeToken)}">
+    <button type="submit">Sign me in</button>
+  </form>
+</main>
+</body>
+</html>`;
+
+  return new NextResponse(page, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      // The token is in this page's form. Nothing should keep a copy.
+      "cache-control": "no-store, no-cache, must-revalidate",
+      referrer: "no-referrer",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
 
 /**
- * Redeem a sign-in link and become somebody.
+ * The token is echoed into an attribute, so it is escaped.
  *
- * WHY IT REDIRECTS INSTEAD OF RENDERING. The token is in the URL, and a page
- * rendered at that URL keeps it in the address bar, in history, and in the
- * `Referer` of every asset and link on it. Redirecting to `/` the moment the
- * session cookie is set means the token exists in the browser for one response.
- * It is single-use and already spent by then, which makes the window small; the
- * redirect makes it smaller for no cost.
- *
- * WHY EVERY FAILURE IS THE SAME REDIRECT. Expired, already used, revoked since
- * it was sent, never issued, malformed — all land on `/sign-in?failed=1`, which
- * says the link did not work and offers another. Distinguishing them would tell
- * whoever is holding the link things the person who lost it already knows.
+ * It is a base64url string when it is genuine, but the value here is whatever
+ * the URL carried and is never validated before this point — deliberately, so
+ * that a malformed token is not answered differently from a wrong one.
  */
-
-const SESSION_MINUTES = 12 * 60;
-
-export async function GET(request: NextRequest): Promise<NextResponse> {
-  const failed = NextResponse.redirect(
-    new URL("/sign-in?failed=1", request.url),
-  );
-
-  if (!isPersistenceConfigured()) return failed;
-
-  const raw = request.nextUrl.searchParams.get("token");
-  if (raw === null) return failed;
-
-  const token = decodeSignInToken(raw);
-  if (token === undefined) return failed;
-
-  const redeemed = await redeemSignIn(getPool(), token, {
-    requestId: randomUUID(),
-    deploymentRevision: process.env["DASHER_DEPLOYMENT_REVISION"] ?? "dev",
-  });
-  if (redeemed === undefined) return failed;
-
-  const now = Date.now();
-  const cookie = createSessionCookieMetadata(
-    now,
-    now + SESSION_MINUTES * 60 * 1_000,
-  );
-
-  const response = NextResponse.redirect(new URL("/", request.url));
-  response.cookies.set({
-    name: cookie.name,
-    value: encodeSessionToken(redeemed.sessionToken),
-    httpOnly: cookie.httpOnly,
-    secure: cookie.secure,
-    sameSite: cookie.sameSite,
-    path: cookie.path,
-    maxAge: cookie.maxAge,
-  });
-  return response;
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }

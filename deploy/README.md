@@ -6,8 +6,14 @@ exactly rather than adapted while reading it.
 
 ## What this deploys
 
-One EC2 instance running three containers: PostgreSQL 16, the Next.js
-application, and Caddy, which is the only thing bound to a host port. The
+One EC2 instance running four containers: PostgreSQL 16, the Next.js
+application, Caddy — the only thing bound to a host port — and a backup service
+that dumps to S3 on a timer. A fifth, `migrate`, sits behind the `tools` profile
+and runs only when invoked.
+
+The backup container is the one worth noticing in an audit of what holds
+credentials on the box: it carries the schema-owner DSN and the AWS
+credentials, because a dump has to read every row. The
 application is reachable on the compose network and nowhere else, so a security
 group mistake cannot expose it over plain HTTP.
 
@@ -56,7 +62,10 @@ docker compose -f deploy/compose.yml --env-file deploy/.env up -d postgres
 ### Create the two roles
 
 The migrator grants `dasher_app` to a login role but does not invent one, and it
-refuses to run as anything other than the schema owner. Both roles are created
+refuses to run as anything other than the DATABASE owner — `assertDatabaseOwner`
+compares `CURRENT_USER` against `pg_database.datdba`. It does not check schema
+ownership, which it could not: at this point the `dasher` schema does not exist,
+because the migration that creates it has not run. Both roles are created
 once, by hand, as the superuser. Use passwords that match what you put in
 `deploy/.env`.
 
@@ -69,8 +78,9 @@ docker compose -f deploy/compose.yml --env-file deploy/.env exec postgres \
 -- "permission denied to create role" and the migrate step below aborts.
 CREATE ROLE dasher_owner LOGIN CREATEROLE PASSWORD 'REPLACE_ME';
 CREATE ROLE dasher_web_app LOGIN PASSWORD 'REPLACE_ME';
--- The owner owns the schema the migrator is about to create, and the migrator
--- verifies that before it mutates anything.
+-- The migrator refuses to run as anything but the owner of the DATABASE, which
+-- is what this line establishes. It creates the `dasher` schema itself on the
+-- first migration.
 ALTER DATABASE dasher OWNER TO dasher_owner;
 SQL
 ```
@@ -137,12 +147,23 @@ The development bootstrap **must not** be enabled here — it mints a session fo
 anyone who can reach the URL. Sign-in is the real path:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR_HOSTNAME/     # 200
-curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR_HOSTNAME/dev/bootstrap  # 404
+curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR_HOSTNAME/                 # 200
+curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR_HOSTNAME/dev/bootstrap    # 404
 ```
 
-The second is the important one. A `404` confirms the bootstrap is off; a `405`
-would mean it is on, and the deployment should be taken down until it is not.
+The second is the one that matters, and 404 is the answer you want.
+
+`app/dev/bootstrap/route.ts` exports BOTH a GET and a POST, and each checks
+`DASHER_DEV_BOOTSTRAP` before anything else. Switched off, both answer 404 — so
+the route does not confirm it exists. Switched on, the GET answers 405 ("use
+POST"). A **405 therefore means the bootstrap is live** on this deployment,
+which mints a session for anyone who can reach the URL: take it down until it
+is not.
+
+Measured against a real build in both states rather than read off the source,
+because an adversarial review asserted the opposite — that the route exports
+only POST and a secured deployment answers 405 — and acting on that would have
+inverted this check.
 
 Then sign in for real: open `/sign-in`, enter the address you provisioned, and
 follow the link. If no mail transport is configured the page says sign-in is

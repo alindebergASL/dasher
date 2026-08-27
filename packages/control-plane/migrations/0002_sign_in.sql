@@ -284,6 +284,16 @@ DECLARE
   challenge dasher.sign_in_challenges%ROWTYPE;
   member_revision bigint;
   new_session uuid := pg_catalog.gen_random_uuid();
+  -- ONE clock read for the whole redemption.
+  --
+  -- The guard below and the consuming UPDATE used to read the clock
+  -- separately, with a membership lookup and a session insert in between. A
+  -- link that expired in that window passed the guard and then violated
+  -- `sign_in_challenges_consumed_window_check` (consumed_at < expires_at),
+  -- raising 23514 out of the seam as a 500 instead of the uniform "that link
+  -- did not work" every other failure gets. Narrow, and the kind of thing that
+  -- happens to somebody clicking a link exactly as it lapses.
+  now_at timestamptz := pg_catalog.clock_timestamp();
 BEGIN
   SELECT * INTO challenge
   FROM dasher.sign_in_challenges AS candidate
@@ -293,7 +303,7 @@ BEGIN
 
   IF NOT FOUND
     OR challenge.consumed_at IS NOT NULL
-    OR challenge.expires_at <= pg_catalog.clock_timestamp()
+    OR challenge.expires_at <= now_at
   THEN
     RETURN;
   END IF;
@@ -320,19 +330,17 @@ BEGIN
     new_session, challenge.organization_id, challenge.user_id, member_revision,
     p_session_token_key_version, p_session_token_digest,
     p_session_csrf_key_version, p_session_csrf_digest,
-    pg_catalog.clock_timestamp(), pg_catalog.clock_timestamp(),
+    now_at, now_at,
     -- `sessions_idle_expiry_check` requires idle <= absolute, so the idle
     -- window is clamped rather than assumed.
-    pg_catalog.clock_timestamp() + pg_catalog.make_interval(
+    now_at + pg_catalog.make_interval(
       mins => LEAST(p_idle_minutes, p_absolute_minutes)
     ),
-    pg_catalog.clock_timestamp() + pg_catalog.make_interval(
-      mins => p_absolute_minutes
-    )
+    now_at + pg_catalog.make_interval(mins => p_absolute_minutes)
   );
 
   UPDATE dasher.sign_in_challenges AS held
-  SET consumed_at = pg_catalog.clock_timestamp(),
+  SET consumed_at = now_at,
       consumed_session_id = new_session
   WHERE held.challenge_id = challenge.challenge_id;
 

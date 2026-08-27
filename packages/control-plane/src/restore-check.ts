@@ -36,8 +36,14 @@ import { Pool } from "pg";
  * restore brings some tables and not others, and a restore continued past
  * errors leaves whatever it managed. All three produce a database that opens
  * cleanly, answers queries, and is missing the rows a dashboard's figures point
- * at. Each check below has been driven red against a real restored database in
- * exactly that state.
+ * at.
+ *
+ * HOW FAR THAT WAS ACTUALLY TESTED, precisely. Each check below has been driven
+ * red against a real database holding real rows, with the relevant foreign key
+ * dropped and the rows deleted — which is the END STATE those restore paths
+ * produce. `pg_restore` itself has never been run against this checker, so the
+ * claim is "the checker notices these absences", not "these absences were
+ * produced by a real partial restore".
  *
  * WHY IT COUNTS AS WELL AS CHECKS. All three pass trivially on an empty
  * database. A restore that produced no rows is the worst outcome and the one

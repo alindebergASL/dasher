@@ -17,6 +17,23 @@ set -euo pipefail
 # within double quotes, and the script fails to parse rather than to run.
 : "${DASHER_BACKUP_DSN:?set it to the schema owner connection string}"
 : "${DASHER_BACKUP_S3_URI:?set DASHER_BACKUP_S3_URI, e.g. s3://bucket/dasher}"
+
+# Split the password out of the DSN so it can travel in the environment rather
+# than in argv. Bash parameter expansion only — no parser, because the shape
+# accepted here is the one deploy/.env documents:
+#   postgresql://user:password@host:port/database
+# A DSN with no password is passed through untouched, which is what an instance
+# using a trust or IAM connection would supply.
+_credentials="${DASHER_BACKUP_DSN#*://}"
+_credentials="${_credentials%%@*}"
+if [ "${_credentials}" != "${DASHER_BACKUP_DSN}" ] && [ "${_credentials#*:}" != "${_credentials}" ]; then
+  DASHER_BACKUP_PASSWORD="${_credentials#*:}"
+  DASHER_BACKUP_URI="${DASHER_BACKUP_DSN%%://*}://${_credentials%%:*}@${DASHER_BACKUP_DSN#*@}"
+else
+  DASHER_BACKUP_PASSWORD=""
+  DASHER_BACKUP_URI="${DASHER_BACKUP_DSN}"
+fi
+unset _credentials
 INTERVAL_SECONDS="${DASHER_BACKUP_INTERVAL_SECONDS:-86400}"
 
 log() { printf '%s backup: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -41,8 +58,18 @@ run_once() {
   # Custom format, so a restore can be selective and parallel. Plain SQL would
   # also work and would be larger and slower to restore, which matters at the
   # moment somebody is deciding whether to wait.
+  # The password goes in the environment, not in argv.
+  #
+  # `pg_dump "postgresql://user:pw@host/db"` puts the whole URI — password
+  # included — into the process's argv, which is world-readable through `ps` and
+  # `docker top` for the duration of every dump. This container holds the
+  # credential that bypasses row-level security, so that is the one credential
+  # most worth not publishing to every local account on the instance. libpq
+  # reads PGPASSWORD from the environment, which `/proc/<pid>/environ` does not
+  # expose to other users.
   log "dumping"
-  pg_dump --format=custom --no-owner --file="${target}" "${DASHER_BACKUP_DSN}" \
+  PGPASSWORD="${DASHER_BACKUP_PASSWORD}" \
+    pg_dump --format=custom --no-owner --file="${target}" "${DASHER_BACKUP_URI}" \
     || { log "pg_dump failed"; return 1; }
 
   # Verified before it is uploaded, so a truncated dump is caught here rather

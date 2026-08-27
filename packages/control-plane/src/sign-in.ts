@@ -51,6 +51,17 @@ export interface SignInRequest {
 export interface IssuedSignInLink {
   readonly challengeId: string;
   /**
+   * The address the challenge was actually raised for, normalised.
+   *
+   * Returned rather than left to the caller to re-derive, because the caller
+   * holds the RAW string a person typed. Mailing that instead is a real
+   * failure: `"  padded@example.com  "` raises a challenge for
+   * `padded@example.com`, spends one of its five hourly slots, and then hands
+   * the provider a recipient it rejects — so the link is never sent and the
+   * person is told one is on its way.
+   */
+  readonly normalizedEmail: string;
+  /**
    * The raw token, to be put in a link and emailed. Never persisted, never
    * logged, and not returned anywhere a browser can see it.
    */
@@ -117,7 +128,7 @@ export async function beginSignIn(
     const challengeId = result.rows[0]?.challenge_id;
     return challengeId === null || challengeId === undefined
       ? undefined
-      : { challengeId, token };
+      : { challengeId, normalizedEmail: normalized, token };
   } finally {
     client.release();
   }
@@ -199,8 +210,17 @@ export function decodeSignInToken(raw: string): Buffer | undefined {
   }
   if (token.length !== TOKEN_BYTES) return undefined;
   // Re-encoding and comparing rejects a string that decodes to the right bytes
-  // but is not the canonical encoding of them, so one token cannot arrive under
-  // several spellings and consume several rate-limit slots or audit rows.
+  // but is not the canonical encoding of them — standard base64, a padded
+  // variant, anything a permissive decoder would accept.
+  //
+  // What that is NOT worth: redemption has no rate limit and writes no audit
+  // row until it succeeds, so several spellings of one token could not consume
+  // either. An earlier version of this comment said they could, which would
+  // have told a reader auditing whether `/sign-in/verify` is throttled that it
+  // is. It is not, and nothing in this module throttles it.
+  //
+  // What it IS worth: one token has one representation, so a link cannot be
+  // reshaped into a different-looking URL that still works.
   const canonical = Buffer.from(token.toString("base64url"), "utf8");
   const presented = Buffer.from(raw, "utf8");
   if (canonical.length !== presented.length) return undefined;

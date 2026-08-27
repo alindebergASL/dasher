@@ -8,8 +8,10 @@ import {
 
 /**
  * The reporting half. The queries themselves are exercised against a real
- * restored database — see `restore-check.integration.test.ts` — because a fake
- * that returns the numbers I choose would prove only that I can add up.
+ * database with real rows and real absences — see
+ * `restore-check.integration.test.ts`, which inflicts the damage directly
+ * rather than restoring a dump — because a fake that returns chosen numbers
+ * would prove only that the arithmetic adds up.
  *
  * What is worth pinning here is the sentence a person reads at 3am, and in
  * particular the one case where "every invariant held" is the wrong thing to

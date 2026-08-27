@@ -55,10 +55,14 @@ import { defineConfig } from "vitest/config";
  * supported; a mutant that reports `complete` where the evidence was not
  * retained is exactly the overclaim these tables were added to prevent — and
  * nothing downstream would contradict it, because the column is where the
- * answer is supposed to live. Both suites are named below; they and
- * `upload.test.ts` are the only `apps/web` and non-composition
- * `dashboard-schema` suites in the list, because the rest of those packages'
- * tests render React or walk the repository, neither of which this run loads.
+ * answer is supposed to live. Both suites are named below.
+ *
+ * What the include list does NOT contain from those two packages is the rest of
+ * their suites: `apps/web`'s tests render React and `dashboard-schema`'s
+ * `generated-code-gate.test.ts` walks the whole repository, and this run loads
+ * neither. Counting which suites are "the only ones of their kind" here has
+ * been wrong twice; the rule is simply that a file in the mutate list needs its
+ * exercising suite named below, and nothing else belongs.
  *
  * `exact.ts` is here because it is arithmetic and nothing else — the decimal
  * comparison, rounding and formatting every ledger figure passes through on its

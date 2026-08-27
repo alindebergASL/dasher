@@ -92,10 +92,56 @@ test("a link that was never issued lands back on sign-in, saying so", async ({
   // Every failure is this failure: expired, already used, revoked since it was
   // sent, never issued, malformed. Distinguishing them would tell whoever holds
   // the link things the person who lost it already knows.
+  //
+  // And the failure is only reached after CONFIRMING: opening the link shows a
+  // button, it does not redeem. Note this page says nothing about whether the
+  // token is real — validating before the click would answer "is this a live
+  // token?" more cheaply than redeeming it.
   await page.goto("/sign-in/verify?token=not-a-real-token");
+  await expect(page.locator("main")).toContainText("Sign in to Dasher");
+
+  await page.getByRole("button", { name: "Sign me in" }).click();
 
   await expect(page).toHaveURL(/\/sign-in\?failed=1$/u);
   await expect(page.locator("main")).toContainText("That link did not work");
+});
+
+test("opening a link does not sign anyone in until they confirm", async ({
+  page,
+}) => {
+  // The login-CSRF property, and the reason the redemption moved to a POST.
+  //
+  // A GET that mints a session lets an attacker put their OWN link where a
+  // victim will follow it — a message, or a redirect from any page the victim
+  // visits — and the victim's browser silently stores a session for the
+  // attacker's organization. The same GET also let mail scanners and
+  // link-preview bots spend a single-use link before the recipient clicked it.
+  //
+  // Asserted without a database, because the property is that GET performs no
+  // state change at all, whatever the token is.
+  await page.goto("/sign-in/verify?token=whatever");
+
+  // No session cookie was set by merely opening the link.
+  const cookies = await page.context().cookies();
+  expect(
+    cookies.some((cookie) => cookie.name === "__Host-dasher_session"),
+  ).toBe(false);
+
+  // And the page that redeems is a form posting elsewhere, not this URL.
+  await expect(page.locator("form")).toHaveAttribute("method", /post/iu);
+  await expect(page.locator("form")).toHaveAttribute(
+    "action",
+    "/sign-in/confirm",
+  );
+});
+
+test("the confirm route refuses a GET", async ({ page }) => {
+  // Belt and braces on the same property: if the redemption endpoint answered
+  // GET, moving it would have bought nothing.
+  const answered = await page.context().request.get("/sign-in/confirm", {
+    maxRedirects: 0,
+  });
+  expect(answered.status()).toBe(405);
 });
 
 test.describe("with a database and a provisioned member", () => {
@@ -176,6 +222,7 @@ test.describe("with a database and a provisioned member", () => {
       expect(created.rows[0]?.challenge_id).not.toBeNull();
 
       await page.goto(`/sign-in/verify?token=${token.toString("base64url")}`);
+      await page.getByRole("button", { name: "Sign me in" }).click();
 
       // Redeemed: the home page, not back on /sign-in?failed=1.
       await expect(page).toHaveURL(/\/$/u);
@@ -198,8 +245,9 @@ test.describe("with a database and a provisioned member", () => {
           .getByRole("button", { name: "Sign out" }),
       ).toBeVisible();
 
-      // Spent. Following it again lands on the failure page.
+      // Spent. Confirming it again lands on the failure page.
       await page.goto(`/sign-in/verify?token=${token.toString("base64url")}`);
+      await page.getByRole("button", { name: "Sign me in" }).click();
       await expect(page).toHaveURL(/\/sign-in\?failed=1$/u);
     } finally {
       await owner.end();

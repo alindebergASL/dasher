@@ -289,11 +289,33 @@ test.describe("a dashboard built from an uploaded ledger", () => {
         [organizationId],
       );
 
-      // Every assertion is supported, because an upload retains its bytes.
+      // "Every assertion is supported" cannot be read off this query alone: it
+      // INNER JOINs through `claim_evidence`, so a claim that came back
+      // `unsupported` has no edge, produces no row, and is invisible here
+      // rather than failing. Thirteen of fourteen regressing to `unsupported`
+      // would have left this green.
+      //
+      // So the supported rows are counted against every claim recorded for
+      // this version, and only then are the states checked.
       expect(chain.rows.length).toBeGreaterThan(0);
       for (const row of chain.rows) {
         expect(row.evidence_state, row.json_pointer).toBe("complete");
       }
+
+      const total = await owner.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM dasher.dashboards AS dashboard
+           JOIN dasher.dashboard_versions AS version
+             ON version.organization_id = dashboard.organization_id
+            AND version.version_id = dashboard.head_version_id
+           JOIN dasher.claims AS claim
+             ON claim.organization_id = version.organization_id
+            AND claim.version_id = version.version_id
+          WHERE dashboard.organization_id = $1`,
+        [organizationId],
+      );
+      const supported = new Set(chain.rows.map((row) => row.json_pointer));
+      expect(supported.size).toBe(Number(total.rows[0]?.count));
 
       // The brief and the next action are the assertions a reader meets first,
       // and each traces to a line of the file that was uploaded in this test.

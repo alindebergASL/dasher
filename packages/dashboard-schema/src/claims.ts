@@ -130,10 +130,20 @@ function labelFor(
 /**
  * The item arrays that carry assertions, by component kind.
  *
- * The component's own `evidenceIds` is not among them on purpose. A component
- * is a container whose evidence is the union of its rows', so recording it as a
- * claim of its own would count the same assertion twice — once as "the metric
- * grid says something" and once for each metric that actually says it.
+ * The component's own `evidenceIds` is not among them on purpose: a component
+ * is a container, and recording it as a claim of its own would count the same
+ * assertion twice — once as "the metric grid says something" and once for each
+ * metric that actually says it.
+ *
+ * WHAT THIS COSTS, stated because it is not nothing. Nothing makes a
+ * component's `evidenceIds` the union of its rows': the schema defaults it to
+ * `[]` and only checks each id resolves, and `compile-ledger.ts` gives some
+ * components the calculation evidence that no individual row names. Where a
+ * component cites an item none of its rows cite, that citation appears in the
+ * evidence panel and in no claim. Today every such item is also cited by a
+ * summary claim, so nothing is actually unrepresented — but that is a property
+ * of the current compilers rather than of this walk, and a component kind whose
+ * container evidence is genuinely its own would need a claim of its own.
  */
 function assertionItems(
   component: DashboardComponent,
