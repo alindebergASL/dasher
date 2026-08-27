@@ -303,6 +303,26 @@ test.describe("with a database and a provisioned member", () => {
   });
 });
 
+test("refuses a sign-out submitted from another site", async ({ page }) => {
+  // LOGOUT CSRF. `isSameOrigin` was written for `/sign-in/confirm` and not
+  // applied here in the same commit, so one state-changing POST was guarded and
+  // the other was not. Reproduced with a real browser: a cross-site form
+  // cleared the victim's cookie and signed them out — and because `SameSite=lax`
+  // withholds the cookie on that request, nothing was revoked server-side, so
+  // the reader was locked out while their session stayed live.
+  //
+  // Asserted on the response rather than on a session, because the defect is
+  // the unconditional `Set-Cookie`: no cookie header on the reply means no
+  // browser was logged out.
+  const attacked = await page.context().request.post("/sign-out", {
+    headers: { origin: "https://evil.example", "sec-fetch-site": "cross-site" },
+    maxRedirects: 0,
+  });
+
+  expect(attacked.status()).toBe(303);
+  expect(attacked.headers()["set-cookie"]).toBeUndefined();
+});
+
 test.describe("signing out", () => {
   test.skip(
     process.env["DASHER_DATABASE_URL"] === undefined ||

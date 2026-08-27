@@ -48,7 +48,17 @@ else
     # and does not out of PGPASSWORD — so a password written `p%40ss` in the
     # DSN is `p@ss` to the server, and passing the raw form in the environment
     # would authenticate with the wrong string.
-    DASHER_BACKUP_PASSWORD="$(printf '%b' "${_userinfo#*:}" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+    # `sed` FIRST, then one `printf %b`. The earlier form ran `printf %b` on
+    # the raw password before the substitution, so a password containing a
+    # backslash was backslash-decoded — `a\tb` became a tab, `a\\b` became one
+    # backslash — and authentication then failed with a password nobody could
+    # see was wrong. Percent-decoding is the only transformation wanted here,
+    # because libpq decodes percent-escapes out of a URI and does not out of
+    # PGPASSWORD.
+    DASHER_BACKUP_PASSWORD="$(
+      printf '%s' "${_userinfo#*:}" \
+        | sed 's/\\/\\\\/g; s/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g'
+    )"
     DASHER_BACKUP_PASSWORD="$(printf '%b' "${DASHER_BACKUP_PASSWORD}")"
     DASHER_BACKUP_URI="${DASHER_BACKUP_DSN%%://*}://${_userinfo%%:*}@${_rest#*@}"
   fi

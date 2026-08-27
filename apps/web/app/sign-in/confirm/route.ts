@@ -8,7 +8,7 @@ import {
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getPool, isPersistenceConfigured } from "../../database";
-import { publicOrigin } from "../../mailer";
+import { isSameOrigin } from "../../same-origin";
 import { encodeSessionToken } from "../../session";
 
 /**
@@ -93,39 +93,4 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     maxAge: cookie.maxAge,
   });
   return response;
-}
-
-/**
- * Is this submission from our own page, or from somebody else's?
- *
- * `Sec-Fetch-Site` FIRST, and it is the reliable one. The browser computes it
- * and will not send `same-origin` for a cross-site form, and — unlike `Origin`
- * — it is unaffected by the referrer policy and by whatever a reverse proxy
- * does to the Host header.
- *
- * `Origin` is the fallback for a browser too old to send `Sec-Fetch-Site`, and
- * it is compared against the CONFIGURED public origin rather than the request's
- * own, because behind Caddy the request's origin is the container's, not the
- * one the browser saw.
- *
- * A measured trap worth recording: with `Referrer-Policy: no-referrer` — which
- * the confirm page carried until this was written — a browser sends
- * `Origin: null` even on a SAME-ORIGIN form post. An Origin-only check would
- * therefore have rejected the legitimate flow while looking correct in review.
- * The page now sets `referrer: origin`, which sends a real Origin and a Referer
- * carrying no token.
- */
-function isSameOrigin(request: NextRequest): boolean {
-  const site = request.headers.get("sec-fetch-site");
-  if (site !== null) return site === "same-origin";
-
-  const origin = request.headers.get("origin");
-  if (origin === null || origin === "null") return false;
-  try {
-    return origin === publicOrigin();
-  } catch {
-    // No configured origin means nothing can be compared against, and guessing
-    // from the request is what this check exists to avoid.
-    return false;
-  }
 }

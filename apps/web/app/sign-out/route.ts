@@ -5,15 +5,27 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getPool, isPersistenceConfigured } from "../database";
 import { readSessionCredential, SESSION_COOKIE_NAME } from "../session";
+import { isSameOrigin } from "../same-origin";
 
 /**
  * End the session and clear the cookie.
  *
- * WHY POST ONLY. A GET that revokes is a state change any page, email, or image
- * tag can trigger — `<img src="/sign-out">` in a forum post would sign out
- * every reader who loaded it. Signing someone out is a small harm, but it is a
- * harm delivered by somebody else, which is the definition this rule exists
- * for.
+ * WHY POST ONLY, AND WHY THAT IS NOT THE GUARD. A GET that revokes is a state
+ * change any page, email, or image tag can trigger — `<img src="/sign-out">` in
+ * a forum post would sign out every reader who loaded it. But POST alone does
+ * not stop it: a cross-site auto-submitting form is a top-level navigation, so
+ * an attacker serves a page instead of an image tag.
+ *
+ * That was this route for one commit. `isSameOrigin` was written for
+ * `/sign-in/confirm` in the very commit that added it and not applied here, so
+ * one state-changing POST was guarded and the other was not — reproduced with a
+ * real browser: a cross-site form cleared the victim's cookie and signed them
+ * out. Worse than it sounds, because `SameSite=lax` withholds the cookie on
+ * that request, so nothing was revoked server-side: the reader was locked out
+ * while their session stayed live.
+ *
+ * Signing someone out is a small harm, but it is a harm delivered by somebody
+ * else, which is the definition the rule exists for.
  *
  * WHY THE COOKIE IS CLEARED WHETHER OR NOT ANYTHING WAS REVOKED. The revoke
  * returns false for a session already ended and for a token never issued. In
@@ -24,6 +36,12 @@ import { readSessionCredential, SESSION_COOKIE_NAME } from "../session";
  * marks it rather than refusing — so this branch is not a test of liveness.)
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // Checked before anything is cleared or revoked. A cross-site caller gets a
+  // redirect and no `Set-Cookie`, so it cannot log anybody out.
+  if (!isSameOrigin(request)) {
+    return NextResponse.redirect(new URL("/", request.url), { status: 303 });
+  }
+
   const response = NextResponse.redirect(new URL("/", request.url), {
     // 303, so the browser follows with GET rather than re-POSTing to `/`.
     status: 303,

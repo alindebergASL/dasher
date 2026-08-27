@@ -48,11 +48,18 @@ sudo usermod -aG docker "$USER" && newgrp docker
 git clone https://github.com/alindebergASL/dasher.git && cd dasher
 
 # 3. The contract. Fill in every blank; read the "MUST STAY UNSET" section.
-cp deploy/.env.example deploy/.env && "$EDITOR" deploy/.env
+cp deploy/.env.example deploy/.env && "${EDITOR:-nano}" deploy/.env
 
 # 4. Load it into THIS SHELL as well. `--env-file` populates interpolation
 #    inside the compose file; it does not export anything to your shell, and
 #    several commands below reference these variables directly.
+#
+#    NOTE that this is the SHELL parsing the file, not compose. The two differ:
+#    the shell performs expansion and word splitting, treats an unquoted `#` as
+#    starting a comment, and will execute a `$(...)`. Compose does none of that.
+#    So keep every value in deploy/.env single-quoted — 'p@ss word#1' — and the
+#    two parsers agree. An unquoted password containing a space or a `#` will
+#    silently mean something different here than it does to compose.
 set -a && . deploy/.env && set +a
 
 # 5. The database, on its own, so the roles exist before the migrator runs.
@@ -235,9 +242,16 @@ docker compose -f deploy/compose.yml --env-file deploy/.env \
 #    Connect as the SUPERUSER: the restore ran --no-owner, so `dasher_owner` is
 #    neither the object owner nor a member of dasher_app in the restored copy
 #    and would be refused on every table.
+#
+#    The password rides in PGPASSWORD rather than in the URI. Spliced into a
+#    DSN it has to be percent-encoded, and a password containing `@`, `/`, `?`
+#    or `#` silently produces a different connection string — usually one that
+#    parses, connects somewhere unintended, or fails with an error naming the
+#    wrong host.
 docker compose -f deploy/compose.yml --env-file deploy/.env \
   --profile tools run --rm \
-  -e DASHER_RESTORE_CHECK_DSN="postgresql://$DASHER_PG_SUPERUSER:$DASHER_PG_SUPERUSER_PASSWORD@postgres:5432/dasher_restore_check" \
+  -e PGPASSWORD="$DASHER_PG_SUPERUSER_PASSWORD" \
+  -e DASHER_RESTORE_CHECK_DSN="postgresql://$DASHER_PG_SUPERUSER@postgres:5432/dasher_restore_check" \
   migrate pnpm --filter @dasher/control-plane restore-check
 ```
 
