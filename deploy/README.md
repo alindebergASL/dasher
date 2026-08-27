@@ -146,9 +146,62 @@ before any of this works: an unmigrated database answers with a 500, because
 
 ## Backups
 
-Nothing here backs anything up, and the data is in a Docker volume on one
-instance. Before a pilot organization puts real data in, this needs answering —
-`pg_dump` on a timer to S3 is the small version, RDS with automated snapshots is
-the real one. Recorded rather than quietly deferred: `source_snapshots` holds
-uploaded files under an immutability trigger, so the volume is the only copy of
-evidence that a dashboard's figures are still citing.
+The `backup` service dumps the database on a timer and puts the archive in S3.
+It runs as part of `up -d`; nothing extra to start.
+
+Off the instance is the whole point. The failure a backup exists for is losing
+the volume, and `source_snapshots` holds uploaded files under an immutability
+trigger — nothing can recreate them, so that volume is the only copy of
+evidence that live dashboards are still citing.
+
+Give the instance an IAM role that can `s3:PutObject` to the prefix in
+`DASHER_BACKUP_S3_URI`, rather than putting keys in `deploy/.env`. The backup
+container reads every row, so a key there is a key to the whole database. Put a
+lifecycle rule on the bucket unless you intend to keep every daily dump for
+ever.
+
+Force a run without waiting for the timer:
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env \
+  run --rm backup --once
+```
+
+Each run dumps, then parses the archive with `pg_restore --list` BEFORE
+uploading, so a truncated dump fails here rather than being discovered during a
+restore. A failed run is logged and the loop continues: a transient S3 error
+should cost one backup, not every backup after it.
+
+### Restoring, and proving the restore is worth keeping
+
+A backup nobody has restored is a claim, not a capability. Restore into a
+throwaway database first — never over the live one:
+
+```sh
+aws s3 cp s3://your-bucket/dasher/20260827T000000Z.dump /tmp/restore.dump
+
+docker compose -f deploy/compose.yml --env-file deploy/.env exec postgres \
+  createdb -U "$DASHER_PG_SUPERUSER" dasher_restore_check
+docker compose -f deploy/compose.yml --env-file deploy/.env exec -T postgres \
+  pg_restore -U "$DASHER_PG_SUPERUSER" -d dasher_restore_check --no-owner \
+  < /tmp/restore.dump
+
+DASHER_RESTORE_CHECK_DSN=postgresql://dasher_owner:PASSWORD@localhost:5432/dasher_restore_check \
+  pnpm --filter @dasher/control-plane restore-check
+```
+
+`restore-check` does not ask whether the restore errored. It asks whether the
+three claims this product makes about stored evidence still hold: every stored
+file hashes to the digest beside it, every dashboard version can still find the
+file it cites, and every claim edge still reaches an evidence record that still
+belongs to a snapshot. It also refuses to call an EMPTY restore simply
+verified — every invariant holds vacuously over no rows, which is the outcome
+most likely to be mistaken for success.
+
+Why that check exists at all: a restore is the one operation where the database
+accepts whatever it is given. Foreign keys are not enforced on the paths a
+partial recovery actually takes — `pg_restore --disable-triggers` turns off FK
+triggers, a selective `-t` restore brings some tables and not others, and a
+restore continued past errors leaves whatever it managed. All three produce a
+database that opens cleanly, answers queries, and is missing the rows a
+dashboard points at. A non-zero exit means do not promote this restore.

@@ -75,6 +75,14 @@ export {
 } from "./dashboard-repository";
 
 export {
+  checkRestore,
+  formatRestoreCheck,
+  runRestoreCheck,
+  type RestoreCheckCounts,
+  type RestoreCheckResult,
+} from "./restore-check";
+
+export {
   parseProvisionArgs,
   provisionPrincipal,
   type ProvisionOptions,

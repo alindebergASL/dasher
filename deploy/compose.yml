@@ -81,6 +81,28 @@ services:
     expose:
       - "3000"
 
+  # Off the instance, on a timer. A dump beside the database is not a backup of
+  # the failure that actually happens.
+  backup:
+    build:
+      context: .
+      dockerfile: backup.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The SCHEMA OWNER's connection: a dump has to read every row, which the
+      # application role deliberately cannot.
+      DASHER_BACKUP_DSN: ${DASHER_MIGRATE_DSN:?set in .env}
+      DASHER_BACKUP_S3_URI: ${DASHER_BACKUP_S3_URI:?set in .env}
+      DASHER_BACKUP_INTERVAL_SECONDS: ${DASHER_BACKUP_INTERVAL_SECONDS:-86400}
+      # Prefer an instance role over keys. These are read if set, and left
+      # unset when the instance profile provides credentials.
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+
   proxy:
     image: caddy:2.10-alpine
     restart: unless-stopped
