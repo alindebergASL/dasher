@@ -35,10 +35,34 @@ import { defineConfig } from "vitest/config";
  * decides how large a file may be, whether its bytes are text at all, what the
  * reader must declare about it, and what each refusal says. A surviving mutant
  * there is a way for a file nobody could read to be accepted, or for a person
- * to be told the wrong thing about why theirs was not. It is the app's only
- * mutated file, and its suite is the only one from `apps/web` in the list
- * below — the rest of that package's tests render React, which this run does
- * not load.
+ * to be told the wrong thing about why theirs was not.
+ *
+ * `apps/web/app/mailer.ts` is here because its defaults are security
+ * decisions rather than configuration plumbing. A mutant that makes the
+ * development transport reachable without being named turns a deployment with
+ * missing provider credentials into one that prints live sign-in links to its
+ * logs; a mutant that relaxes the https check on the link origin produces
+ * sessions a browser silently refuses to store. Neither would fail any other
+ * gate, and neither is visible in a code review that reads the intent rather
+ * than the condition.
+ *
+ * The claims pair is here because the evidence chain is a claim ABOUT the
+ * product's honesty, and a surviving mutant in either file is a way to make
+ * that claim falsely. `packages/dashboard-schema/src/claims.ts` decides which
+ * assertions exist and which evidence each inherits its label from; a mutant
+ * that widens a label turns an interpretation into an observation on the
+ * record. `apps/web/app/claims.ts` decides whether an assertion counts as
+ * supported; a mutant that reports `complete` where the evidence was not
+ * retained is exactly the overclaim these tables were added to prevent — and
+ * nothing downstream would contradict it, because the column is where the
+ * answer is supposed to live. Both suites are named below.
+ *
+ * What the include list does NOT contain from those two packages is the rest of
+ * their suites: `apps/web`'s tests render React and `dashboard-schema`'s
+ * `generated-code-gate.test.ts` walks the whole repository, and this run loads
+ * neither. Counting which suites are "the only ones of their kind" here has
+ * been wrong twice; the rule is simply that a file in the mutate list needs its
+ * exercising suite named below, and nothing else belongs.
  *
  * `exact.ts` is here because it is arithmetic and nothing else — the decimal
  * comparison, rounding and formatting every ledger figure passes through on its
@@ -65,10 +89,13 @@ export default defineConfig({
       "packages/planner/src/**/*.test.ts",
       "packages/river-domain/src/**/*.test.ts",
       "packages/station-domain/src/**/*.test.ts",
+      "packages/dashboard-schema/src/claims.test.ts",
       "packages/dashboard-schema/src/compose.test.ts",
       "packages/ledger-domain/src/exact.test.ts",
       "packages/ledger-domain/src/from-csv.test.ts",
       "packages/workbook/src/csv.test.ts",
+      "apps/web/app/claims.test.ts",
+      "apps/web/app/mailer.test.ts",
       "apps/web/app/upload.test.ts",
       "packages/ledger-domain/src/ledger.test.ts",
       "packages/dashboard-schema/src/layout.test.ts",

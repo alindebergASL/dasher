@@ -53,6 +53,68 @@ export interface SaveDashboardInput {
    * bytes alive for as long as this version exists.
    */
   readonly sourceSnapshotId?: string;
+  /**
+   * One row per assertion the dashboard makes, with the evidence behind it.
+   *
+   * Opaque here in the same sense the spec bytes are: the shape is the seam's,
+   * `@dasher/dashboard-schema` decides what an assertion is, and this file only
+   * carries the rows across. Omitted or empty writes a version with no claims,
+   * which is what every caller did before this existed.
+   */
+  readonly claims?: readonly PersistedClaim[];
+  readonly requestId: string;
+  readonly deploymentRevision: string;
+}
+
+/**
+ * An assertion on the page, its evidence, and how well supported it is.
+ *
+ * `evidenceState` is the caller's to decide rather than the spec's, because it
+ * answers a question the spec cannot: whether the evidence behind this
+ * assertion was actually retained. A dashboard built from an uploaded file has
+ * bytes standing behind its figures; one built from a live API read has the
+ * same evidence on the page and nothing durable underneath it. Those are
+ * different claims about the same sentence, and only the layer that knows
+ * which `evidence_records` rows exist can tell them apart.
+ */
+export interface PersistedClaim {
+  /** RFC 6901 pointer into the canonical spec bytes stored beside it. */
+  readonly pointer: string;
+  readonly label: string;
+  readonly salience: "high" | "normal";
+  readonly evidenceState:
+    "complete" | "partial" | "contradicted" | "stale" | "unsupported";
+  /** Lowercase hex, 64 characters. The seam decodes it. */
+  readonly assertionSha256: string;
+  /** `evidence_records` ids, which exist only where bytes were retained. */
+  readonly evidence: readonly {
+    readonly evidenceId: string;
+    /** The three `claim_evidence_relation_check` accepts, verbatim. */
+    readonly relation: "supports" | "contradicts" | "context";
+  }[];
+}
+
+/** One retained-bytes citation: where in a snapshot a figure came from. */
+export interface RecordEvidenceInput {
+  /** The `source_snapshots` row these bytes are part of. */
+  readonly snapshotId: string;
+  /**
+   * What kind of act produced the figure — `observed`, `calculated`,
+   * `interpreted`, `recommended`. The spec's own vocabulary, carried through.
+   */
+  readonly evidenceKind: string;
+  /**
+   * Where inside the snapshot this came from, in whatever the producing domain
+   * uses to locate it. For a ledger upload that is the evidence id the domain
+   * minted per line, which is its own name for that row of the file.
+   */
+  readonly coordinates: string;
+  /** What was done to those bytes to get the figure. */
+  readonly transformation: string;
+  /** Digest of the evidence item as displayed, computed by the caller. */
+  readonly contentSha256: Uint8Array;
+  /** When the source says this was true, not when it was received. */
+  readonly observedAt: Date;
   readonly requestId: string;
   readonly deploymentRevision: string;
 }
@@ -150,6 +212,17 @@ export interface DashboardRepository {
   recordSourceSnapshot(input: RecordSourceSnapshotInput): Promise<string>;
 
   /**
+   * Cite one part of a stored snapshot, and return the id a claim can link to.
+   *
+   * Called once per evidence item the spec carries, between storing the bytes
+   * and saving the version, because a claim's edge needs an `evidence_records`
+   * id and that row needs a snapshot to belong to. There is deliberately no
+   * path to an evidence record without a snapshot: the column is `NOT NULL`,
+   * and evidence that cites nothing retained is not evidence.
+   */
+  recordEvidence(input: RecordEvidenceInput): Promise<string>;
+
+  /**
    * Read a dashboard and its head version by id.
    *
    * Returns `undefined` for both "no such dashboard" and "not yours", because
@@ -220,7 +293,23 @@ export function createDashboardRepository(
           [
             runId,
             input.canonicalSpecBytes,
-            "[]",
+            // The seam walks this array and writes `claims` and
+            // `claim_evidence` itself. It was a literal `"[]"` from the day
+            // `finalize_run` was written until this line, which is why three
+            // fully modelled tables had never held a row.
+            JSON.stringify(
+              (input.claims ?? []).map((claim) => ({
+                pointer: claim.pointer,
+                label: claim.label,
+                salience: claim.salience,
+                evidence_state: claim.evidenceState,
+                assertion_sha256: claim.assertionSha256,
+                evidence: claim.evidence.map((edge) => ({
+                  evidence_id: edge.evidenceId,
+                  relation: edge.relation,
+                })),
+              })),
+            ),
             FIRST_REVISION,
             input.requestId,
             input.deploymentRevision,
@@ -286,6 +375,39 @@ export function createDashboardRepository(
         );
       }
       return snapshotId;
+    },
+
+    async recordEvidence(input: RecordEvidenceInput): Promise<string> {
+      const stored = await handle.query<{ evidence_id: string }>(
+        "SELECT dasher_api.record_evidence($1, $2, $3, $4, $5, $6, $7, $8) AS evidence_id",
+        [
+          input.snapshotId,
+          input.evidenceKind,
+          input.coordinates,
+          input.transformation,
+          // Same reason as the snapshot bytes: a `Uint8Array` that is not a
+          // `Buffer` goes over as an array literal and arrives as something
+          // that is not a 32-byte digest, which the column's own CHECK then
+          // rejects mid-transaction.
+          Buffer.from(
+            input.contentSha256.buffer,
+            input.contentSha256.byteOffset,
+            input.contentSha256.byteLength,
+          ),
+          input.observedAt.toISOString(),
+          input.requestId,
+          input.deploymentRevision,
+        ],
+      );
+
+      const evidenceId = stored.rows[0]?.evidence_id;
+      if (evidenceId === undefined) {
+        throw new DashboardRepositoryError(
+          "unexpected_shape",
+          "record_evidence returned no identifier",
+        );
+      }
+      return evidenceId;
     },
 
     async listRecent(limit: number): Promise<readonly DashboardListEntry[]> {

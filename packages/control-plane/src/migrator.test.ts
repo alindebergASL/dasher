@@ -143,12 +143,24 @@ describe("discoverMigrations", () => {
     expect(base?.checksumSha256).not.toEqual(drifted?.checksumSha256);
   });
 
-  it("reads the real baseline series", async () => {
+  it("reads the real migration series", async () => {
     const migrations = await discoverMigrations(baselineMigrationDirectory);
 
-    expect(migrations).toHaveLength(1);
-    expect(migrations[0]?.filename).toBe("0001_baseline.sql");
+    // Named in order rather than counted, so adding a migration is a
+    // deliberate edit here and a renamed or reordered one is a failure rather
+    // than a number that still adds up.
+    expect(migrations.map((migration) => migration.filename)).toEqual([
+      "0001_baseline.sql",
+      "0002_sign_in.sql",
+      "0003_session_revocation.sql",
+    ]);
     expect(migrations[0]?.sql).toContain("CREATE TABLE dasher.dashboards");
+    expect(migrations[1]?.sql).toContain(
+      "CREATE TABLE dasher.sign_in_challenges",
+    );
+    expect(migrations[2]?.sql).toContain(
+      "CREATE FUNCTION dasher_api.revoke_session",
+    );
   });
 
   it("rejects an empty directory", async () => {

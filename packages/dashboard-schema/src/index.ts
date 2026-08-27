@@ -28,7 +28,14 @@ export {
   type PlacedComponent,
 } from "./layout";
 
-export { canonicalSpecBytes } from "./canonical";
+export { canonicalBytes, canonicalSpecBytes } from "./canonical";
+export {
+  claimPointer,
+  extractSpecClaims,
+  type ClaimLabel,
+  type ClaimSalience,
+  type SpecClaim,
+} from "./claims";
 export {
   composeDashboards,
   DashboardCompositionError,

@@ -67,10 +67,39 @@ export {
   type DashboardRepository,
   type DashboardRepositoryErrorCode,
   type LoadedDashboard,
+  type PersistedClaim,
+  type RecordEvidenceInput,
   type RecordSourceSnapshotInput,
   type SaveDashboardInput,
   type SavedDashboard,
 } from "./dashboard-repository";
+
+export {
+  checkRestore,
+  formatRestoreCheck,
+  runRestoreCheck,
+  type RestoreCheckCounts,
+  type RestoreCheckResult,
+} from "./restore-check";
+
+export {
+  parseProvisionArgs,
+  provisionPrincipal,
+  type ProvisionOptions,
+  type ProvisionedPrincipal,
+} from "./provision-cli";
+
+export {
+  beginSignIn,
+  decodeSignInToken,
+  encodeSignInToken,
+  redeemSignIn,
+  revokeSession,
+  SIGN_IN_LINK_MINUTES,
+  type IssuedSignInLink,
+  type RedeemedSignIn,
+  type SignInRequest,
+} from "./sign-in";
 
 export {
   seedDevPrincipal,

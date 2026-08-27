@@ -44,10 +44,7 @@ export default async function YourDashboards() {
   if (credential === undefined) {
     return (
       <Shell>
-        <p className="dashboard-list-empty">
-          No session, so no saved dashboards to show. Build a dashboard and save
-          it, and it will be waiting here.
-        </p>
+        <SignedOutNote />
       </Shell>
     );
   }
@@ -66,10 +63,7 @@ export default async function YourDashboards() {
     if (isDenied(error)) {
       return (
         <Shell>
-          <p className="dashboard-list-empty">
-            No session, so no saved dashboards to show. Build a dashboard and
-            save it, and it will be waiting here.
-          </p>
+          <SignedOutNote />
         </Shell>
       );
     }
@@ -130,6 +124,29 @@ function formatCreatedAt(createdAt: string): string {
     timeStyle: "short",
     timeZone: "UTC",
   }).format(new Date(createdAt));
+}
+
+/**
+ * The one sentence both signed-out branches render.
+ *
+ * A COMPONENT rather than two copies, because the two branches are "no cookie"
+ * and "a well-formed cookie the seam refused", and the rule is that they must
+ * not read differently — otherwise somebody probing with a forged token learns
+ * that it reached the seam and was rejected, where an absent cookie is simply
+ * absent. Two copies is exactly how that guarantee was broken: adding a sign-in
+ * link to the first branch and not the second left the comment below describing
+ * a property the page no longer had.
+ */
+function SignedOutNote() {
+  return (
+    <p className="dashboard-list-empty">
+      You are not signed in, so there are no saved dashboards to show.{" "}
+      <a className="dashboard-list-link" href="/sign-in">
+        Sign in
+      </a>{" "}
+      and anything you build will be waiting here.
+    </p>
+  );
 }
 
 function isDenied(error: unknown): boolean {

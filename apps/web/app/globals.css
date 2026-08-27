@@ -1749,6 +1749,29 @@ footer {
     display: block;
   }
 
+  /*
+   * And the sign-in field, for the same reason and by the same mistake. Reusing
+   * `.request-input` and `.request-label` on a new page inherits this rule
+   * along with them, so a phone got an unlabelled email box — the second time
+   * that has happened, caught the second time by measuring rather than reading.
+   */
+  .sign-in-form .request-label {
+    display: block;
+  }
+
+  /*
+   * The footer nav has to clear the pinned request bar.
+   *
+   * `.request-bar` is `position: fixed` at the bottom on a phone, so on any
+   * page that has one it covers the navigation sitting at the end of the flow —
+   * the link was in the DOM, was visible to a locator, and could not be
+   * clicked. The clearance is applied only where a request bar actually exists,
+   * so pages without one do not gain a strip of dead space.
+   */
+  body:has(.request-bar) .site-header {
+    margin-bottom: 5rem;
+  }
+
   .request-input,
   .refine-bar .request-input {
     flex: 1 1 8rem;
@@ -1830,4 +1853,157 @@ footer {
   font-size: var(--body);
   line-height: 1.55;
   max-width: 46ch;
+}
+
+/*
+ * The sign-in page.
+ *
+ * A page rather than a panel on the workspace, because it is the one thing a
+ * signed-out reader is being asked to do and putting it beside the request bar
+ * would offer two calls to action for two different products.
+ *
+ * `.request-input` is reused here for the field, and `.sign-in-form` neutralises
+ * its `flex: 1 1 22rem` for the same reason `.upload-form` has to: that basis is
+ * a WIDTH in the request bar's row-direction container and a HEIGHT in a
+ * column-direction one, and inheriting it renders a 350px-tall text box. Found
+ * once already in the upload panel; not rediscovered here.
+ */
+.sign-in-main {
+  display: flex;
+  justify-content: center;
+  padding: var(--s6) var(--s4);
+}
+
+.sign-in-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  width: 100%;
+  max-width: 44rem;
+  padding: var(--s5);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.sign-in-heading {
+  margin: 0;
+  font-size: var(--title);
+  line-height: 1.2;
+}
+
+.sign-in-note {
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--small);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.sign-in-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.sign-in-form .request-input {
+  flex: 1 1 auto;
+}
+
+.sign-in-sent {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  font-size: var(--small);
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--green-soft);
+  border-radius: var(--radius);
+}
+
+/*
+ * The site header.
+ *
+ * One row, small text, no vertical padding beyond what a touch target needs.
+ * Its height comes out of the first-viewport budget the executive brief has to
+ * fit inside on a phone, so it is measured by `upload-panel.spec.ts` rather
+ * than trusted.
+ */
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s4);
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+  font-size: var(--small);
+  /* Pushed to the bottom of the column on a phone, where it costs the first
+     viewport nothing. `margin-top: auto` rather than a fixed position, so it
+     never overlays the content it was moved out of the way of. */
+  margin-top: auto;
+}
+
+@media (min-width: 641px) {
+  .site-header {
+    order: -1;
+    margin-top: 0;
+    border-top: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+.site-header-home {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: var(--label-track);
+}
+
+.site-header-nav {
+  display: flex;
+  gap: var(--s3);
+}
+
+.site-header-nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.site-header-nav a:hover,
+.site-header-nav a:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/*
+ * Sign out is a button because it is a state change, and a state change behind
+ * a link is a GET any page or image tag could trigger on somebody's behalf. It
+ * is styled to sit in the nav row beside the anchors rather than to look like a
+ * form control.
+ */
+.site-header-signout {
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.site-header-signout:hover,
+.site-header-signout:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.site-header-nav form {
+  display: contents;
 }

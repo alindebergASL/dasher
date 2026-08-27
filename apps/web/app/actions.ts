@@ -31,6 +31,7 @@ import {
 import { operatingSpendFixture } from "@dasher/ledger-domain/fixture";
 
 import ucrEnrollmentSnapshot from "../../../fixtures/ucr/campus-facts-2025.snapshot.json";
+import { evidenceCitations, persistedClaims } from "./claims";
 import { getPool, isPersistenceConfigured } from "./database";
 import {
   classifyRequest,
@@ -112,6 +113,13 @@ async function persist(
         provider: provenance.provider,
         model: provenance.model,
         canonicalSpecBytes: canonicalSpecBytes(dashboard),
+        // Claims, and deliberately no evidence records. This path's source
+        // retained no bytes — a gauge read answers again tomorrow rather than
+        // being kept — so every claim lands `unsupported`, which is the true
+        // statement about a live read and not a gap in the recording. When a
+        // live source starts storing its snapshot, the same call starts
+        // producing supported claims without changing here.
+        claims: persistedClaims(dashboard, new Map()),
         requestId: randomUUID(),
         deploymentRevision: process.env["DASHER_DEPLOYMENT_REVISION"] ?? "dev",
       }),
@@ -861,12 +869,33 @@ export async function uploadLedgerDashboard(
         // the derived pair would be two answers to one question, and they would
         // disagree on the day a model-backed ledger planner lands.
         const provenance = combinedProvenance([DETERMINISTIC_LEDGER_PLANNER]);
+
+        // The evidence chain, which only an upload can complete: the bytes are
+        // retained, so every figure on the page can cite the part of them it
+        // came from, and every assertion can cite those citations. Written
+        // before the version because a claim's edge needs an evidence id, and
+        // inside the same transaction because a dashboard whose evidence half
+        // committed would be worse than one with none.
+        const recordIdBySpecEvidenceId = new Map<string, string>();
+        for (const citation of evidenceCitations(dashboard)) {
+          recordIdBySpecEvidenceId.set(
+            citation.specEvidenceId,
+            await repository.recordEvidence({
+              ...citation.record,
+              snapshotId: sourceSnapshotId,
+              requestId,
+              deploymentRevision,
+            }),
+          );
+        }
+
         const saved = await repository.save({
           title: dashboard.title,
           requestText: fields.request,
           provider: provenance.provider,
           model: provenance.model,
           canonicalSpecBytes: canonicalSpecBytes(dashboard),
+          claims: persistedClaims(dashboard, recordIdBySpecEvidenceId),
           sourceSnapshotId,
           requestId,
           deploymentRevision,
