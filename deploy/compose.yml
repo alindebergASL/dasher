@@ -74,6 +74,15 @@ services:
       # that looks like flakiness, and would call an upstream on every request.
       DASHER_SOURCE_MODE: ${DASHER_SOURCE_MODE:-fixture}
       OPENAQ_API_KEY: ${OPENAQ_API_KEY:-}
+      # Sign-in. `--env-file` populates interpolation in THIS FILE; it does not
+      # put anything into a container. Without these four named here the
+      # application reads none of them, `mailer()` returns undefined, and every
+      # visitor is told sign-in is unavailable — which is what this deployment
+      # did until a review traced the runbook.
+      DASHER_PUBLIC_ORIGIN: ${DASHER_PUBLIC_ORIGIN:?set in .env}
+      DASHER_MAIL_TRANSPORT: ${DASHER_MAIL_TRANSPORT:-}
+      DASHER_RESEND_API_KEY: ${DASHER_RESEND_API_KEY:-}
+      DASHER_MAIL_FROM: ${DASHER_MAIL_FROM:-}
       # DASHER_DEV_BOOTSTRAP and DASHER_DEV_SEED_DSN are absent on purpose and
       # must stay absent. See deploy/README.md — the first mints an
       # authenticated session for anyone who can reach the URL, and the second

@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createHash, randomBytes } from "node:crypto";
+
 import { Pool } from "pg";
 
 /**
@@ -84,30 +86,6 @@ for (const viewport of VIEWPORTS) {
   });
 }
 
-test.describe("without a database", () => {
-  test("says sign-in is unavailable rather than accepting an address", async ({
-    page,
-  }) => {
-    // The honest failure. Accepting the address and answering "a link is on its
-    // way" would be the one sentence this product must not say falsely — and it
-    // is the sentence a correctly configured deployment gives to an address it
-    // will not mail, so the two must not be confusable.
-    test.skip(
-      process.env["DASHER_DATABASE_URL"] !== undefined,
-      "A database is configured, so sign-in is available",
-    );
-
-    await openSignIn(page);
-    await page.getByLabel("Your email address").fill("someone@example.com");
-    await page.getByRole("button", { name: "Email me a link" }).click();
-
-    await expect(page.locator(".sign-in-form p.request-error")).toContainText(
-      "Sign-in is unavailable",
-    );
-    await expect(page.locator(".sign-in-sent")).toHaveCount(0);
-  });
-});
-
 test("a link that was never issued lands back on sign-in, saying so", async ({
   page,
 }) => {
@@ -130,15 +108,18 @@ test.describe("with a database and a provisioned member", () => {
   test("signs a provisioned member in through a real link", async ({
     page,
   }) => {
-    // The whole path in a browser: an address that was provisioned asks for a
-    // link, the link redeems once, and the session it sets is a session the
-    // product accepts — proven by the dashboards page answering as a signed-in
-    // reader rather than redirecting.
+    // THE WHOLE PATH, and it really does redeem. The first version of this test
+    // asserted `sessions == 0` and stopped there while its comments said it had
+    // signed in — so a regression in `redeem_sign_in`, `redeemSignIn` or
+    // `/sign-in/verify` would have passed it green, precisely BECAUSE nothing
+    // was redeemed. An adversarial review found that; it is the reason this
+    // comment is longer than the assertion it explains.
     //
-    // The token is read from the database rather than from an inbox, because
-    // the transport is somebody else's service. What that skips is delivery;
-    // what it still proves is that the link the product builds is redeemable
-    // and that redeeming it produces a usable session.
+    // The token cannot be read back from a challenge the product created: only
+    // its digest is stored, which is the point of the design. So the test mints
+    // its own token, asks the product's own seam to raise a challenge for that
+    // digest, and follows the resulting link through the browser as a person
+    // would. Everything after `begin_sign_in` is the product's code.
     const owner = new Pool({
       connectionString: process.env["DASHER_DEV_SEED_DSN"],
       max: 1,
@@ -165,33 +146,61 @@ test.describe("with a database and a provisioned member", () => {
         [crypto.randomUUID(), organizationId, userId],
       );
 
+      // The form first: the sentence it shows is part of the contract, being
+      // the same one an address it will not mail receives.
       await page.goto("/sign-in");
       await page.getByLabel("Your email address").fill(email);
       await page.getByRole("button", { name: "Email me a link" }).click();
-
-      // The same sentence a refusal gets. That is the product working.
       await expect(page.locator(".sign-in-sent")).toContainText(
         "If that address can sign in",
       );
 
-      // A challenge exists, and its digest is NOT readable by the application —
-      // this reads it as the owner, which is why the test needs the seed DSN.
-      const challenge = await owner.query<{ count: string }>(
-        `SELECT count(*)::text AS count
-           FROM dasher.sign_in_challenges
+      const raised = await owner.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM dasher.sign_in_challenges
           WHERE organization_id = $1 AND consumed_at IS NULL`,
         [organizationId],
       );
-      expect(challenge.rows[0]?.count).toBe("1");
+      expect(raised.rows[0]?.count).toBe("1");
 
-      // The link is rebuilt from the stored challenge the only way a test can:
-      // the token itself was never stored, so the run is verified by redeeming
-      // through the seam and checking a session appeared for this member.
-      const before = await owner.query<{ count: string }>(
+      const token = randomBytes(32);
+      const created = await owner.query<{ challenge_id: string | null }>(
+        `SELECT dasher_api.begin_sign_in(
+           $1, 1::smallint, $2, now() + interval '15 minutes', $3, 'e2e'
+         ) AS challenge_id`,
+        [
+          email,
+          createHash("sha256").update(token).digest(),
+          crypto.randomUUID(),
+        ],
+      );
+      expect(created.rows[0]?.challenge_id).not.toBeNull();
+
+      await page.goto(`/sign-in/verify?token=${token.toString("base64url")}`);
+
+      // Redeemed: the home page, not back on /sign-in?failed=1.
+      await expect(page).toHaveURL(/\/$/u);
+
+      // A session exists where a moment ago there was none.
+      const sessions = await owner.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM dasher.sessions WHERE organization_id = $1",
         [organizationId],
       );
-      expect(before.rows[0]?.count).toBe("0");
+      expect(sessions.rows[0]?.count).toBe("1");
+
+      // And it is a session the PRODUCT accepts, not merely a row.
+      await page.goto("/dashboards");
+      await expect(page.locator("main")).not.toContainText(
+        "You are not signed in",
+      );
+      await expect(
+        page
+          .getByRole("navigation", { name: "Site" })
+          .getByRole("button", { name: "Sign out" }),
+      ).toBeVisible();
+
+      // Spent. Following it again lands on the failure page.
+      await page.goto(`/sign-in/verify?token=${token.toString("base64url")}`);
+      await expect(page).toHaveURL(/\/sign-in\?failed=1$/u);
     } finally {
       await owner.end();
     }

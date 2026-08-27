@@ -44,7 +44,12 @@ git clone https://github.com/alindebergASL/dasher.git && cd dasher
 # 3. The contract. Fill in every blank; read the "MUST STAY UNSET" section.
 cp deploy/.env.example deploy/.env && "$EDITOR" deploy/.env
 
-# 4. The database, on its own, so the roles exist before the migrator runs.
+# 4. Load it into THIS SHELL as well. `--env-file` populates interpolation
+#    inside the compose file; it does not export anything to your shell, and
+#    several commands below reference these variables directly.
+set -a && . deploy/.env && set +a
+
+# 5. The database, on its own, so the roles exist before the migrator runs.
 docker compose -f deploy/compose.yml --env-file deploy/.env up -d postgres
 ```
 
@@ -58,7 +63,11 @@ once, by hand, as the superuser. Use passwords that match what you put in
 ```sh
 docker compose -f deploy/compose.yml --env-file deploy/.env exec postgres \
   psql -U "$DASHER_PG_SUPERUSER" -d dasher -v ON_ERROR_STOP=1 <<'SQL'
-CREATE ROLE dasher_owner LOGIN PASSWORD 'REPLACE_ME';
+-- CREATEROLE is required, not decorative: `migrate` calls
+-- `bootstrapManagedRoles` before applying anything, and that runs
+-- `CREATE ROLE dasher_app`. A plain database owner gets
+-- "permission denied to create role" and the migrate step below aborts.
+CREATE ROLE dasher_owner LOGIN CREATEROLE PASSWORD 'REPLACE_ME';
 CREATE ROLE dasher_web_app LOGIN PASSWORD 'REPLACE_ME';
 -- The owner owns the schema the migrator is about to create, and the migrator
 -- verifies that before it mutates anything.
@@ -108,9 +117,12 @@ has an active membership, and there is deliberately no path in the product that
 creates one. So the first organization is created here, as the schema owner:
 
 ```sh
+# No `-e DASHER_MIGRATE_DSN=...`: the `migrate` service already resolves it
+# from deploy/.env, and passing it again overrides it with whatever the shell
+# has — which was empty, so provisioning printed "DASHER_MIGRATE_DSN is not
+# set" and created nothing.
 docker compose -f deploy/compose.yml --env-file deploy/.env \
-  --profile tools run --rm \
-  -e DASHER_MIGRATE_DSN="$DASHER_MIGRATE_DSN" migrate \
+  --profile tools run --rm migrate \
   pnpm --filter @dasher/control-plane provision \
     --organization "Your org" --email you@example.com --role admin
 ```
@@ -178,16 +190,27 @@ A backup nobody has restored is a claim, not a capability. Restore into a
 throwaway database first — never over the live one:
 
 ```sh
-aws s3 cp s3://your-bucket/dasher/20260827T000000Z.dump /tmp/restore.dump
+# Everything runs INSIDE the compose network. The database port is deliberately
+# only `expose`d, so `localhost:5432` from the host does not reach it, and the
+# instance has no pnpm — the setup step installs Docker and nothing else.
 
-docker compose -f deploy/compose.yml --env-file deploy/.env exec postgres \
-  createdb -U "$DASHER_PG_SUPERUSER" dasher_restore_check
-docker compose -f deploy/compose.yml --env-file deploy/.env exec -T postgres \
-  pg_restore -U "$DASHER_PG_SUPERUSER" -d dasher_restore_check --no-owner \
-  < /tmp/restore.dump
+# 1. Fetch the dump into the backup container, which already has aws and the
+#    Postgres client tools.
+docker compose -f deploy/compose.yml --env-file deploy/.env \
+  run --rm --entrypoint sh backup -c \
+  'aws s3 cp "$DASHER_BACKUP_S3_URI/20260827T000000Z.dump" /tmp/r.dump &&
+   createdb -h postgres -U '"$DASHER_PG_SUPERUSER"' dasher_restore_check &&
+   pg_restore -h postgres -U '"$DASHER_PG_SUPERUSER"' -d dasher_restore_check \
+     --no-owner --role='"$DASHER_PG_SUPERUSER"' /tmp/r.dump'
 
-DASHER_RESTORE_CHECK_DSN=postgresql://dasher_owner:PASSWORD@localhost:5432/dasher_restore_check \
-  pnpm --filter @dasher/control-plane restore-check
+# 2. Verify it, from the application image, which has the workspace installed.
+#    Connect as the SUPERUSER: the restore ran --no-owner, so `dasher_owner` is
+#    neither the object owner nor a member of dasher_app in the restored copy
+#    and would be refused on every table.
+docker compose -f deploy/compose.yml --env-file deploy/.env \
+  --profile tools run --rm \
+  -e DASHER_RESTORE_CHECK_DSN="postgresql://$DASHER_PG_SUPERUSER:$DASHER_PG_SUPERUSER_PASSWORD@postgres:5432/dasher_restore_check" \
+  migrate pnpm --filter @dasher/control-plane restore-check
 ```
 
 `restore-check` does not ask whether the restore errored. It asks whether the

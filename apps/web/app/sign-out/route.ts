@@ -16,11 +16,12 @@ import { readSessionCredential, SESSION_COOKIE_NAME } from "../session";
  * for.
  *
  * WHY THE COOKIE IS CLEARED WHETHER OR NOT ANYTHING WAS REVOKED. The revoke
- * returns false for a session already ended, one that expired, and a token
- * never issued. In every one of those cases the browser is holding a credential
- * the server will not honour, and leaving it there so the header can keep
- * offering "Sign out" helps nobody. The clear is the part the person asked for;
- * the revoke is the part that matters to everyone else.
+ * returns false for a session already ended and for a token never issued. In
+ * both cases the browser is holding a credential the server will not honour,
+ * and leaving it there so the header can keep offering "Sign out" helps
+ * nobody. The clear is the part the person asked for; the revoke is the part
+ * that matters to everyone else. (An expired session returns TRUE — the seam
+ * marks it rather than refusing — so this branch is not a test of liveness.)
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const response = NextResponse.redirect(new URL("/", request.url), {

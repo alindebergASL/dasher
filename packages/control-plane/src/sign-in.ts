@@ -214,12 +214,13 @@ export function encodeSignInToken(token: Buffer): string {
 /**
  * End a session by presenting it.
  *
- * Returns whether anything was revoked, which the caller should use for logging
- * and not for what it renders: an already-revoked session, an expired one and a
- * token that was never issued are all `false`, and signing out has to look the
- * same in every case. The cookie is cleared regardless, because a browser
- * holding a credential the server will not honour is worse than one holding
- * none.
+ * Returns whether a row was marked, which the caller should use for logging and
+ * not for what it renders: signing out has to look the same in every case. An
+ * already-revoked session and a token that was never issued are `false`; an
+ * EXPIRED one is `true`, because the seam marks it rather than refusing — so
+ * this boolean means "a row was revoked", not "the session was live". The
+ * cookie is cleared regardless, because a browser holding a credential the
+ * server will not honour is worse than one holding none.
  */
 export async function revokeSession(
   pool: RequestPool,

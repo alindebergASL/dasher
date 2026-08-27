@@ -530,3 +530,55 @@ it("no longer lets the application role ask whether an address has an account", 
     ]),
   ).rejects.toMatchObject({ code: "42501" });
 });
+
+it("still revokes a session that has already expired", async () => {
+  // Pinned because three docstrings said the opposite until a review checked
+  // them against the UPDATE, which filters on the digest and `revoked_at IS
+  // NULL` and says nothing about expiry. That is the right behaviour — a
+  // session that lapsed between page load and click is exactly the one
+  // somebody is trying to end — but it means the boolean means "a row was
+  // marked", not "the session was live", and a caller must not read it as
+  // liveness.
+  await provision("expired-session@example.com");
+  const issued = await beginSignIn(appPool, {
+    email: "expired-session@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+
+  // Aged past both windows through the owner; there is no product path that
+  // ages a session and waiting twelve hours is not a test.
+  await ownerPool.query(
+    `UPDATE dasher.sessions
+        SET issued_at = now() - interval '2 days',
+            last_seen_at = now() - interval '2 days',
+            idle_expires_at = now() - interval '1 day',
+            absolute_expires_at = now() - interval '1 day'
+      WHERE session_id = $1`,
+    [redeemed?.sessionId],
+  );
+
+  // The request seam already refuses it...
+  await expect(
+    withDashboardRepository(
+      appPool,
+      { tokenKeyVersion: 1, token: redeemed!.sessionToken },
+      async (_repository, principal) => principal,
+    ),
+  ).rejects.toThrow();
+
+  // ...and revoking it still returns true and still marks the row, so the
+  // audit trail records that somebody ended it rather than it merely lapsing.
+  expect(
+    await revokeSession(appPool, redeemed!.sessionToken, {
+      reason: "signed_out",
+      ...context(),
+    }),
+  ).toBe(true);
+
+  const row = await ownerPool.query<{ revocation_reason: string | null }>(
+    "SELECT revocation_reason FROM dasher.sessions WHERE session_id = $1",
+    [redeemed?.sessionId],
+  );
+  expect(row.rows[0]?.revocation_reason).toBe("signed_out");
+});

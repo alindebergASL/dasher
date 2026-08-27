@@ -23,10 +23,18 @@
  * end it. Possession of the token is the authorisation, exactly as it is for
  * `begin_request`.
  *
- * WHY IT IS NOT AN ERROR TO REVOKE NOTHING. An already-revoked session, an
- * expired one, and a token that was never issued all return false. Signing out
- * twice is not a failure, and telling a caller which case it was would answer
- * "is this a real token?" for anyone holding a stolen one.
+ * WHY IT IS NOT AN ERROR TO REVOKE NOTHING. An already-revoked session and a
+ * token that was never issued both return false. Signing out twice is not a
+ * failure, and telling a caller which case it was would answer "is this a real
+ * token?" for anyone holding a stolen one.
+ *
+ * AN EXPIRED SESSION IS STILL REVOKED, and returns true. The UPDATE filters on
+ * the digest and `revoked_at IS NULL` only — deliberately, because that is the
+ * same reason this function takes a token rather than a principal: a session
+ * that lapsed between page load and click is exactly the one somebody is
+ * trying to end, and refusing would leave a row that `begin_request` already
+ * rejects but nothing ever marked. The caller must not read the boolean as
+ * "the session was live".
  */
 CREATE FUNCTION dasher_api.revoke_session(
   p_token_key_version smallint,

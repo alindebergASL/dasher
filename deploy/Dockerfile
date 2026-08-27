@@ -8,10 +8,14 @@
 # way a larger image is not. This copies the built workspace and runs it the
 # same way `pnpm start` runs it locally.
 #
-# WHY THE BUILD AND THE RUNTIME ARE SEPARATE STAGES ANYWAY. The build needs the
-# source tree, the test fixtures, and every devDependency; the runtime needs
-# none of them. Keeping them apart means the running container does not carry a
-# copy of the repository, which is worth doing even when the image is not small.
+# WHY THE BUILD AND THE RUNTIME ARE SEPARATE STAGES ANYWAY. Not to slim the
+# image: the runtime stage copies `/app` wholesale, so it DOES carry the source
+# tree, the test files and the devDependencies — saying otherwise would be a
+# claim this file does not earn. What the split buys is that the runtime image
+# is built from a known-good `/app` rather than from whatever the build left
+# behind, and that build-time tooling (apt caches, the pnpm store) does not
+# ride along. Slimming it further means `output: "standalone"`, whose tracing
+# risk is argued against above.
 FROM node:22.22.2-bookworm-slim AS builder
 
 ENV PNPM_HOME="/pnpm" PATH="/pnpm:$PATH" CI=1
