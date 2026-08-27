@@ -101,11 +101,28 @@ Set `DASHER_DEPLOYMENT_REVISION` to the deployed commit SHA each time. It is
 written onto every dashboard version and every audit event, and it is the only
 thing that will let you trace a stored row back to the code that wrote it.
 
+### Create the first organization
+
+Sign-in is invitation-only: a link is only ever sent to an address that already
+has an active membership, and there is deliberately no path in the product that
+creates one. So the first organization is created here, as the schema owner:
+
+```sh
+docker compose -f deploy/compose.yml --env-file deploy/.env \
+  --profile tools run --rm \
+  -e DASHER_MIGRATE_DSN="$DASHER_MIGRATE_DSN" migrate \
+  pnpm --filter @dasher/control-plane provision \
+    --organization "Your org" --email you@example.com --role admin
+```
+
+Re-running it with the same address and a different organization adds that
+person to the second one rather than creating a second account for the same
+inbox. A sign-in link goes to their oldest membership.
+
 ## Verifying it actually works
 
-There is no sign-in yet, and the development bootstrap **must not** be enabled
-here — it mints a session for anyone who can reach the URL. So what a first
-deploy can honestly demonstrate is the unauthenticated path:
+The development bootstrap **must not** be enabled here — it mints a session for
+anyone who can reach the URL. Sign-in is the real path:
 
 ```sh
 curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR_HOSTNAME/     # 200
@@ -115,9 +132,17 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR_HOSTNAME/dev/bootstrap  #
 The second is the important one. A `404` confirms the bootstrap is off; a `405`
 would mean it is on, and the deployment should be taken down until it is not.
 
-Building a dashboard and having it survive a reload needs a session, which needs
-sign-in. Until then this deployment renders, plans, compiles, and refuses to
-persist — which is the honest state of the product rather than a broken deploy.
+Then sign in for real: open `/sign-in`, enter the address you provisioned, and
+follow the link. If no mail transport is configured the page says sign-in is
+unavailable rather than accepting the address and doing nothing — the one
+sentence this product must not say falsely is "a link is on its way".
+
+Two things to know when it does not arrive. The page says the same sentence for
+an address it will not mail as for one it will, on purpose, so that submitting
+an address is not a way to ask whether it has an account here — which means "no
+email" is not by itself evidence of a fault. And the schema must be migrated
+before any of this works: an unmigrated database answers with a 500, because
+`dasher_api.begin_sign_in` does not exist yet. Run the migrate step above.
 
 ## Backups
 

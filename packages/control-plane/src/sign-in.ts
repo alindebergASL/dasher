@@ -85,7 +85,12 @@ export async function beginSignIn(
 ): Promise<IssuedSignInLink | undefined> {
   let normalized: string;
   try {
-    normalized = normalizeEmailAddress(request.email);
+    // Trimmed here rather than inside `normalizeEmailAddress`, which rejects
+    // surrounding whitespace on purpose and is the wrong place to relax: it is
+    // the function that decides two strings are the same account. The cost of
+    // not trimming here is a legitimate person pasting an address with a
+    // trailing space, being told a link is on its way, and never getting one.
+    normalized = normalizeEmailAddress(request.email.trim());
   } catch {
     // An unparseable address is not an error the person needs explained
     // differently from an unknown one. Both are "if that address can sign in,

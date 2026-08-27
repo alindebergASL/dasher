@@ -31,6 +31,8 @@ describe("control-plane public exports", () => {
       "encodeSignInToken",
       "normalizeEmailAddress",
       "parsePostgresIntegrationEnv",
+      "parseProvisionArgs",
+      "provisionPrincipal",
       "redeemSignIn",
       "renderSchemaSnapshot",
       "runMigrations",

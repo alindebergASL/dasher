@@ -6,6 +6,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   beginSignIn,
   bootstrapManagedRoles,
+  provisionPrincipal,
   decodeSignInToken,
   encodeSignInToken,
   parsePostgresIntegrationEnv,
@@ -173,6 +174,22 @@ it("answers an unknown address exactly as it answers a known one", async () => {
   expect(malformed).toBeUndefined();
 });
 
+it("still sends to an address that arrived with stray whitespace", async () => {
+  // `normalizeEmailAddress` rejects surrounding whitespace, which is right for
+  // the function that decides two strings are one account and wrong as the
+  // product's answer to a pasted address. Untrimmed, this person is told a link
+  // is on its way and never gets one — the same sentence as a genuine refusal,
+  // which is exactly why it would never be reported as a bug.
+  await provision("padded@example.com");
+
+  expect(
+    await beginSignIn(appPool, {
+      email: "  Padded@Example.com  ",
+      ...context(),
+    }),
+  ).toBeDefined();
+});
+
 it("redeems a link once, and issues a session bound to the membership", async () => {
   const organizationId = await provision("redeem@example.com");
   const issued = await beginSignIn(appPool, {
@@ -337,4 +354,65 @@ it("accepts only the canonical encoding of a token", async () => {
   expect(decodeSignInToken(`${encoded}=`)).toBeUndefined();
   expect(decodeSignInToken("")).toBeUndefined();
   expect(decodeSignInToken(encodeSignInToken(randomBytes(16)))).toBeUndefined();
+});
+
+it("is enabled for an address the provisioning tool created", async () => {
+  // The bootstrapping question invitation-only creates: somebody has to go
+  // first, and the product deliberately offers no way to. This is the whole
+  // path — the operator tool writes the organization, the identity and the
+  // membership, and the address it names can then request a link where a
+  // moment earlier it could not.
+  expect(
+    await beginSignIn(appPool, { email: "first@example.com", ...context() }),
+  ).toBeUndefined();
+
+  const provisioned = await provisionPrincipal(ownerPool, {
+    organizationName: "First pilot org",
+    email: "  First@Example.COM  ",
+    role: "admin",
+  });
+
+  // Normalised on the way in, so the subject written is the subject the
+  // sign-in lookup searches for. Two normalisations would be two accounts.
+  expect(provisioned.normalizedEmail).toBe("first@example.com");
+  expect(provisioned.reusedExistingUser).toBe(false);
+
+  const issued = await beginSignIn(appPool, {
+    email: "first@example.com",
+    ...context(),
+  });
+  expect(issued).toBeDefined();
+
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+  expect(redeemed?.organizationId).toBe(provisioned.organizationId);
+  expect(redeemed?.userId).toBe(provisioned.userId);
+});
+
+it("adds an existing address to a second organization without a second user", async () => {
+  // `external_identities` is UNIQUE on user_id and keyed on (issuer, subject),
+  // so re-provisioning the same address must reuse the person rather than fail
+  // or fork them into two accounts sharing an inbox.
+  const first = await provisionPrincipal(ownerPool, {
+    organizationName: "Org one",
+    email: "shared@example.com",
+    role: "admin",
+  });
+  const second = await provisionPrincipal(ownerPool, {
+    organizationName: "Org two",
+    email: "shared@example.com",
+    role: "editor",
+  });
+
+  expect(second.reusedExistingUser).toBe(true);
+  expect(second.userId).toBe(first.userId);
+  expect(second.organizationId).not.toBe(first.organizationId);
+
+  // And the link goes to the OLDEST membership, deterministically, rather than
+  // to whichever row the planner happened to return.
+  const issued = await beginSignIn(appPool, {
+    email: "shared@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+  expect(redeemed?.organizationId).toBe(first.organizationId);
 });

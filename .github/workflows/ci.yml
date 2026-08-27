@@ -252,6 +252,12 @@ jobs:
       # if it is only argued for in a comment.
       DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
       DASHER_DEV_BOOTSTRAP: "1"
+      # The sign-in suite needs a transport chosen by name and an origin to
+      # build links from. `log` prints to stdout instead of reaching a provider:
+      # CI must never send mail, and the fallback-to-log shape this replaces is
+      # exactly the defect `mailer.test.ts` pins.
+      DASHER_MAIL_TRANSPORT: log
+      DASHER_PUBLIC_ORIGIN: http://localhost:3100
       # Explicit rather than relying on the default. CI must never depend on
       # an upstream being reachable or on what it happens to be reporting
       # today, and a run that silently went live would be nondeterministic in
@@ -375,6 +381,17 @@ jobs:
           pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
             e2e/uploaded-ledger.spec.ts
 
+      # A third run and a third report. `sign-in.spec.ts` skips its
+      # database-backed case without one, exactly as the two suites above skip
+      # theirs — and a skip is what this job exists to make impossible.
+      - name: Run the sign-in suite
+        env:
+          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+          PLAYWRIGHT_JSON_OUTPUT_FILE: /tmp/sign-in-results.json
+        run: |
+          pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
+            e2e/sign-in.spec.ts
+
       # Positive proof, not absence of a symptom. The preflight catches a
       # missing variable and the explicit path catches a missing file; this
       # catches a guard that quietly turned the tests off in place.
@@ -400,6 +417,16 @@ jobs:
           pnpm --filter @dasher/repo-graph assert:playwright-report -- \
             --report=/tmp/upload-results.json \
             --spec-file=uploaded-ledger.spec.ts \
+            --min-tests=8
+
+      # Its own floor again. The sign-in suite's whole point is the case that
+      # needs a database, and a report where only the seven layout cases ran
+      # would satisfy any shared count.
+      - name: Assert the sign-in tests actually ran
+        run: |
+          pnpm --filter @dasher/repo-graph assert:playwright-report -- \
+            --report=/tmp/sign-in-results.json \
+            --spec-file=sign-in.spec.ts \
             --min-tests=8
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

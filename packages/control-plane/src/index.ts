@@ -75,6 +75,13 @@ export {
 } from "./dashboard-repository";
 
 export {
+  parseProvisionArgs,
+  provisionPrincipal,
+  type ProvisionOptions,
+  type ProvisionedPrincipal,
+} from "./provision-cli";
+
+export {
   beginSignIn,
   decodeSignInToken,
   encodeSignInToken,

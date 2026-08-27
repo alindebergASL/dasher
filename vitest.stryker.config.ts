@@ -37,6 +37,15 @@ import { defineConfig } from "vitest/config";
  * there is a way for a file nobody could read to be accepted, or for a person
  * to be told the wrong thing about why theirs was not.
  *
+ * `apps/web/app/mailer.ts` is here because its defaults are security
+ * decisions rather than configuration plumbing. A mutant that makes the
+ * development transport reachable without being named turns a deployment with
+ * missing provider credentials into one that prints live sign-in links to its
+ * logs; a mutant that relaxes the https check on the link origin produces
+ * sessions a browser silently refuses to store. Neither would fail any other
+ * gate, and neither is visible in a code review that reads the intent rather
+ * than the condition.
+ *
  * The claims pair is here because the evidence chain is a claim ABOUT the
  * product's honesty, and a surviving mutant in either file is a way to make
  * that claim falsely. `packages/dashboard-schema/src/claims.ts` decides which
@@ -82,6 +91,7 @@ export default defineConfig({
       "packages/ledger-domain/src/from-csv.test.ts",
       "packages/workbook/src/csv.test.ts",
       "apps/web/app/claims.test.ts",
+      "apps/web/app/mailer.test.ts",
       "apps/web/app/upload.test.ts",
       "packages/ledger-domain/src/ledger.test.ts",
       "packages/dashboard-schema/src/layout.test.ts",
