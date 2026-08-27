@@ -11,7 +11,9 @@ import {
   encodeSignInToken,
   parsePostgresIntegrationEnv,
   redeemSignIn,
+  revokeSession,
   runMigrations,
+  withDashboardRepository,
 } from "../src/index";
 import {
   baselineMigrationDirectory,
@@ -415,4 +417,116 @@ it("adds an existing address to a second organization without a second user", as
   });
   const redeemed = await redeemSignIn(appPool, issued!.token, context());
   expect(redeemed?.organizationId).toBe(first.organizationId);
+});
+
+it("ends a session so the request seam stops accepting it", async () => {
+  // The property worth asserting is not that a column changed. It is that
+  // `begin_request` — which every other operation goes through — refuses the
+  // credential afterwards. So this signs in, proves the session works by
+  // resolving a principal through the real seam, revokes, and proves it does
+  // not.
+  await provision("signs-out@example.com");
+  const issued = await beginSignIn(appPool, {
+    email: "signs-out@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+  const credential = {
+    tokenKeyVersion: 1,
+    token: redeemed!.sessionToken,
+  };
+
+  const before = await withDashboardRepository(
+    appPool,
+    credential,
+    async (_repository, principal) => principal,
+  );
+  expect(before.organizationId).toBe(redeemed?.organizationId);
+
+  expect(
+    await revokeSession(appPool, redeemed!.sessionToken, {
+      reason: "signed_out",
+      ...context(),
+    }),
+  ).toBe(true);
+
+  await expect(
+    withDashboardRepository(
+      appPool,
+      credential,
+      async (_repository, principal) => principal,
+    ),
+  ).rejects.toThrow();
+});
+
+it("reports revoking nothing without saying which nothing", async () => {
+  // Already revoked, and never issued. Both false, because signing out twice is
+  // not a failure and distinguishing the two would answer "is this a real
+  // token?" for somebody holding a stolen one.
+  await provision("double-out@example.com");
+  const issued = await beginSignIn(appPool, {
+    email: "double-out@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+
+  expect(
+    await revokeSession(appPool, redeemed!.sessionToken, {
+      reason: "signed_out",
+      ...context(),
+    }),
+  ).toBe(true);
+  expect(
+    await revokeSession(appPool, redeemed!.sessionToken, {
+      reason: "signed_out",
+      ...context(),
+    }),
+  ).toBe(false);
+  expect(
+    await revokeSession(appPool, randomBytes(32), {
+      reason: "signed_out",
+      ...context(),
+    }),
+  ).toBe(false);
+});
+
+it("records the revocation, with its reason, in the audit trail", async () => {
+  const organizationId = await provision("audited-out@example.com");
+  const issued = await beginSignIn(appPool, {
+    email: "audited-out@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+  await revokeSession(appPool, redeemed!.sessionToken, {
+    reason: "signed_out",
+    ...context(),
+  });
+
+  const events = await ownerPool.query<{ action: string }>(
+    `SELECT action FROM dasher.audit_events
+      WHERE organization_id = $1 AND action = 'session.revoked'`,
+    [organizationId],
+  );
+  expect(events.rows).toHaveLength(1);
+
+  const session = await ownerPool.query<{ revocation_reason: string }>(
+    "SELECT revocation_reason FROM dasher.sessions WHERE session_id = $1",
+    [redeemed?.sessionId],
+  );
+  expect(session.rows[0]?.revocation_reason).toBe("signed_out");
+});
+
+it("no longer lets the application role ask whether an address has an account", async () => {
+  // `resolve_external_identity` was granted to `dasher_app` in the baseline and
+  // called by nothing. It answers in one call the question `begin_sign_in`
+  // returns a uniform NULL to avoid answering, which made the enumeration
+  // guarantee a property of one code path rather than of the role.
+  await provision("known@example.com");
+
+  await expect(
+    appPool.query("SELECT dasher_api.resolve_external_identity($1, $2)", [
+      "urn:dasher:email-link",
+      "known@example.com",
+    ]),
+  ).rejects.toMatchObject({ code: "42501" });
 });

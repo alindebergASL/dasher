@@ -86,6 +86,7 @@ export {
   decodeSignInToken,
   encodeSignInToken,
   redeemSignIn,
+  revokeSession,
   SIGN_IN_LINK_MINUTES,
   type IssuedSignInLink,
   type RedeemedSignIn,

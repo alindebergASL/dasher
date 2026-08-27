@@ -296,6 +296,7 @@ describe("migration application", () => {
     expect(result.rows.map((row) => row.filename)).toEqual([
       "0001_baseline.sql",
       "0002_sign_in.sql",
+      "0003_session_revocation.sql",
     ]);
     for (const row of result.rows) {
       expect(row.checksum_sha256, row.filename).toHaveLength(32);

@@ -152,10 +152,14 @@ describe("discoverMigrations", () => {
     expect(migrations.map((migration) => migration.filename)).toEqual([
       "0001_baseline.sql",
       "0002_sign_in.sql",
+      "0003_session_revocation.sql",
     ]);
     expect(migrations[0]?.sql).toContain("CREATE TABLE dasher.dashboards");
     expect(migrations[1]?.sql).toContain(
       "CREATE TABLE dasher.sign_in_challenges",
+    );
+    expect(migrations[2]?.sql).toContain(
+      "CREATE FUNCTION dasher_api.revoke_session",
     );
   });
 

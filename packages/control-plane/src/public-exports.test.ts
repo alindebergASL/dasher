@@ -35,6 +35,7 @@ describe("control-plane public exports", () => {
       "provisionPrincipal",
       "redeemSignIn",
       "renderSchemaSnapshot",
+      "revokeSession",
       "runMigrations",
       "seedDevPrincipal",
       "withDashboardRepository",

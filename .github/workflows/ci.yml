@@ -427,7 +427,7 @@ jobs:
           pnpm --filter @dasher/repo-graph assert:playwright-report -- \
             --report=/tmp/sign-in-results.json \
             --spec-file=sign-in.spec.ts \
-            --min-tests=8
+            --min-tests=10
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()

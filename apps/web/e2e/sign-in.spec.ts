@@ -197,3 +197,60 @@ test.describe("with a database and a provisioned member", () => {
     }
   });
 });
+
+test.describe("signing out", () => {
+  test.skip(
+    process.env["DASHER_DATABASE_URL"] === undefined ||
+      process.env["DASHER_DEV_BOOTSTRAP"] !== "1",
+    "Needs a database and a way to obtain a session",
+  );
+
+  test("ends the session and puts the reader back where they started", async ({
+    page,
+  }) => {
+    // The session comes from the development bootstrap rather than from a
+    // link, because the token in a link is never stored and cannot be read
+    // back. What is under test here is revocation, and a session is a session:
+    // the bootstrap writes one through the same seam sign-in does.
+    const bootstrap = await page.context().request.post("/dev/bootstrap");
+    expect(bootstrap.ok()).toBe(true);
+
+    await page.goto("/dashboards");
+    await expect(page.locator("main")).not.toContainText(
+      "You are not signed in",
+    );
+    const nav = page.getByRole("navigation", { name: "Site" });
+    await expect(nav.getByRole("button", { name: "Sign out" })).toBeVisible();
+
+    await nav.getByRole("button", { name: "Sign out" }).click();
+
+    // Back on the home page, and the header agrees with the pages.
+    await expect(page).toHaveURL(/\/$/u);
+    await expect(
+      page.getByRole("navigation", { name: "Site" }).getByRole("link", {
+        name: "Sign in",
+      }),
+    ).toBeVisible();
+
+    // And the protected page has genuinely reverted, rather than the header
+    // merely changing.
+    await page.goto("/dashboards");
+    await expect(page.locator("main")).toContainText("You are not signed in");
+  });
+
+  test("does not sign anyone out through a GET", async ({ page }) => {
+    // `<img src="/sign-out">` on any page would otherwise sign out every reader
+    // who loaded it. The route answers 405 and the session survives.
+    await page.context().request.post("/dev/bootstrap");
+
+    const attempted = await page.context().request.get("/sign-out", {
+      maxRedirects: 0,
+    });
+    expect(attempted.status()).toBe(405);
+
+    await page.goto("/dashboards");
+    await expect(page.locator("main")).not.toContainText(
+      "You are not signed in",
+    );
+  });
+});

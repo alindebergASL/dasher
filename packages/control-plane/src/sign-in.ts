@@ -210,3 +210,42 @@ export function decodeSignInToken(raw: string): Buffer | undefined {
 export function encodeSignInToken(token: Buffer): string {
   return token.toString("base64url");
 }
+
+/**
+ * End a session by presenting it.
+ *
+ * Returns whether anything was revoked, which the caller should use for logging
+ * and not for what it renders: an already-revoked session, an expired one and a
+ * token that was never issued are all `false`, and signing out has to look the
+ * same in every case. The cookie is cleared regardless, because a browser
+ * holding a credential the server will not honour is worse than one holding
+ * none.
+ */
+export async function revokeSession(
+  pool: RequestPool,
+  token: Buffer,
+  context: {
+    readonly reason: string;
+    readonly requestId: string;
+    readonly deploymentRevision: string;
+  },
+): Promise<boolean> {
+  if (token.length !== TOKEN_BYTES) return false;
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query<{ revoked: boolean }>(
+      "SELECT dasher_api.revoke_session($1, $2, $3, $4, $5) AS revoked",
+      [
+        KEY_VERSION,
+        digest(token),
+        context.reason,
+        context.requestId,
+        context.deploymentRevision,
+      ],
+    );
+    return result.rows[0]?.revoked === true;
+  } finally {
+    client.release();
+  }
+}

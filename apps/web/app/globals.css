@@ -1981,3 +1981,29 @@ body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/*
+ * Sign out is a button because it is a state change, and a state change behind
+ * a link is a GET any page or image tag could trigger on somebody's behalf. It
+ * is styled to sit in the nav row beside the anchors rather than to look like a
+ * form control.
+ */
+.site-header-signout {
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.site-header-signout:hover,
+.site-header-signout:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.site-header-nav form {
+  display: contents;
+}

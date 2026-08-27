@@ -45,8 +45,11 @@ export default async function YourDashboards() {
     return (
       <Shell>
         <p className="dashboard-list-empty">
-          No session, so no saved dashboards to show. Build a dashboard and save
-          it, and it will be waiting here.
+          You are not signed in, so there are no saved dashboards to show.{" "}
+          <a className="dashboard-list-link" href="/sign-in">
+            Sign in
+          </a>{" "}
+          and anything you build will be waiting here.
         </p>
       </Shell>
     );
