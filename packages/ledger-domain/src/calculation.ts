@@ -179,6 +179,34 @@ function textValue(entry: { state: string; value: string | null }): string {
 }
 
 /**
+ * The engine's coefficient for a canonical decimal: its digits with the point
+ * removed and no leading zero.
+ *
+ * This was `exact.replace(".", "")`, which is right for every amount of one
+ * unit or more and wrong for every amount below one. "0.75" became the
+ * coefficient "075", and the engine rejects a leading zero — so a ledger
+ * carrying a $0.75 bank fee, a refund, or any sub-dollar line did not render a
+ * degraded dashboard, it failed to build one at all: `invalid_graph`, surfacing
+ * to the reader as "That export read correctly but no dashboard could be built
+ * from it."
+ *
+ * Exactly zero survived, because "0" has no leading zero to strip, which is why
+ * a suite with zero-amount fixtures throughout never caught it. The defect
+ * predates the ratio work in this file and is unrelated to it; it is repaired
+ * here because a ledger product that refuses cents has a smaller problem with
+ * its shares.
+ *
+ * `fromText` has already normalised trailing zeros and negative zero, so the
+ * only thing left to remove is the leading run, and one digit always stays.
+ */
+function coefficientOf(exact: Exact): string {
+  const negative = exact.startsWith("-");
+  const digits = (negative ? exact.slice(1) : exact).replace(".", "");
+  const trimmed = digits.replace(/^0+(?=\d)/u, "");
+  return `${negative ? "-" : ""}${trimmed}`;
+}
+
+/**
  * Builds the four documents, runs them, and reads the rows back.
  *
  * Every output node shares one evaluation domain — the source rowset — so the
@@ -219,7 +247,7 @@ function runLedger(
         [FIELD_AMOUNT]: {
           state: "present",
           value: decimal(
-            exact.replace(".", ""),
+            coefficientOf(exact),
             dot === -1 ? 0 : exact.length - dot - 1,
           ),
         },

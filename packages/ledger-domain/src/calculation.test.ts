@@ -168,6 +168,67 @@ describe("the timestamp handed to the engine", () => {
   });
 });
 
+describe("amounts smaller than one unit", () => {
+  /*
+   * Found by an adversarial review of the ratio work, in code the ratio work
+   * did not touch. `decimal(exact.replace(".", ""), …)` produced a coefficient
+   * with a leading zero for any |amount| < 1, which the engine rejects, so the
+   * dashboard did not degrade — it failed to build. Exactly zero was fine,
+   * which is why a suite full of zero fixtures never noticed.
+   */
+  const oneLine = (amounts: readonly string[]) =>
+    LedgerSnapshotSchema.parse({
+      ...snapshot,
+      periods: ["2026-07", "2026-08"],
+      lines: [{ id: "only", label: "Only", amounts: [...amounts] }],
+    });
+
+  it("builds a ledger carrying a sub-dollar line", () => {
+    const fee = calculateLedger(oneLine(["0.75", "0.80"]));
+    const last = fee.cells.find(
+      (one) => one.period === "2026-08",
+    ) as (typeof fee.cells)[number];
+
+    expect(last.amount).toBe("0.8");
+    expect(last.periodTotal).toBe("0.8");
+    // The share of a single line is the whole of it, whatever its magnitude.
+    expect(ratioToPercent(last.share as string)).toBe("100");
+  });
+
+  it("keeps a cent exact rather than rounding it into the coefficient", () => {
+    const cents = calculateLedger(oneLine(["0.01", "0.02"]));
+
+    expect(cents.cells.map((one) => one.amount)).toStrictEqual([
+      "0.01",
+      "0.02",
+    ]);
+  });
+
+  it("carries the sign on a negative sub-unit amount", () => {
+    const refund = calculateLedger(oneLine(["-0.50", "2.00"]));
+
+    expect(refund.cells.map((one) => one.amount)).toStrictEqual(["-0.5", "2"]);
+  });
+
+  it("mixes sub-unit and whole-unit lines in one ledger", () => {
+    const mixed = calculateLedger(
+      LedgerSnapshotSchema.parse({
+        ...snapshot,
+        periods: ["2026-07", "2026-08"],
+        lines: [
+          { id: "salaries", label: "Salaries", amounts: ["309400", "312965"] },
+          { id: "fee", label: "Bank fee", amounts: ["0.75", "0.75"] },
+        ],
+      }),
+    );
+    const total = mixed.cells.find(
+      (one) => one.period === "2026-08",
+    ) as (typeof mixed.cells)[number];
+
+    expect(total.periodTotal).toBe("312965.75");
+  });
+});
+
 describe("when a denominator is zero", () => {
   /**
    * The engine refuses `x / 0` outright rather than returning a null, which is
