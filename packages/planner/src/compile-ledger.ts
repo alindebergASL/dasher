@@ -147,6 +147,45 @@ function whyNotComputed(periodLabel: string): string {
  * below a line measured at 0.0% — inventing an ordering out of a value nobody
  * computed.
  */
+/**
+ * Which of the three things there is to say about this ledger's shares.
+ *
+ * `largest` needs the shares to be a DISTRIBUTION — every one of them between
+ * nothing and the whole — and on a ledger carrying credits they are not. A line
+ * of +$200 against a credit of -$100 nets to $100, so the shares are +200% and
+ * -100%: arithmetically exact, summing to 100, and reported by the first
+ * version of this as "Alpha accounts for 200.0% of spending in 2026-08". The
+ * figure was right and the sentence was not; "share of" carries an implication
+ * of part-of-whole that a net total does not support.
+ *
+ * `offset` is that case, and it is deliberately NOT folded into `absent`: those
+ * shares were computed, and saying they were not would be its own false
+ * statement. The per-line percentages still render. What stops is the claim
+ * that one of them is the largest share of spending.
+ *
+ * THIS IS A JUDGEMENT ABOUT WORDS, NOT ARITHMETIC, and a reversible one: an
+ * owner who would rather see "200.0% of a net total" than a sentence about
+ * offsetting can delete `offset` and let `largest` cover it.
+ */
+type ShareStanding =
+  | {
+      readonly kind: "largest";
+      readonly line: LedgerLineFacts & { readonly share: Exact };
+    }
+  | { readonly kind: "offset" }
+  | { readonly kind: "absent" };
+
+function shareStanding(lines: readonly LedgerLineFacts[]): ShareStanding {
+  const top = largestShare(lines);
+  if (top === undefined) return { kind: "absent" };
+  const distribution = lines.every(
+    (line) =>
+      line.share === null ||
+      (sign(line.share) >= 0 && compare(line.share, "100") <= 0),
+  );
+  return distribution ? { kind: "largest", line: top } : { kind: "offset" };
+}
+
 function largestShare(
   lines: readonly LedgerLineFacts[],
 ): (LedgerLineFacts & { readonly share: Exact }) | undefined {
@@ -424,7 +463,7 @@ export function compileLedgerPlan(
     selected.map((line) => line.evidenceId),
     [facts.calculationEvidenceId],
   );
-  const biggest = largestShare(selected);
+  const standing = shareStanding(selected);
   const evidence: Evidence[] = [
     ...facts.evidence,
     plannerEvidence(options.planner, "budget line", options.asOf),
@@ -491,15 +530,19 @@ export function compileLedgerPlan(
         headline:
           facts.overBudget.length > 0
             ? `${String(facts.overBudget.length)} line${facts.overBudget.length === 1 ? "" : "s"} over budget`
-            : biggest === undefined
+            : standing.kind === "absent"
               ? `No line's share of ${facts.latestPeriod} was computed`
-              : `${biggest.label} is the largest share`,
+              : standing.kind === "offset"
+                ? `Credits offset spending in ${facts.latestPeriod}`
+                : `${standing.line.label} is the largest share`,
         detail:
           facts.overBudget.length > 0
-            ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.${biggest === undefined ? ` No line's share of ${facts.latestPeriod} was computed. ${whyNotComputed(facts.periodLabel)}` : ""}`
-            : biggest === undefined
+            ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.${standing.kind === "absent" ? ` No line's share of ${facts.latestPeriod} was computed. ${whyNotComputed(facts.periodLabel)}` : ""}`
+            : standing.kind === "absent"
               ? `Spending in ${facts.latestPeriod} totalled ${money(facts.total, facts.currency)}, and that total is exact. What was not computed is each line's share of it. ${whyNotComputed(facts.periodLabel)}`
-              : `${biggest.label} accounts for ${percent(biggest.share)} of spending in ${facts.latestPeriod}.`,
+              : standing.kind === "offset"
+                ? `At least one line reduced the total for ${facts.latestPeriod} rather than adding to it, so ${money(facts.total, facts.currency)} is a net figure and the shares below are of that net. Dasher does not name a largest share when they are not parts of a whole.`
+                : `${standing.line.label} accounts for ${percent(standing.line.share)} of spending in ${facts.latestPeriod}.`,
         evidenceIds: everything,
       },
     },

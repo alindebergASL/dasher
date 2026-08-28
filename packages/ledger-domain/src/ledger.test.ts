@@ -363,6 +363,84 @@ describe("the values deriveLedgerFacts computes", () => {
     expect(refused.lines.every((line) => line.share === null)).toBe(true);
   });
 
+  it("refuses a ledger larger than the engine will evaluate, and names the size", () => {
+    /*
+     * 30 lines over 12 months — an ordinary operating export — is 360 figures
+     * and cannot be charted. It used to reach the engine and fail there with
+     * `limit_exceeded`, which the upload path reported as "That export read
+     * correctly but no dashboard could be built from it": true, unactionable,
+     * and indistinguishable from a malformed file.
+     */
+    const tooBig = {
+      ...snapshot,
+      periods: Array.from(
+        { length: 12 },
+        (_, index) => `2026-${String(index + 1).padStart(2, "0")}`,
+      ),
+      lines: Array.from({ length: 30 }, (_, index) => ({
+        id: `l${String(index)}`,
+        label: `Line ${String(index)}`,
+        amounts: Array.from({ length: 12 }, () => "100"),
+      })),
+    };
+
+    const refusal = LedgerSnapshotSchema.safeParse(tooBig);
+
+    expect(refusal.success).toBe(false);
+    expect(refusal.error?.issues[0]?.message).toBe(
+      "this export has 30 lines across 12 periods, which is 360 figures; Dasher can build a dashboard from at most 250",
+    );
+  });
+
+  it("accepts a ledger exactly at the ceiling", () => {
+    // The boundary is measured, not assumed: 250 builds and 260 does not.
+    const atCeiling = {
+      ...snapshot,
+      periods: Array.from(
+        { length: 25 },
+        (_, index) =>
+          `20${String(26 + Math.floor(index / 12))}-${String((index % 12) + 1).padStart(2, "0")}`,
+      ),
+      lines: Array.from({ length: 10 }, (_, index) => ({
+        id: `l${String(index)}`,
+        label: `Line ${String(index)}`,
+        amounts: Array.from({ length: 25 }, () => "100"),
+      })),
+    };
+
+    expect(LedgerSnapshotSchema.safeParse(atCeiling).success).toBe(true);
+    expect(() =>
+      deriveLedgerFacts(LedgerSnapshotSchema.parse(atCeiling)),
+    ).not.toThrow();
+  });
+
+  it("keeps latest minus previous equal to the change it reports", () => {
+    /*
+     * The `delta` node declared `scale: i64:0`, so `change` was the one figure
+     * on the page rounded to whole units while the two amounts it sits between
+     * stayed exact. Measured before the repair: 10.00 -> 10.40 reported a change
+     * of "0", and 10.00 -> 9.40 reported "-1" — a $0.60 fall shown as a dollar,
+     * and a real move shown as none at all.
+     */
+    for (const amounts of [
+      ["100", "160"],
+      ["100.00", "101.20"],
+      ["10.00", "10.40"],
+      ["10.00", "9.40"],
+      ["0.75", "0.80"],
+    ]) {
+      const line = deriveLedgerFacts(
+        LedgerSnapshotSchema.parse({
+          ...snapshot,
+          periods: ["2026-07", "2026-08"],
+          lines: [{ id: "only", label: "Only", amounts }],
+        }),
+      ).lines[0]!;
+
+      expect(line.change).toBe(exact.subtract(line.latest, line.previous));
+    }
+  });
+
   it("names the source and the period span in each line's evidence", () => {
     const evidence = facts.evidence.find(
       (item) => item.id === line("cloud").evidenceId,

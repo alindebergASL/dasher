@@ -394,6 +394,55 @@ describe("the figures a ledger dashboard displays", () => {
  * survive a sibling ratio failing, and the ones that genuinely are not say so
  * in words instead of in a number.
  */
+describe("when a credit offsets spending", () => {
+  /*
+   * Shares only mean "part of a whole" when every part has the sign of the
+   * whole. With a credit in the ledger they do not: +$200 against -$100 nets to
+   * $100, so the shares are +200% and -100%. Both figures are exact and they sum
+   * to 100 — what was wrong was the sentence built on them, which read "Alpha
+   * accounts for 200.0% of spending in 2026-08".
+   */
+  const offsetting = {
+    ...snapshot,
+    periods: ["2026-07", "2026-08"],
+    lines: [
+      { id: "alpha", label: "Alpha", amounts: ["200", "200"] },
+      { id: "credit", label: "Vendor credit", amounts: ["-100", "-100"] },
+    ],
+  };
+  const brief = compileLedgerPlan(
+    planLedgerDashboard("spending", ["alpha", "credit"]),
+    offsetting,
+    options,
+  ).executiveBrief;
+
+  it("does not name a largest share of a net total", () => {
+    expect(brief.important.headline).toBe("Credits offset spending in 2026-08");
+    expect(brief.important.detail).toContain("net figure");
+    expect(brief.important.detail).not.toContain("accounts for");
+    expect(brief.important.detail).not.toContain("200.0%");
+  });
+
+  it("still reports the shares themselves, which are exact", () => {
+    // The percentages are not suppressed. They were computed and they are
+    // right; only the claim that one of them is a majority of spending goes.
+    const notes = compileLedgerPlan(
+      planLedgerDashboard("spending", ["alpha", "credit"]),
+      offsetting,
+      options,
+    )
+      .pages.flatMap((page) => page.components)
+      .flatMap((component) =>
+        component.kind === "ranking"
+          ? component.items.map((item) => item.note ?? "")
+          : [],
+      );
+
+    expect(notes.join(" ")).toContain("200.0% of total");
+    expect(notes.join(" ")).toContain("-100.0% of total");
+  });
+});
+
 describe("when a share has no denominator", () => {
   const periods = ["2026-06", "2026-07", "2026-08"];
   const base = { ...snapshot, periods };

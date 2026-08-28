@@ -1,4 +1,5 @@
 import {
+  LIMITS,
   type CellSpec,
   type FieldSpec,
   type NodeSpec,
@@ -69,6 +70,9 @@ const CHANGE = uuid(807);
 const CHANGE_PERCENT = uuid(808);
 const TOTAL_CHANGE_PERCENT = uuid(809);
 
+/** How many of the output columns are ratios. See `RATIO_ORDER`. */
+const RATIO_COUNT = 3;
+
 /**
  * Ten fractional digits on the share ratio, eight on the percentage change.
  *
@@ -79,6 +83,32 @@ const TOTAL_CHANGE_PERCENT = uuid(809);
  */
 const SHARE_SCALE = 10;
 const PERCENT_SCALE = 8;
+
+/**
+ * The most line-periods this graph can ask the engine to evaluate.
+ *
+ * `LIMITS.finalOutputRows` is a budget over the SUM of every output node's
+ * rows, not a per-node cap, and this graph asks for eight columns — three of
+ * which are the ratios, and two of which (`line_id`, `period`) exist only so a
+ * figure can be matched to the line it belongs to rather than to its insertion
+ * position. Eight into 2000 is 250 cells, and a snapshot above that fails the
+ * first run with `limit_exceeded`, which `calculateLedger` rethrows.
+ *
+ * Derived rather than written as `250`, so that adding a fourth ratio moves the
+ * ceiling instead of silently making this number wrong.
+ *
+ * WHAT THIS CEILING MEANS FOR THE PRODUCT, stated plainly because nothing else
+ * states it: 30 budget lines over 12 months is 360 cells and does not build.
+ * That is an ordinary operating export. The schema permits 200 lines and 240
+ * periods — 48,000 cells — so the contract a caller reads promises roughly two
+ * hundred times what the engine will do. Raising it is a change to a reviewed
+ * arithmetic contract and an owner's decision; until then the refusal happens
+ * at parse time, where it can name a number, rather than as an opaque failure
+ * to build.
+ */
+export const MAX_LEDGER_CELLS = Math.floor(
+  Number(LIMITS.finalOutputRows) / (5 + RATIO_COUNT),
+);
 
 /** A per-line, per-period result, in the row order the engine evaluated. */
 export interface LedgerCell {
@@ -236,11 +266,28 @@ function runLedger(
   ];
 
   const rows: Array<Record<string, CellSpec>> = [];
+  /**
+   * The widest fractional part any amount in this ledger has.
+   *
+   * `delta` quantizes to a scale the graph declares, and that scale was a
+   * literal `0`. So `change` was the only figure on the page rounded to whole
+   * units while `latest` and `previous` beside it stayed exact — measured, a
+   * line that moved from $10.00 to $10.40 reported a change of `$0`, and one
+   * that fell $0.60 reported `-$1`. Deriving the scale from the amounts keeps
+   * `latest - previous = change` true for whatever precision the export
+   * actually carries, including a currency with no minor unit, where it is
+   * still 0 and nothing changes.
+   */
+  let amountScale = 0;
   for (const line of snapshot.lines) {
     line.amounts.forEach((amount, index) => {
       const period = snapshot.periods[index] as string;
       const exact = fromText(amount);
       const dot = exact.indexOf(".");
+      amountScale = Math.max(
+        amountScale,
+        dot === -1 ? 0 : exact.length - dot - 1,
+      );
       rows.push({
         [FIELD_LINE]: { state: "present", value: line.id },
         [FIELD_PERIOD]: { state: "present", value: period },
@@ -331,7 +378,8 @@ function runLedger(
       partition_node_ids: [LINE],
       keys: sortByPeriod as never,
       offset: "i64:1",
-      scale: "i64:0",
+      // Was `i64:0`. See `amountScale`, above, for what that cost a reader.
+      scale: `i64:${String(amountScale)}`,
       rounding: "half_even",
       output_type: scalarOut({ scalar: "decimal", ...ROW, currency }),
     },

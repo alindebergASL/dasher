@@ -5,6 +5,7 @@ import {
   type CsvRefusal,
   type LedgerSnapshot,
   type LedgerSource,
+  LEDGER_TOO_LARGE,
 } from "@dasher/ledger-domain";
 import { z } from "zod";
 
@@ -314,6 +315,23 @@ function contractMessage(error: z.ZodError): string {
     (path[0] === "periods" || path.includes("amounts"))
   ) {
     return "That export does not read as a ledger. It needs at least two period columns, named like 2026-03, so a change between periods can be computed.";
+  }
+
+  /*
+   * A ledger that reads perfectly and is simply too big.
+   *
+   * "That export does not read as a ledger" is wrong about this one, and wrong
+   * in the way that wastes somebody's afternoon: they go looking for a
+   * malformed row in a file that has none. The contract's own message names the
+   * counts and the ceiling, so it is passed through whole.
+   */
+  if (
+    issue.code === "custom" &&
+    (issue.params as Record<string, unknown> | undefined)?.[
+      LEDGER_TOO_LARGE
+    ] === true
+  ) {
+    return `That export is larger than Dasher can chart — ${issue.message}. Split it, or narrow the periods, and try again.`;
   }
 
   const line =
