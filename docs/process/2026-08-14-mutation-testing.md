@@ -87,6 +87,16 @@ Stryker restores from a backup directory when it finishes, and the CI job runs
 `git status --porcelain` afterwards so an unrestored file is reported rather
 than silently carried into the next step.
 
+**The restore cuts both ways, and the second direction is the dangerous one.**
+The backup is taken when the run starts, so anything edited while the run is in
+flight is reverted when it ends — silently, with no conflict and no message. On
+a twelve-minute run that is long enough to write a test, watch it pass, and then
+lose it: measured on 2026-08-28, when a regression test added mid-run was gone
+afterwards and only `grep -c "it("` caught it. The rule is simply not to edit
+while `pnpm test:mutation` is running, and to diff the working tree against what
+you expect once it finishes. CI never hits this because nothing else edits
+during the job; a person or an agent working alongside the run does.
+
 **A dedicated Vitest config.** The shared rules are exercised from both
 packages, so mutating them has to run both suites or the score measures the
 wrong thing. `vitest.stryker.config.ts` selects exactly those two; nothing else

@@ -2,6 +2,7 @@ import { canonicalSpecBytes } from "@dasher/dashboard-schema";
 import { describe, expect, it } from "vitest";
 
 import { operatingSpendFixture } from "@dasher/ledger-domain/fixture";
+import type { LedgerSnapshot } from "@dasher/ledger-domain";
 
 import { compileLedgerPlan, LedgerPlanRejected } from "./compile-ledger";
 import { LedgerPlanSchema, type LedgerPlan } from "./ledger-plan";
@@ -373,6 +374,118 @@ describe("the figures a ledger dashboard displays", () => {
       "Salaries and benefits is the largest share",
     );
     expect(brief.important.detail).toContain("% of spending in 2026-08");
+  });
+});
+
+/**
+ * What a reader is shown when a ratio has no denominator.
+ *
+ * The compiler used to print a fabricated `0.0%` here, because
+ * `deriveLedgerFacts` substituted a literal `"0"` for the null the engine
+ * returned. These pin both halves of the repair: the shares that ARE computable
+ * survive a sibling ratio failing, and the ones that genuinely are not say so
+ * in words instead of in a number.
+ */
+describe("when a share has no denominator", () => {
+  const periods = ["2026-06", "2026-07", "2026-08"];
+  const base = { ...snapshot, periods };
+  const plan = planLedgerDashboard("spending", ["alpha", "beta"]);
+  const componentsOf = (lines: LedgerSnapshot["lines"]) =>
+    compileLedgerPlan(plan, { ...base, lines }, options).pages.flatMap(
+      (page) => page.components,
+    );
+
+  describe("and it is a sibling ratio that failed", () => {
+    // Beta was zero last period, so `changePercent` cannot divide. Every period
+    // total is non-zero, so every share can.
+    const components = componentsOf([
+      { id: "alpha", label: "Alpha", amounts: ["100", "100", "60"] },
+      { id: "beta", label: "Beta", amounts: ["100", "0", "40"] },
+    ]);
+
+    it("prints the shares that were computed, not zeroes", () => {
+      const ranking = components.find(
+        (component) => component.kind === "ranking",
+      );
+      const notes =
+        ranking?.kind === "ranking" ? ranking.items.map((one) => one.note) : [];
+
+      // Asserted as whole notes rather than by substring: "60.0% of total"
+      // contains "0.0% of total", so a `not.toContain` here would pass on the
+      // fabricated zero it was written to catch.
+      expect(notes).toStrictEqual([
+        "no prior period · 60.0% of total",
+        "no prior period · 40.0% of total",
+      ]);
+    });
+
+    it("still reports the largest of them", () => {
+      const grid = components.find(
+        (component) => component.kind === "metric-grid",
+      );
+      const largest =
+        grid?.kind === "metric-grid"
+          ? grid.metrics.find((one) => one.label === "Largest share")?.value
+          : undefined;
+
+      expect(largest).toBe("60.0%");
+    });
+  });
+
+  describe("and there was genuinely no total to divide by", () => {
+    // The first period sums to zero, so `share` has no denominator anywhere —
+    // the window is partitioned by period and the rows cannot be filtered
+    // without changing the totals of the periods that remain.
+    const lines = [
+      { id: "alpha", label: "Alpha", amounts: ["0", "100", "60"] },
+      { id: "beta", label: "Beta", amounts: ["0", "100", "40"] },
+    ];
+    const components = componentsOf(lines);
+    const brief = compileLedgerPlan(
+      plan,
+      { ...base, lines },
+      options,
+    ).executiveBrief;
+
+    it("says so in words rather than printing a percentage", () => {
+      const ranking = components.find(
+        (component) => component.kind === "ranking",
+      );
+      const notes =
+        ranking?.kind === "ranking" ? ranking.items.map((one) => one.note) : [];
+
+      // The whole notes, not a predicate over them: `every` on an empty array
+      // is vacuously true, so a missing ranking component would have passed
+      // this test rather than failed it.
+      expect(notes).toStrictEqual([
+        "no prior period · no total to divide by",
+        "no prior period · no total to divide by",
+      ]);
+    });
+
+    it("leaves the largest-share stat empty rather than claiming a winner", () => {
+      const grid = components.find(
+        (component) => component.kind === "metric-grid",
+      );
+      const largest =
+        grid?.kind === "metric-grid"
+          ? grid.metrics.find((one) => one.label === "Largest share")?.value
+          : undefined;
+
+      expect(largest).toBe("—");
+    });
+
+    it("reports the total in the brief instead of naming a largest share", () => {
+      // The old code sorted for a `biggest` unconditionally and read a
+      // fabricated `0` off it, so this slot announced that some arbitrary line
+      // "accounts for 0.0% of spending".
+      expect(brief.important.headline).toBe(
+        "No line's share of 2026-08 could be computed",
+      );
+      expect(brief.important.detail).toContain("totalled $100");
+      expect(brief.important.detail).toContain("nothing to divide by");
+      expect(brief.important.detail).not.toContain("0.0%");
+    });
   });
 });
 

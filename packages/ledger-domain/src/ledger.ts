@@ -155,8 +155,12 @@ export interface LedgerLineFacts {
   readonly change: Exact;
   /** Percent change, or `null` when the previous period was zero. */
   readonly changePercent: Exact | null;
-  /** Share of the latest period's total, as a percentage. */
-  readonly share: Exact;
+  /**
+   * Share of the latest period's total, as a percentage, or `null` when there
+   * was no total to divide by. A reader is told which of the two it is; see
+   * `calculateLedger` for when the engine can and cannot answer.
+   */
+  readonly share: Exact | null;
   readonly budgetPerPeriod: Exact | undefined;
   /** `undefined` when the line has no budget to be over. */
   readonly overBudgetBy: Exact | undefined;
@@ -250,10 +254,14 @@ export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
       previous: cellFor(line.id, previousPeriod).amount,
       change: now.change ?? "0",
       changePercent: now.changePercent,
-      // The engine returns a ratio; a share of nothing is not a share, and the
-      // summary says the total instead rather than printing a fabricated zero
-      // as though it were measured.
-      share: now.share === null ? "0" : ratioToPercent(now.share),
+      /*
+       * A share of nothing is not a share of zero, and this used to say it was.
+       * The comment that stood here claimed the summary reported the total
+       * instead of "printing a fabricated zero as though it were measured" —
+       * and the line under it printed exactly that fabricated zero. The null
+       * travels now, and the compiler renders it in words.
+       */
+      share: now.share === null ? null : ratioToPercent(now.share),
       budgetPerPeriod: budget,
       overBudgetBy: over,
       evidenceId: `ledger-line-${line.id}`,

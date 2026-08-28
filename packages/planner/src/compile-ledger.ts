@@ -101,6 +101,39 @@ function percent(value: Exact): string {
   return `${toFixed(value, 1)}%`;
 }
 
+/**
+ * A share, or the reason there isn't one.
+ *
+ * `signedPercent` set the convention above: an undefined ratio is reported in
+ * words that name why it is undefined, not as a number that looks measured. A
+ * share is null when its period had no total to divide by, and saying "0.0%"
+ * there would tell a reader a line spent nothing — a different and false claim.
+ */
+function shareOfTotal(value: Exact | null): string {
+  return value === null
+    ? "no total to divide by"
+    : `${percent(value)} of total`;
+}
+
+/**
+ * The line holding the largest share, or `undefined` when no line has one.
+ *
+ * Lines without a share are dropped rather than sorted as zero. `compare`
+ * cannot rank an absence, and treating it as zero would rank an unmeasured line
+ * below a line measured at 0.0% — inventing an ordering out of a value nobody
+ * computed.
+ */
+function largestShare(
+  lines: readonly LedgerLineFacts[],
+): (LedgerLineFacts & { readonly share: Exact }) | undefined {
+  return lines
+    .filter(
+      (line): line is LedgerLineFacts & { readonly share: Exact } =>
+        line.share !== null,
+    )
+    .sort((one, two) => compare(two.share, one.share))[0];
+}
+
 function directionOf(change: Exact): "up" | "down" | "steady" {
   const which = sign(change);
   return which > 0 ? "up" : which < 0 ? "down" : "steady";
@@ -157,7 +190,8 @@ function buildSection(
         ],
       };
 
-    case "headline-totals":
+    case "headline-totals": {
+      const top = largestShare(lines);
       return {
         kind: "metric-grid",
         id: "headline-totals",
@@ -183,18 +217,15 @@ function buildSection(
           },
           {
             label: `Largest share`,
-            value:
-              lines[0] === undefined
-                ? "—"
-                : percent(
-                    [...lines].sort((one, two) =>
-                      compare(two.share, one.share),
-                    )[0]!.share,
-                  ),
+            // The em dash covers both no lines and no computable share: the
+            // stat has one slot and "there isn't a figure" is the whole of what
+            // it can honestly say in it.
+            value: top === undefined ? "—" : percent(top.share),
             evidenceIds: everything,
           },
         ],
       };
+    }
 
     case "largest-movers": {
       const movers = facts.movers;
@@ -209,7 +240,7 @@ function buildSection(
           id: line.id,
           label: line.label,
           value: `${sign(line.change) < 0 ? "−" : "+"}${money(abs(line.change), facts.currency)}`,
-          note: `${signedPercent(line.changePercent)} · ${percent(line.share)} of total`,
+          note: `${signedPercent(line.changePercent)} · ${shareOfTotal(line.share)}`,
           evidenceIds: uniqueIds(
             [line.evidenceId],
             [facts.calculationEvidenceId],
@@ -352,9 +383,7 @@ export function compileLedgerPlan(
     selected.map((line) => line.evidenceId),
     [facts.calculationEvidenceId],
   );
-  const biggest = [...selected].sort((one, two) =>
-    compare(two.share, one.share),
-  )[0]!;
+  const biggest = largestShare(selected);
   const evidence: Evidence[] = [
     ...facts.evidence,
     plannerEvidence(options.planner, "budget line", options.asOf),
@@ -392,16 +421,33 @@ export function compileLedgerPlan(
         detail: `Total spending moved from ${money(facts.previousTotal, facts.currency)} to ${money(facts.total, facts.currency)}.`,
         evidenceIds: everything,
       },
+      /*
+       * Three cases, not two. Over budget wins; failing that the largest share
+       * is the interesting thing; and failing THAT there is no largest share to
+       * name, because a period in this ledger totals zero and the engine will
+       * not divide by it.
+       *
+       * The third case is the one the old code did not have. It sorted for a
+       * `biggest` unconditionally and read `.share` off it, which was a
+       * fabricated `0` — so a ledger with no computable share announced that
+       * some arbitrary line "accounts for 0.0% of spending". Reporting the total
+       * instead is what the comment in `deriveLedgerFacts` always claimed
+       * happened here.
+       */
       important: {
         statementTypes: ["interpreted"],
         headline:
           facts.overBudget.length > 0
             ? `${String(facts.overBudget.length)} line${facts.overBudget.length === 1 ? "" : "s"} over budget`
-            : `${biggest.label} is the largest share`,
+            : biggest === undefined
+              ? `No line's share of ${facts.latestPeriod} could be computed`
+              : `${biggest.label} is the largest share`,
         detail:
           facts.overBudget.length > 0
             ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.`
-            : `${biggest.label} accounts for ${percent(biggest.share)} of spending in ${facts.latestPeriod}.`,
+            : biggest === undefined
+              ? `Spending in ${facts.latestPeriod} totalled ${money(facts.total, facts.currency)}. No line's share of it was computed, because a ${facts.periodLabel} in this ledger totals zero and there is nothing to divide by.`
+              : `${biggest.label} accounts for ${percent(biggest.share)} of spending in ${facts.latestPeriod}.`,
         evidenceIds: everything,
       },
     },

@@ -108,10 +108,14 @@ describe("deriveLedgerFacts", () => {
      * exact decimals and the column a reader could add up by hand adds up.
      */
     const sum = facts.lines.reduce(
-      (total, line) => exact.add(total, line.share),
+      // Every line in this fixture has a share; a null here would be the bug
+      // this sum exists to catch, so it fails loudly rather than summing as
+      // zero and still reaching 100 by luck.
+      (total, line) => exact.add(total, line.share as string),
       exact.ZERO,
     );
 
+    expect(facts.lines.every((line) => line.share !== null)).toBe(true);
     expect(sum).toBe("100");
   });
 
@@ -352,7 +356,7 @@ describe("the values deriveLedgerFacts computes", () => {
     );
   });
 
-  it("reports zero share rather than a meaningless one when nothing was spent", () => {
+  it("reports no share at all when there was no total to divide by", () => {
     const empty = withLines([
       {
         id: "only",
@@ -363,11 +367,38 @@ describe("the values deriveLedgerFacts computes", () => {
     const derived = deriveLedgerFacts(empty);
 
     expect(derived.total).toBe("0");
-    // The engine refuses to divide by zero, so no share was computed at all;
-    // what reaches the reader is a zero share and a summary that says the
-    // total, which is what the float version produced by testing for it.
-    expect(derived.lines[0]?.share).toBe("0");
+    /*
+     * This asserted `"0"`, and the comment beside it said what reaches the
+     * reader is "a zero share and a summary that says the total". Neither half
+     * was true: the summary said nothing about the total, and the zero was
+     * `deriveLedgerFacts` substituting a literal for a null the engine had
+     * refused to compute. A line holding an unknown share is not a line holding
+     * none of the budget, and the type now carries the difference.
+     */
+    expect(derived.lines[0]?.share).toBeNull();
     expect(derived.lines[0]?.changePercent).toBeNull();
+  });
+
+  it("keeps a real zero share distinguishable from an absent one", () => {
+    // The distinction the null exists to make. This line genuinely spent
+    // nothing out of a non-zero total, so its share is a measured zero — and it
+    // must not read the same as the case above.
+    const spentNothing = withLines([
+      {
+        id: "idle",
+        label: "Idle line",
+        amounts: ["0", "0", "0", "0", "0", "0"],
+      },
+      {
+        id: "busy",
+        label: "Busy line",
+        amounts: ["100", "100", "100", "100", "100", "100"],
+      },
+    ]);
+    const derived = deriveLedgerFacts(spentNothing);
+
+    expect(derived.lines.find((one) => one.id === "idle")?.share).toBe("0");
+    expect(derived.lines.find((one) => one.id === "busy")?.share).toBe("100");
   });
 
   it("keeps the period vocabulary the source supplied", () => {
