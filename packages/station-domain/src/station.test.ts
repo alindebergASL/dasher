@@ -134,6 +134,44 @@ describe("the river's numbers are parameters", () => {
     ).toBe("steady");
   });
 
+  it("rounds a change to two decimals, which the tolerances are not", () => {
+    /*
+     * The one number here that is NOT a parameter, pinned because the next
+     * domain will meet it.
+     *
+     * `changeOverHours` returns `Number((current - prior).toFixed(2))`. Both
+     * domains that exist are safe: a river gauge is feet to two places, and
+     * PM2.5 is µg/m³ on a 0-500 scale, so two decimals is below anything
+     * either reports. A domain whose PRIMARY series is in ppm is not — ozone
+     * runs 0.020 to 0.100, and a real one-hour move of 0.004 ppm would arrive
+     * here as exactly 0 and be classified steady, whatever tolerance the
+     * caller passed.
+     *
+     * Air already carries ozone in ppm, and gets away with it only because
+     * ozone is its SECONDARY series and secondaries are never differenced.
+     * `directionTolerance` and `materialRiseTolerance` were both made
+     * parameters for this reason; this precision was not, and a third domain
+     * (see the backlog) is what would find out.
+     */
+    const ppm = monitor({
+      primary: { unit: "ppm", observations: hourly([0.04, 0.048]) },
+    });
+
+    // The exact move is +0.008. What a caller gets is +0.01 — and at +0.004 it
+    // would be 0, with no way to tell that from no change at all.
+    expect(buildStationMetrics(ppm, AS_OF).primaryChange1h).toBe(0.01);
+
+    const smaller = monitor({
+      primary: { unit: "ppm", observations: hourly([0.04, 0.044]) },
+    });
+
+    expect(buildStationMetrics(smaller, AS_OF).primaryChange1h).toBe(0);
+    expect(
+      buildStationMetrics(smaller, AS_OF, { directionTolerance: 0.001 })
+        .direction,
+    ).toBe("steady");
+  });
+
   it("ranks against the caller's material-rise tolerance", () => {
     const metrics = [buildStationMetrics(monitor(), AS_OF)];
     const strict = deriveStationFacts(metrics, {
