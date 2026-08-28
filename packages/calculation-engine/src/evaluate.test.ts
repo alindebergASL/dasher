@@ -1642,6 +1642,97 @@ describe("boolean, conditional, clamp, and select", () => {
     ).toBe("invalid_graph");
   });
 
+  it("can only express a multi-column select when the hashes happen to sort", () => {
+    /*
+     * A characterization test, not a wish. `select` is unusable beyond one
+     * projection, and this pins why so the next person does not spend an
+     * afternoon finding out.
+     *
+     * Two rules apply at once. `schema.ts` requires the declared `field_id`
+     * array to be STRICTLY ASCENDING. `validate.ts` requires each `field_id` to
+     * equal `derivedSelectFieldId(node, ORDINAL, name, value_node)`, where the
+     * ordinal is the projection's index in that same array. So the position
+     * determines the hash and the hashes must ascend: a caller has to find a
+     * permutation whose derived ids happen to come out sorted, and for n columns
+     * only about 1 in n! orderings can.
+     *
+     * Whether ANY ordering works is therefore a property of the hashes, not
+     * something a caller can arrange — and it is sometimes zero. The first
+     * version of this test asserted five columns can never work, and was wrong:
+     * with the node ids below one ordering out of 120 does. Both facts are
+     * pinned here, because the useful statement is not "impossible" but "you get
+     * what the hashes give you".
+     *
+     * The eight-column set that prompted this had 2 valid orderings out of
+     * 40,320 — and seven of its eight subsets, as columns were added and
+     * removed, had none at all. A caller whose projection list varies cannot
+     * rely on the feature.
+     *
+     * Nothing is broken at runtime; the engine refuses exactly what it
+     * documents. But `select` has only ever been exercised with a single
+     * projection (the test below), which is why the interaction went unnoticed.
+     */
+    const selectId = uuid(430);
+    const columns = [
+      [uuid(431), "line_id"],
+      [uuid(432), "period"],
+      [uuid(433), "amount"],
+      [uuid(434), "period_total"],
+      [uuid(435), "change"],
+    ] as const;
+
+    const orderings = (function permute<T>(items: readonly T[]): T[][] {
+      if (items.length <= 1) return [[...items]];
+      return items.flatMap((item, index) =>
+        permute([...items.slice(0, index), ...items.slice(index + 1)]).map(
+          (rest) => [item, ...rest],
+        ),
+      );
+    })(columns);
+
+    const ascends = orderings.filter((ordering) => {
+      const ids = ordering.map(([node, name], index) =>
+        selectFieldId(selectId, index, name, node),
+      );
+      return ids.every(
+        (id, index) => index === 0 || (ids[index - 1] as string) < id,
+      );
+    });
+
+    expect(orderings).toHaveLength(120);
+    // One in 120 for this set — close to the 1/n! a random hash order predicts,
+    // and the whole of what a caller has to work with.
+    expect(ascends).toHaveLength(1);
+
+    // The same five columns under different node ids: none of the 120 works.
+    const barren = [
+      [uuid(441), "line_id"],
+      [uuid(442), "period"],
+      [uuid(443), "amount"],
+      [uuid(444), "period_total"],
+      [uuid(446), "change"],
+    ] as const;
+    const barrenOrderings = (function permute<T>(items: readonly T[]): T[][] {
+      if (items.length <= 1) return [[...items]];
+      return items.flatMap((item, index) =>
+        permute([...items.slice(0, index), ...items.slice(index + 1)]).map(
+          (rest) => [item, ...rest],
+        ),
+      );
+    })(barren);
+
+    expect(
+      barrenOrderings.filter((ordering) => {
+        const ids = ordering.map(([node, name], index) =>
+          selectFieldId(uuid(440), index, name, node),
+        );
+        return ids.every(
+          (id, index) => index === 0 || (ids[index - 1] as string) < id,
+        );
+      }),
+    ).toHaveLength(0);
+  });
+
   it("derives select field IDs from the frozen UUIDv8 preimage", () => {
     const selectId = uuid(410);
     const derived = selectFieldId(selectId, 0, "amount", FIELD_USD);
