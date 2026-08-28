@@ -327,6 +327,42 @@ describe("the values deriveLedgerFacts computes", () => {
     );
   });
 
+  it("names share of total in the calculation evidence when it was computed", () => {
+    const detail = facts.evidence.find(
+      (item) => item.id === facts.calculationEvidenceId,
+    )?.detail;
+
+    expect(detail).toBe(
+      "Totals, period-over-period change, share of total, and budget comparisons are computed by Dasher from the recorded amounts. Amounts are in USD.",
+    );
+  });
+
+  it("drops share of total from that record when it was not computed", () => {
+    /*
+     * The evidence panel is where a reader goes to check a figure, and this
+     * record is cited behind every one of them. It listed "share of total"
+     * unconditionally, so on a ledger whose shares were refused it stood at high
+     * confidence behind an em dash, asserting a calculation that had not
+     * happened. Asserted whole rather than by substring: the failure this
+     * catches is one clause remaining in a sentence, which `toContain` would
+     * miss in either direction.
+     */
+    const refused = deriveLedgerFacts(
+      withLines([
+        { id: "one", label: "One", amounts: ["0", "0", "0", "0", "0", "60"] },
+        { id: "two", label: "Two", amounts: ["0", "0", "0", "0", "0", "40"] },
+      ]),
+    );
+    const detail = refused.evidence.find(
+      (item) => item.id === refused.calculationEvidenceId,
+    )?.detail;
+
+    expect(detail).toBe(
+      "Totals, period-over-period change, and budget comparisons are computed by Dasher from the recorded amounts. Share of total was not computed for this ledger, because a period in it totals zero. Amounts are in USD.",
+    );
+    expect(refused.lines.every((line) => line.share === null)).toBe(true);
+  });
+
   it("names the source and the period span in each line's evidence", () => {
     const evidence = facts.evidence.find(
       (item) => item.id === line("cloud").evidenceId,
