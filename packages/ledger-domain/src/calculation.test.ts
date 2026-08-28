@@ -200,10 +200,13 @@ describe("when a denominator is zero", () => {
     expect(last.changePercent).toBeNull();
   });
 
-  it("drops the ratios only when it has to", () => {
-    // A line that starts at zero and then moves has no percentage change in the
-    // period after zero — so the whole snapshot loses its ratios, and this says
-    // so rather than leaving it to be discovered.
+  it("drops all three when all three have a zero denominator", () => {
+    // One line at zero until the last period. Every earlier period totals zero,
+    // so `share` has nothing to divide by; every earlier amount is zero, so
+    // `changePercent` and `totalChangePercent` have no lag to divide by either.
+    // All three are genuinely unanswerable here — which is why this case cannot
+    // tell whether they are dropped together or separately, and the two tests
+    // below exist to answer that.
     const fromZero = calculateLedger(
       withLines([
         {
@@ -221,5 +224,84 @@ describe("when a denominator is zero", () => {
     expect(last.change).toBe("500");
     expect(last.share).toBeNull();
     expect(last.changePercent).toBeNull();
+    expect(last.totalChangePercent).toBeNull();
+  });
+
+  /**
+   * The regression this block was rewritten for.
+   *
+   * A line whose previous amount was zero — one that started mid-year, a
+   * one-off cost, a refund that cancelled a charge — is ordinary, and it is the
+   * common way a real ledger acquires a zero denominator. It breaks
+   * `changePercent` and nothing else: the period totals are all non-zero, so
+   * every share is perfectly computable.
+   *
+   * The first version dropped all three ratios whenever any one of them failed,
+   * so this snapshot reported no shares at all — and `deriveLedgerFacts` then
+   * printed the missing ratio as "0", which told a reader that two lines
+   * holding 60% and 40% of the budget each held none of it.
+   */
+  const zeroPriorAmount = calculateLedger(
+    withLines([
+      {
+        id: "alpha",
+        label: "Alpha",
+        amounts: ["100", "100", "100", "100", "100", "60"],
+      },
+      {
+        id: "beta",
+        label: "Beta",
+        amounts: ["100", "100", "100", "100", "0", "40"],
+      },
+    ]),
+  );
+  const priorZeroAt = (lineId: string) =>
+    zeroPriorAmount.cells.find(
+      (one) => one.lineId === lineId && one.period === latest,
+    ) as (typeof zeroPriorAmount.cells)[number];
+
+  it("keeps every share when it is the change that cannot divide", () => {
+    expect(ratioToPercent(priorZeroAt("alpha").share as string)).toBe("60");
+    expect(ratioToPercent(priorZeroAt("beta").share as string)).toBe("40");
+  });
+
+  it("drops only the ratio whose own denominator was zero", () => {
+    // Beta is the line with the zero prior amount, so it is the reason
+    // `changePercent` cannot be computed — and the engine refuses the column
+    // rather than the row, so alpha loses its percentage too. That is a loss of
+    // information, not a false one, and narrowing it further would need the
+    // engine to express a per-row null.
+    expect(priorZeroAt("beta").changePercent).toBeNull();
+    expect(priorZeroAt("alpha").changePercent).toBeNull();
+
+    // The two ratios with sound denominators survive, which is the whole point.
+    expect(priorZeroAt("alpha").share).not.toBeNull();
+    expect(priorZeroAt("alpha").totalChangePercent).not.toBeNull();
+  });
+
+  it("loses the share but keeps the changes when the last period is empty", () => {
+    /*
+     * The mirror of the case above, and what shows the three really are
+     * independent rather than two-against-one. A zero total in the LAST period
+     * is a denominator for `share` — every row divides by its own period's
+     * total — but never for `totalChangePercent`, which divides by the period
+     * before. So the column that fails here is the opposite one.
+     */
+    const emptyLast = calculateLedger(
+      withLines([
+        {
+          id: "only",
+          label: "Only",
+          amounts: ["100", "100", "100", "100", "100", "0"],
+        },
+      ]),
+    );
+    const last = emptyLast.cells.find(
+      (one) => one.period === latest,
+    ) as (typeof emptyLast.cells)[number];
+
+    expect(last.share).toBeNull();
+    expect(last.changePercent).toBe("-100");
+    expect(last.totalChangePercent).toBe("-100");
   });
 });

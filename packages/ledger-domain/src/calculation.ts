@@ -188,7 +188,7 @@ function textValue(entry: { state: string; value: string | null }): string {
  */
 function runLedger(
   snapshot: LedgerSnapshot,
-  withRatios: boolean,
+  ratios: ReadonlySet<string>,
 ): LedgerCalculation {
   const currency = snapshot.currency;
   const fields: readonly FieldSpec[] = [
@@ -344,14 +344,13 @@ function runLedger(
   ];
 
   /**
-   * The three ratios are dropped together when a denominator is zero. Which
-   * denominator it was does not change the answer for a reader — a ledger with
-   * nothing in it has no shares and no percentage changes — and reporting some
-   * ratios and not others would need this function to explain a distinction the
-   * dashboard has no room to make.
+   * A ratio the caller did not ask for is not in the graph at all, rather than
+   * computed and discarded. The three are independent nodes with independent
+   * denominators, so which ones are present is the caller's decision and this
+   * function does not have an opinion about the combination.
    */
   const nodes = everyNode.filter(
-    (node) => withRatios || !RATIO_NODE_IDS.has(node.node_id),
+    (node) => !RATIO_NODE_IDS.has(node.node_id) || ratios.has(node.node_id),
   );
 
   const graph = buildGraph({
@@ -362,7 +361,7 @@ function runLedger(
       AMOUNT,
       PERIOD_TOTAL,
       CHANGE,
-      ...(withRatios ? [SHARE, CHANGE_PERCENT, TOTAL_CHANGE_PERCENT] : []),
+      ...RATIO_ORDER.filter((nodeId) => ratios.has(nodeId)),
     ],
     contractOutputNodeId: AMOUNT,
     input,
@@ -415,11 +414,15 @@ function runLedger(
   const lineRows = rowsOf(LINE);
   const periodRows = rowsOf(PERIOD);
   const amountRows = rowsOf(AMOUNT);
-  const shareRows = withRatios ? rowsOf(SHARE) : null;
+  const shareRows = ratios.has(SHARE) ? rowsOf(SHARE) : null;
   const changeRows = rowsOf(CHANGE);
-  const changePercentRows = withRatios ? rowsOf(CHANGE_PERCENT) : null;
+  const changePercentRows = ratios.has(CHANGE_PERCENT)
+    ? rowsOf(CHANGE_PERCENT)
+    : null;
   const periodTotalRows = rowsOf(PERIOD_TOTAL);
-  const totalChangeRows = withRatios ? rowsOf(TOTAL_CHANGE_PERCENT) : null;
+  const totalChangeRows = ratios.has(TOTAL_CHANGE_PERCENT)
+    ? rowsOf(TOTAL_CHANGE_PERCENT)
+    : null;
 
   const decimalAt = (
     source: { state: string; value: unknown }[] | null,
@@ -482,42 +485,97 @@ function runLedger(
   return { cells, inputSha256: input.sha256, rowCount: rows.length };
 }
 
-const RATIO_NODE_IDS: ReadonlySet<string> = new Set([
+/**
+ * The three ratios, in the order they are asked for and read back.
+ *
+ * They are listed once so that adding a fourth is one edit rather than four
+ * that have to agree.
+ */
+const RATIO_ORDER: readonly string[] = [
   SHARE,
   CHANGE_PERCENT,
   TOTAL_CHANGE_PERCENT,
-]);
+];
+
+const RATIO_NODE_IDS: ReadonlySet<string> = new Set(RATIO_ORDER);
 
 /**
- * Runs the figures, and answers a zero denominator with absence.
+ * Runs the figures, and answers a zero denominator with absence — for the ratio
+ * that has one, and not for the other two.
  *
- * The engine refuses `x / 0` — the whole run fails with `divide_by_zero` rather
- * than yielding a null a caller might print — and that refusal is right. What it
- * means for a ledger is that a period whose total is zero, or a line whose
- * previous amount was zero, has no share and no percentage change to report.
+ * The engine refuses `x / 0`: the whole run fails with `divide_by_zero` rather
+ * than yielding a null a caller might print, and that refusal is right. The
+ * guard cannot go in the graph either. It would need a literal zero to compare
+ * the total against, and a literal derives `grain: null` and `currency: null`,
+ * so comparing one to a row-grained amount in USD fails on both counts before it
+ * ever runs. So a ratio the engine cannot compute is not asked for, and `null`
+ * reaches the facts.
  *
- * The guard cannot go in the graph. It would need a literal zero to compare the
- * total against, and a literal derives `grain: null` and `currency: null`, so
- * comparing one to a row-grained amount in USD fails on both counts before it
- * ever runs. Rather than smuggle the case past the engine, the ratios are simply
- * not asked for on the second attempt, and `null` reaches the facts exactly
- * where the float version returned `null` for the same reason.
+ * WHAT CHANGED, AND WHY IT WAS WRONG BEFORE. The first version dropped all three
+ * ratios together, on the reasoning that "which denominator it was does not
+ * change the answer for a reader". It does, because the three denominators are
+ * different columns and they fail on different data:
  *
- * The retry costs a second run only in the degenerate case; every real snapshot
- * answers on the first.
+ * - `share` divides by its own period's total, so it fails only when a whole
+ *   period sums to zero.
+ * - `changePercent` divides by the line's previous amount, so it fails when any
+ *   single line was zero last period — a line that started mid-year, a one-off
+ *   cost, a refund that cancelled a charge.
+ * - `totalChangePercent` divides by the previous period's total, which is the
+ *   share denominator shifted by one, so a zero total in the LAST period breaks
+ *   `share` and leaves this one intact.
+ *
+ * The common case is the middle one, and it used to discard every share on the
+ * dashboard. Measured: two snapshots differing in one cell — a line whose prior
+ * amount is zero — reported 60%/40% and 0%/0%. The 0%/0% was not a share of
+ * nothing; it was two perfectly computable shares thrown away because a
+ * different column could not divide.
+ *
+ * WHAT THIS STILL DOES NOT DO. A ratio is dropped for the whole snapshot or not
+ * at all. One zero-total period still costs every period its share, because
+ * `share` is a window over a period partition and the rows cannot be filtered
+ * without changing the totals of the periods that remain. That is a loss of
+ * information rather than a false statement — the facts carry `null` and the
+ * dashboard says so in words — and narrowing it further needs the engine to
+ * express a per-row null, which is a change to a reviewed arithmetic contract
+ * and not this function's to make.
+ *
+ * COST. One run in the ordinary case, unchanged. A snapshot with a zero
+ * denominator costs five: the failed attempt, one probe per ratio, and one final
+ * run that computes the survivors together so every column comes from a single
+ * consistent evaluation. Probing is how this function learns which ratio was at
+ * fault — the engine reports `divide_by_zero` without naming the node, and
+ * re-deriving the denominators here would mean summing money in JavaScript to
+ * second-guess the engine, which is the one thing this package does not do.
  */
 export function calculateLedger(snapshot: LedgerSnapshot): LedgerCalculation {
   try {
-    return runLedger(snapshot, true);
+    return runLedger(snapshot, RATIO_NODE_IDS);
   } catch (error) {
-    if (
-      error instanceof LedgerCalculationFailed &&
-      error.reason === "divide_by_zero"
-    ) {
-      return runLedger(snapshot, false);
-    }
+    if (!isZeroDenominator(error)) throw error;
+    return runLedger(
+      snapshot,
+      new Set(RATIO_ORDER.filter((ratio) => answers(snapshot, ratio))),
+    );
+  }
+}
+
+/** Whether the engine can compute this one ratio over this snapshot. */
+function answers(snapshot: LedgerSnapshot, ratio: string): boolean {
+  try {
+    runLedger(snapshot, new Set([ratio]));
+    return true;
+  } catch (error) {
+    if (isZeroDenominator(error)) return false;
     throw error;
   }
+}
+
+function isZeroDenominator(error: unknown): boolean {
+  return (
+    error instanceof LedgerCalculationFailed &&
+    error.reason === "divide_by_zero"
+  );
 }
 
 /**
