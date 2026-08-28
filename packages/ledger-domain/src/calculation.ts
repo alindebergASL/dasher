@@ -560,13 +560,31 @@ export function calculateLedger(snapshot: LedgerSnapshot): LedgerCalculation {
   }
 }
 
-/** Whether the engine can compute this one ratio over this snapshot. */
+/**
+ * Whether the engine can compute this one ratio over this snapshot.
+ *
+ * ANY engine refusal answers "no", not just a zero denominator, and the first
+ * version of this got that wrong. It re-raised anything that was not
+ * `divide_by_zero`, which was a regression against the code it replaced: the old
+ * degenerate path built a graph with no ratio nodes in it at all, so a runtime
+ * failure confined to one ratio column — an overflow in `percentage_change`, a
+ * row cap reached only because the ratios add output nodes — could not surface.
+ * Isolating the ratios exposed those failures for the first time and then let
+ * them escape, so a snapshot that used to produce a degraded dashboard produced
+ * "no dashboard could be built from it" instead.
+ *
+ * Reaching this function already means the full run failed on a zero
+ * denominator, so the question here is only which of the three ratios can still
+ * be reported. A ratio the engine will not evaluate, for whatever reason it
+ * gives, is one of the ones that cannot. Errors that are not the engine
+ * refusing — a bug in this file, say — are still not caught.
+ */
 function answers(snapshot: LedgerSnapshot, ratio: string): boolean {
   try {
     runLedger(snapshot, new Set([ratio]));
     return true;
   } catch (error) {
-    if (isZeroDenominator(error)) return false;
+    if (error instanceof LedgerCalculationFailed) return false;
     throw error;
   }
 }

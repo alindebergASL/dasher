@@ -335,7 +335,7 @@ describe("the figures a ledger dashboard displays", () => {
     );
   });
 
-  it("reports no prior period rather than a change, when there is none", () => {
+  it("says a change was not computed rather than naming a false reason", () => {
     const single = {
       ...snapshot,
       periods: ["2026-07", "2026-08"],
@@ -349,8 +349,16 @@ describe("the figures a ledger dashboard displays", () => {
       .pages.flatMap((page) => page.components)
       .find((component) => component.kind === "metric-grid");
 
+    /*
+     * This asserted "no prior period", and the string was false every time it
+     * rendered. A latest period always HAS a prior one — the schema requires two
+     * — so a null change percent means the column was refused, never that the
+     * period was missing. Here the line is 0 then 500: the prior period exists
+     * and its amount is zero, which is precisely the case the old wording
+     * denied.
+     */
     expect(grid?.kind === "metric-grid" ? grid.metrics[0]?.change : "").toBe(
-      "no prior period",
+      "change not computed",
     );
   });
 
@@ -414,8 +422,8 @@ describe("when a share has no denominator", () => {
       // contains "0.0% of total", so a `not.toContain` here would pass on the
       // fabricated zero it was written to catch.
       expect(notes).toStrictEqual([
-        "no prior period · 60.0% of total",
-        "no prior period · 40.0% of total",
+        "change not computed · 60.0% of total",
+        "change not computed · 40.0% of total",
       ]);
     });
 
@@ -432,10 +440,18 @@ describe("when a share has no denominator", () => {
     });
   });
 
-  describe("and there was genuinely no total to divide by", () => {
-    // The first period sums to zero, so `share` has no denominator anywhere —
-    // the window is partitioned by period and the rows cannot be filtered
-    // without changing the totals of the periods that remain.
+  describe("and the share column was refused for the whole ledger", () => {
+    /*
+     * This block was named "and there was genuinely no total to divide by",
+     * which was false about its own fixture: 2026-06 sums to zero, and 2026-08
+     * — the period every one of these assertions is about — totals $100.
+     *
+     * `share` is refused for the snapshot because the window is partitioned by
+     * period and the rows cannot be filtered without changing the totals of the
+     * periods that remain. That is the accepted limitation. What was NOT
+     * acceptable was telling a reader looking at a $100 total that there was no
+     * total to divide by.
+     */
     const lines = [
       { id: "alpha", label: "Alpha", amounts: ["0", "100", "60"] },
       { id: "beta", label: "Beta", amounts: ["0", "100", "40"] },
@@ -457,9 +473,11 @@ describe("when a share has no denominator", () => {
       // The whole notes, not a predicate over them: `every` on an empty array
       // is vacuously true, so a missing ranking component would have passed
       // this test rather than failed it.
+      // Neither half names a cause any more. The row does not know one: the
+      // columns were refused for the ledger, not for this line.
       expect(notes).toStrictEqual([
-        "no prior period · no total to divide by",
-        "no prior period · no total to divide by",
+        "change not computed · share not computed",
+        "change not computed · share not computed",
       ]);
     });
 
@@ -480,11 +498,62 @@ describe("when a share has no denominator", () => {
       // fabricated `0` off it, so this slot announced that some arbitrary line
       // "accounts for 0.0% of spending".
       expect(brief.important.headline).toBe(
-        "No line's share of 2026-08 could be computed",
+        "No line's share of 2026-08 was computed",
       );
       expect(brief.important.detail).toContain("totalled $100");
-      expect(brief.important.detail).toContain("nothing to divide by");
       expect(brief.important.detail).not.toContain("0.0%");
+    });
+
+    it("still explains the missing share when a line is over budget", () => {
+      /*
+       * The over-budget headline wins, as it should — it is the thing to act on.
+       * But the first version made the explanation an ALTERNATIVE to it, so this
+       * combination put an em dash in the metric grid and said nothing anywhere
+       * on the page about why. It is the case where a reader is most likely to
+       * be reading the grid.
+       */
+      const overBudget = compileLedgerPlan(
+        plan,
+        {
+          ...base,
+          lines: lines.map((line) => ({ ...line, budgetPerPeriod: "10" })),
+        },
+        options,
+      ).executiveBrief;
+
+      expect(overBudget.important.headline).toBe("2 lines over budget");
+      expect(overBudget.important.detail).toContain("exceeded the budget");
+      expect(overBudget.important.detail).toContain(
+        "No line's share of 2026-08 was computed",
+      );
+    });
+
+    it("does not deny the total in the same breath as stating it", () => {
+      /*
+       * The assertion this replaces required the detail to contain BOTH
+       * "totalled $100" and "nothing to divide by" — a self-contradiction,
+       * pinned on adjacent lines of a test written to remove exactly this class
+       * of defect. Every string a reader sees about the missing share is checked
+       * here against the total the same page reports.
+       */
+      const said = [
+        brief.important.detail,
+        brief.changed.headline,
+        ...components.flatMap((component) =>
+          component.kind === "ranking"
+            ? component.items.map((item) => item.note ?? "")
+            : component.kind === "summary"
+              ? component.claims.map((claim) => claim.text)
+              : [],
+        ),
+      ];
+
+      expect(brief.important.detail).toContain("that total is exact");
+      for (const sentence of said) {
+        expect(sentence).not.toContain("no total to divide by");
+        expect(sentence).not.toContain("nothing to divide by");
+        expect(sentence).not.toContain("no prior period");
+      }
     });
   });
 });

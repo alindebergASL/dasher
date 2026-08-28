@@ -115,7 +115,9 @@ describe("deriveLedgerFacts", () => {
       exact.ZERO,
     );
 
-    expect(facts.lines.every((line) => line.share !== null)).toBe(true);
+    // Was `every(share !== null)`, which could not fail on either revision:
+    // this fixture has no zero denominator, so the guard proved nothing. The sum
+    // below is the real assertion, and a null would make `add` throw.
     expect(sum).toBe("100");
   });
 

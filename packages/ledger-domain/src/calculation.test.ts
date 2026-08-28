@@ -279,6 +279,45 @@ describe("when a denominator is zero", () => {
     expect(priorZeroAt("alpha").totalChangePercent).not.toBeNull();
   });
 
+  it("degrades rather than refusing when a probe fails for another reason", () => {
+    /*
+     * The regression this replaced. Isolating the ratios exposed engine failures
+     * the old all-or-nothing path could not reach — it built a graph with no
+     * ratio nodes at all — and the first version of `answers` re-raised them,
+     * turning a degraded dashboard into "no dashboard could be built from it".
+     *
+     * Both failures have to be present and they have to be DIFFERENT, which is
+     * the whole difficulty of writing this case. The first period totals zero by
+     * cancellation, so `share` cannot divide; no amount is zero, so
+     * `changePercent` has no zero denominator anywhere and fails instead on the
+     * 1 -> 1e30 jump overflowing at scale 8. A snapshot with a zero AMOUNT would
+     * make both refusals `divide_by_zero` and prove nothing.
+     */
+    const both = LedgerSnapshotSchema.parse({
+      ...snapshot,
+      periods: ["2026-06", "2026-07", "2026-08"],
+      lines: [
+        {
+          id: "alpha",
+          label: "Alpha",
+          amounts: ["1", "1000000000000000000000000000000", "5"],
+        },
+        { id: "beta", label: "Beta", amounts: ["-1", "1", "5"] },
+      ],
+    });
+
+    expect(() => calculateLedger(both)).not.toThrow();
+    const cells = calculateLedger(both).cells;
+    const alpha = cells.find(
+      (one) => one.period === "2026-08" && one.lineId === "alpha",
+    ) as (typeof cells)[number];
+
+    // The amounts still arrive; only the ratios the engine refused are absent.
+    expect(alpha.amount).toBe("5");
+    expect(alpha.share).toBeNull();
+    expect(alpha.changePercent).toBeNull();
+  });
+
   it("loses the share but keeps the changes when the last period is empty", () => {
     /*
      * The mirror of the case above, and what shows the three really are

@@ -91,8 +91,32 @@ function money(amount: Exact, currency: string): string {
   return (formatter.format as unknown as (value: string) => string)(amount);
 }
 
+/**
+ * WHY AN ABSENT RATIO IS NOT GIVEN A REASON HERE.
+ *
+ * The convention these three functions follow is that an undefined ratio is
+ * reported in words rather than as a number that looks measured — saying "0.0%"
+ * would tell a reader a line spent nothing, which is a different and false
+ * claim. That much survived review. What did not is the wording.
+ *
+ * The first version named a CAUSE: "no prior period" for a change, "no total to
+ * divide by" for a share. Both are false, and not at the margin.
+ * `calculateLedger` drops a ratio for the WHOLE SNAPSHOT or not at all, so what
+ * a null means is "this column was refused", never "this row had no
+ * denominator". Measured, on a ledger whose 2026-03 totals zero: the page
+ * printed `Total, 2026-08 = $299,100` in one tile and "no total to divide by"
+ * three inches below it. And every latest-period line has a previous amount —
+ * the schema requires two periods — so "no prior period" was wrong in every
+ * case it ever rendered, including for lines whose own prior amount was fine.
+ *
+ * That was the same defect the change these functions belong to set out to
+ * remove: a fabricated number replaced by a fabricated explanation. So the words
+ * now say only what is true — the figure was not computed — and the cause, which
+ * is a property of the ledger rather than of the row, is stated once in the
+ * executive brief where there is room to state it correctly.
+ */
 function signedPercent(value: Exact | null): string {
-  if (value === null) return "no prior period";
+  if (value === null) return "change not computed";
   // `toFixed` already carries the minus sign; only the plus has to be added.
   return `${sign(value) < 0 ? "" : "+"}${toFixed(value, 1)}%`;
 }
@@ -101,18 +125,18 @@ function percent(value: Exact): string {
   return `${toFixed(value, 1)}%`;
 }
 
-/**
- * A share, or the reason there isn't one.
- *
- * `signedPercent` set the convention above: an undefined ratio is reported in
- * words that name why it is undefined, not as a number that looks measured. A
- * share is null when its period had no total to divide by, and saying "0.0%"
- * there would tell a reader a line spent nothing — a different and false claim.
- */
 function shareOfTotal(value: Exact | null): string {
-  return value === null
-    ? "no total to divide by"
-    : `${percent(value)} of total`;
+  return value === null ? "share not computed" : `${percent(value)} of total`;
+}
+
+/**
+ * The one place the cause is named, because it is the one place with room to
+ * name it correctly. Reached only when a ratio was refused, and true whichever
+ * of the three it was: the engine will not divide by zero, and the ledger holds
+ * a zero where a denominator was needed.
+ */
+function whyNotComputed(periodLabel: string): string {
+  return `A ${periodLabel} in this ledger holds a zero where a denominator was needed, and Dasher does not divide by it. The figure is left out rather than reported as zero.`;
 }
 
 /**
@@ -131,7 +155,14 @@ function largestShare(
       (line): line is LedgerLineFacts & { readonly share: Exact } =>
         line.share !== null,
     )
-    .sort((one, two) => compare(two.share, one.share))[0];
+    .sort(
+      (one, two) =>
+        // Tie-broken by id, the way `movers` and `overBudget` are in
+        // `deriveLedgerFacts`. Without it two lines on an identical share
+        // resolve by the order the plan happened to list them, and the brief
+        // names a different "largest" for the same ledger.
+        compare(two.share, one.share) || one.id.localeCompare(two.id),
+    )[0];
 }
 
 function directionOf(change: Exact): "up" | "down" | "steady" {
@@ -162,7 +193,17 @@ function buildSection(
         tone: facts.overBudget.length > 0 ? "attention" : "normal",
         claims: [
           {
-            text: `Total spending for ${facts.latestPeriod} was ${money(facts.total, facts.currency)}, ${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}.`,
+            /*
+             * Branched rather than interpolated. `signedPercent` returns a noun
+             * phrase written for a stat slot, and dropping it into a sentence
+             * produced "Total spending for 2026-08 was $299,100, no prior period
+             * against 2026-07." — a fragment, rendered to a reader and stored as
+             * a claim.
+             */
+            text:
+              facts.totalChangePercent === null
+                ? `Total spending for ${facts.latestPeriod} was ${money(facts.total, facts.currency)}. Its change against ${facts.previousPeriod} was not computed. ${whyNotComputed(facts.periodLabel)}`
+                : `Total spending for ${facts.latestPeriod} was ${money(facts.total, facts.currency)}, ${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}.`,
             evidenceIds: everything,
           },
           ...(facts.movers[0] === undefined
@@ -417,22 +458,33 @@ export function compileLedgerPlan(
       },
       changed: {
         statementTypes: ["calculated"],
-        headline: `${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}`,
+        // Same fragment problem as the spending summary above: this slot read
+        // "no prior period against 2026-07" and was persisted that way.
+        headline:
+          facts.totalChangePercent === null
+            ? `Change against ${facts.previousPeriod} not computed`
+            : `${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}`,
+        // The move itself is exact whether or not its percentage divides, so the
+        // detail says it either way.
         detail: `Total spending moved from ${money(facts.previousTotal, facts.currency)} to ${money(facts.total, facts.currency)}.`,
         evidenceIds: everything,
       },
       /*
-       * Three cases, not two. Over budget wins; failing that the largest share
-       * is the interesting thing; and failing THAT there is no largest share to
-       * name, because a period in this ledger totals zero and the engine will
-       * not divide by it.
+       * Three cases, and the ORDER of the first two was wrong.
        *
-       * The third case is the one the old code did not have. It sorted for a
-       * `biggest` unconditionally and read `.share` off it, which was a
+       * Over budget still wins the headline — it is the thing a reader must act
+       * on. But the first version made the missing-share explanation an
+       * alternative to it, so a ledger that was both over budget and unable to
+       * compute a share showed "1 line over budget" and nothing at all about the
+       * em dash sitting in the metric grid above. That is the case where a
+       * reader is most likely to be scanning the grid, and it was the case with
+       * no explanation on the page. The detail now carries the reason whenever
+       * there is one to carry, whatever the headline is about.
+       *
+       * The third case is the one the old code did not have at all. It sorted
+       * for a `biggest` unconditionally and read `.share` off it, which was a
        * fabricated `0` — so a ledger with no computable share announced that
-       * some arbitrary line "accounts for 0.0% of spending". Reporting the total
-       * instead is what the comment in `deriveLedgerFacts` always claimed
-       * happened here.
+       * some arbitrary line "accounts for 0.0% of spending".
        */
       important: {
         statementTypes: ["interpreted"],
@@ -440,13 +492,13 @@ export function compileLedgerPlan(
           facts.overBudget.length > 0
             ? `${String(facts.overBudget.length)} line${facts.overBudget.length === 1 ? "" : "s"} over budget`
             : biggest === undefined
-              ? `No line's share of ${facts.latestPeriod} could be computed`
+              ? `No line's share of ${facts.latestPeriod} was computed`
               : `${biggest.label} is the largest share`,
         detail:
           facts.overBudget.length > 0
-            ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.`
+            ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.${biggest === undefined ? ` No line's share of ${facts.latestPeriod} was computed. ${whyNotComputed(facts.periodLabel)}` : ""}`
             : biggest === undefined
-              ? `Spending in ${facts.latestPeriod} totalled ${money(facts.total, facts.currency)}. No line's share of it was computed, because a ${facts.periodLabel} in this ledger totals zero and there is nothing to divide by.`
+              ? `Spending in ${facts.latestPeriod} totalled ${money(facts.total, facts.currency)}, and that total is exact. What was not computed is each line's share of it. ${whyNotComputed(facts.periodLabel)}`
               : `${biggest.label} accounts for ${percent(biggest.share)} of spending in ${facts.latestPeriod}.`,
         evidenceIds: everything,
       },

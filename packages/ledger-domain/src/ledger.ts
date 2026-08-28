@@ -156,9 +156,15 @@ export interface LedgerLineFacts {
   /** Percent change, or `null` when the previous period was zero. */
   readonly changePercent: Exact | null;
   /**
-   * Share of the latest period's total, as a percentage, or `null` when there
-   * was no total to divide by. A reader is told which of the two it is; see
-   * `calculateLedger` for when the engine can and cannot answer.
+   * Share of the latest period's total, as a percentage, or `null` when the
+   * share column was refused.
+   *
+   * The null does NOT mean this period had no total — that reading was written
+   * here first and it is wrong. `calculateLedger` drops a ratio for the whole
+   * snapshot or not at all, so a share is absent when ANY period in the ledger
+   * totals zero, including when the latest period's own total is large and
+   * exact. A caller putting words to this must say the figure was not computed,
+   * not why this row lacked a denominator.
    */
   readonly share: Exact | null;
   readonly budgetPerPeriod: Exact | undefined;
@@ -287,7 +293,18 @@ export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
       label: "Ledger calculations",
       sourceName: "Dasher calculations",
       retrievedAt: parsed.retrievedAt,
-      detail: `Totals, period-over-period change, share of total, and budget comparisons are computed by Dasher from the recorded amounts. Amounts are in ${parsed.currency}.`,
+      /*
+       * Names what was actually computed for THIS ledger, not what this
+       * function is capable of computing.
+       *
+       * The fixed string listed "share of total" unconditionally. On a ledger
+       * whose shares were refused, that record was cited — at high confidence,
+       * as supporting evidence — behind an em dash, so the audit trail asserted
+       * a calculation that had not happened. The evidence panel is the one place
+       * a reader goes to check a figure; it is the last place that should
+       * describe work in general terms.
+       */
+      detail: `${["Totals", "period-over-period change", ...(lines.some((line) => line.share !== null) ? ["share of total"] : []), "budget comparisons"].join(", ").replace(/, ([^,]*)$/u, ", and $1")} are computed by Dasher from the recorded amounts.${lines.every((line) => line.share === null) ? " Share of total was not computed for this ledger, because a period in it totals zero." : ""} Amounts are in ${parsed.currency}.`,
       confidence: "high",
     },
   ];
