@@ -49,3 +49,39 @@ export function isSameOrigin(request: NextRequest): boolean {
     return false;
   }
 }
+
+/**
+ * Where to send a browser after a POST that changed something.
+ *
+ * `new URL("/", request.url)` is the obvious spelling and it is wrong on a
+ * deployment. Next resolves `request.url` from the address it was told to
+ * listen on, not from the `Host` the browser sent — so the image, which starts
+ * with `--hostname 0.0.0.0 --port 3000`, redirected sign-in to
+ * `http://0.0.0.0:3000/`. Measured against the built image behind a proxy:
+ *
+ *     HTTP/1.1 303 See Other
+ *     location: http://0.0.0.0:3000/
+ *     set-cookie: __Host-dasher_session=...; Secure; HttpOnly; SameSite=lax
+ *
+ * The session was real and the reader still landed on a browser error page,
+ * signed in to a page they could not reach.
+ *
+ * The end-to-end suite cannot see this. It starts the same server with
+ * `--hostname 127.0.0.1 --port 3100`, where `request.url` happens to be an
+ * address the browser can reach, so every redirect resolves and every
+ * assertion passes. The defect lives in the difference between how the suite
+ * starts Next and how the Dockerfile does.
+ *
+ * `publicOrigin()` is the configured public address, already validated and
+ * already required before a sign-in link can be raised at all. Falling back to
+ * `request.url` keeps a local run working where the variable is unset — the
+ * situation that hid this in the first place, kept deliberately rather than
+ * turned into a crash.
+ */
+export function siteUrl(path: string, request: NextRequest): URL {
+  try {
+    return new URL(path, publicOrigin());
+  } catch {
+    return new URL(path, request.url);
+  }
+}

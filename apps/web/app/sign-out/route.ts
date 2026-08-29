@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getPool, isPersistenceConfigured } from "../database";
 import { readSessionCredential, SESSION_COOKIE_NAME } from "../session";
-import { isSameOrigin } from "../same-origin";
+import { isSameOrigin, siteUrl } from "../same-origin";
 
 /**
  * End the session and clear the cookie.
@@ -39,10 +39,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // Checked before anything is cleared or revoked. A cross-site caller gets a
   // redirect and no `Set-Cookie`, so it cannot log anybody out.
   if (!isSameOrigin(request)) {
-    return NextResponse.redirect(new URL("/", request.url), { status: 303 });
+    return NextResponse.redirect(siteUrl("/", request), { status: 303 });
   }
 
-  const response = NextResponse.redirect(new URL("/", request.url), {
+  const response = NextResponse.redirect(siteUrl("/", request), {
     // 303, so the browser follows with GET rather than re-POSTing to `/`.
     status: 303,
   });
