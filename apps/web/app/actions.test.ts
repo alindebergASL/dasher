@@ -20,6 +20,7 @@ import { UPLOAD_MAX_BYTES } from "./upload";
 // text sweep: it forbids that form anywhere in first-party source and does not
 // treat type positions differently from value ones -- nor comments differently
 // from code, which is why this note does not quote the form it is avoiding.
+import type * as Session from "./session";
 import type * as SourceRuntime from "./source-runtime";
 import type * as DashboardSchema from "@dasher/dashboard-schema";
 
@@ -43,6 +44,16 @@ let unavailableDomains: readonly ("river" | "air")[] = [];
 let composeRefuses = false;
 /** A fault that is NOT a refusal, so the two branches can be told apart. */
 let composeFaults = false;
+
+/*
+ * No request scope in a unit test, so `cookies()` throws before the code under
+ * test can decide anything. Answering "no session" is the state these tests are
+ * about: every one of them is a reader who has not signed in.
+ */
+vi.mock("./session", async (importOriginal) => ({
+  ...(await importOriginal<typeof Session>()),
+  readSessionCredential: async () => undefined,
+}));
 
 vi.mock("@dasher/dashboard-schema", async (importOriginal) => {
   const actual = await importOriginal<typeof DashboardSchema>();
@@ -681,6 +692,29 @@ describe("uploadLedgerDashboard", () => {
     expect(result.ok).toBe(false);
     expect(result.dashboard).toBeUndefined();
     expect(result.error).toMatch(/nowhere to keep them/u);
+  });
+
+  it("tells a signed-out reader to sign in, not that the deployment is broken", async () => {
+    /*
+     * These two refusals were one string, on the reasoning that they were both
+     * "nowhere to put the file". A deployment with no database and a reader who
+     * is not signed in are not the same thing, and the second is the one an
+     * ordinary visitor reaches: the upload panel is on the PUBLIC page.
+     *
+     * Measured on the deployable, a signed-out upload was told "this deployment
+     * has nowhere to keep them" — which sends somebody to check their server
+     * configuration over what is a sign-in prompt.
+     */
+    vi.stubEnv("DASHER_DATABASE_URL", "postgresql://u:p@localhost:5432/d");
+    try {
+      const result = await uploadLedgerDashboard(form());
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/Sign in first/u);
+      expect(result.error).not.toMatch(/nowhere to keep them/u);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("asks for a file before anything else", async () => {

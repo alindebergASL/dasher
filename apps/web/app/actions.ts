@@ -809,9 +809,27 @@ export async function uploadLedgerDashboard(
   if (!isPersistenceConfigured()) {
     return { ok: false, error: NO_DURABLE_HOME };
   }
+  /*
+   * Being signed out is NOT the same refusal, and saying it was told a reader
+   * something false about the deployment.
+   *
+   * These two returned one message, on the reasoning that they were "both ways
+   * of having nowhere to put the file". They are not. The first is true: there
+   * is no database, so nothing can be kept. The second is a deployment that
+   * keeps files perfectly well and has nobody to attribute this one to — and
+   * the upload panel sits on the PUBLIC page, so it is the case an ordinary
+   * visitor reaches by trying the product before signing in. Measured on the
+   * deployable: a signed-out upload was told "this deployment has nowhere to
+   * keep them", which sends somebody to check their configuration over what is
+   * a sign-in prompt.
+   *
+   * Nothing is leaked by telling them apart. That a deployment has persistence
+   * is not a secret — the sign-in page is public, and a reader who can see this
+   * form can see that.
+   */
   const credential = await readSessionCredential();
   if (credential === undefined) {
-    return { ok: false, error: NO_DURABLE_HOME };
+    return { ok: false, error: NOT_SIGNED_IN };
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -932,9 +950,13 @@ export async function uploadLedgerDashboard(
   }
 }
 
-/** Kept identical across both ways of having nowhere to put the file. */
+/** A deployment with no database at all: nothing can be kept, by anyone. */
 const NO_DURABLE_HOME =
   "Uploads are kept as the evidence behind their dashboard, and this deployment has nowhere to keep them. Nothing was built.";
+
+/** A deployment that can keep the file, for somebody it can name. */
+const NOT_SIGNED_IN =
+  "Sign in first: an upload is stored as the evidence behind its dashboard, so it has to belong to an organization. Nothing was built.";
 
 /** Which reader was applied, which is what a later reader needs to know. */
 const UPLOAD_SOURCE_KIND = "csv-upload";
