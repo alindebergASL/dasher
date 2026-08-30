@@ -46,6 +46,8 @@ const appUsername = `dasher_test_${randomUUID().replaceAll("-", "")}`;
 let operatorPool: Pool;
 let ownerPool: Pool;
 let appPool: Pool;
+/** Kept so the burst test can open a pool wide enough to actually race. */
+let appConnectionString: string;
 
 function context() {
   return { requestId: randomUUID(), deploymentRevision: "test" };
@@ -110,7 +112,8 @@ beforeAll(async () => {
   await createTemporaryAppLogin(ownerPool, appDsnUrl.toString(), appUsername);
   const appUrl = new URL(appDsnUrl.toString());
   appUrl.username = appUsername;
-  appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
+  appConnectionString = appUrl.toString();
+  appPool = new Pool({ connectionString: appConnectionString, max: 4 });
   ignoreTeardownShutdown(appPool);
 }, 60_000);
 
@@ -295,6 +298,57 @@ it("stops sending after five links in an hour", async () => {
   expect(
     await beginSignIn(appPool, { email: "flooded@example.com", ...context() }),
   ).toBeUndefined();
+});
+
+/**
+ * The limit under concurrency, which is the only condition it was ever going
+ * to be tested under in production.
+ *
+ * The sequential test above passes against a function that counts, compares,
+ * and then inserts as three separate statements -- because sequentially those
+ * three ARE one decision. Concurrently they are not: under READ COMMITTED every
+ * transaction in a burst takes its snapshot before any of them has inserted, so
+ * each one reads a count below the limit and each one proceeds. Bursts of a
+ * dozen stored six, and at times eight, against a documented cap of five.
+ *
+ * This is not a theoretical window. The sign-in form is unauthenticated and, in
+ * the deployment this was written for, public: the limit is the only thing
+ * bounding how much mail one known address can be sent.
+ *
+ * Twelve rather than six, and a pool wide enough for all of them, because the
+ * race needs the requests genuinely in flight together -- a pool that queues
+ * them serializes them and the test would pass without proving anything.
+ */
+it("stores no more than five links when a burst arrives at once", async () => {
+  await provision("burst@example.com");
+
+  const burstPool = new Pool({ connectionString: appConnectionString, max: 12 });
+  ignoreTeardownShutdown(burstPool);
+
+  try {
+    const results = await Promise.all(
+      Array.from({ length: 12 }, async () =>
+        beginSignIn(burstPool, { email: "burst@example.com", ...context() }),
+      ),
+    );
+
+    const issued = results.filter((link) => link !== undefined).length;
+    const stored = await ownerPool.query<{ count: string }>(
+      `SELECT pg_catalog.count(*) AS count
+         FROM dasher.sign_in_challenges
+        WHERE normalized_email = $1`,
+      ["burst@example.com"],
+    );
+
+    // Both, not either. A function that refused everything would keep `stored`
+    // at or under five while breaking sign-in entirely, and a caller that
+    // dropped links on the floor would keep `issued` low while the rows piled
+    // up. The limit means these two numbers are five and are the same number.
+    expect(issued).toBe(5);
+    expect(Number(stored.rows[0]?.count)).toBe(5);
+  } finally {
+    await burstPool.end();
+  }
 });
 
 it("records both halves of a sign-in in the audit trail", async () => {

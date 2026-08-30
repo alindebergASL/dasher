@@ -153,6 +153,7 @@ describe("discoverMigrations", () => {
       "0001_baseline.sql",
       "0002_sign_in.sql",
       "0003_session_revocation.sql",
+      "0004_sign_in_rate_limit_lock.sql",
     ]);
     expect(migrations[0]?.sql).toContain("CREATE TABLE dasher.dashboards");
     expect(migrations[1]?.sql).toContain(
@@ -160,6 +161,9 @@ describe("discoverMigrations", () => {
     );
     expect(migrations[2]?.sql).toContain(
       "CREATE FUNCTION dasher_api.revoke_session",
+    );
+    expect(migrations[3]?.sql).toContain(
+      "pg_catalog.pg_advisory_xact_lock",
     );
   });
 
