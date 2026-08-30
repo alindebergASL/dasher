@@ -5,6 +5,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 
 import {
   bootstrapManagedRoles,
+  DashboardRepositoryError,
   parsePostgresIntegrationEnv,
   runMigrations,
   seedDevPrincipal,
@@ -307,14 +308,34 @@ it("writes nothing when the request fails after a save", async () => {
   expect(found).toBeUndefined();
 });
 
-it("refuses to save without a valid session", async () => {
-  await expect(
-    withDashboardRepository(
-      appPool,
-      { tokenKeyVersion: 1, token: Buffer.alloc(32, 3) },
-      async (repository) => repository.save(saveInput("unauthenticated")),
-    ),
-  ).rejects.toMatchObject({ code: "denied" });
+/**
+ * A well-formed token the database refuses arrives as this package's OWN error,
+ * not as the seam's.
+ *
+ * The credential below is the shape of a real one — right key version, right
+ * length — so nothing upstream can reject it on syntax. It is simply not a
+ * token anybody was issued, which is the same position a caller is in when
+ * theirs has expired, been revoked, or lost its membership. The seam raises
+ * `RequestContextError("denied")` for all of those; the facade re-raises it as
+ * `not_authenticated`.
+ *
+ * Asserting the CLASS matters as much as the code. `request-context.ts` is not
+ * exported, so a caller outside this package cannot name `RequestContextError`
+ * to match on it; if the translation were dropped, the rejection would still
+ * carry a `code` and a `toMatchObject` check alone would keep passing while
+ * every caller lost the ability to recognise it.
+ */
+it("refuses to save without a valid session, in its own vocabulary", async () => {
+  const rejection = withDashboardRepository(
+    appPool,
+    { tokenKeyVersion: 1, token: Buffer.alloc(32, 3) },
+    async (repository) => repository.save(saveInput("unauthenticated")),
+  );
+
+  await expect(rejection).rejects.toBeInstanceOf(DashboardRepositoryError);
+  await expect(rejection).rejects.toMatchObject({
+    code: "not_authenticated",
+  });
 });
 
 it("keeps each organization's dashboards to itself when both have saved", async () => {

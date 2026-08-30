@@ -15,7 +15,10 @@ import {
   type PlannerRunOptions,
   type PlanningProvider,
 } from "@dasher/planner";
-import { withDashboardRepository } from "@dasher/control-plane";
+import {
+  DashboardRepositoryError,
+  withDashboardRepository,
+} from "@dasher/control-plane";
 import {
   canonicalSpecBytes,
   composeDashboards,
@@ -938,7 +941,28 @@ export async function uploadLedgerDashboard(
       noRefinement: "uploaded-file",
       dashboardId,
     };
-  } catch {
+  } catch (error) {
+    /*
+     * A session that ended is not a storage failure, and calling it one asks
+     * for a retry that cannot work.
+     *
+     * The `readSessionCredential() === undefined` check above catches only a
+     * credential too malformed to parse — no cookie, empty, bad base64, too
+     * short. A well-formed token that is expired, revoked, forged, or attached
+     * to a membership that no longer exists parses fine, reaches the database,
+     * and is refused there. That is the COMMON way to be signed out: a stale
+     * tab, not a corrupt cookie. Both used to arrive here and be described as
+     * "That export could not be stored ... Try again."
+     *
+     * The seam deliberately gives one code for every rejection, so this cannot
+     * and does not tell the reader which it was.
+     */
+    if (
+      error instanceof DashboardRepositoryError &&
+      error.code === "not_authenticated"
+    ) {
+      return { ok: false, error: NOT_SIGNED_IN };
+    }
     // Unlike the typed path, this does NOT return the dashboard with a warning.
     // The file is the evidence; a dashboard shown after its evidence failed to
     // store is the exact state this action exists to prevent.

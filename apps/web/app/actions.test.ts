@@ -20,6 +20,8 @@ import { UPLOAD_MAX_BYTES } from "./upload";
 // text sweep: it forbids that form anywhere in first-party source and does not
 // treat type positions differently from value ones -- nor comments differently
 // from code, which is why this note does not quote the form it is avoiding.
+import { DashboardRepositoryError } from "@dasher/control-plane";
+import type * as ControlPlane from "@dasher/control-plane";
 import type * as Session from "./session";
 import type * as SourceRuntime from "./source-runtime";
 import type * as DashboardSchema from "@dasher/dashboard-schema";
@@ -47,13 +49,43 @@ let composeFaults = false;
 
 /*
  * No request scope in a unit test, so `cookies()` throws before the code under
- * test can decide anything. Answering "no session" is the state these tests are
- * about: every one of them is a reader who has not signed in.
+ * test can decide anything. Answering "no session" is the state most of these
+ * tests are about: a reader who has not signed in.
+ *
+ * Mutable rather than fixed, because "no credential at all" and "a credential
+ * the database refuses" are DIFFERENT states that used to produce the same
+ * sentence, and only the first can be reached by returning `undefined`.
  */
+let presentedCredential: Awaited<
+  ReturnType<typeof Session.readSessionCredential>
+> = undefined;
+
 vi.mock("./session", async (importOriginal) => ({
   ...(await importOriginal<typeof Session>()),
-  readSessionCredential: async () => undefined,
+  readSessionCredential: async () => presentedCredential,
 }));
+
+/**
+ * Rejection injected at the repository seam, for the stale-session case.
+ *
+ * Kept `undefined` by default so every other test runs the real facade; a mock
+ * that always rejected would make the tests below prove nothing about the code
+ * that actually stores a file.
+ */
+let repositoryRejection: Error | undefined;
+
+vi.mock("@dasher/control-plane", async (importOriginal) => {
+  const actual = await importOriginal<typeof ControlPlane>();
+  return {
+    ...actual,
+    withDashboardRepository: async (
+      ...args: Parameters<typeof ControlPlane.withDashboardRepository>
+    ) => {
+      if (repositoryRejection !== undefined) throw repositoryRejection;
+      return actual.withDashboardRepository(...args);
+    },
+  };
+});
 
 vi.mock("@dasher/dashboard-schema", async (importOriginal) => {
   const actual = await importOriginal<typeof DashboardSchema>();
@@ -714,6 +746,58 @@ describe("uploadLedgerDashboard", () => {
       expect(result.error).not.toMatch(/nowhere to keep them/u);
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+
+  it("tells a reader with a dead session to sign in, not to retry storage", async () => {
+    /*
+     * The commit that split these two messages only caught a credential too
+     * malformed to parse. A well-formed token that is expired, revoked,
+     * forged, or attached to a membership that no longer exists parses fine,
+     * reaches PostgreSQL, and is refused THERE — and that is the common way to
+     * be signed out: a tab left open overnight, not a corrupt cookie.
+     *
+     * Every such reader was told "That export could not be stored ... Try
+     * again." Retrying cannot work. The fix has to key on the repository's own
+     * `not_authenticated`, which is why the facade translates the seam's
+     * denial instead of callers matching on an unexported error type.
+     */
+    vi.stubEnv("DASHER_DATABASE_URL", "postgresql://u:p@localhost:5432/d");
+    presentedCredential = { tokenKeyVersion: 1, token: Buffer.alloc(32, 3) };
+    repositoryRejection = new DashboardRepositoryError(
+      "not_authenticated",
+      "the presented credential was not accepted",
+    );
+    try {
+      const result = await uploadLedgerDashboard(form());
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/Sign in first/u);
+      expect(result.error).not.toMatch(/could not be stored/u);
+    } finally {
+      vi.unstubAllEnvs();
+      presentedCredential = undefined;
+      repositoryRejection = undefined;
+    }
+  });
+
+  it("still calls a real storage failure a storage failure", async () => {
+    // The guard above must not swallow the case it sits in front of: a genuine
+    // database, transaction, or evidence fault is still worth retrying, and
+    // telling that reader to sign in would be the same error in reverse.
+    vi.stubEnv("DASHER_DATABASE_URL", "postgresql://u:p@localhost:5432/d");
+    presentedCredential = { tokenKeyVersion: 1, token: Buffer.alloc(32, 3) };
+    repositoryRejection = new Error("connection terminated unexpectedly");
+    try {
+      const result = await uploadLedgerDashboard(form());
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/could not be stored/u);
+      expect(result.error).not.toMatch(/Sign in first/u);
+    } finally {
+      vi.unstubAllEnvs();
+      presentedCredential = undefined;
+      repositoryRejection = undefined;
     }
   });
 

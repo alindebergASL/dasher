@@ -1,4 +1,5 @@
 import {
+  RequestContextError,
   withRequestContext,
   type RequestCredential,
   type RequestPool,
@@ -169,6 +170,17 @@ export interface LoadedDashboard {
 export type DashboardRepositoryErrorCode =
   /** A seam refused the write because state moved under it. */
   | "conflict"
+  /**
+   * The credential presented was not accepted: absent, expired, revoked, or
+   * belonging to no live membership. The seam deliberately does not say which
+   * of those it was, and neither does this.
+   *
+   * This exists so a caller can tell "your session is over" apart from "the
+   * write failed", WITHOUT the request-context module becoming public. A
+   * caller that cannot make the distinction has to describe a dead session as
+   * a storage fault and invite a retry that can never work.
+   */
+  | "not_authenticated"
   /** A seam returned success without the identifier it promises. */
   | "unexpected_shape";
 
@@ -522,7 +534,31 @@ export async function withDashboardRepository<T>(
     principal: RequestPrincipal,
   ) => Promise<T>,
 ): Promise<T> {
-  return withRequestContext(pool, credential, async (handle, principal) =>
-    work(createDashboardRepository(handle, principal), principal),
-  );
+  try {
+    return await withRequestContext(pool, credential, async (handle, principal) =>
+      work(createDashboardRepository(handle, principal), principal),
+    );
+  } catch (error) {
+    /*
+     * Translate the one context failure a caller can act on, and let every
+     * other one through as itself.
+     *
+     * `request-context.ts` stays unexported — its handle still accepts SQL —
+     * so its error type cannot be what callers match on. Re-raising the denial
+     * in the vocabulary this module already publishes is what lets a caller
+     * distinguish a finished session from a broken database without being
+     * handed the seam to do it.
+     *
+     * Note the `await` above: without it this returns the promise and the
+     * rejection escapes the `try` entirely, which is the shape of bug that
+     * makes a translation like this silently do nothing.
+     */
+    if (error instanceof RequestContextError && error.code === "denied") {
+      throw new DashboardRepositoryError(
+        "not_authenticated",
+        "the presented credential was not accepted",
+      );
+    }
+    throw error;
+  }
 }
