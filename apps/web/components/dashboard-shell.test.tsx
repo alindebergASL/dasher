@@ -239,6 +239,27 @@ describe("DashboardShell", () => {
     expect(screen.getByText("Conditions summary")).toBeInTheDocument();
   });
 
+  it("says nothing about a latest observation when there is no instant", () => {
+    /*
+     * `UTC` sat outside the ternary, so a dashboard with no observation time
+     * rendered "Unknown UTC" — a unit on a non-value, in the largest type on
+     * the page. Every ledger dashboard showed it, because `compileLedgerPlan`
+     * leaves `latestObservationAt` unset deliberately: a monthly ledger has no
+     * instant of observation, and the period is named in the freshness label
+     * instead. Seen on the built image, not inferred.
+     */
+    const freshness = { ...dashboard.freshness };
+    delete (freshness as { latestObservationAt?: string }).latestObservationAt;
+    render(<DashboardShell dashboard={{ ...dashboard, freshness }} />);
+
+    expect(screen.queryByText(/Unknown/u)).not.toBeInTheDocument();
+    expect(screen.queryByText("Latest observation")).not.toBeInTheDocument();
+    // The label still carries the truth about freshness.
+    expect(
+      screen.getAllByText(dashboard.freshness.label).length,
+    ).toBeGreaterThan(0);
+  });
+
   it("switches between dashboard pages", () => {
     render(<DashboardShell dashboard={dashboard} />);
     fireEvent.click(screen.getByRole("button", { name: /02Gauge details/i }));

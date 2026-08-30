@@ -562,21 +562,34 @@ export function DashboardShell({
                 <span className="eyebrow">{page.title}</span>
                 <h2>{page.description}</h2>
               </div>
-              <div className="updated">
-                <span>Latest observation</span>
-                <strong>
-                  {dashboard.freshness.latestObservationAt
-                    ? new Date(
-                        dashboard.freshness.latestObservationAt,
-                      ).toLocaleTimeString("en-US", {
-                        hour: "numeric",
-                        minute: "2-digit",
-                        timeZone: "UTC",
-                      })
-                    : "Unknown"}{" "}
-                  UTC
-                </strong>
-              </div>
+              {/*
+                Omitted entirely when there is no instant, rather than filled
+                in with a word.
+
+                `UTC` sat OUTSIDE the ternary, so a dashboard without an
+                observation time rendered "Unknown UTC" — a unit attached to a
+                non-value, in the largest type on the page. Every ledger
+                dashboard showed it: `compileLedgerPlan` leaves
+                `latestObservationAt` unset on purpose, because a monthly ledger
+                has no instant of observation, and says so in the freshness
+                label instead. The mobile line below already got this right,
+                which is how the two came to disagree.
+              */}
+              {dashboard.freshness.latestObservationAt === undefined ? null : (
+                <div className="updated">
+                  <span>Latest observation</span>
+                  <strong>
+                    {new Date(
+                      dashboard.freshness.latestObservationAt,
+                    ).toLocaleTimeString("en-US", {
+                      hour: "numeric",
+                      minute: "2-digit",
+                      timeZone: "UTC",
+                    })}{" "}
+                    UTC
+                  </strong>
+                </div>
+              )}
             </div>
             <div className="mobile-status">
               <span
@@ -584,12 +597,12 @@ export function DashboardShell({
               >
                 {dashboard.freshness.label}
               </span>
-              <span>
-                Latest observation:{" "}
-                {dashboard.freshness.latestObservationAt
-                  ? `${new Date(dashboard.freshness.latestObservationAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })} UTC`
-                  : "Unknown"}
-              </span>
+              {dashboard.freshness.latestObservationAt === undefined ? null : (
+                <span>
+                  Latest observation:{" "}
+                  {`${new Date(dashboard.freshness.latestObservationAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })} UTC`}
+                </span>
+              )}
             </div>
             {/*
               One brief per dashboard, on the page the reader lands on. This
