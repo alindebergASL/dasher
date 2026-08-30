@@ -569,6 +569,36 @@ describe("a bad cell is locatable", () => {
       "That export does not read as a ledger. line ids must be unique",
     );
   });
+
+  it("says a too-large export is too large, not that it does not read", () => {
+    /*
+     * The engine evaluates at most 250 figures for a ledger, and 30 lines over
+     * 12 months is 360. That reached the engine, failed with `limit_exceeded`,
+     * and reached the reader as "That export read correctly but no dashboard
+     * could be built from it" — which sends somebody looking for a malformed
+     * row in a file that has none.
+     */
+    const periods = Array.from(
+      { length: 12 },
+      (_, index) => `2026-${String(index + 1).padStart(2, "0")}`,
+    );
+    const rows = Array.from(
+      { length: 30 },
+      (_, index) =>
+        `l${String(index)},Line ${String(index)},,${periods.map(() => "100").join(",")}\r\n`,
+    ).join("");
+    const read = snapshotFromUpload(
+      bytes(`line_id,label,budget_per_period,${periods.join(",")}\r\n${rows}`),
+      FIELDS,
+    );
+
+    expect(read.ok === false && read.message).toBe(
+      "That export is larger than Dasher can chart — this export has 30 lines across 12 periods, which is 360 figures; Dasher can build a dashboard from at most 250. Split it, or narrow the periods, and try again.",
+    );
+    expect(read.ok === false && read.message).not.toContain(
+      "does not read as a ledger",
+    );
+  });
 });
 
 /**

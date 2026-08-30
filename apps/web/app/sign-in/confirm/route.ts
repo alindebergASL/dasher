@@ -8,7 +8,7 @@ import {
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getPool, isPersistenceConfigured } from "../../database";
-import { isSameOrigin } from "../../same-origin";
+import { isSameOrigin, siteUrl } from "../../same-origin";
 import { encodeSessionToken } from "../../session";
 
 /**
@@ -44,10 +44,9 @@ import { encodeSessionToken } from "../../session";
 const SESSION_MINUTES = 12 * 60;
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const failed = NextResponse.redirect(
-    new URL("/sign-in?failed=1", request.url),
-    { status: 303 },
-  );
+  const failed = NextResponse.redirect(siteUrl("/sign-in?failed=1", request), {
+    status: 303,
+  });
 
   if (!isPersistenceConfigured()) return failed;
 
@@ -80,7 +79,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     now + SESSION_MINUTES * 60 * 1_000,
   );
 
-  const response = NextResponse.redirect(new URL("/", request.url), {
+  const response = NextResponse.redirect(siteUrl("/", request), {
     status: 303,
   });
   response.cookies.set({

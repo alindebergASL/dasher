@@ -91,14 +91,117 @@ function money(amount: Exact, currency: string): string {
   return (formatter.format as unknown as (value: string) => string)(amount);
 }
 
+/**
+ * WHY AN ABSENT RATIO IS NOT GIVEN A REASON HERE.
+ *
+ * The convention these three functions follow is that an undefined ratio is
+ * reported in words rather than as a number that looks measured — saying "0.0%"
+ * would tell a reader a line spent nothing, which is a different and false
+ * claim. That much survived review. What did not is the wording.
+ *
+ * The first version named a CAUSE: "no prior period" for a change, "no total to
+ * divide by" for a share. Both are false, and not at the margin.
+ * `calculateLedger` drops a ratio for the WHOLE SNAPSHOT or not at all, so what
+ * a null means is "this column was refused", never "this row had no
+ * denominator". Measured, on a ledger whose 2026-03 totals zero: the page
+ * printed `Total, 2026-08 = $299,100` in one tile and "no total to divide by"
+ * three inches below it. And every latest-period line has a previous amount —
+ * the schema requires two periods — so "no prior period" was wrong in every
+ * case it ever rendered, including for lines whose own prior amount was fine.
+ *
+ * That was the same defect the change these functions belong to set out to
+ * remove: a fabricated number replaced by a fabricated explanation. So the words
+ * now say only what is true — the figure was not computed — and the cause, which
+ * is a property of the ledger rather than of the row, is stated once in the
+ * executive brief where there is room to state it correctly.
+ */
 function signedPercent(value: Exact | null): string {
-  if (value === null) return "no prior period";
+  if (value === null) return "change not computed";
   // `toFixed` already carries the minus sign; only the plus has to be added.
   return `${sign(value) < 0 ? "" : "+"}${toFixed(value, 1)}%`;
 }
 
 function percent(value: Exact): string {
   return `${toFixed(value, 1)}%`;
+}
+
+function shareOfTotal(value: Exact | null): string {
+  return value === null ? "share not computed" : `${percent(value)} of total`;
+}
+
+/**
+ * The one place the cause is named, because it is the one place with room to
+ * name it correctly. Reached only when a ratio was refused, and true whichever
+ * of the three it was: the engine will not divide by zero, and the ledger holds
+ * a zero where a denominator was needed.
+ */
+function whyNotComputed(periodLabel: string): string {
+  return `A ${periodLabel} in this ledger holds a zero where a denominator was needed, and Dasher does not divide by it. The figure is left out rather than reported as zero.`;
+}
+
+/**
+ * The line holding the largest share, or `undefined` when no line has one.
+ *
+ * Lines without a share are dropped rather than sorted as zero. `compare`
+ * cannot rank an absence, and treating it as zero would rank an unmeasured line
+ * below a line measured at 0.0% — inventing an ordering out of a value nobody
+ * computed.
+ */
+/**
+ * Which of the three things there is to say about this ledger's shares.
+ *
+ * `largest` needs the shares to be a DISTRIBUTION — every one of them between
+ * nothing and the whole — and on a ledger carrying credits they are not. A line
+ * of +$200 against a credit of -$100 nets to $100, so the shares are +200% and
+ * -100%: arithmetically exact, summing to 100, and reported by the first
+ * version of this as "Alpha accounts for 200.0% of spending in 2026-08". The
+ * figure was right and the sentence was not; "share of" carries an implication
+ * of part-of-whole that a net total does not support.
+ *
+ * `offset` is that case, and it is deliberately NOT folded into `absent`: those
+ * shares were computed, and saying they were not would be its own false
+ * statement. The per-line percentages still render. What stops is the claim
+ * that one of them is the largest share of spending.
+ *
+ * THIS IS A JUDGEMENT ABOUT WORDS, NOT ARITHMETIC, and a reversible one: an
+ * owner who would rather see "200.0% of a net total" than a sentence about
+ * offsetting can delete `offset` and let `largest` cover it.
+ */
+type ShareStanding =
+  | {
+      readonly kind: "largest";
+      readonly line: LedgerLineFacts & { readonly share: Exact };
+    }
+  | { readonly kind: "offset" }
+  | { readonly kind: "absent" };
+
+function shareStanding(lines: readonly LedgerLineFacts[]): ShareStanding {
+  const top = largestShare(lines);
+  if (top === undefined) return { kind: "absent" };
+  const distribution = lines.every(
+    (line) =>
+      line.share === null ||
+      (sign(line.share) >= 0 && compare(line.share, "100") <= 0),
+  );
+  return distribution ? { kind: "largest", line: top } : { kind: "offset" };
+}
+
+function largestShare(
+  lines: readonly LedgerLineFacts[],
+): (LedgerLineFacts & { readonly share: Exact }) | undefined {
+  return lines
+    .filter(
+      (line): line is LedgerLineFacts & { readonly share: Exact } =>
+        line.share !== null,
+    )
+    .sort(
+      (one, two) =>
+        // Tie-broken by id, the way `movers` and `overBudget` are in
+        // `deriveLedgerFacts`. Without it two lines on an identical share
+        // resolve by the order the plan happened to list them, and the brief
+        // names a different "largest" for the same ledger.
+        compare(two.share, one.share) || one.id.localeCompare(two.id),
+    )[0];
 }
 
 function directionOf(change: Exact): "up" | "down" | "steady" {
@@ -129,7 +232,17 @@ function buildSection(
         tone: facts.overBudget.length > 0 ? "attention" : "normal",
         claims: [
           {
-            text: `Total spending for ${facts.latestPeriod} was ${money(facts.total, facts.currency)}, ${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}.`,
+            /*
+             * Branched rather than interpolated. `signedPercent` returns a noun
+             * phrase written for a stat slot, and dropping it into a sentence
+             * produced "Total spending for 2026-08 was $299,100, no prior period
+             * against 2026-07." — a fragment, rendered to a reader and stored as
+             * a claim.
+             */
+            text:
+              facts.totalChangePercent === null
+                ? `Total spending for ${facts.latestPeriod} was ${money(facts.total, facts.currency)}. Its change against ${facts.previousPeriod} was not computed. ${whyNotComputed(facts.periodLabel)}`
+                : `Total spending for ${facts.latestPeriod} was ${money(facts.total, facts.currency)}, ${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}.`,
             evidenceIds: everything,
           },
           ...(facts.movers[0] === undefined
@@ -157,7 +270,8 @@ function buildSection(
         ],
       };
 
-    case "headline-totals":
+    case "headline-totals": {
+      const top = largestShare(lines);
       return {
         kind: "metric-grid",
         id: "headline-totals",
@@ -183,18 +297,15 @@ function buildSection(
           },
           {
             label: `Largest share`,
-            value:
-              lines[0] === undefined
-                ? "—"
-                : percent(
-                    [...lines].sort((one, two) =>
-                      compare(two.share, one.share),
-                    )[0]!.share,
-                  ),
+            // The em dash covers both no lines and no computable share: the
+            // stat has one slot and "there isn't a figure" is the whole of what
+            // it can honestly say in it.
+            value: top === undefined ? "—" : percent(top.share),
             evidenceIds: everything,
           },
         ],
       };
+    }
 
     case "largest-movers": {
       const movers = facts.movers;
@@ -209,7 +320,7 @@ function buildSection(
           id: line.id,
           label: line.label,
           value: `${sign(line.change) < 0 ? "−" : "+"}${money(abs(line.change), facts.currency)}`,
-          note: `${signedPercent(line.changePercent)} · ${percent(line.share)} of total`,
+          note: `${signedPercent(line.changePercent)} · ${shareOfTotal(line.share)}`,
           evidenceIds: uniqueIds(
             [line.evidenceId],
             [facts.calculationEvidenceId],
@@ -352,9 +463,7 @@ export function compileLedgerPlan(
     selected.map((line) => line.evidenceId),
     [facts.calculationEvidenceId],
   );
-  const biggest = [...selected].sort((one, two) =>
-    compare(two.share, one.share),
-  )[0]!;
+  const standing = shareStanding(selected);
   const evidence: Evidence[] = [
     ...facts.evidence,
     plannerEvidence(options.planner, "budget line", options.asOf),
@@ -388,20 +497,52 @@ export function compileLedgerPlan(
       },
       changed: {
         statementTypes: ["calculated"],
-        headline: `${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}`,
+        // Same fragment problem as the spending summary above: this slot read
+        // "no prior period against 2026-07" and was persisted that way.
+        headline:
+          facts.totalChangePercent === null
+            ? `Change against ${facts.previousPeriod} not computed`
+            : `${signedPercent(facts.totalChangePercent)} against ${facts.previousPeriod}`,
+        // The move itself is exact whether or not its percentage divides, so the
+        // detail says it either way.
         detail: `Total spending moved from ${money(facts.previousTotal, facts.currency)} to ${money(facts.total, facts.currency)}.`,
         evidenceIds: everything,
       },
+      /*
+       * Three cases, and the ORDER of the first two was wrong.
+       *
+       * Over budget still wins the headline — it is the thing a reader must act
+       * on. But the first version made the missing-share explanation an
+       * alternative to it, so a ledger that was both over budget and unable to
+       * compute a share showed "1 line over budget" and nothing at all about the
+       * em dash sitting in the metric grid above. That is the case where a
+       * reader is most likely to be scanning the grid, and it was the case with
+       * no explanation on the page. The detail now carries the reason whenever
+       * there is one to carry, whatever the headline is about.
+       *
+       * The third case is the one the old code did not have at all. It sorted
+       * for a `biggest` unconditionally and read `.share` off it, which was a
+       * fabricated `0` — so a ledger with no computable share announced that
+       * some arbitrary line "accounts for 0.0% of spending".
+       */
       important: {
         statementTypes: ["interpreted"],
         headline:
           facts.overBudget.length > 0
             ? `${String(facts.overBudget.length)} line${facts.overBudget.length === 1 ? "" : "s"} over budget`
-            : `${biggest.label} is the largest share`,
+            : standing.kind === "absent"
+              ? `No line's share of ${facts.latestPeriod} was computed`
+              : standing.kind === "offset"
+                ? `Credits offset spending in ${facts.latestPeriod}`
+                : `${standing.line.label} is the largest share`,
         detail:
           facts.overBudget.length > 0
-            ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.`
-            : `${biggest.label} accounts for ${percent(biggest.share)} of spending in ${facts.latestPeriod}.`,
+            ? `${facts.overBudget.map((line) => line.label).join(", ")} exceeded the budget set for one ${facts.periodLabel}.${standing.kind === "absent" ? ` No line's share of ${facts.latestPeriod} was computed. ${whyNotComputed(facts.periodLabel)}` : ""}`
+            : standing.kind === "absent"
+              ? `Spending in ${facts.latestPeriod} totalled ${money(facts.total, facts.currency)}, and that total is exact. What was not computed is each line's share of it. ${whyNotComputed(facts.periodLabel)}`
+              : standing.kind === "offset"
+                ? `At least one line reduced the total for ${facts.latestPeriod} rather than adding to it, so ${money(facts.total, facts.currency)} is a net figure and the shares below are of that net. Dasher does not name a largest share when they are not parts of a whole.`
+                : `${standing.line.label} accounts for ${percent(standing.line.share)} of spending in ${facts.latestPeriod}.`,
         evidenceIds: everything,
       },
     },

@@ -2,6 +2,7 @@ import { canonicalSpecBytes } from "@dasher/dashboard-schema";
 import { describe, expect, it } from "vitest";
 
 import { operatingSpendFixture } from "@dasher/ledger-domain/fixture";
+import type { LedgerSnapshot } from "@dasher/ledger-domain";
 
 import { compileLedgerPlan, LedgerPlanRejected } from "./compile-ledger";
 import { LedgerPlanSchema, type LedgerPlan } from "./ledger-plan";
@@ -334,7 +335,7 @@ describe("the figures a ledger dashboard displays", () => {
     );
   });
 
-  it("reports no prior period rather than a change, when there is none", () => {
+  it("says a change was not computed rather than naming a false reason", () => {
     const single = {
       ...snapshot,
       periods: ["2026-07", "2026-08"],
@@ -348,8 +349,16 @@ describe("the figures a ledger dashboard displays", () => {
       .pages.flatMap((page) => page.components)
       .find((component) => component.kind === "metric-grid");
 
+    /*
+     * This asserted "no prior period", and the string was false every time it
+     * rendered. A latest period always HAS a prior one — the schema requires two
+     * — so a null change percent means the column was refused, never that the
+     * period was missing. Here the line is 0 then 500: the prior period exists
+     * and its amount is zero, which is precisely the case the old wording
+     * denied.
+     */
     expect(grid?.kind === "metric-grid" ? grid.metrics[0]?.change : "").toBe(
-      "no prior period",
+      "change not computed",
     );
   });
 
@@ -373,6 +382,228 @@ describe("the figures a ledger dashboard displays", () => {
       "Salaries and benefits is the largest share",
     );
     expect(brief.important.detail).toContain("% of spending in 2026-08");
+  });
+});
+
+/**
+ * What a reader is shown when a ratio has no denominator.
+ *
+ * The compiler used to print a fabricated `0.0%` here, because
+ * `deriveLedgerFacts` substituted a literal `"0"` for the null the engine
+ * returned. These pin both halves of the repair: the shares that ARE computable
+ * survive a sibling ratio failing, and the ones that genuinely are not say so
+ * in words instead of in a number.
+ */
+describe("when a credit offsets spending", () => {
+  /*
+   * Shares only mean "part of a whole" when every part has the sign of the
+   * whole. With a credit in the ledger they do not: +$200 against -$100 nets to
+   * $100, so the shares are +200% and -100%. Both figures are exact and they sum
+   * to 100 — what was wrong was the sentence built on them, which read "Alpha
+   * accounts for 200.0% of spending in 2026-08".
+   */
+  const offsetting = {
+    ...snapshot,
+    periods: ["2026-07", "2026-08"],
+    lines: [
+      { id: "alpha", label: "Alpha", amounts: ["200", "200"] },
+      { id: "credit", label: "Vendor credit", amounts: ["-100", "-100"] },
+    ],
+  };
+  const brief = compileLedgerPlan(
+    planLedgerDashboard("spending", ["alpha", "credit"]),
+    offsetting,
+    options,
+  ).executiveBrief;
+
+  it("does not name a largest share of a net total", () => {
+    expect(brief.important.headline).toBe("Credits offset spending in 2026-08");
+    expect(brief.important.detail).toContain("net figure");
+    expect(brief.important.detail).not.toContain("accounts for");
+    expect(brief.important.detail).not.toContain("200.0%");
+  });
+
+  it("still reports the shares themselves, which are exact", () => {
+    // The percentages are not suppressed. They were computed and they are
+    // right; only the claim that one of them is a majority of spending goes.
+    const notes = compileLedgerPlan(
+      planLedgerDashboard("spending", ["alpha", "credit"]),
+      offsetting,
+      options,
+    )
+      .pages.flatMap((page) => page.components)
+      .flatMap((component) =>
+        component.kind === "ranking"
+          ? component.items.map((item) => item.note ?? "")
+          : [],
+      );
+
+    expect(notes.join(" ")).toContain("200.0% of total");
+    expect(notes.join(" ")).toContain("-100.0% of total");
+  });
+});
+
+describe("when a share has no denominator", () => {
+  const periods = ["2026-06", "2026-07", "2026-08"];
+  const base = { ...snapshot, periods };
+  const plan = planLedgerDashboard("spending", ["alpha", "beta"]);
+  const componentsOf = (lines: LedgerSnapshot["lines"]) =>
+    compileLedgerPlan(plan, { ...base, lines }, options).pages.flatMap(
+      (page) => page.components,
+    );
+
+  describe("and it is a sibling ratio that failed", () => {
+    // Beta was zero last period, so `changePercent` cannot divide. Every period
+    // total is non-zero, so every share can.
+    const components = componentsOf([
+      { id: "alpha", label: "Alpha", amounts: ["100", "100", "60"] },
+      { id: "beta", label: "Beta", amounts: ["100", "0", "40"] },
+    ]);
+
+    it("prints the shares that were computed, not zeroes", () => {
+      const ranking = components.find(
+        (component) => component.kind === "ranking",
+      );
+      const notes =
+        ranking?.kind === "ranking" ? ranking.items.map((one) => one.note) : [];
+
+      // Asserted as whole notes rather than by substring: "60.0% of total"
+      // contains "0.0% of total", so a `not.toContain` here would pass on the
+      // fabricated zero it was written to catch.
+      expect(notes).toStrictEqual([
+        "change not computed · 60.0% of total",
+        "change not computed · 40.0% of total",
+      ]);
+    });
+
+    it("still reports the largest of them", () => {
+      const grid = components.find(
+        (component) => component.kind === "metric-grid",
+      );
+      const largest =
+        grid?.kind === "metric-grid"
+          ? grid.metrics.find((one) => one.label === "Largest share")?.value
+          : undefined;
+
+      expect(largest).toBe("60.0%");
+    });
+  });
+
+  describe("and the share column was refused for the whole ledger", () => {
+    /*
+     * This block was named "and there was genuinely no total to divide by",
+     * which was false about its own fixture: 2026-06 sums to zero, and 2026-08
+     * — the period every one of these assertions is about — totals $100.
+     *
+     * `share` is refused for the snapshot because the window is partitioned by
+     * period and the rows cannot be filtered without changing the totals of the
+     * periods that remain. That is the accepted limitation. What was NOT
+     * acceptable was telling a reader looking at a $100 total that there was no
+     * total to divide by.
+     */
+    const lines = [
+      { id: "alpha", label: "Alpha", amounts: ["0", "100", "60"] },
+      { id: "beta", label: "Beta", amounts: ["0", "100", "40"] },
+    ];
+    const components = componentsOf(lines);
+    const brief = compileLedgerPlan(
+      plan,
+      { ...base, lines },
+      options,
+    ).executiveBrief;
+
+    it("says so in words rather than printing a percentage", () => {
+      const ranking = components.find(
+        (component) => component.kind === "ranking",
+      );
+      const notes =
+        ranking?.kind === "ranking" ? ranking.items.map((one) => one.note) : [];
+
+      // The whole notes, not a predicate over them: `every` on an empty array
+      // is vacuously true, so a missing ranking component would have passed
+      // this test rather than failed it.
+      // Neither half names a cause any more. The row does not know one: the
+      // columns were refused for the ledger, not for this line.
+      expect(notes).toStrictEqual([
+        "change not computed · share not computed",
+        "change not computed · share not computed",
+      ]);
+    });
+
+    it("leaves the largest-share stat empty rather than claiming a winner", () => {
+      const grid = components.find(
+        (component) => component.kind === "metric-grid",
+      );
+      const largest =
+        grid?.kind === "metric-grid"
+          ? grid.metrics.find((one) => one.label === "Largest share")?.value
+          : undefined;
+
+      expect(largest).toBe("—");
+    });
+
+    it("reports the total in the brief instead of naming a largest share", () => {
+      // The old code sorted for a `biggest` unconditionally and read a
+      // fabricated `0` off it, so this slot announced that some arbitrary line
+      // "accounts for 0.0% of spending".
+      expect(brief.important.headline).toBe(
+        "No line's share of 2026-08 was computed",
+      );
+      expect(brief.important.detail).toContain("totalled $100");
+      expect(brief.important.detail).not.toContain("0.0%");
+    });
+
+    it("still explains the missing share when a line is over budget", () => {
+      /*
+       * The over-budget headline wins, as it should — it is the thing to act on.
+       * But the first version made the explanation an ALTERNATIVE to it, so this
+       * combination put an em dash in the metric grid and said nothing anywhere
+       * on the page about why. It is the case where a reader is most likely to
+       * be reading the grid.
+       */
+      const overBudget = compileLedgerPlan(
+        plan,
+        {
+          ...base,
+          lines: lines.map((line) => ({ ...line, budgetPerPeriod: "10" })),
+        },
+        options,
+      ).executiveBrief;
+
+      expect(overBudget.important.headline).toBe("2 lines over budget");
+      expect(overBudget.important.detail).toContain("exceeded the budget");
+      expect(overBudget.important.detail).toContain(
+        "No line's share of 2026-08 was computed",
+      );
+    });
+
+    it("does not deny the total in the same breath as stating it", () => {
+      /*
+       * The assertion this replaces required the detail to contain BOTH
+       * "totalled $100" and "nothing to divide by" — a self-contradiction,
+       * pinned on adjacent lines of a test written to remove exactly this class
+       * of defect. Every string a reader sees about the missing share is checked
+       * here against the total the same page reports.
+       */
+      const said = [
+        brief.important.detail,
+        brief.changed.headline,
+        ...components.flatMap((component) =>
+          component.kind === "ranking"
+            ? component.items.map((item) => item.note ?? "")
+            : component.kind === "summary"
+              ? component.claims.map((claim) => claim.text)
+              : [],
+        ),
+      ];
+
+      expect(brief.important.detail).toContain("that total is exact");
+      for (const sentence of said) {
+        expect(sentence).not.toContain("no total to divide by");
+        expect(sentence).not.toContain("nothing to divide by");
+        expect(sentence).not.toContain("no prior period");
+      }
+    });
   });
 });
 

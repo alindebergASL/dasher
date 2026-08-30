@@ -95,6 +95,17 @@ export function evidenceCitations(
  * staleness needs a freshness horizon, which the spec carries as a label for a
  * reader rather than as a rule. Emitting either from a guess would put an
  * invention in the column a reviewer trusts most.
+ *
+ * NEITHER IS `blocked`, AND THE LEDGER'S UNDEFINED RATIOS ARE NOT AN EXCEPTION.
+ * It was tempting to label a claim `blocked` when a share could not be computed
+ * — the compiler does decline to state one. But what reaches the document is
+ * not an absence: it is the sentence "no total to divide by", which is derived
+ * from the calculation and is fully supported by the same evidence as any other
+ * figure on the page. `calculated` and `complete` are the true answers for it.
+ * Reaching `blocked` would take either a component the compiler omits entirely
+ * — leaving no pointer to hang a claim on — or a schema that marks a value as
+ * declined, and inferring it here by matching that sentence would make the
+ * label depend on prose nobody promised to keep.
  */
 export function persistedClaims(
   spec: DashboardSpec,

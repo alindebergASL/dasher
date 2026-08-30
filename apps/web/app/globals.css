@@ -590,6 +590,16 @@ td .item-evidence {
   line-height: 1.05;
 }
 .metric-card small {
+  /*
+   * Block, like the `span` and `strong` above it, because this line is a field
+   * and not a fragment of the one before it.
+   *
+   * Inline, it butted straight against the Evidence button that follows —
+   * measured at zero gap, rendering "no prior periodEvidence" as one word. A
+   * short value like "+5.7%" hid it; the word-form values a refused ratio now
+   * produces ("change not computed") made it the common case.
+   */
+  display: block;
   color: var(--muted);
 }
 

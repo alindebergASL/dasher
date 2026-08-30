@@ -108,10 +108,16 @@ describe("deriveLedgerFacts", () => {
      * exact decimals and the column a reader could add up by hand adds up.
      */
     const sum = facts.lines.reduce(
-      (total, line) => exact.add(total, line.share),
+      // Every line in this fixture has a share; a null here would be the bug
+      // this sum exists to catch, so it fails loudly rather than summing as
+      // zero and still reaching 100 by luck.
+      (total, line) => exact.add(total, line.share as string),
       exact.ZERO,
     );
 
+    // Was `every(share !== null)`, which could not fail on either revision:
+    // this fixture has no zero denominator, so the guard proved nothing. The sum
+    // below is the real assertion, and a null would make `add` throw.
     expect(sum).toBe("100");
   });
 
@@ -321,6 +327,120 @@ describe("the values deriveLedgerFacts computes", () => {
     );
   });
 
+  it("names share of total in the calculation evidence when it was computed", () => {
+    const detail = facts.evidence.find(
+      (item) => item.id === facts.calculationEvidenceId,
+    )?.detail;
+
+    expect(detail).toBe(
+      "Totals, period-over-period change, share of total, and budget comparisons are computed by Dasher from the recorded amounts. Amounts are in USD.",
+    );
+  });
+
+  it("drops share of total from that record when it was not computed", () => {
+    /*
+     * The evidence panel is where a reader goes to check a figure, and this
+     * record is cited behind every one of them. It listed "share of total"
+     * unconditionally, so on a ledger whose shares were refused it stood at high
+     * confidence behind an em dash, asserting a calculation that had not
+     * happened. Asserted whole rather than by substring: the failure this
+     * catches is one clause remaining in a sentence, which `toContain` would
+     * miss in either direction.
+     */
+    const refused = deriveLedgerFacts(
+      withLines([
+        { id: "one", label: "One", amounts: ["0", "0", "0", "0", "0", "60"] },
+        { id: "two", label: "Two", amounts: ["0", "0", "0", "0", "0", "40"] },
+      ]),
+    );
+    const detail = refused.evidence.find(
+      (item) => item.id === refused.calculationEvidenceId,
+    )?.detail;
+
+    expect(detail).toBe(
+      "Totals, period-over-period change, and budget comparisons are computed by Dasher from the recorded amounts. Share of total was not computed for this ledger, because a period in it totals zero. Amounts are in USD.",
+    );
+    expect(refused.lines.every((line) => line.share === null)).toBe(true);
+  });
+
+  it("refuses a ledger larger than the engine will evaluate, and names the size", () => {
+    /*
+     * 30 lines over 12 months — an ordinary operating export — is 360 figures
+     * and cannot be charted. It used to reach the engine and fail there with
+     * `limit_exceeded`, which the upload path reported as "That export read
+     * correctly but no dashboard could be built from it": true, unactionable,
+     * and indistinguishable from a malformed file.
+     */
+    const tooBig = {
+      ...snapshot,
+      periods: Array.from(
+        { length: 12 },
+        (_, index) => `2026-${String(index + 1).padStart(2, "0")}`,
+      ),
+      lines: Array.from({ length: 30 }, (_, index) => ({
+        id: `l${String(index)}`,
+        label: `Line ${String(index)}`,
+        amounts: Array.from({ length: 12 }, () => "100"),
+      })),
+    };
+
+    const refusal = LedgerSnapshotSchema.safeParse(tooBig);
+
+    expect(refusal.success).toBe(false);
+    expect(refusal.error?.issues[0]?.message).toBe(
+      "this export has 30 lines across 12 periods, which is 360 figures; Dasher can build a dashboard from at most 250",
+    );
+  });
+
+  it("accepts a ledger exactly at the ceiling", () => {
+    // The boundary is measured, not assumed: 250 builds and 260 does not.
+    const atCeiling = {
+      ...snapshot,
+      periods: Array.from(
+        { length: 25 },
+        (_, index) =>
+          `20${String(26 + Math.floor(index / 12))}-${String((index % 12) + 1).padStart(2, "0")}`,
+      ),
+      lines: Array.from({ length: 10 }, (_, index) => ({
+        id: `l${String(index)}`,
+        label: `Line ${String(index)}`,
+        amounts: Array.from({ length: 25 }, () => "100"),
+      })),
+    };
+
+    expect(LedgerSnapshotSchema.safeParse(atCeiling).success).toBe(true);
+    expect(() =>
+      deriveLedgerFacts(LedgerSnapshotSchema.parse(atCeiling)),
+    ).not.toThrow();
+  });
+
+  it("keeps latest minus previous equal to the change it reports", () => {
+    /*
+     * The `delta` node declared `scale: i64:0`, so `change` was the one figure
+     * on the page rounded to whole units while the two amounts it sits between
+     * stayed exact. Measured before the repair: 10.00 -> 10.40 reported a change
+     * of "0", and 10.00 -> 9.40 reported "-1" — a $0.60 fall shown as a dollar,
+     * and a real move shown as none at all.
+     */
+    for (const amounts of [
+      ["100", "160"],
+      ["100.00", "101.20"],
+      ["10.00", "10.40"],
+      ["10.00", "9.40"],
+      ["0.75", "0.80"],
+    ]) {
+      const line = deriveLedgerFacts(
+        LedgerSnapshotSchema.parse({
+          ...snapshot,
+          periods: ["2026-07", "2026-08"],
+          lines: [{ id: "only", label: "Only", amounts }],
+        }),
+      ).lines[0]!;
+
+      expect(line.change).toBe(exact.subtract(line.latest, line.previous));
+    }
+  });
+
   it("names the source and the period span in each line's evidence", () => {
     const evidence = facts.evidence.find(
       (item) => item.id === line("cloud").evidenceId,
@@ -352,7 +472,7 @@ describe("the values deriveLedgerFacts computes", () => {
     );
   });
 
-  it("reports zero share rather than a meaningless one when nothing was spent", () => {
+  it("reports no share at all when there was no total to divide by", () => {
     const empty = withLines([
       {
         id: "only",
@@ -363,11 +483,38 @@ describe("the values deriveLedgerFacts computes", () => {
     const derived = deriveLedgerFacts(empty);
 
     expect(derived.total).toBe("0");
-    // The engine refuses to divide by zero, so no share was computed at all;
-    // what reaches the reader is a zero share and a summary that says the
-    // total, which is what the float version produced by testing for it.
-    expect(derived.lines[0]?.share).toBe("0");
+    /*
+     * This asserted `"0"`, and the comment beside it said what reaches the
+     * reader is "a zero share and a summary that says the total". Neither half
+     * was true: the summary said nothing about the total, and the zero was
+     * `deriveLedgerFacts` substituting a literal for a null the engine had
+     * refused to compute. A line holding an unknown share is not a line holding
+     * none of the budget, and the type now carries the difference.
+     */
+    expect(derived.lines[0]?.share).toBeNull();
     expect(derived.lines[0]?.changePercent).toBeNull();
+  });
+
+  it("keeps a real zero share distinguishable from an absent one", () => {
+    // The distinction the null exists to make. This line genuinely spent
+    // nothing out of a non-zero total, so its share is a measured zero — and it
+    // must not read the same as the case above.
+    const spentNothing = withLines([
+      {
+        id: "idle",
+        label: "Idle line",
+        amounts: ["0", "0", "0", "0", "0", "0"],
+      },
+      {
+        id: "busy",
+        label: "Busy line",
+        amounts: ["100", "100", "100", "100", "100", "100"],
+      },
+    ]);
+    const derived = deriveLedgerFacts(spentNothing);
+
+    expect(derived.lines.find((one) => one.id === "idle")?.share).toBe("0");
+    expect(derived.lines.find((one) => one.id === "busy")?.share).toBe("100");
   });
 
   it("keeps the period vocabulary the source supplied", () => {

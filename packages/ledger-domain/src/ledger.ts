@@ -2,6 +2,7 @@ import type { Evidence } from "@dasher/dashboard-schema";
 import { z } from "zod";
 
 import {
+  MAX_LEDGER_CELLS,
   type LedgerCell as LedgerCellOf,
   calculateLedger,
 } from "./calculation";
@@ -69,6 +70,16 @@ const LineSchema = z.strictObject({
   amounts: z.array(DECIMAL_TEXT).min(2).max(240),
 });
 
+/**
+ * Marks the one contract refusal that is about size rather than shape.
+ *
+ * A caller putting words to a refusal needs to tell "this file is not a ledger"
+ * from "this ledger is bigger than Dasher can chart", and the two are otherwise
+ * indistinguishable: both are custom issues on `lines`. Exported so the check
+ * and the sentence cannot drift apart.
+ */
+export const LEDGER_TOO_LARGE = "ledgerTooLarge";
+
 export const LedgerSnapshotSchema = z
   .strictObject({
     sourceName: z.string().min(1).max(120),
@@ -86,6 +97,30 @@ export const LedgerSnapshotSchema = z
     lines: z.array(LineSchema).min(1).max(200),
   })
   .superRefine((snapshot, context) => {
+    /*
+     * The ceiling the engine actually enforces, checked where a message can
+     * still name it.
+     *
+     * `lines.max(200)` and `periods.max(240)` are independent, and their
+     * product is two hundred times what `MAX_LEDGER_CELLS` allows — so the
+     * contract promised sizes that failed later with `limit_exceeded`, reaching
+     * a reader as "That export read correctly but no dashboard could be built
+     * from it." A 30-line, 12-month export got that, with nothing to act on.
+     */
+    const cells = snapshot.lines.length * snapshot.periods.length;
+    if (cells > MAX_LEDGER_CELLS) {
+      context.addIssue({
+        code: "custom",
+        path: ["lines"],
+        // Marked rather than identified by its path: the duplicate-id check
+        // below raises a custom issue on the same path, and a caller that told
+        // the two apart by position would report a size limit for a repeated
+        // line id. The upload path reads this flag.
+        params: { [LEDGER_TOO_LARGE]: true },
+        message: `this export has ${String(snapshot.lines.length)} lines across ${String(snapshot.periods.length)} periods, which is ${String(cells)} figures; Dasher can build a dashboard from at most ${String(MAX_LEDGER_CELLS)}`,
+      });
+    }
+
     // A ragged table is the failure a normalized shape exists to exclude. It
     // would otherwise surface as a trend line that silently stops early.
     for (const [index, line] of snapshot.lines.entries()) {
@@ -155,8 +190,18 @@ export interface LedgerLineFacts {
   readonly change: Exact;
   /** Percent change, or `null` when the previous period was zero. */
   readonly changePercent: Exact | null;
-  /** Share of the latest period's total, as a percentage. */
-  readonly share: Exact;
+  /**
+   * Share of the latest period's total, as a percentage, or `null` when the
+   * share column was refused.
+   *
+   * The null does NOT mean this period had no total — that reading was written
+   * here first and it is wrong. `calculateLedger` drops a ratio for the whole
+   * snapshot or not at all, so a share is absent when ANY period in the ledger
+   * totals zero, including when the latest period's own total is large and
+   * exact. A caller putting words to this must say the figure was not computed,
+   * not why this row lacked a denominator.
+   */
+  readonly share: Exact | null;
   readonly budgetPerPeriod: Exact | undefined;
   /** `undefined` when the line has no budget to be over. */
   readonly overBudgetBy: Exact | undefined;
@@ -250,10 +295,14 @@ export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
       previous: cellFor(line.id, previousPeriod).amount,
       change: now.change ?? "0",
       changePercent: now.changePercent,
-      // The engine returns a ratio; a share of nothing is not a share, and the
-      // summary says the total instead rather than printing a fabricated zero
-      // as though it were measured.
-      share: now.share === null ? "0" : ratioToPercent(now.share),
+      /*
+       * A share of nothing is not a share of zero, and this used to say it was.
+       * The comment that stood here claimed the summary reported the total
+       * instead of "printing a fabricated zero as though it were measured" —
+       * and the line under it printed exactly that fabricated zero. The null
+       * travels now, and the compiler renders it in words.
+       */
+      share: now.share === null ? null : ratioToPercent(now.share),
       budgetPerPeriod: budget,
       overBudgetBy: over,
       evidenceId: `ledger-line-${line.id}`,
@@ -279,7 +328,18 @@ export function deriveLedgerFacts(snapshot: LedgerSnapshot): LedgerFacts {
       label: "Ledger calculations",
       sourceName: "Dasher calculations",
       retrievedAt: parsed.retrievedAt,
-      detail: `Totals, period-over-period change, share of total, and budget comparisons are computed by Dasher from the recorded amounts. Amounts are in ${parsed.currency}.`,
+      /*
+       * Names what was actually computed for THIS ledger, not what this
+       * function is capable of computing.
+       *
+       * The fixed string listed "share of total" unconditionally. On a ledger
+       * whose shares were refused, that record was cited — at high confidence,
+       * as supporting evidence — behind an em dash, so the audit trail asserted
+       * a calculation that had not happened. The evidence panel is the one place
+       * a reader goes to check a figure; it is the last place that should
+       * describe work in general terms.
+       */
+      detail: `${["Totals", "period-over-period change", ...(lines.some((line) => line.share !== null) ? ["share of total"] : []), "budget comparisons"].join(", ").replace(/, ([^,]*)$/u, ", and $1")} are computed by Dasher from the recorded amounts.${lines.every((line) => line.share === null) ? " Share of total was not computed for this ledger, because a period in it totals zero." : ""} Amounts are in ${parsed.currency}.`,
       confidence: "high",
     },
   ];

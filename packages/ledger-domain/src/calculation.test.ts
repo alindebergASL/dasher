@@ -168,6 +168,67 @@ describe("the timestamp handed to the engine", () => {
   });
 });
 
+describe("amounts smaller than one unit", () => {
+  /*
+   * Found by an adversarial review of the ratio work, in code the ratio work
+   * did not touch. `decimal(exact.replace(".", ""), …)` produced a coefficient
+   * with a leading zero for any |amount| < 1, which the engine rejects, so the
+   * dashboard did not degrade — it failed to build. Exactly zero was fine,
+   * which is why a suite full of zero fixtures never noticed.
+   */
+  const oneLine = (amounts: readonly string[]) =>
+    LedgerSnapshotSchema.parse({
+      ...snapshot,
+      periods: ["2026-07", "2026-08"],
+      lines: [{ id: "only", label: "Only", amounts: [...amounts] }],
+    });
+
+  it("builds a ledger carrying a sub-dollar line", () => {
+    const fee = calculateLedger(oneLine(["0.75", "0.80"]));
+    const last = fee.cells.find(
+      (one) => one.period === "2026-08",
+    ) as (typeof fee.cells)[number];
+
+    expect(last.amount).toBe("0.8");
+    expect(last.periodTotal).toBe("0.8");
+    // The share of a single line is the whole of it, whatever its magnitude.
+    expect(ratioToPercent(last.share as string)).toBe("100");
+  });
+
+  it("keeps a cent exact rather than rounding it into the coefficient", () => {
+    const cents = calculateLedger(oneLine(["0.01", "0.02"]));
+
+    expect(cents.cells.map((one) => one.amount)).toStrictEqual([
+      "0.01",
+      "0.02",
+    ]);
+  });
+
+  it("carries the sign on a negative sub-unit amount", () => {
+    const refund = calculateLedger(oneLine(["-0.50", "2.00"]));
+
+    expect(refund.cells.map((one) => one.amount)).toStrictEqual(["-0.5", "2"]);
+  });
+
+  it("mixes sub-unit and whole-unit lines in one ledger", () => {
+    const mixed = calculateLedger(
+      LedgerSnapshotSchema.parse({
+        ...snapshot,
+        periods: ["2026-07", "2026-08"],
+        lines: [
+          { id: "salaries", label: "Salaries", amounts: ["309400", "312965"] },
+          { id: "fee", label: "Bank fee", amounts: ["0.75", "0.75"] },
+        ],
+      }),
+    );
+    const total = mixed.cells.find(
+      (one) => one.period === "2026-08",
+    ) as (typeof mixed.cells)[number];
+
+    expect(total.periodTotal).toBe("312965.75");
+  });
+});
+
 describe("when a denominator is zero", () => {
   /**
    * The engine refuses `x / 0` outright rather than returning a null, which is
@@ -200,10 +261,13 @@ describe("when a denominator is zero", () => {
     expect(last.changePercent).toBeNull();
   });
 
-  it("drops the ratios only when it has to", () => {
-    // A line that starts at zero and then moves has no percentage change in the
-    // period after zero — so the whole snapshot loses its ratios, and this says
-    // so rather than leaving it to be discovered.
+  it("drops all three when all three have a zero denominator", () => {
+    // One line at zero until the last period. Every earlier period totals zero,
+    // so `share` has nothing to divide by; every earlier amount is zero, so
+    // `changePercent` and `totalChangePercent` have no lag to divide by either.
+    // All three are genuinely unanswerable here — which is why this case cannot
+    // tell whether they are dropped together or separately, and the two tests
+    // below exist to answer that.
     const fromZero = calculateLedger(
       withLines([
         {
@@ -221,5 +285,123 @@ describe("when a denominator is zero", () => {
     expect(last.change).toBe("500");
     expect(last.share).toBeNull();
     expect(last.changePercent).toBeNull();
+    expect(last.totalChangePercent).toBeNull();
+  });
+
+  /**
+   * The regression this block was rewritten for.
+   *
+   * A line whose previous amount was zero — one that started mid-year, a
+   * one-off cost, a refund that cancelled a charge — is ordinary, and it is the
+   * common way a real ledger acquires a zero denominator. It breaks
+   * `changePercent` and nothing else: the period totals are all non-zero, so
+   * every share is perfectly computable.
+   *
+   * The first version dropped all three ratios whenever any one of them failed,
+   * so this snapshot reported no shares at all — and `deriveLedgerFacts` then
+   * printed the missing ratio as "0", which told a reader that two lines
+   * holding 60% and 40% of the budget each held none of it.
+   */
+  const zeroPriorAmount = calculateLedger(
+    withLines([
+      {
+        id: "alpha",
+        label: "Alpha",
+        amounts: ["100", "100", "100", "100", "100", "60"],
+      },
+      {
+        id: "beta",
+        label: "Beta",
+        amounts: ["100", "100", "100", "100", "0", "40"],
+      },
+    ]),
+  );
+  const priorZeroAt = (lineId: string) =>
+    zeroPriorAmount.cells.find(
+      (one) => one.lineId === lineId && one.period === latest,
+    ) as (typeof zeroPriorAmount.cells)[number];
+
+  it("keeps every share when it is the change that cannot divide", () => {
+    expect(ratioToPercent(priorZeroAt("alpha").share as string)).toBe("60");
+    expect(ratioToPercent(priorZeroAt("beta").share as string)).toBe("40");
+  });
+
+  it("drops only the ratio whose own denominator was zero", () => {
+    // Beta is the line with the zero prior amount, so it is the reason
+    // `changePercent` cannot be computed — and the engine refuses the column
+    // rather than the row, so alpha loses its percentage too. That is a loss of
+    // information, not a false one, and narrowing it further would need the
+    // engine to express a per-row null.
+    expect(priorZeroAt("beta").changePercent).toBeNull();
+    expect(priorZeroAt("alpha").changePercent).toBeNull();
+
+    // The two ratios with sound denominators survive, which is the whole point.
+    expect(priorZeroAt("alpha").share).not.toBeNull();
+    expect(priorZeroAt("alpha").totalChangePercent).not.toBeNull();
+  });
+
+  it("degrades rather than refusing when a probe fails for another reason", () => {
+    /*
+     * The regression this replaced. Isolating the ratios exposed engine failures
+     * the old all-or-nothing path could not reach — it built a graph with no
+     * ratio nodes at all — and the first version of `answers` re-raised them,
+     * turning a degraded dashboard into "no dashboard could be built from it".
+     *
+     * Both failures have to be present and they have to be DIFFERENT, which is
+     * the whole difficulty of writing this case. The first period totals zero by
+     * cancellation, so `share` cannot divide; no amount is zero, so
+     * `changePercent` has no zero denominator anywhere and fails instead on the
+     * 1 -> 1e30 jump overflowing at scale 8. A snapshot with a zero AMOUNT would
+     * make both refusals `divide_by_zero` and prove nothing.
+     */
+    const both = LedgerSnapshotSchema.parse({
+      ...snapshot,
+      periods: ["2026-06", "2026-07", "2026-08"],
+      lines: [
+        {
+          id: "alpha",
+          label: "Alpha",
+          amounts: ["1", "1000000000000000000000000000000", "5"],
+        },
+        { id: "beta", label: "Beta", amounts: ["-1", "1", "5"] },
+      ],
+    });
+
+    expect(() => calculateLedger(both)).not.toThrow();
+    const cells = calculateLedger(both).cells;
+    const alpha = cells.find(
+      (one) => one.period === "2026-08" && one.lineId === "alpha",
+    ) as (typeof cells)[number];
+
+    // The amounts still arrive; only the ratios the engine refused are absent.
+    expect(alpha.amount).toBe("5");
+    expect(alpha.share).toBeNull();
+    expect(alpha.changePercent).toBeNull();
+  });
+
+  it("loses the share but keeps the changes when the last period is empty", () => {
+    /*
+     * The mirror of the case above, and what shows the three really are
+     * independent rather than two-against-one. A zero total in the LAST period
+     * is a denominator for `share` — every row divides by its own period's
+     * total — but never for `totalChangePercent`, which divides by the period
+     * before. So the column that fails here is the opposite one.
+     */
+    const emptyLast = calculateLedger(
+      withLines([
+        {
+          id: "only",
+          label: "Only",
+          amounts: ["100", "100", "100", "100", "100", "0"],
+        },
+      ]),
+    );
+    const last = emptyLast.cells.find(
+      (one) => one.period === latest,
+    ) as (typeof emptyLast.cells)[number];
+
+    expect(last.share).toBeNull();
+    expect(last.changePercent).toBe("-100");
+    expect(last.totalChangePercent).toBe("-100");
   });
 });
