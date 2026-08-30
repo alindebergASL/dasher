@@ -322,7 +322,10 @@ it("stops sending after five links in an hour", async () => {
 it("stores no more than five links when a burst arrives at once", async () => {
   await provision("burst@example.com");
 
-  const burstPool = new Pool({ connectionString: appConnectionString, max: 12 });
+  const burstPool = new Pool({
+    connectionString: appConnectionString,
+    max: 12,
+  });
   ignoreTeardownShutdown(burstPool);
 
   try {

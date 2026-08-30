@@ -162,9 +162,7 @@ describe("discoverMigrations", () => {
     expect(migrations[2]?.sql).toContain(
       "CREATE FUNCTION dasher_api.revoke_session",
     );
-    expect(migrations[3]?.sql).toContain(
-      "pg_catalog.pg_advisory_xact_lock",
-    );
+    expect(migrations[3]?.sql).toContain("pg_catalog.pg_advisory_xact_lock");
   });
 
   it("rejects an empty directory", async () => {

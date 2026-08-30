@@ -535,8 +535,11 @@ export async function withDashboardRepository<T>(
   ) => Promise<T>,
 ): Promise<T> {
   try {
-    return await withRequestContext(pool, credential, async (handle, principal) =>
-      work(createDashboardRepository(handle, principal), principal),
+    return await withRequestContext(
+      pool,
+      credential,
+      async (handle, principal) =>
+        work(createDashboardRepository(handle, principal), principal),
     );
   } catch (error) {
     /*
