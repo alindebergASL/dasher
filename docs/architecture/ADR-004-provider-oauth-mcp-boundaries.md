@@ -4,9 +4,10 @@ Status: Accepted
 Date: 2026-07-30
 Depends on: ADR-003
 
-> **Proposed amendment (2026-08-12):**
+> **Amendment accepted (2026-08-31):**
 > [Requirements Amendment 01](../product/2026-08-12-requirements-amendment-01.md)
-> proposes a Dasher-operated platform credential class as the pilot default,
+> adds the Dasher-operated platform credential row to the disposition table
+> below as the pilot default,
 > selected explicitly per organization and never reached by fallback, and proposes
 > that the first live provider be chosen by measured dashboard quality rather than
 > fixed in advance. The no-cross-credential-fallback rule below is unchanged and is
@@ -31,15 +32,16 @@ tool, OAuth, or authentication path.
 
 ## Credential disposition
 
-| Credential or integration class                            | Disposition                   | Dasher posture                                                                                                                                                                            |
-| ---------------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standard QwenCloud/Model Studio pay-as-you-go API key BYOK | **PASS**                      | First live model path, restricted to an exact approved endpoint, region/workspace, credential class, and model allowlist.                                                                 |
-| Standard OpenAI Platform API key BYOK                      | **PASS**                      | Supported general API path, tenant-owned and restricted to the tenant's project and the gateway policy.                                                                                   |
-| Consumer Codex/ChatGPT OAuth or subscription token         | **HOLD**                      | Unsupported for Dasher SaaS today. Do not collect tokens, import local auth files, scrape cookies, copy another client's public identifier, or call undocumented endpoints.               |
-| Codex Business/Enterprise access token                     | **CAUTION / HOLD**            | No implementation until a documented or provider-confirmed Dasher app-server contract satisfies the workspace, identity, provisioning, rotation, revocation, and tool-denial gates below. |
-| Qwen Coding Plan or Token Plan credential for backend use  | **REJECT**                    | These plans are not Dasher backend credentials. Reject unsupported credential/endpoint combinations before prompt data leaves.                                                            |
-| Generic MCP server                                         | **CAUTION / deferred**        | No arbitrary discovery or stdio. A future path is remote HTTPS, named, admin-approved, pinned, read-only, and brokered.                                                                   |
-| Official Google Workspace MCP                              | **CAUTION / read-only gated** | Native read-only Google Sheets comes first. A later remote MCP facade may expose only an exact approved read-only manifest.                                                               |
+| Credential or integration class                            | Disposition                   | Dasher posture                                                                                                                                                                                                       |
+| ---------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Standard QwenCloud/Model Studio pay-as-you-go API key BYOK | **PASS**                      | First live model path, restricted to an exact approved endpoint, region/workspace, credential class, and model allowlist.                                                                                            |
+| Standard OpenAI Platform API key BYOK                      | **PASS**                      | Supported general API path, tenant-owned and restricted to the tenant's project and the gateway policy.                                                                                                              |
+| Dasher-operated platform credential                        | **PASS**                      | Pilot default (Amendment 01 A1, accepted 2026-08-31). Same gateway contract, endpoint/region/model validation, budget ceilings, and metering as BYOK. Selected explicitly per organization; never a fallback target. |
+| Consumer Codex/ChatGPT OAuth or subscription token         | **HOLD**                      | Unsupported for Dasher SaaS today. Do not collect tokens, import local auth files, scrape cookies, copy another client's public identifier, or call undocumented endpoints.                                          |
+| Codex Business/Enterprise access token                     | **CAUTION / HOLD**            | No implementation until a documented or provider-confirmed Dasher app-server contract satisfies the workspace, identity, provisioning, rotation, revocation, and tool-denial gates below.                            |
+| Qwen Coding Plan or Token Plan credential for backend use  | **REJECT**                    | These plans are not Dasher backend credentials. Reject unsupported credential/endpoint combinations before prompt data leaves.                                                                                       |
+| Generic MCP server                                         | **CAUTION / deferred**        | No arbitrary discovery or stdio. A future path is remote HTTPS, named, admin-approved, pinned, read-only, and brokered.                                                                                              |
+| Official Google Workspace MCP                              | **CAUTION / read-only gated** | Native read-only Google Sheets comes first. A later remote MCP facade may expose only an exact approved read-only manifest.                                                                                          |
 
 Credential class must be established from configured product, issuer,
 endpoint, workspace/region, provider validation, and explicit administrator

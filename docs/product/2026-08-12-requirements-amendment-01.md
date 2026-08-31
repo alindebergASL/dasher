@@ -1,7 +1,10 @@
 # Requirements Amendment 01
 
-Status: Proposed amendment — requires owner acceptance before it governs
+Status: Accepted by owner direction, 2026-08-31 — governs, with the A5
+exception recorded below
 Date: 2026-08-12
+Accepted: 2026-08-31, in response to a direction review that found this
+amendment and the approved baseline in open conflict
 Amends: [Product requirements](PRODUCT_REQUIREMENTS.md) (Approved baseline),
 [ADR-004](../architecture/ADR-004-provider-oauth-mcp-boundaries.md) (Accepted),
 [ADR-005](../architecture/ADR-005-agentic-dashboard-harness.md) (Proposed),
@@ -15,14 +18,25 @@ baseline, two accepted documents, and one proposed ADR. This amendment states th
 replacement text for each clause in one reviewable place rather than editing
 those documents quietly.
 
-Until this amendment is accepted, the original clauses govern. On acceptance,
-each amended document gets a dated pointer to this file at its head, and the
-superseded clause is marked in place rather than deleted — the convention
-`docs/plans/2026-07-30-product-spine.md:3-14` already established.
+Accepted 2026-08-31. Each amended document carries a dated pointer to this
+file at its head, and the superseded clauses are marked in place rather than
+deleted — the convention `docs/plans/2026-07-30-product-spine.md:3-14`
+established.
+
+**One exception: A5 does not govern.** Between proposal and acceptance the
+owner decided A5 directly — the
+[2026-08-26 decision](2026-08-26-a5-alerting-decision.md) chose the third
+option while declining the composition-contract constraint A5's replacement
+text would have imposed. The later, more specific owner decision governs; A5
+below stands as the record of the constraint that was proposed and declined,
+and of what would reopen it.
 
 Nothing here relaxes a safety invariant. The generated-code gate stays `CLOSED`.
-Record immutability, forced row-level security, composite tenant foreign keys,
-audit atomicity, and the no-cross-credential-fallback rule are all unchanged.
+Record immutability, row-level security (enabled and seam-governed — "forced"
+here was stale language; see ADR-003's 2026-08-17 correction for why forcing
+would deny the `SECURITY DEFINER` seam the writes it exists to perform),
+composite tenant foreign keys, audit atomicity, and the
+no-cross-credential-fallback rule are all unchanged.
 
 ---
 
@@ -239,9 +253,13 @@ The Gate 1 record is not revised. The technique is not used again.
 A1, A2, A4, A6, and A7 are straightforward once accepted: they change text and
 future work, and contradict nothing already built.
 
-A3 is only partly achievable by amendment. The schema it removes from the product
-is permanent unless [ADR-006](../architecture/ADR-006-schema-freeze-point.md) is
-also accepted and a squash is performed before a Freeze Point is declared.
+A3 is fully achieved. The squash ADR-006 contemplated was performed on
+2026-08-13 ([baseline squash](../status/2026-08-13-baseline-squash.md)):
+`0001_baseline.sql` deliberately omits the disposable-dashboard machinery, so
+the schema this amendment removes from the product is gone from the live
+migration series, not merely deprecated. The search requirement A3 adds remains
+unbuilt and open.
 
-A5 records a constraint and leaves a product decision open. It is the one item
-here that is not finished.
+A5 was decided by the owner on 2026-08-26 — see the exception in the Standing
+section. The constraint this amendment proposed was declined, and the residual
+risk it named is recorded there rather than resolved.

@@ -503,7 +503,15 @@ const adr004Clauses: ExactClause[] = [
 ];
 
 const adr005Clauses: ExactClause[] = [
-  exactClause("ADR-005 proposed status", `Status: Proposed`),
+  // Pinned as Proposed until 2026-08-31, when the owner accepted the ADR (as
+  // amended by Requirements Amendment 01) to unblock the model-planner work.
+  // The clause still pins the status line so a silent edit — in either
+  // direction — fails here rather than drifting.
+  exactClause(
+    "ADR-005 accepted status",
+    `Status: Accepted by owner direction, 2026-08-31, as amended by Requirements
+    Amendment 01`,
+  ),
   exactClause(
     "ADR-005 target is not current implementation",
     `This ADR records an owner-approved product direction as a proposed target
