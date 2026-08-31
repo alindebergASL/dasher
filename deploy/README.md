@@ -244,6 +244,15 @@ worst possible moment.
   out which backups exist. This one is on the BUCKET, not on the objects; a
   policy that lists only object ARNs silently grants nothing.
 
+One more, conditional: any real dump exceeds the CLI's 8 MB threshold and
+uploads as MULTIPART. When a multipart upload dies half way, the CLI tries to
+abort it; without `s3:AbortMultipartUpload` that abort is refused and the
+orphaned parts sit in the bucket, invisibly billed, for ever. Grant it on the
+prefix — or make the lifecycle rule below also expire incomplete multipart
+uploads (`AbortIncompleteMultipartUpload`), which covers the same failure
+without the extra action. (If the bucket uses SSE-KMS rather than SSE-S3, the
+role additionally needs `kms:GenerateDataKey` and `kms:Decrypt` on the key.)
+
 Put a lifecycle rule on the bucket unless you intend to keep every daily dump
 for ever.
 

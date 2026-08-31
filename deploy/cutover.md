@@ -35,8 +35,15 @@ systemctl list-units --type=service | grep -i -E 'dasher|next|node'
 ## 1. Docker, and the revision you intend to run
 
 ```sh
+# docker-compose-v2 exists in Ubuntu 22.04 and later. If this apt-get cannot
+# find it, the host is older than assumed — stop and check `lsb_release -a`
+# before improvising a compose install.
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
 sudo usermod -aG docker "$USER" && newgrp docker
+# `newgrp` opens a NEW shell: fine pasted interactively, but it only affects
+# this session (a second SSH login still lacks the group until re-login), and
+# any variables exported before it are gone — so run it BEFORE step 2's
+# `set -a`, or log out and back in instead.
 
 cd ~/dasher
 git fetch origin
@@ -97,12 +104,32 @@ curl -sS -o /dev/null -w '%{http_code}\n' "http://$WEB:3000/"   # 200
 ## 5. Rehearse through the OLD proxy, TLS and all
 
 This step is the reason the cutover is safe, and it is worth doing rather than
-skipping to step 6. Point nginx's upstream at the container and reload:
+skipping to step 6. Point nginx's upstream at the container and reload — but
+edit the RIGHT file, and put the backup in the right place:
 
 ```sh
-sudo sed -i.bak "s#127\.0\.0\.1:3000#$WEB:3000#" /etc/nginx/sites-enabled/<site>
+# The entry under sites-enabled is a SYMLINK into sites-available. `sed -i.bak`
+# on the symlink does two wrong things at once: it replaces the symlink with a
+# regular file, and it drops the `.bak` INSIDE the directory nginx globs — so
+# nginx loads the site twice and `nginx -t` fails on a duplicate default
+# server, dead-ending the cutover mid-morning. Reproduced, not theorized.
+SITE=$(readlink -f /etc/nginx/sites-enabled/<site>)
+sudo cp -a "$SITE" /root/nginx-site.rehearsal.bak
+sudo sed -i "s#127\.0\.0\.1:3000#$WEB:3000#" "$SITE"
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+One check before trusting the rehearsal:
+
+```sh
+grep -n 'proxy_set_header[[:space:]]\+Host' "$SITE"
+```
+
+If that finds nothing, add `proxy_set_header Host $host;` to the location block
+before rehearsing. nginx's default forwards the UPSTREAM address as the Host,
+and Next.js rejects server actions whose `Origin` disagrees with the forwarded
+Host — so page loads would look fine while sign-in and the CSV upload fail,
+which is precisely the false confidence this step exists to prevent.
 
 The new application is now being served over the EXISTING certificate, on the
 real hostname, still behind Basic Auth. That means sign-in can be exercised for
@@ -110,8 +137,15 @@ real before anything irreversible happens — `__Host-` cookies need `Secure` an
 a real hostname, and this arrangement provides both. Sign in, upload a CSV, load
 a dashboard.
 
-`nginx -t && systemctl reload nginx` after restoring the `.bak` puts it back,
-with no downtime in either direction.
+> **`$WEB` is not stable.** It is a bridge-network address that can change any
+> time the container is recreated — another `up -d --build`, or an OOM-kill
+> followed by `restart: unless-stopped`. If ANYTHING rebuilds or restarts the
+> `web` container after this step, re-derive `$WEB` (step 4) and re-point
+> nginx, or the live site quietly serves 502s while the rehearsal still looks
+> green in your notes.
+
+To undo the rehearsal: `sudo cp /root/nginx-site.rehearsal.bak "$SITE" && sudo
+nginx -t && sudo systemctl reload nginx` — no downtime in either direction.
 
 ## 6. Cut over
 
@@ -139,6 +173,12 @@ curl -sSI https://luckbutton.com/ | grep -i 'content-security-policy\|x-frame'  
 curl -sS -o /dev/null -w '%{http_code}\n' http://luckbutton.com/                 # 308 to https
 ```
 
+Run the header check against a 200, not against the first response after a
+restart: the security headers ride the APPLICATION's responses, and a
+Caddy-generated `502 Bad Gateway` during the few seconds a container is coming
+up carries none of them (and a `Server: Caddy` banner besides). A missing
+header on a 502 is a race you lost, not a configuration fault.
+
 404 is the answer you want on `/dev/bootstrap`: the route exports GET and POST
 and both check the switch first, so a switched-off deployment answers 404 on
 either. A **405 means the bootstrap is live** — it mints a session for anyone
@@ -149,12 +189,16 @@ Then sign in again through Caddy, and confirm the dashboard you created in step
 
 ## Rolling back
 
-Until the old units are disabled, rollback is two commands and about ten
-seconds:
+Before step 6, rollback is the rehearsal-undo above. After step 6 it is three
+commands, not two — step 6 stopped BOTH old services, and restoring nginx's
+config points it back at `127.0.0.1:3000`, where nothing answers until the old
+server is started again. A rollback that forgets the third command serves 502s
+and looks like a second failure:
 
 ```sh
 docker compose -f deploy/compose.yml --env-file deploy/.env stop proxy
-sudo systemctl start nginx        # restore the .bak upstream first if step 5 was left in place
+sudo cp /root/nginx-site.rehearsal.bak "$SITE" && sudo nginx -t   # if step 5 edited it
+sudo systemctl start <old next unit> && sudo systemctl start nginx
 ```
 
 Postgres, `web` and `backup` can keep running while you work out what happened —

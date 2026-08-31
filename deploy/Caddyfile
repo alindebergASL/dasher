@@ -70,8 +70,10 @@
 		# preview sent, and it stays true until somebody decides otherwise.
 		?X-Robots-Tag "noindex, nofollow"
 
-		# Version banners are free reconnaissance.
+		# Banners are free reconnaissance. Both of them: Caddy's own Server
+		# header, and the X-Powered-By that Next attaches upstream.
 		-Server
+		-X-Powered-By
 	}
 
 	reverse_proxy web:3000
