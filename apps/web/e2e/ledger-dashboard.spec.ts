@@ -75,8 +75,19 @@ test("every figure on the ledger dashboard has evidence behind it", async ({
     ).toBeVisible();
   }
 
-  await page.locator(".dashboard-grid .sources-button").first().click();
+  // First CLIENT interaction on the page, so the click races hydration: the
+  // server HTML paints this button before React has attached its onClick, and
+  // a click that lands in that window is silently lost — the button looks
+  // actionable to Playwright either way. (The "Build dashboard" click above
+  // has no such race: it submits a form, which works before hydration.)
+  // Retrying the click until the dialog answers is the only signal that the
+  // handler actually exists yet.
+  const sourcesButton = page.locator(".dashboard-grid .sources-button").first();
   const evidence = page.getByRole("dialog");
+  await expect(async () => {
+    await sourcesButton.click();
+    await expect(evidence).toBeVisible({ timeout: 1_000 });
+  }).toPass();
   await expect(evidence).toContainText("Operating ledger export");
   await expect(evidence).toContainText("Ledger calculations");
 });
@@ -91,8 +102,18 @@ test("the architecture panel explains the ledger path without a sensor in it", a
   await page.getByRole("button", { name: "Build dashboard" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 
-  await page.getByRole("button", { name: /Architecture/u }).click();
+  // Same hydration race as the evidence click above — this was the one that
+  // actually fired, twice in CI and once in eight local repeats: the click
+  // beat the onClick handler, no dialog ever opened, and the test timed out
+  // on an element that was never going to exist.
+  const architectureButton = page.getByRole("button", {
+    name: /Architecture/u,
+  });
   const dialog = page.getByRole("dialog");
+  await expect(async () => {
+    await architectureButton.click();
+    await expect(dialog).toBeVisible({ timeout: 1_000 });
+  }).toPass();
 
   await expect(dialog).toContainText("Ledger export");
   await expect(dialog).toContainText("Dasher calculations");
