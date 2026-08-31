@@ -343,6 +343,55 @@ describe("the previous plan is parsed, not trusted", () => {
   });
 });
 
+describe("a session that dies between page load and build", () => {
+  /*
+   * The typed path's version of the upload fix. `persist()` runs after the
+   * dashboard is already built; when the repository refuses the credential,
+   * the dashboard still stands and only its durability is gone. The old
+   * message — "could not be saved" — invited a retry against a save that was
+   * never attempted. The distinction matters here MORE than on upload,
+   * because this reader has a finished dashboard on screen and no other clue
+   * that they stopped being signed in.
+   */
+  it("says the session ended, not that the save failed", async () => {
+    vi.stubEnv("DASHER_DATABASE_URL", "postgresql://u:p@localhost:5432/d");
+    presentedCredential = { tokenKeyVersion: 1, token: Buffer.alloc(32, 3) };
+    repositoryRejection = new DashboardRepositoryError(
+      "not_authenticated",
+      "the presented credential was not accepted",
+    );
+    try {
+      const result = await planDashboard(DEFAULT_REQUEST);
+
+      // The dashboard itself survives; only the message changes.
+      expect(result.ok).toBe(true);
+      expect(result.dashboard).toBeDefined();
+      expect(result.error).toMatch(/session has ended/u);
+      expect(result.error).not.toMatch(/could not be saved/u);
+    } finally {
+      vi.unstubAllEnvs();
+      presentedCredential = undefined;
+      repositoryRejection = undefined;
+    }
+  });
+
+  it("still calls a genuine save fault a save fault", async () => {
+    vi.stubEnv("DASHER_DATABASE_URL", "postgresql://u:p@localhost:5432/d");
+    presentedCredential = { tokenKeyVersion: 1, token: Buffer.alloc(32, 3) };
+    repositoryRejection = new Error("connection terminated unexpectedly");
+    try {
+      const result = await planDashboard(DEFAULT_REQUEST);
+
+      expect(result.ok).toBe(true);
+      expect(result.error).toMatch(/could not be saved/u);
+    } finally {
+      vi.unstubAllEnvs();
+      presentedCredential = undefined;
+      repositoryRejection = undefined;
+    }
+  });
+});
+
 describe("the badge tells the truth about where readings came from", () => {
   // THE BUG THIS SLICE FIXES. Every builder wrote `dataMode: "demo"` as a
   // literal, so the shell's `dataMode === "live"` branch was unreachable and a

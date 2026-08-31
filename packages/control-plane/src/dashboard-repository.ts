@@ -187,8 +187,12 @@ export type DashboardRepositoryErrorCode =
 export class DashboardRepositoryError extends Error {
   readonly code: DashboardRepositoryErrorCode;
 
-  constructor(code: DashboardRepositoryErrorCode, message: string) {
-    super(message);
+  constructor(
+    code: DashboardRepositoryErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.name = "DashboardRepositoryError";
     this.code = code;
   }
@@ -557,9 +561,12 @@ export async function withDashboardRepository<T>(
      * makes a translation like this silently do nothing.
      */
     if (error instanceof RequestContextError && error.code === "denied") {
+      // `cause` keeps the original rejection reachable for whoever is
+      // holding a debugger, without it becoming part of the contract.
       throw new DashboardRepositoryError(
         "not_authenticated",
         "the presented credential was not accepted",
+        { cause: error },
       );
     }
     throw error;

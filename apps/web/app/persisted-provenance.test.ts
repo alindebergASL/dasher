@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type * as ControlPlane from "@dasher/control-plane";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DETERMINISTIC_LEDGER_PLANNER } from "@dasher/planner";
@@ -94,7 +95,16 @@ vi.mock("./session", () => ({
   readSessionCredential: async () => ({ token: "t", tokenKeyVersion: 1 }),
 }));
 
-vi.mock("@dasher/control-plane", () => ({
+/*
+ * `importOriginal` spread, even though only one symbol is replaced: actions.ts
+ * also VALUE-imports `DashboardRepositoryError` from this module for an
+ * `instanceof` in its catch handlers. A factory that returns only the one
+ * function leaves that class `undefined`, and the first error to reach the
+ * catch becomes "Right-hand side of 'instanceof' is not an object" instead of
+ * whatever this suite was actually asserting.
+ */
+vi.mock("@dasher/control-plane", async (importOriginal) => ({
+  ...(await importOriginal<typeof ControlPlane>()),
   withDashboardRepository: async (
     _pool: unknown,
     _credential: unknown,

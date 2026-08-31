@@ -228,7 +228,22 @@ async function planAndPersist(
       plannerProvenance(decision, planned.planners),
     );
     return dashboardId === undefined ? result : { ...result, dashboardId };
-  } catch {
+  } catch (error) {
+    // A session that ended mid-visit is not a durability failure. The same
+    // split the upload path makes, for the same reason: "could not be saved"
+    // sends a reader to retry against a save that was never attempted, when
+    // what actually happened is that they stopped being signed in between
+    // opening the page and pressing the button.
+    if (
+      error instanceof DashboardRepositoryError &&
+      error.code === "not_authenticated"
+    ) {
+      return {
+        ...result,
+        error:
+          "This dashboard was built, but your session has ended, so it was not saved. Sign in again to keep what you build.",
+      };
+    }
     // The dashboard stands; only its durability failed. Saying so is the point
     // — a persistence slice whose failure mode is "the page looked fine" would
     // be indistinguishable from not having built it.
