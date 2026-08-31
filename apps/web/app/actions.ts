@@ -15,7 +15,10 @@ import {
   type PlannerRunOptions,
   type PlanningProvider,
 } from "@dasher/planner";
-import { withDashboardRepository } from "@dasher/control-plane";
+import {
+  DashboardRepositoryError,
+  withDashboardRepository,
+} from "@dasher/control-plane";
 import {
   canonicalSpecBytes,
   composeDashboards,
@@ -225,7 +228,22 @@ async function planAndPersist(
       plannerProvenance(decision, planned.planners),
     );
     return dashboardId === undefined ? result : { ...result, dashboardId };
-  } catch {
+  } catch (error) {
+    // A session that ended mid-visit is not a durability failure. The same
+    // split the upload path makes, for the same reason: "could not be saved"
+    // sends a reader to retry against a save that was never attempted, when
+    // what actually happened is that they stopped being signed in between
+    // opening the page and pressing the button.
+    if (
+      error instanceof DashboardRepositoryError &&
+      error.code === "not_authenticated"
+    ) {
+      return {
+        ...result,
+        error:
+          "This dashboard was built, but your session has ended, so it was not saved. Sign in again to keep what you build.",
+      };
+    }
     // The dashboard stands; only its durability failed. Saying so is the point
     // — a persistence slice whose failure mode is "the page looked fine" would
     // be indistinguishable from not having built it.
@@ -809,9 +827,27 @@ export async function uploadLedgerDashboard(
   if (!isPersistenceConfigured()) {
     return { ok: false, error: NO_DURABLE_HOME };
   }
+  /*
+   * Being signed out is NOT the same refusal, and saying it was told a reader
+   * something false about the deployment.
+   *
+   * These two returned one message, on the reasoning that they were "both ways
+   * of having nowhere to put the file". They are not. The first is true: there
+   * is no database, so nothing can be kept. The second is a deployment that
+   * keeps files perfectly well and has nobody to attribute this one to — and
+   * the upload panel sits on the PUBLIC page, so it is the case an ordinary
+   * visitor reaches by trying the product before signing in. Measured on the
+   * deployable: a signed-out upload was told "this deployment has nowhere to
+   * keep them", which sends somebody to check their configuration over what is
+   * a sign-in prompt.
+   *
+   * Nothing is leaked by telling them apart. That a deployment has persistence
+   * is not a secret — the sign-in page is public, and a reader who can see this
+   * form can see that.
+   */
   const credential = await readSessionCredential();
   if (credential === undefined) {
-    return { ok: false, error: NO_DURABLE_HOME };
+    return { ok: false, error: NOT_SIGNED_IN };
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -920,7 +956,28 @@ export async function uploadLedgerDashboard(
       noRefinement: "uploaded-file",
       dashboardId,
     };
-  } catch {
+  } catch (error) {
+    /*
+     * A session that ended is not a storage failure, and calling it one asks
+     * for a retry that cannot work.
+     *
+     * The `readSessionCredential() === undefined` check above catches only a
+     * credential too malformed to parse — no cookie, empty, bad base64, too
+     * short. A well-formed token that is expired, revoked, forged, or attached
+     * to a membership that no longer exists parses fine, reaches the database,
+     * and is refused there. That is the COMMON way to be signed out: a stale
+     * tab, not a corrupt cookie. Both used to arrive here and be described as
+     * "That export could not be stored ... Try again."
+     *
+     * The seam deliberately gives one code for every rejection, so this cannot
+     * and does not tell the reader which it was.
+     */
+    if (
+      error instanceof DashboardRepositoryError &&
+      error.code === "not_authenticated"
+    ) {
+      return { ok: false, error: NOT_SIGNED_IN };
+    }
     // Unlike the typed path, this does NOT return the dashboard with a warning.
     // The file is the evidence; a dashboard shown after its evidence failed to
     // store is the exact state this action exists to prevent.
@@ -932,9 +989,13 @@ export async function uploadLedgerDashboard(
   }
 }
 
-/** Kept identical across both ways of having nowhere to put the file. */
+/** A deployment with no database at all: nothing can be kept, by anyone. */
 const NO_DURABLE_HOME =
   "Uploads are kept as the evidence behind their dashboard, and this deployment has nowhere to keep them. Nothing was built.";
+
+/** A deployment that can keep the file, for somebody it can name. */
+const NOT_SIGNED_IN =
+  "Sign in first: an upload is stored as the evidence behind its dashboard, so it has to belong to an organization. Nothing was built.";
 
 /** Which reader was applied, which is what a later reader needs to know. */
 const UPLOAD_SOURCE_KIND = "csv-upload";

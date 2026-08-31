@@ -1,4 +1,7 @@
-import { withDashboardRepository } from "@dasher/control-plane";
+import {
+  DashboardRepositoryError,
+  withDashboardRepository,
+} from "@dasher/control-plane";
 import { parseDashboardSpec } from "@dasher/dashboard-schema";
 import { notFound } from "next/navigation";
 
@@ -64,11 +67,20 @@ export default async function SavedDashboard({
       async (repository) => repository.loadById(id),
     );
   } catch (error) {
-    // A cookie that is well formed but names no live session raises `denied`.
-    // Letting it escape returns 500, which tells the holder of a forged token
-    // that their token is the problem rather than the dashboard. Anything else
-    // is a real fault and still surfaces as one.
-    if (isDenied(error)) notFound();
+    // A cookie that is well formed but names no live session must land on the
+    // same 404 as a dashboard that does not exist. Letting it escape returns
+    // 500, which tells the holder of a forged token that their token is the
+    // problem rather than the dashboard. Anything else is a real fault and
+    // still surfaces as one.
+    //
+    // The facade translates the seam's denial into its own vocabulary — this
+    // page briefly matched the seam's `denied` directly, which the facade no
+    // longer lets out, and every dead session was a 500 for as long as that
+    // lasted. The class check is what keeps this from silently dying again:
+    // a bare `code` comparison matches nothing when the code moves, while an
+    // `instanceof` against the exported error at least anchors this to the
+    // package whose contract it is.
+    if (isNotAuthenticated(error)) notFound();
     throw error;
   }
   if (loaded === undefined) notFound();
@@ -91,10 +103,9 @@ export default async function SavedDashboard({
   return <DashboardShell dashboard={spec} sealed />;
 }
 
-function isDenied(error: unknown): boolean {
+function isNotAuthenticated(error: unknown): boolean {
   return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "denied"
+    error instanceof DashboardRepositoryError &&
+    error.code === "not_authenticated"
   );
 }

@@ -17,5 +17,64 @@
 		max_size 8MB
 	}
 
+	# Response headers the browser enforces.
+	#
+	# WHY THESE LIVE HERE. The application sets none of them: there is no
+	# `middleware.ts` and no `headers()` in `next.config`. The preview this
+	# deployment replaces was fronted by nginx, which did set them, so shipping
+	# the proxy without them would be a measurable REGRESSION delivered at the
+	# same moment the site stops being password-protected — losing clickjacking
+	# protection exactly when the pages become reachable by anyone.
+	header {
+		# Everything comes from this origin. The app references no external
+		# host — no CDN, no font service, no analytics — which is what makes a
+		# default of `self` viable rather than aspirational.
+		#
+		# `unsafe-inline` is Next's own output on both counts: six inline
+		# <script> blocks carrying the flight payload, and inline style
+		# attributes from the components. Measured rather than assumed — the
+		# strict form was served first, and Chrome refused all six scripts and
+		# three styles.
+		#
+		# Worth recording precisely, because the failure is quiet: with the
+		# scripts blocked the page still RENDERED and still looked right, since
+		# what you see first is server-rendered HTML. It is the hydration data
+		# that never arrives. A smoke test that loads the page and checks for
+		# text would have called the strict policy a success.
+		#
+		# Removing the script exception needs a per-request nonce, which needs
+		# a middleware — a change to the application rather than to its proxy.
+		# Worth doing; not worth blocking this deploy on.
+		#
+		# The directives that do NOT depend on that are the ones carrying most
+		# of the weight here, and they are all exact: no plugins, no <base>
+		# rewriting, no framing, and forms that can only post back to us.
+		?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
+		# Redundant with frame-ancestors above for current browsers, kept
+		# because it is what the deployment being replaced sent and dropping it
+		# would narrow protection for anything older.
+		?X-Frame-Options "DENY"
+		?X-Content-Type-Options "nosniff"
+		?Referrer-Policy "strict-origin-when-cross-origin"
+		?Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+		# Deliberately no `preload`, and deliberately no `includeSubDomains`.
+		# Both are one-way doors — preload is removable only on someone else's
+		# schedule, and includeSubDomains commits every sibling name on this
+		# domain to HTTPS whether or not it is ready. A pilot should not sign
+		# either on the owner's behalf.
+		?Strict-Transport-Security "max-age=31536000"
+
+		# A pilot's dashboards are not search results. This is what the
+		# preview sent, and it stays true until somebody decides otherwise.
+		?X-Robots-Tag "noindex, nofollow"
+
+		# Banners are free reconnaissance. Both of them: Caddy's own Server
+		# header, and the X-Powered-By that Next attaches upstream.
+		-Server
+		-X-Powered-By
+	}
+
 	reverse_proxy web:3000
 }

@@ -1,17 +1,26 @@
 # ADR-005: Agentic Dashboard Harness
 
-Status: Proposed
+Status: Accepted by owner direction, 2026-08-31, as amended by Requirements
+Amendment 01
 Date: 2026-07-31
 Depends on: ADR-001, ADR-003, ADR-004
 
-> **Proposed amendments (2026-08-12):**
+> **Amendments accepted (2026-08-31):**
 > [Requirements Amendment 01](../product/2026-08-12-requirements-amendment-01.md)
-> proposes removing Scratch, disposable kind, TTL policy, promotion, and quarantine
-> from the normative product grammar below, and proposes making `count_distinct`,
-> `median`, and percentile executable in registry v1 rather than declarable-but-
-> abstaining. [ADR-006](ADR-006-schema-freeze-point.md) proposes replacing this
-> ADR's rule that lifecycle rules "must exist in the first dashboard migration"
-> with a Freeze Point that begins at first deployment holding real data.
+> removes Scratch, disposable kind, TTL policy, promotion, and quarantine from
+> the normative product grammar below (A3), and makes `count_distinct`,
+> `median`, and percentile executable requirements for registry v1 rather than
+> declarable-but-abstaining (A6). [ADR-006](ADR-006-schema-freeze-point.md),
+> also accepted, replaces this ADR's rule that lifecycle rules "must exist in
+> the first dashboard migration" with a Freeze Point — and its squash was
+> executed on 2026-08-13, so the first-migration-completeness rule is both
+> superseded and moot. Read the grammar below through those amendments; it is
+> retained unedited so the review trail stays legible.
+>
+> Acceptance makes this the governing target for wiring a model planner into
+> the product (the work the deterministic keyword router stands in for). It
+> does not claim any harness capability exists, and every gate below still has
+> to pass before its capability is enabled.
 
 ## Context
 

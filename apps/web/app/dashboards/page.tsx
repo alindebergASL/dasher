@@ -1,4 +1,7 @@
-import { withDashboardRepository } from "@dasher/control-plane";
+import {
+  DashboardRepositoryError,
+  withDashboardRepository,
+} from "@dasher/control-plane";
 import Link from "next/link";
 
 import { getPool, isPersistenceConfigured } from "../database";
@@ -57,10 +60,11 @@ export default async function YourDashboards() {
       async (repository) => repository.listRecent(LIST_LIMIT),
     );
   } catch (error) {
-    // A well-formed cookie naming no live session raises `denied`. The same
-    // rule as /d/[id]: that must not read differently from having no session
-    // at all, so the holder of a forged token learns nothing from this page.
-    if (isDenied(error)) {
+    // A well-formed cookie naming no live session arrives as the repository's
+    // `not_authenticated`. The same rule as /d/[id]: that must not read
+    // differently from having no session at all, so the holder of a forged
+    // token learns nothing from this page.
+    if (isNotAuthenticated(error)) {
       return (
         <Shell>
           <SignedOutNote />
@@ -149,10 +153,9 @@ function SignedOutNote() {
   );
 }
 
-function isDenied(error: unknown): boolean {
+function isNotAuthenticated(error: unknown): boolean {
   return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "denied"
+    error instanceof DashboardRepositoryError &&
+    error.code === "not_authenticated"
   );
 }

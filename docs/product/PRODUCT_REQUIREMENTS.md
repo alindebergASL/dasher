@@ -6,13 +6,17 @@ Updated: 2026-08-01
 Domain: `luckbutton.com`
 Repository: `alindebergASL/dasher`
 
-> **Proposed amendment (2026-08-12):** Owner decisions recorded in
-> [product direction decisions](2026-08-12-product-direction-decisions.md) contradict
-> clauses in this baseline. The replacement text is proposed in
-> [Requirements Amendment 01](2026-08-12-requirements-amendment-01.md) and affects
-> the BYOK pilot default (`:203`), the multi-dashboard workspace and disposable
-> TTLs, the alerting and safety-non-goal pair, and the deferred Compose canvas.
-> Until that amendment is accepted, the clauses below govern unchanged.
+> **Amendment accepted (2026-08-31):**
+> [Requirements Amendment 01](2026-08-12-requirements-amendment-01.md) now
+> governs, recording the owner decisions of 2026-08-12. It replaces the BYOK
+> pilot default, replaces the Boards-and-Scratches workspace with one dashboard
+> kind and no expiry, adds a provider-evaluation-harness requirement and a
+> dashboard-search requirement, and removes the Compose canvas. Superseded
+> clauses below are marked in place. The alerting/safety-non-goal pair was
+> decided separately — the
+> [2026-08-26 decision](2026-08-26-a5-alerting-decision.md) lets the disclaimer
+> stand as the boundary, with legal review still owed before a real pilot user
+> beyond the owner.
 
 ## Product thesis
 
@@ -104,6 +108,17 @@ Combine employee lists, project trackers, time-off calendars, engagement surveys
 Combine account briefs, meeting notes, emails, opportunities, support issues, and current company news into account health, what changed, opportunity and stakeholder maps, executive priorities, risks, meeting readiness, next-best actions, and an evidence drawer.
 
 ## Multi-dashboard workspace
+
+> **Superseded (Amendment 01 A3, accepted 2026-08-31).** The pilot workspace
+> holds dashboards of one kind, with the lifecycle `draft → active → archived`.
+> Archiving is reversible, retains authorized access, and removes the dashboard
+> from default views; explicit delete transitions any state to access-revoked
+> cleanup. Workspace scale is managed by archiving and search — this baseline
+> therefore gains a requirement for dashboard search across title, audience,
+> source, and freshness (unbuilt). No dashboard expires automatically, and no
+> dashboard is destroyed on a timer. The Scratch/Board split, TTL policy,
+> promotion, and quarantine below are retained as text only, so the review
+> trail stays legible.
 
 The pilot target is a Workspace container/registry with multiple Boards and
 Scratches, not a single dashboard per user or organization. A Scratch is a
@@ -208,6 +223,18 @@ access.
 
 ## AI credentials and model portability
 
+> **Superseded (Amendment 01 A1, accepted 2026-08-31).** A Dasher-operated
+> provider credential is the pilot default, so an invited organization reaches
+> a working dashboard without procuring an inference key. Organization BYOK is
+> supported and switchable at any time. Credential selection is an explicit,
+> stored, per-organization choice; Dasher never falls back from one credential
+> to another for any reason — a missing or failing credential produces a clear
+> error and no inference call. A2 additionally requires an evaluation harness
+> that runs a fixed request corpus against each candidate provider and compares
+> the resulting plans deterministically — composition quality, request
+> adherence, revision behaviour, refusals, latency, and cost — with the first
+> live provider chosen by that evidence rather than fixed in advance.
+
 - Organization-level BYOK is the pilot default.
 - Provider credentials are encrypted and never exposed to generated code or browser clients.
 - Credentials are tenant-scoped, administrator-managed, auditable, revocable,
@@ -255,3 +282,10 @@ The initial release does not include public signup or self-serve billing. Admini
 - Emergency dispatch or safety-critical flood warnings.
 - Claims that the dashboard replaces official USGS or emergency-management guidance.
 - Public signup or billing.
+
+> **On the tension between threshold alerts and these non-goals:** decided
+> 2026-08-26 — the disclaimer stands as the boundary and the planner may emit
+> emergency-shaped titles and audiences; no composition-contract constraint is
+> added. The residual risk and its reopening conditions are recorded in
+> [the decision](2026-08-26-a5-alerting-decision.md); legal review remains a
+> blocker for a real pilot user beyond the owner.

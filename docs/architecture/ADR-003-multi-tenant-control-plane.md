@@ -308,19 +308,40 @@ The implementation must deny or preserve the prior good state when:
 
 ## Acceptance gates
 
-| Gate                              | Enables                                                | Required evidence                                                                                                                                                                                                                                                                                                                       |
-| --------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foundation checkpoint             | Continued fixture development                          | Merged foundation schema, fixture pipeline, renderer, Architecture dialog, tests, and CI remain green; generated-code status is exactly `CLOSED`.                                                                                                                                                                                       |
-| Identity and tenant policy        | Invitations and durable tenant rows                    | Invite/session/CSRF/role tests; verified-principal and email-binding tests; no-email-linking and explicit-link audit tests when those paths are proposed for enablement; PostgreSQL `FORCE RLS` cross-tenant matrix under restricted roles; composite-FK, forged-context, missing-context, pool-reuse, and mid-flight revocation tests. |
-| Immutable persistence and storage | Durable sources, evidence, dashboards, jobs, and audit | Insert-only enforcement; durable refresh and disposable expiry/cleanup/promotion races; complete evidence/version lineage; candidate promotion failure tests; audit atomicity; tenant storage and signed-URL isolation; backup restore; retention and deletion procedure.                                                               |
-| Ingestion                         | Controlled USGS and then approved CSV/XLSX data        | Early raw and expanded byte limits; SSRF, redirect, timeout, decompression, malformed-input, macro/link/formula, parser-isolation, quarantine/promotion, and orphan-cleanup tests.                                                                                                                                                      |
-| Job authority                     | Manual refresh, then one daily schedule                | Deduplication, leases, retry bounds, failure preservation, payload secret scan, and revocation at claim, wait, pre-call, retry, continuation, and commit.                                                                                                                                                                               |
-| Model gateway                     | Standard organization BYOK                             | Fake-provider zero-network/zero-secret proof; endpoint/region/model/credential classification before data leaves; schema and evidence negative tests; transport-level budget block; log secret scan; live capped smoke and kill switch.                                                                                                 |
-| Private pilot operations          | Owner pilot go/no-go review                            | All prior gates on the exact deployment, monitoring and incident drill, no unresolved isolation blocker, and explicit owner decisions on real data, terms, cohort, liability, and release.                                                                                                                                              |
+| Gate                              | Enables                                                | Required evidence                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foundation checkpoint             | Continued fixture development                          | Merged foundation schema, fixture pipeline, renderer, Architecture dialog, tests, and CI remain green; generated-code status is exactly `CLOSED`.                                                                                                                                                                                                                                                        |
+| Identity and tenant policy        | Invitations and durable tenant rows                    | Invite/session/CSRF/role tests; verified-principal and email-binding tests; no-email-linking and explicit-link audit tests when those paths are proposed for enablement; PostgreSQL RLS cross-tenant matrix under restricted roles (enabled and seam-governed, per the 2026-08-17 correction — not `FORCE`); composite-FK, forged-context, missing-context, pool-reuse, and mid-flight revocation tests. |
+| Immutable persistence and storage | Durable sources, evidence, dashboards, jobs, and audit | Insert-only enforcement; durable refresh and disposable expiry/cleanup/promotion races; complete evidence/version lineage; candidate promotion failure tests; audit atomicity; tenant storage and signed-URL isolation; backup restore; retention and deletion procedure.                                                                                                                                |
+| Ingestion                         | Controlled USGS and then approved CSV/XLSX data        | Early raw and expanded byte limits; SSRF, redirect, timeout, decompression, malformed-input, macro/link/formula, parser-isolation, quarantine/promotion, and orphan-cleanup tests.                                                                                                                                                                                                                       |
+| Job authority                     | Manual refresh, then one daily schedule                | Deduplication, leases, retry bounds, failure preservation, payload secret scan, and revocation at claim, wait, pre-call, retry, continuation, and commit.                                                                                                                                                                                                                                                |
+| Model gateway                     | Standard organization BYOK                             | Fake-provider zero-network/zero-secret proof; endpoint/region/model/credential classification before data leaves; schema and evidence negative tests; transport-level budget block; log secret scan; live capped smoke and kill switch.                                                                                                                                                                  |
+| Private pilot operations          | Owner pilot go/no-go review                            | All prior gates on the exact deployment, monitoring and incident drill, no unresolved isolation blocker, and explicit owner decisions on real data, terms, cohort, liability, and release.                                                                                                                                                                                                               |
 
 Gate evidence must identify the exact revision and environment. Passing a gate
 does not imply production readiness or authorize the next owner-reserved
 decision.
+
+> **Corrected 2026-08-31.** The identity-gate row above said `FORCE RLS`, which
+> the 2026-08-17 correction higher in this document had already retired:
+> forcing row security would deny the `SECURITY DEFINER` seam its writes. The
+> gate's substance — a cross-tenant denial matrix under restricted roles — is
+> unchanged and is what the integration suites actually prove.
+
+> **Amended 2026-08-31 — what "real customer data" means for the owner pilot.**
+> This ADR's opening rule reads as forbidding any deployment before every gate
+> passes, and the first `luckbutton.com` deployment was about to trip that
+> reading silently. The distinction the rule protects is between DATA THE OWNER
+> ANSWERS FOR and DATA SOMEONE ELSE ENTRUSTED. The owner's own organization
+> operating on the owner's own data is the first, and deploying it is how
+> several gates obtain the "authoritative environment" evidence they demand — a
+> gate that can only pass against a deployment cannot also forbid the
+> deployment it needs. Customer data in this ADR's sense — any second
+> organization, any person beyond the owner — remains gated in full. The
+> gate-by-gate status at the first deployment, the waivers the owner accepts
+> for the owner-only phase, and the preconditions for inviting anyone else are
+> recorded in
+> [the 2026-08-31 review](../status/2026-08-31-freeze-point-and-pilot-gate-review.md).
 
 ## Alternatives considered
 

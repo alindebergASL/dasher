@@ -3,13 +3,14 @@
 Status: Accepted execution roadmap
 Date: 2026-07-30
 
-> **Proposed amendments (2026-08-12):** the
-> [proposed re-sequencing](2026-08-12-proposed-resequencing.md) proposes running the
-> value loop and the trust plane as parallel tracks, and
+> **Amendments (updated 2026-08-31):** the
+> [proposed re-sequencing](2026-08-12-proposed-resequencing.md) — running the
+> value loop and the trust plane as parallel tracks — remains proposed.
 > [Requirements Amendment 01](../product/2026-08-12-requirements-amendment-01.md)
-> proposes that Gate 5's first live provider be chosen by evaluation rather than
-> fixed to Qwen, and retires synthetic model agreement as gate evidence for any
-> comprehension criterion. Until accepted, the sequence below governs.
+> was **accepted 2026-08-31**: Gate 5's first live provider is chosen by
+> evaluation rather than fixed to Qwen, and synthetic model agreement is retired
+> as gate evidence for any comprehension criterion (A7). Gate 5 and the Gate 1
+> precedent below are superseded accordingly.
 
 ## Outcome
 

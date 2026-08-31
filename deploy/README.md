@@ -63,7 +63,18 @@ cp deploy/.env.example deploy/.env && "${EDITOR:-nano}" deploy/.env
 set -a && . deploy/.env && set +a
 
 # 5. The database, on its own, so the roles exist before the migrator runs.
-docker compose -f deploy/compose.yml --env-file deploy/.env up -d postgres
+#
+#    `--wait` is not optional here. `up -d` returns when the CONTAINER has
+#    started, which is several seconds before PostgreSQL accepts connections;
+#    the `exec psql` in the next step then fails with "No such file or
+#    directory ... Is the server running locally", which reads like a broken
+#    image rather than a race you lost by a few seconds. Measured on a clean
+#    volume: six seconds from started to ready.
+#
+#    `migrate` and `web` already wait, via `depends_on: service_healthy` — it
+#    is only this hand-run step, outside compose's dependency graph, that has
+#    to ask.
+docker compose -f deploy/compose.yml --env-file deploy/.env up -d --wait postgres
 ```
 
 ### Create the two roles
@@ -102,8 +113,15 @@ organizations`, that is the schema working — do not fix it with a grant.
 ```sh
 # Idempotent. Reports what it discovered, what was already applied, and what it
 # applied, so running it on every deploy is the intended use.
+#
+# `--build` on the RUN, not just on the `up` below. `migrate` builds its own
+# image and sits behind `profiles: ["tools"]`, so it is not among the services
+# `up --build` starts and `up --build` therefore never rebuilds it. Without
+# this flag `run` reuses whatever image is already on the host — which on a
+# second deploy is the PREVIOUS revision's, so a migration added since then is
+# silently not applied and the new web image starts against an old schema.
 docker compose -f deploy/compose.yml --env-file deploy/.env \
-  --profile tools run --rm migrate
+  --profile tools run --build --rm migrate
 
 docker compose -f deploy/compose.yml --env-file deploy/.env up -d --build
 ```
@@ -114,12 +132,20 @@ Caddy obtains the certificate on first request. Watch it happen:
 docker compose -f deploy/compose.yml --env-file deploy/.env logs -f proxy
 ```
 
+> **Deploying onto a host that is already serving something?** This file
+> assumes an empty instance. A host where nginx or another proxy already holds
+> 80 and 443 needs the reversible sequence in [`cutover.md`](./cutover.md)
+> instead — Caddy cannot bind while the old proxy is running, and the order that
+> keeps a rollback available is not the order below.
+
 ## Subsequent deploys
 
 ```sh
 git pull
+# `--build` here for the reason given above: without it this runs the previous
+# revision's migrator, which is exactly the deploy where it matters.
 docker compose -f deploy/compose.yml --env-file deploy/.env \
-  --profile tools run --rm migrate
+  --profile tools run --build --rm migrate
 docker compose -f deploy/compose.yml --env-file deploy/.env up -d --build
 ```
 
@@ -200,11 +226,35 @@ the volume, and `source_snapshots` holds uploaded files under an immutability
 trigger — nothing can recreate them, so that volume is the only copy of
 evidence that live dashboards are still citing.
 
-Give the instance an IAM role that can `s3:PutObject` to the prefix in
-`DASHER_BACKUP_S3_URI`, rather than putting keys in `deploy/.env`. The backup
-container reads every row, so a key there is a key to the whole database. Put a
-lifecycle rule on the bucket unless you intend to keep every daily dump for
-ever.
+Give the instance an IAM role rather than putting keys in `deploy/.env`. The
+backup container reads every row, so a key there is a key to the whole
+database.
+
+The role needs three actions, not one. `s3:PutObject` on the prefix is what
+writing a dump takes, and it used to be all this section named — but the
+restore below downloads the archive using the SAME instance credentials, and
+choosing which backup to restore means listing them. A role with only
+`PutObject` produces a deployment that backs up perfectly and cannot restore,
+which is the one failure mode a backup exists to prevent, discovered at the
+worst possible moment.
+
+- `s3:PutObject` on `arn:aws:s3:::BUCKET/PREFIX/*` — writing a dump.
+- `s3:GetObject` on `arn:aws:s3:::BUCKET/PREFIX/*` — reading one back.
+- `s3:ListBucket` on `arn:aws:s3:::BUCKET`, conditioned on the prefix — finding
+  out which backups exist. This one is on the BUCKET, not on the objects; a
+  policy that lists only object ARNs silently grants nothing.
+
+One more, conditional: any real dump exceeds the CLI's 8 MB threshold and
+uploads as MULTIPART. When a multipart upload dies half way, the CLI tries to
+abort it; without `s3:AbortMultipartUpload` that abort is refused and the
+orphaned parts sit in the bucket, invisibly billed, for ever. Grant it on the
+prefix — or make the lifecycle rule below also expire incomplete multipart
+uploads (`AbortIncompleteMultipartUpload`), which covers the same failure
+without the extra action. (If the bucket uses SSE-KMS rather than SSE-S3, the
+role additionally needs `kms:GenerateDataKey` and `kms:Decrypt` on the key.)
+
+Put a lifecycle rule on the bucket unless you intend to keep every daily dump
+for ever.
 
 Force a run without waiting for the timer:
 
