@@ -11,9 +11,10 @@ interface InitialCarrier {
 }
 
 /**
- * The landing page shows the sample built for the default request. Built once
- * per server process so a page view never spends a model call, and never
- * saved, because nobody asked for it.
+ * The landing page shows the sample built for the default request, once per
+ * server process. `persist=no` is what keeps it out of whoever is signed in on
+ * the request that happens to warm it, and the cached result is therefore the
+ * same for every visitor: sample data, no session, no saved id.
  */
 function initialDashboard(): Promise<PlanResult> {
   const carrier = globalThis as InitialCarrier;

@@ -34,8 +34,9 @@ column to get a useful first view.
 - **The model decides composition; code decides facts.** This is the whole
   architecture. It is why a dashboard from Dasher can be trusted with a
   number, and why refinement is safe.
-- **Evidence is one click away.** Every claim opens to the file, the rows,
-  and the calculation behind it.
+- **Evidence is one click away.** Every claim opens to the file it came from
+  and the arithmetic that produced it, both stated in plain language. Tracing a
+  single figure to the exact rows behind it is not built yet.
 - **It reads your file, not a template.** Header mapping, tolerant number
   and date parsing, wide-to-long unpivoting. A real export should work on the
   first try.

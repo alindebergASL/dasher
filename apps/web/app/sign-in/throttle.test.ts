@@ -93,12 +93,31 @@ describe("SlidingWindowThrottle", () => {
 });
 
 describe("clientKey", () => {
-  it("takes the first x-forwarded-for hop", () => {
+  it("takes the last x-forwarded-for hop, the one the proxy appended", () => {
     expect(
       clientKey(
         new Headers({ "x-forwarded-for": " 203.0.113.9 , 10.0.0.1, 10.0.0.2" }),
       ),
-    ).toBe("203.0.113.9");
+    ).toBe("10.0.0.2");
+  });
+
+  it("ignores hops the caller seeded ahead of the proxy's", () => {
+    const throttle = new SlidingWindowThrottle(2, 1_000);
+    const spoofed = (n: number) =>
+      clientKey(
+        new Headers({ "x-forwarded-for": `9.9.9.${String(n)}, 203.0.113.7` }),
+      );
+    expect(throttle.allow(spoofed(1), 0)).toBe(true);
+    expect(throttle.allow(spoofed(2), 0)).toBe(true);
+    expect(throttle.allow(spoofed(3), 0)).toBe(false);
+    expect(throttle.size).toBe(1);
+  });
+
+  it("caps the key so a long header cannot pin memory", () => {
+    const key = clientKey(
+      new Headers({ "x-forwarded-for": "a".repeat(5_000) }),
+    );
+    expect(key.length).toBeLessThanOrEqual(64);
   });
 
   it("falls back to x-real-ip", () => {

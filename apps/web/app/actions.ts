@@ -19,6 +19,8 @@ import {
   type TablePlan,
 } from "@dasher/planner";
 
+import { headers } from "next/headers";
+
 import { evidenceCitations, persistedClaims } from "./claims";
 import { getPool, isPersistenceConfigured } from "./database";
 import { planner, PlannerBudgetExceeded } from "./planner-config";
@@ -31,9 +33,42 @@ import {
 import { provenanceOf } from "./provenance";
 import { sampleBytes, SAMPLE_NAME } from "./samples";
 import { readSessionCredential } from "./session";
+import { clientKey, SlidingWindowThrottle } from "./sign-in/throttle";
 import { readUpload, type ReadUpload } from "./upload";
 
 const UPLOAD_SOURCE_KIND = "upload:csv";
+
+/**
+ * Builds are reachable without a session, so one caller cannot be allowed to
+ * spend the instance's CPU or the planning budget at will. Per process, which
+ * is what a single-instance deployment has.
+ */
+const BUILD_THROTTLE_KEY = Symbol.for("dasher.web.buildThrottle");
+interface ThrottleCarrier {
+  [BUILD_THROTTLE_KEY]?: SlidingWindowThrottle;
+}
+function buildThrottle(): SlidingWindowThrottle {
+  const carrier = globalThis as ThrottleCarrier;
+  carrier[BUILD_THROTTLE_KEY] ??= new SlidingWindowThrottle(
+    120,
+    60 * 60 * 1_000,
+  );
+  return carrier[BUILD_THROTTLE_KEY];
+}
+
+/**
+ * A stored `source_ref` must be trimmed, printable and non-empty; the column's
+ * CHECK rejects anything else and would abort the whole save, losing a
+ * dashboard the reader watched being built.
+ */
+function safeSourceRef(name: string): string {
+  const cleaned = name
+    .replace(/[\u0000-\u001f\u007f]/gu, " ")
+    .trim()
+    .slice(0, 512)
+    .trim();
+  return cleaned === "" ? "upload.csv" : cleaned;
+}
 
 /**
  * One action builds, rebuilds, and refines. The form carries either
@@ -42,6 +77,14 @@ const UPLOAD_SOURCE_KIND = "upload:csv";
  * refinement, so the server holds nothing between requests.
  */
 export async function buildDashboard(formData: FormData): Promise<PlanResult> {
+  if (!buildThrottle().allow(clientKey(await headers()))) {
+    return {
+      ok: false,
+      error:
+        "Too many dashboards built from this connection in the past hour. Try again later.",
+    };
+  }
+
   const request = String(formData.get("request") ?? "").trim();
   if (request === "") {
     return { ok: false, error: "Say what the dashboard should show." };
@@ -109,7 +152,9 @@ export async function buildDashboard(formData: FormData): Promise<PlanResult> {
       : {}),
   };
 
-  if (refine !== undefined) return result;
+  // The landing page builds the sample nobody asked for; it must not write to
+  // whichever organization happens to be signed in on that request.
+  if (refine !== undefined || formData.get("persist") === "no") return result;
   return persist(result, request, upload, source, provider);
 }
 
@@ -238,7 +283,7 @@ async function persist(
           source.kind === "upload"
             ? await repository.recordSourceSnapshot({
                 sourceKind: UPLOAD_SOURCE_KIND,
-                sourceRef: upload.name.slice(0, 512),
+                sourceRef: safeSourceRef(upload.name),
                 bytes: upload.bytes,
                 observedAt: new Date(dashboard.generatedAt),
                 requestId,

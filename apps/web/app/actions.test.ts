@@ -13,6 +13,9 @@ const { readSessionCredential, isPersistenceConfigured, plannerMock } =
     plannerMock: vi.fn(),
   }));
 
+vi.mock("next/headers", () => ({
+  headers: async () => new Headers({ "x-forwarded-for": "203.0.113.1" }),
+}));
 vi.mock("./session", () => ({ readSessionCredential }));
 vi.mock("./database", () => ({
   isPersistenceConfigured,
@@ -159,5 +162,35 @@ describe("saving", () => {
     expect(result.ok).toBe(true);
     expect(result.dashboardId).toBeUndefined();
     expect(result.error).toBeUndefined();
+  });
+
+  // The landing page builds the sample nobody asked for. Mocking the session
+  // away cannot see this: the bug was that a signed-in visitor warming the page
+  // wrote into their own organization, so the session must be PRESENT here.
+  it("never saves a build marked persist=no, even for a signed-in reader", async () => {
+    isPersistenceConfigured.mockReturnValue(true);
+    readSessionCredential.mockResolvedValue({
+      tokenKeyVersion: 1,
+      token: Buffer.alloc(32, 7),
+    });
+    const form = sampleForm("Where is the money going?");
+    form.set("persist", "no");
+    const result = await buildDashboard(form);
+    expect(result.ok).toBe(true);
+    expect(result.dashboardId).toBeUndefined();
+    // getPool throws in this suite, so reaching persistence at all would surface
+    // as the "could not be saved" sentence rather than a silent pass.
+    expect(result.error).toBeUndefined();
+  });
+
+  it("does attempt to save a build the reader asked for", async () => {
+    isPersistenceConfigured.mockReturnValue(true);
+    readSessionCredential.mockResolvedValue({
+      tokenKeyVersion: 1,
+      token: Buffer.alloc(32, 7),
+    });
+    const result = await buildDashboard(sampleForm("Spending by category"));
+    expect(result.ok).toBe(true);
+    expect(result.error).toMatch(/could not be saved/u);
   });
 });

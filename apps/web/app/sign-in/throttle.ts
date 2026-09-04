@@ -65,19 +65,30 @@ export class SlidingWindowThrottle {
 }
 
 /**
- * The caller's address as the nearest proxy reported it.
+ * The caller's address as the trusted proxy reported it.
  *
- * First `x-forwarded-for` hop, else `x-real-ip`, else `"unknown"`. Both headers
- * are client-influenced unless a trusted proxy overwrites them, so this is a
- * throttle key and never an identity.
+ * `x-forwarded-for` is a list the client can seed: Caddy APPENDS the real peer
+ * to whatever arrived, so the LAST hop is the one this deployment set and the
+ * earlier entries are free text. Taking the first hop would let a caller mint a
+ * fresh bucket per request and evict everyone else's.
+ *
+ * A single reverse proxy is what `deploy/` runs. Behind two, the last hop
+ * becomes the inner proxy and every caller shares one bucket — which throttles
+ * too hard rather than not at all, and is the safe direction to be wrong in.
+ *
+ * The key is capped because it lands in a bounded map, and a header this size
+ * is never an address.
  */
+const MAX_KEY_LENGTH = 64;
+
 export function clientKey(headers: Headers): string {
   const forwarded = headers.get("x-forwarded-for");
   if (forwarded !== null) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first !== undefined && first !== "") return first;
+    const hops = forwarded.split(",");
+    const last = hops[hops.length - 1]?.trim();
+    if (last !== undefined && last !== "") return last.slice(0, MAX_KEY_LENGTH);
   }
   const real = headers.get("x-real-ip")?.trim();
-  if (real !== undefined && real !== "") return real;
+  if (real !== undefined && real !== "") return real.slice(0, MAX_KEY_LENGTH);
   return "unknown";
 }

@@ -1,0 +1,6 @@
+Date,Description,Category,Amount
+2026-01-05,Charge A,Ops,"$1,000.00"
+2026-01-06,Charge B,Ops,"$2,000.00"
+2026-01-07,Charge C,Ops,"$3,000.00"
+2026-01-08,Charge D,Ops,"$4,000.00"
+2026-01-09,Refund,Ops,"$(5,000.00)"

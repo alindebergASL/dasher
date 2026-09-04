@@ -30,6 +30,9 @@ what works, what does not, and what is next. Keep it under a page.
 ## Known gaps
 
 - A saved dashboard reopens read-only; it cannot yet be refined from its page.
+- Evidence is per dashboard, not per claim: every figure cites the same two
+  records (the file, and how the figures were computed). Row-level evidence is
+  the next thing the evidence chain needs.
 - XLSX is not read; export to CSV first.
 - No search across saved dashboards; the list is most-recent-first, 50 deep.
 - The model planner has no spend accounting beyond a per-day call cap.
