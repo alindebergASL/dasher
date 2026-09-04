@@ -70,10 +70,19 @@ function countOutsideQuotes(line: string, delimiter: string): number {
 /** Detects the delimiter, parses, profiles, and unpivots a wide file. */
 export function readTable(csvText: string, options: ReadOptions = {}): Table {
   const delimiter = options.delimiter ?? detectDelimiter(csvText);
+  /*
+   * Excel writes a semicolon delimiter in exactly the locales whose decimal
+   * mark is a comma and whose dates put the day first, so the delimiter is
+   * evidence about the dates in the file.
+   */
+  const profiling: ProfileOptions = {
+    ...options,
+    dates: options.dates ?? (delimiter === ";" ? "day-first" : undefined),
+  };
   let table: Table;
   try {
     const csv = parseCsv(csvText, options.limits ?? CSV_LIMITS, delimiter);
-    table = profileTable(csv, options);
+    table = profileTable(csv, profiling);
   } catch (error) {
     if (error instanceof CsvRefused) {
       throw new TableRefused(error.reason, error.detail);
@@ -83,7 +92,7 @@ export function readTable(csvText: string, options: ReadOptions = {}): Table {
   if (table.rowCount === 0) {
     throw new TableRefused("no_rows", "the file has a header and no rows");
   }
-  const shaped = unpivotIfWide(table);
+  const shaped = unpivotIfWide(table, profiling);
   if (!shaped.columns.some((column) => column.type === "number")) {
     throw new TableRefused(
       "no_numeric_column",

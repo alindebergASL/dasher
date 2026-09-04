@@ -2,11 +2,13 @@
  * Turning a wide file, one column per period, into one row per (line, period).
  */
 
-import { profileColumn } from "./infer";
+import { profileColumn, type ProfileOptions } from "./infer";
 import { parsePeriodHeader } from "./parse-values";
 import type { ColumnProfile, Grain, Table } from "./table";
 
 const BUDGET_NAME = /budget/iu;
+/** The names the unpivoted table gives its own columns. */
+const RESERVED: ReadonlySet<string> = new Set(["period", "amount", "budget"]);
 const FINER_FIRST: readonly Grain[] = ["month", "quarter", "year"];
 
 interface PeriodColumn {
@@ -20,7 +22,10 @@ interface PeriodColumn {
  * table comes back as it was. Non-period columns are kept and repeated for each
  * period; a numeric column named like a budget becomes `budget`.
  */
-export function unpivotIfWide(table: Table): Table {
+export function unpivotIfWide(
+  table: Table,
+  options: ProfileOptions = {},
+): Table {
   const periods = periodColumns(table);
   if (periods.length < 2) return table;
 
@@ -29,14 +34,20 @@ export function unpivotIfWide(table: Table): Table {
   const budget = kept.find(
     (column) => column.type === "number" && BUDGET_NAME.test(column.name),
   );
-  const reserved = new Set(["period", "amount", "budget"]);
-  const keptNames = kept.map((column) =>
-    column === budget
-      ? "budget"
-      : reserved.has(column.name)
-        ? `${column.name}_1`
-        : column.name,
-  );
+  // Every name in the table has to stay unique, so a column that already holds
+  // one of the reserved names takes the first suffix nothing else answers to.
+  const taken = new Set([
+    ...kept.map((column) => column.name),
+    "period",
+    "amount",
+  ]);
+  const keptNames = kept.map((column) => {
+    if (column === budget) return "budget";
+    if (!RESERVED.has(column.name)) return column.name;
+    const free = freeName(column.name, taken);
+    taken.add(free);
+    return free;
+  });
 
   const rows: string[][] = [];
   for (const row of table.rows) {
@@ -52,6 +63,7 @@ export function unpivotIfWide(table: Table): Table {
       name,
       index,
       rows.map((row) => row[index] ?? ""),
+      options,
     );
     return name === "period" ? { ...profile, type: "text" as const } : profile;
   });
@@ -67,6 +79,13 @@ export function unpivotIfWide(table: Table): Table {
       ...(budget === undefined ? {} : { budgetColumn: "budget" as const }),
     },
   };
+}
+
+/** `period_1`, or the next suffix no other column in the table answers to. */
+function freeName(name: string, taken: ReadonlySet<string>): string {
+  let suffix = 1;
+  while (taken.has(`${name}_${String(suffix)}`)) suffix += 1;
+  return `${name}_${String(suffix)}`;
 }
 
 /** The numeric period-headed columns at the most common grain, in file order. */

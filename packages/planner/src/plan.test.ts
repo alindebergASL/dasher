@@ -111,6 +111,17 @@ describe("findPlanProblems", () => {
     ).toEqual(["section_needs_role@pages[0].sections[0]"]);
   });
 
+  it("checks the type of every role, not only the numeric ones", () => {
+    expect(
+      codes({
+        ...base,
+        roles: { ...base.roles, category: "Amount", label: "Date" },
+      }),
+    ).toEqual(
+      expect.arrayContaining(["role_type@roles.category", "role_type@roles.label"]),
+    );
+  });
+
   it("reports duplicate sections and page ids", () => {
     const plan: TablePlan = {
       ...base,
@@ -152,6 +163,19 @@ describe("findPlanProblems", () => {
     ).toEqual([]);
   });
 
+  it("reports plain integers, magnitudes and spelled-out figures", () => {
+    expect(
+      codes({
+        ...base,
+        title: "Q3: we spent 89000, up twenty percent",
+        framing: "Half the budget is gone",
+      }),
+    ).toEqual([
+      "free_text_measurement@title",
+      "free_text_measurement@framing",
+    ]);
+  });
+
   it("works on a table without a period column", () => {
     const plan: TablePlan = {
       ...base,
@@ -180,10 +204,30 @@ describe("findMeasurement", () => {
   });
 
   it.each([
+    "we spent 89000",
+    "50k of runway left",
+    "1.2m in the bank",
+    "3bn under management",
+    "up twenty percent",
+    "three million in claims",
+    "Half the budget is gone",
+    "double the spend of last year",
+    "500 dollars a seat",
+  ])("finds a figure in %s", (text) => {
+    expect(findMeasurement(text)).toBeDefined();
+  });
+
+  it.each([
     "last 12 months",
+    "the last 3 months",
+    "last 24 hours",
     "FY2026 overview",
     "Q3 2026 by team",
+    "2026 operating spend",
+    "top 5 vendors",
+    "the first 10 rows",
     "version two",
+    "Totals for the latest period and the one before",
   ])("allows %s", (text) => {
     expect(findMeasurement(text)).toBeUndefined();
   });

@@ -6,6 +6,12 @@
 
 export type ColumnType = "number" | "date" | "text";
 
+/** Which separator a file uses as its decimal mark: `1,234.56` or `1.234,56`. */
+export type DecimalConvention = "dot" | "comma";
+
+/** Which component a file writes first in `01/02/2026`. */
+export type DateConvention = "month-first" | "day-first";
+
 export interface ColumnProfile {
   /** Header as written in the file, trimmed. Unique within a table. */
   readonly name: string;
@@ -18,6 +24,18 @@ export interface ColumnProfile {
   readonly samples: readonly string[];
   /** Set on number columns when any cell carried a currency symbol. */
   readonly currency?: string;
+  /**
+   * Set on number columns: the convention every cell of the column is read
+   * under. A caller re-parsing a cell must pass it, or `1.250` reads as `1.25`
+   * in a file where the column means 1250.
+   */
+  readonly decimal?: DecimalConvention;
+  /**
+   * Set on date columns: the component order every cell of the column is read
+   * under. A caller re-parsing a cell must pass it, or `01/02/2026` reads as
+   * January in a column that means February.
+   */
+  readonly dates?: DateConvention;
 }
 
 export interface Table {

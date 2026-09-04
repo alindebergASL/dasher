@@ -130,7 +130,17 @@ export function compare(left: Exact, right: Exact): number {
 }
 
 export function sign(value: Exact): -1 | 0 | 1 {
-  return value.startsWith("-") ? -1 : value === "0" ? 0 : 1;
+  const canonical = canonicalise(value);
+  return canonical.startsWith("-") ? -1 : canonical === ZERO ? 0 : 1;
+}
+
+/**
+ * The canonical text of a value that came in wider than canonical: `-0`, `0.0`
+ * and `-0.00` are all the one zero, which has no sign.
+ */
+function canonicalise(value: Exact): Exact {
+  const one = parts(value);
+  return fromParts(one.units, one.scale);
 }
 
 export function abs(value: Exact): Exact {
@@ -153,7 +163,7 @@ export function ratioToPercent(ratio: Exact): Exact {
  */
 export function round(value: Exact, places: number): Exact {
   const one = parts(value);
-  if (one.scale <= places) return value;
+  if (one.scale <= places) return canonicalise(value);
   const divisor = 10n ** BigInt(one.scale - places);
   const negative = one.units < 0n;
   const magnitude = negative ? -one.units : one.units;

@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 
+import { readFilters } from "./fake-heuristics";
 import { findPlanProblems } from "./plan";
 import { FakePlanningProvider, type PlanningRequest } from "./provider";
 import { TablePlanSchema, type TablePlan } from "./table-plan";
-import { flatTable, transactionsTable, wideTable } from "./test-tables";
+import {
+  columnNamed,
+  flatTable,
+  transactionsTable,
+  travelTable,
+  wideTable,
+} from "./test-tables";
 import type { Table } from "./workbook";
 
 const provider = new FakePlanningProvider();
@@ -169,6 +176,21 @@ describe("FakePlanningProvider refinement", () => {
     expect(windowed.lastPeriods).toBe(6);
   });
 
+  it("filters a category the reader names instead of dropping the section", async () => {
+    const table = travelTable();
+    const previous = await planFor(table, "Spend by category");
+    const refined = await planFor(table, "Spend by category", {
+      refinement: {
+        previousPlan: previous,
+        instruction: "drop the travel category",
+      },
+    });
+    expect(sections(refined)).toContain("by-category");
+    expect(refined.filters).toEqual([
+      { column: "Category", op: "exclude", values: ["Travel"] },
+    ]);
+  });
+
   it("shortens to one page and returns an unknown instruction unchanged", async () => {
     const previous = await planFor(transactionsTable(), "Spend");
     expect(previous.pages).toHaveLength(2);
@@ -230,5 +252,28 @@ describe("FakePlanningProvider revision", () => {
     });
     expect(repaired.pages[0]!.sections).toEqual(["summary"]);
     expect(repaired.title).not.toContain("$");
+  });
+});
+
+describe("readFilters", () => {
+  const category = () => columnNamed(travelTable(), "Category");
+
+  it("matches a value as a whole word, never as a substring of one", () => {
+    expect(readFilters("spend excluding travel", category())).toEqual([
+      { column: "Category", op: "exclude", values: ["Travel"] },
+    ]);
+    expect(readFilters("only marketing", category())).toEqual([
+      { column: "Category", op: "include", values: ["Marketing"] },
+    ]);
+  });
+
+  it("emits no filter for a value the profile does not list", () => {
+    expect(readFilters("only E", category())).toEqual([]);
+    expect(readFilters("excluding stationery", category())).toEqual([]);
+  });
+
+  it("never turns a time window into a category filter", () => {
+    expect(readFilters("just the last 2 quarters", category())).toEqual([]);
+    expect(readFilters("only the last 3 months", category())).toEqual([]);
   });
 });

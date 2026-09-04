@@ -60,7 +60,12 @@ export interface BudgetLine {
 export interface TableFacts {
   readonly rows: readonly FactRow[];
   readonly skipped: number;
+  /** Rows the plan's own filters removed. */
   readonly filteredOut: number;
+  /** Rows dropped because they fall outside the plan's period window. */
+  readonly outsideWindow: number;
+  /** The grain the buckets actually use, never finer than the period column. */
+  readonly grain: Grain;
   readonly periods: readonly string[];
   readonly latestPeriod?: string;
   readonly previousPeriod?: string;
@@ -75,6 +80,8 @@ export interface TableFacts {
   readonly change?: Exact;
   readonly changePercent?: Exact;
   readonly shares: readonly CategoryShare[];
+  /** True when the shares were allocated so they add up to exactly 100. */
+  readonly sharesSumToHundred: boolean;
   readonly movers: readonly Mover[];
   readonly largestRows: readonly FactRow[];
   readonly budget: readonly BudgetLine[];
@@ -97,6 +104,13 @@ function columnIndex(
   return column?.index;
 }
 
+const BLANK = "(blank)";
+
+/** RULE: a blank category is shown, and so filtered, as "(blank)". */
+function categoryValue(cell: string | undefined): string {
+  return cell === undefined || cell.trim() === "" ? BLANK : cell;
+}
+
 function cellPeriod(
   text: string,
   isDate: boolean,
@@ -113,18 +127,42 @@ function cellPeriod(
     : header.key;
 }
 
+/** RULE: a filter compares against the value the dashboard shows for the cell. */
 function passesFilters(
   cells: readonly string[],
   plan: TablePlan,
   table: Table,
+  categoryAt: number | undefined,
 ): boolean {
   return plan.filters.every((filter) => {
     const index = columnIndex(table, filter.column);
     if (index === undefined) return true;
-    const cell = (cells[index] ?? "").toLowerCase();
+    const shown =
+      index === categoryAt ? categoryValue(cells[index]) : (cells[index] ?? "");
+    const cell = shown.toLowerCase();
     const matches = filter.values.some((value) => value.toLowerCase() === cell);
     return filter.op === "include" ? matches : !matches;
   });
+}
+
+/**
+ * RULE: buckets are never finer than the period column itself, so a quarterly
+ * column is read by quarter however the plan asked for it.
+ */
+export function planGrain(plan: TablePlan, table: Table): Grain {
+  const periodAt = columnIndex(table, plan.roles.period);
+  if (periodAt === undefined) return plan.grain;
+  if (table.columns[periodAt]?.type === "date") return plan.grain;
+  const categoryAt = columnIndex(table, plan.roles.category);
+  let grain = plan.grain;
+  for (const cells of table.rows) {
+    if (!passesFilters(cells, plan, table, categoryAt)) continue;
+    const header = parsePeriodHeader(cells[periodAt] ?? "");
+    if (header === null) continue;
+    const own = periodGrain(header.key);
+    if (GRAIN_RANK[own] < GRAIN_RANK[grain]) grain = own;
+  }
+  return grain;
 }
 
 function sumBy<T>(
@@ -140,9 +178,10 @@ function sumBy<T>(
   return totals;
 }
 
-function sortedDesc(totals: ReadonlyMap<string, Exact>): [string, Exact][] {
+/** RULE: "largest" means largest in size, so a negative total ranks by magnitude. */
+function sortedAbsDesc(totals: ReadonlyMap<string, Exact>): [string, Exact][] {
   return [...totals.entries()].sort(
-    (a, b) => compare(b[1], a[1]) || a[0].localeCompare(b[0]),
+    (a, b) => compareAbsDesc(a[1], b[1]) || a[0].localeCompare(b[0]),
   );
 }
 
@@ -158,11 +197,13 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   if (amountAt === undefined)
     throw new Error(`Column "${plan.roles.amount}" is not in the table`);
 
+  const grain = planGrain(plan, table);
   let skipped = 0;
   let filteredOut = 0;
+  let outsideWindow = 0;
   let rows: FactRow[] = [];
   for (const [index, cells] of table.rows.entries()) {
-    if (!passesFilters(cells, plan, table)) {
+    if (!passesFilters(cells, plan, table, categoryAt)) {
       filteredOut += 1;
       continue;
     }
@@ -176,7 +217,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     const period =
       periodAt === undefined
         ? undefined
-        : cellPeriod(cells[periodAt] ?? "", periodIsDate, plan.grain);
+        : cellPeriod(cells[periodAt] ?? "", periodIsDate, grain);
     if (periodAt !== undefined && period === undefined) {
       skipped += 1;
       continue;
@@ -188,7 +229,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       ...(budgetText === null ? {} : { budget: budgetText }),
       ...(categoryAt === undefined
         ? {}
-        : { category: cells[categoryAt] || "(blank)" }),
+        : { category: categoryValue(cells[categoryAt]) }),
       ...(labelAt === undefined ? {} : { label: cells[labelAt] ?? "" }),
       ...(period === undefined ? {} : { period }),
     });
@@ -205,7 +246,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     rows = rows.filter(
       (row) => row.period !== undefined && kept.has(row.period),
     );
-    filteredOut += before - rows.length;
+    outsideWindow += before - rows.length;
     periods = periods.filter((period) => kept.has(period));
   }
 
@@ -251,7 +292,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       ? undefined
       : percentOf(change, previousTotal);
 
-  const latestByCategory = sortedDesc(
+  const latestByCategory = sortedAbsDesc(
     sumBy(
       latestRows.filter((row) => row.category !== undefined),
       (row) => row.category as string,
@@ -268,6 +309,12 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       share: shareValues[index] as Exact,
     }),
   );
+  const sharesSumToHundred =
+    shares.length > 0 &&
+    compare(
+      shares.reduce((sum, share) => add(sum, share.share), ZERO),
+      "100",
+    ) === 0;
 
   const movers: Mover[] = [];
   if (latestPeriod !== undefined && previousPeriod !== undefined) {
@@ -301,13 +348,18 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
 
   const budget: BudgetLine[] = [];
   if (budgetAt !== undefined) {
-    const budgeted = latestRows.filter((row) => row.budget !== undefined);
     const nameOf = (row: FactRow): string =>
       row.category ?? row.label ?? "All rows";
-    const amounts = sumBy(budgeted, nameOf, (row) => row.amount);
-    const budgets = sumBy(budgeted, nameOf, (row) => row.budget as Exact);
-    for (const [name, amount] of amounts) {
-      const allowed = budgets.get(name) ?? ZERO;
+    // RULE: a line is spent by every row it has in the period, budgeted by the
+    // budget cells it states; a row without a budget cell still spends.
+    const amounts = sumBy(latestRows, nameOf, (row) => row.amount);
+    const budgets = sumBy(
+      latestRows.filter((row) => row.budget !== undefined),
+      nameOf,
+      (row) => row.budget as Exact,
+    );
+    for (const [name, allowed] of budgets) {
+      const amount = amounts.get(name) ?? ZERO;
       const variance = subtract(amount, allowed);
       const pct = percentOf(variance, allowed);
       budget.push({
@@ -328,6 +380,8 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     rows,
     skipped,
     filteredOut,
+    outsideWindow,
+    grain,
     periods,
     ...(latestPeriod === undefined ? {} : { latestPeriod }),
     ...(previousPeriod === undefined ? {} : { previousPeriod }),
@@ -338,6 +392,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     ...(change === undefined ? {} : { change }),
     ...(changePercent === undefined ? {} : { changePercent }),
     shares,
+    sharesSumToHundred,
     movers,
     largestRows,
     budget,
@@ -363,7 +418,7 @@ export function largestCategories(facts: TableFacts, limit: number): string[] {
     (row) => row.category as string,
     (row) => abs(row.amount),
   );
-  return sortedDesc(totals)
+  return sortedAbsDesc(totals)
     .slice(0, limit)
     .map(([category]) => category);
 }

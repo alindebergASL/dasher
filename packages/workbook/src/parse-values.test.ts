@@ -3,9 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   bucketPeriod,
   comparePeriods,
+  dateConvention,
+  decimalConvention,
   detectCurrency,
   parseAmount,
+  parseAmountsInColumn,
   parseDate,
+  parseDatesInColumn,
   parsePeriodHeader,
   periodLabel,
   periodStartIso,
@@ -144,5 +148,123 @@ describe("period buckets", () => {
       "2026-01",
       "2026-03",
     ]);
+  });
+});
+
+describe("accounting negatives", () => {
+  /**
+   * Excel's Accounting format writes the symbol outside the parentheses, and a
+   * refund read as a positive is a total that is wrong by twice the refund.
+   */
+  it.each([
+    ["($500)", "-500"],
+    ["$(500)", "-500"],
+    ["$ (1,234.56)", "-1234.56"],
+    ["(500)$", "-500"],
+    ["£(500)", "-500"],
+    ["£ (500)", "-500"],
+    ["-$500", "-500"],
+    ["$-500", "-500"],
+    ["USD (500)", "-500"],
+    ["(500) USD", "-500"],
+  ])("reads %j as %j", (text, expected) => {
+    expect(parseAmount(text)).toBe(expected);
+  });
+
+  it.each(["(-500)", "--5", "-(500)", "$(-500)", "(500", "500)"])(
+    "returns null for %j",
+    (text) => {
+      expect(parseAmount(text)).toBeNull();
+    },
+  );
+});
+
+describe("three uppercase letters that are not a currency", () => {
+  it.each(["QTY 3", "100 PCS", "3 PCS", "EACH 12"])(
+    "returns null for %j",
+    (text) => {
+      expect(parseAmount(text)).toBeNull();
+    },
+  );
+
+  it("still reads a real currency code", () => {
+    expect(parseAmount("USD 12")).toBe("12");
+    expect(parseAmount("12 EUR")).toBe("12");
+  });
+});
+
+describe("the decimal mark a column uses", () => {
+  it("infers the mark from the cells that can only be read one way", () => {
+    expect(decimalConvention(["1.234,56", "1.250", "980,50"])).toBe("comma");
+    expect(decimalConvention(["1,234.56", "1,250", "980.50"])).toBe("dot");
+    expect(decimalConvention(["1.250", "2.500"])).toBe("dot");
+  });
+
+  it("reads every cell of a column under one convention", () => {
+    // `1.250` and `1,250` are the same shape; a column may not read one as
+    // thousands and the other as a fraction.
+    expect(parseAmountsInColumn(["1.234,56", "1.250", "980,50"])).toStrictEqual([
+      "1234.56",
+      "1250",
+      "980.5",
+    ]);
+    expect(parseAmountsInColumn(["1,234.56", "1,250", "980.50"])).toStrictEqual([
+      "1234.56",
+      "1250",
+      "980.5",
+    ]);
+  });
+
+  it("keeps the US reading when no cell shows the convention", () => {
+    expect(parseAmountsInColumn(["1.250", "2.500"])).toStrictEqual([
+      "1.25",
+      "2.5",
+    ]);
+  });
+
+  it("reads one string on its own as US, or under a stated convention", () => {
+    expect(parseAmount("1.250")).toBe("1.25");
+    expect(parseAmount("1.250", { decimal: "comma" })).toBe("1250");
+    expect(parseAmount("1,250", { decimal: "comma" })).toBe("1.25");
+    expect(parseAmount("1,250", { decimal: "dot" })).toBe("1250");
+    expect(parseAmount("1.234,56", { decimal: "dot" })).toBe("1234.56");
+    expect(parseAmount("1,234.56", { decimal: "comma" })).toBe("1234.56");
+  });
+});
+
+describe("the component order a date column writes", () => {
+  it("takes a component over twelve as proof of the order", () => {
+    expect(dateConvention(["01/02/2026", "15/03/2026"])).toBe("day-first");
+    expect(dateConvention(["01/02/2026", "03/15/2026"])).toBe("month-first");
+    expect(dateConvention(["01/02/2026", "01/03/2026"])).toBe("month-first");
+    expect(dateConvention(["15/03/2026", "03/15/2026"])).toBe("mixed");
+  });
+
+  it("reads every cell of a day-first column as day-first", () => {
+    const cells = ["01/02/2026", "01/03/2026", "15/04/2026"];
+    expect(parseDatesInColumn(cells).map((date) => date?.iso)).toStrictEqual([
+      "2026-02-01T00:00:00.000Z",
+      "2026-03-01T00:00:00.000Z",
+      "2026-04-15T00:00:00.000Z",
+    ]);
+  });
+
+  it("reads no dates at all from a column that contradicts itself", () => {
+    expect(parseDatesInColumn(["15/03/2026", "03/15/2026"])).toStrictEqual([
+      null,
+      null,
+    ]);
+  });
+
+  it("reads one string on its own as month-first, or as told", () => {
+    expect(parseDate("01/02/2026")).toStrictEqual({
+      iso: "2026-01-02T00:00:00.000Z",
+    });
+    expect(parseDate("01/02/2026", { dates: "day-first" })).toStrictEqual({
+      iso: "2026-02-01T00:00:00.000Z",
+    });
+    expect(parseDate("31/12/2025", { dates: "day-first" })).toStrictEqual({
+      iso: "2025-12-31T00:00:00.000Z",
+    });
   });
 });

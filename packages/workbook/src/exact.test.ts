@@ -150,3 +150,24 @@ describe("percentages and display", () => {
     expect(toFixed("-0.04", 1)).toBe("0.0");
   });
 });
+
+describe("one representation of zero", () => {
+  /**
+   * `-0` is a value JavaScript has and money does not. It reaches these
+   * functions from a file that wrote it, so they canonicalise rather than pass
+   * it on: a reader must never be shown `-0.00`, and a zero must never report a
+   * sign.
+   */
+  it("canonicalises a value it does not have to round", () => {
+    expect(round("-0", 2)).toBe("0");
+    expect(round("-0.00", 2)).toBe("0");
+    expect(round("0.0", 3)).toBe("0");
+    expect(toFixed("-0", 2)).toBe("0.00");
+  });
+
+  it("reports a zero as unsigned however it was written", () => {
+    expect(sign("-0")).toBe(0);
+    expect(sign("0.0")).toBe(0);
+    expect(sign("-0.000")).toBe(0);
+  });
+});

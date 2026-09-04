@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
+import { add } from "./exact";
 import { profileTable } from "./infer";
+import { parseAmount, parseDate } from "./parse-values";
 import { TableRefused, detectDelimiter, readTable } from "./read";
 import { unpivotIfWide } from "./unpivot";
 
@@ -225,5 +227,112 @@ describe("refusals", () => {
 
   it("names the reason in the error", () => {
     expect(() => readTable("Name\nAda\n")).toThrow(/no_numeric_column/u);
+  });
+});
+
+describe("a ledger in Excel's Accounting format", () => {
+  const ledger = [
+    "Item,Amount",
+    'Ads,"$2,500.00"',
+    'Hosting,"$2,500.00"',
+    'Travel,"$2,500.00"',
+    'Software,"$2,500.00"',
+    'Refund,"$(5,000.00)"',
+    "",
+  ].join("\n");
+
+  it("reads the refund as negative, so the column totals what it says", () => {
+    const table = readTable(ledger);
+    const amount = table.columns[1];
+    expect(amount?.type).toBe("number");
+    expect(amount?.currency).toBe("USD");
+
+    const total = table.rows.reduce(
+      (running, row) => add(running, parseAmount(row[1] ?? "") ?? "0"),
+      "0",
+    );
+    expect(total).toBe("5000");
+  });
+});
+
+describe("a European file", () => {
+  const european = [
+    "Datum;Betrag;Konto",
+    "15/01/2026;1.234,56;Giro",
+    "01/02/2026;1.250;Giro",
+    "01/03/2026;980,50;Giro",
+    "",
+  ].join("\n");
+
+  const table = readTable(european);
+
+  it("names the conventions its columns are written in", () => {
+    expect(table.columns.map((column) => column.type)).toStrictEqual([
+      "date",
+      "number",
+      "text",
+    ]);
+    expect(table.columns[0]?.dates).toBe("day-first");
+    expect(table.columns[1]?.decimal).toBe("comma");
+  });
+
+  it("reads every amount under the column's convention", () => {
+    const decimal = table.columns[1]?.decimal;
+    expect(
+      table.rows.map((row) => parseAmount(row[1] ?? "", { decimal })),
+    ).toStrictEqual(["1234.56", "1250", "980.5"]);
+  });
+
+  it("reads every date under the column's convention", () => {
+    const dates = table.columns[0]?.dates;
+    expect(
+      table.rows.map((row) => parseDate(row[0] ?? "", { dates })?.iso),
+    ).toStrictEqual([
+      "2026-01-15T00:00:00.000Z",
+      "2026-02-01T00:00:00.000Z",
+      "2026-03-01T00:00:00.000Z",
+    ]);
+  });
+
+  it("refuses to read dates from a column that contradicts itself", () => {
+    const mixed = readTable(
+      "Date,Amount\n15/03/2026,10\n03/15/2026,20\n01/02/2026,30\n",
+    );
+    expect(mixed.columns[0]?.type).toBe("text");
+    expect(mixed.columns[0]?.dates).toBeUndefined();
+  });
+});
+
+describe("a column of quantities", () => {
+  it("is text, not an amount: PCS is not a currency", () => {
+    const table = readTable("Part,Count,Cost\nbolt,100 PCS,10\nnut,50 PCS,20\n");
+    expect(table.columns[1]?.type).toBe("text");
+    expect(table.columns[2]?.type).toBe("number");
+  });
+});
+
+describe("unpivoting a file whose columns already use the new names", () => {
+  it("gives every column a name no other column has", () => {
+    const table = profileTable({
+      headers: ["period", "period_1", "2026-03", "2026-04"],
+      rows: [["a", "b", "10", "20"]],
+    });
+    const wide = unpivotIfWide(table);
+    const names = wide.columns.map((column) => column.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toStrictEqual(["period_2", "period_1", "period", "amount"]);
+  });
+
+  it("types the new columns at the threshold the caller asked for", () => {
+    const text = "label,2026-03,2026-04\na,10,20\nb,30,x\n";
+    const table = readTable(text, { typeThreshold: 0.5 });
+    const types = Object.fromEntries(
+      table.columns.map((column) => [column.name, column.type]),
+    );
+    expect(types).toStrictEqual({
+      label: "text",
+      period: "text",
+      amount: "number",
+    });
   });
 });

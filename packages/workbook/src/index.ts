@@ -1,4 +1,11 @@
-export type { ColumnProfile, ColumnType, Grain, Table } from "./table";
+export type {
+  ColumnProfile,
+  ColumnType,
+  DateConvention,
+  DecimalConvention,
+  Grain,
+  Table,
+} from "./table";
 export {
   CSV_LIMITS,
   CsvRefused,
@@ -26,13 +33,19 @@ export {
 export {
   bucketPeriod,
   comparePeriods,
+  dateConvention,
+  decimalConvention,
   detectCurrency,
   parseAmount,
+  parseAmountsInColumn,
   parseDate,
+  parseDatesInColumn,
   parsePeriodHeader,
   periodGrain,
   periodLabel,
   periodStartIso,
+  type AmountOptions,
+  type DateOptions,
 } from "./parse-values";
 export { profileColumn, profileTable, type ProfileOptions } from "./infer";
 export { unpivotIfWide } from "./unpivot";

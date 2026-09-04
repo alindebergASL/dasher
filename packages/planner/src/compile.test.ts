@@ -7,10 +7,18 @@ import { PlanRejected } from "./plan";
 import type { TablePlan } from "./table-plan";
 import {
   AS_OF,
+  blankCategoryTable,
+  centsTable,
   flatTable,
+  manyCategoriesTable,
+  negativeTable,
+  partialBudgetTable,
+  quarterlyTable,
   sourceFor,
   transactionsTable,
+  travelTable,
   wideTable,
+  zeroTotalTable,
 } from "./test-tables";
 
 const ALL_SECTIONS: TablePlan["pages"] = [
@@ -86,6 +94,20 @@ function options(
       usesModel,
     },
     source: sourceFor(table, "sample.csv"),
+  };
+}
+
+/** A one-page plan over a small table. */
+function planWith(
+  roles: TablePlan["roles"],
+  sections: TablePlan["pages"][number]["sections"],
+  extra: Partial<TablePlan> = {},
+): TablePlan {
+  return {
+    ...transactionsPlan,
+    roles,
+    pages: [{ id: "one", title: "One", description: "Everything.", sections }],
+    ...extra,
   };
 }
 
@@ -321,7 +343,7 @@ describe("compileTablePlan", () => {
     expect(
       spec.pages[0]!.components.map((component) => component.kind),
     ).toEqual(["summary", "ranking", "ranking", "table"]);
-    expect(spec.notice).toContain("1 rows were skipped");
+    expect(spec.notice).toContain("1 row was skipped");
     expect(spec.executiveBrief.changed.headline).toMatch(/no prior period/iu);
   });
 
@@ -371,5 +393,218 @@ describe("compileTablePlan", () => {
       "Date",
       "Description",
     ]);
+  });
+
+  it("charges every row in the period against the budget its line states", () => {
+    const table = partialBudgetTable();
+    const plan = planWith(
+      {
+        amount: "Amount",
+        period: "Date",
+        category: "Category",
+        budget: "Budget",
+      },
+      ["summary", "budget-variance"],
+    );
+    const facts = computeFacts(plan, table);
+    expect(facts.budget.find((line) => line.name === "Eng")).toMatchObject({
+      amount: "2700",
+      budget: "1200",
+      variance: "1500",
+      over: true,
+    });
+    expect(facts.budget.find((line) => line.name === "Ops")).toMatchObject({
+      amount: "100",
+      budget: "500",
+      variance: "-400",
+      over: false,
+    });
+    const spec = compileTablePlan(plan, table, options(table));
+    const summary = spec.pages[0]!.components[0]!;
+    expect(
+      summary.kind === "summary" &&
+        summary.claims.some((claim) =>
+          claim.text.includes("1 of 2 budgeted lines are over budget"),
+        ),
+    ).toBe(true);
+    const alerts = spec.pages[0]!.components[1]!;
+    expect(alerts.kind === "alert-list" && alerts.alerts[0]!.title).toContain(
+      "Eng over budget by 1,500",
+    );
+  });
+
+  it("ranks categories by size when every amount is negative", () => {
+    const table = negativeTable();
+    const plan = planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+      "summary",
+      "headline-totals",
+      "by-category",
+    ]);
+    const facts = computeFacts(plan, table);
+    expect(facts.shares.map((share) => share.category)).toEqual([
+      "Payroll",
+      "Rent",
+      "Coffee",
+    ]);
+    expect(facts.shares[0]!.share).toBe("95.2");
+    const spec = compileTablePlan(plan, table, options(table));
+    const summary = spec.pages[0]!.components[0]!;
+    expect(
+      summary.kind === "summary" &&
+        summary.claims.some((claim) =>
+          claim.text.startsWith("Payroll is the largest category"),
+        ),
+    ).toBe(true);
+    const ranking = spec.pages[0]!.components[2]!;
+    expect(
+      ranking.kind === "ranking" && ranking.items.map((item) => item.label),
+    ).toEqual(["Payroll", "Rent", "Coffee"]);
+    expect(spec.executiveBrief.important.headline).toContain("Payroll");
+  });
+
+  it("adopts the period column's grain when it is coarser than the plan's", () => {
+    const table = quarterlyTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Quarter", category: "Category" },
+      ["summary", "trend"],
+    );
+    expect(plan.grain).toBe("month");
+    const facts = computeFacts(plan, table);
+    expect(facts.grain).toBe("quarter");
+    expect(facts.periods).toEqual(["2026-Q1", "2026-Q2"]);
+    const spec = compileTablePlan(plan, table, options(table));
+    expect(spec.notice).toContain("by quarter");
+    expect(spec.notice).not.toContain("by month");
+    expect(spec.evidence[1]!.detail).toContain("grouped by quarter");
+    const trend = spec.pages[0]!.components[1]!;
+    expect(trend.title).toBe("Trend by quarter");
+  });
+
+  it("says how the shares were computed and what the ranking left out", () => {
+    const transactions = transactionsTable();
+    expect(
+      compileTablePlan(transactionsPlan, transactions, options(transactions))
+        .evidence[1]!.detail,
+    ).toContain("sum to exactly one hundred");
+
+    const negatives = negativeTable();
+    const negativeDetail = compileTablePlan(
+      planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+        "summary",
+        "by-category",
+      ]),
+      negatives,
+      options(negatives),
+    ).evidence[1]!.detail;
+    expect(negativeDetail).not.toContain("sum to exactly one hundred");
+    expect(negativeDetail).toContain("need not sum to one hundred");
+
+    const zero = zeroTotalTable();
+    expect(
+      compileTablePlan(
+        planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+          "summary",
+          "by-category",
+        ]),
+        zero,
+        options(zero),
+      ).evidence[1]!.detail,
+    ).toContain("total is zero");
+
+    const many = manyCategoriesTable(137);
+    const spec = compileTablePlan(
+      planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+        "by-category",
+      ]),
+      many,
+      options(many),
+    );
+    expect(spec.evidence[1]!.detail).toContain("37 more");
+    const ranking = spec.pages[0]!.components[0]!;
+    expect(ranking.kind === "ranking" && ranking.items).toHaveLength(100);
+    expect(ranking.title).toContain("137");
+  });
+
+  it("rounds trend points to the money scale the rest of the page uses", () => {
+    const table = centsTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Date", category: "Category" },
+      ["headline-totals", "trend"],
+    );
+    const spec = compileTablePlan(plan, table, options(table));
+    const grid = spec.pages[0]!.components[0]!;
+    expect(grid.kind === "metric-grid" && grid.metrics[0]!.value).toBe("$10.01");
+    const trend = spec.pages[0]!.components[1]!;
+    expect(
+      trend.kind === "trend-list" && trend.series[0]!.points.at(-1)!.value,
+    ).toBe(10.01);
+    expect(trend.kind === "trend-list" && trend.series[0]!.unit).toBe("USD");
+  });
+
+  it("counts rows outside the period window apart from filtered rows", () => {
+    const table = transactionsTable();
+    const plan: TablePlan = { ...transactionsPlan, lastPeriods: 3 };
+    const facts = computeFacts(plan, table);
+    expect(facts.filteredOut).toBe(0);
+    expect(facts.outsideWindow).toBeGreaterThan(0);
+    const detail = compileTablePlan(plan, table, options(table)).evidence[1]!
+      .detail;
+    expect(detail).toContain("0 rows were left out by the plan's filters");
+    expect(detail).toContain(
+      `${String(facts.outsideWindow)} rows fell outside the last 3 periods`,
+    );
+  });
+
+  it("filters a blank category by the name the dashboard shows for it", () => {
+    const table = blankCategoryTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Date", category: "Category" },
+      ["summary", "by-category"],
+      { filters: [{ column: "Category", op: "exclude", values: ["(blank)"] }] },
+    );
+    const facts = computeFacts(plan, table);
+    expect(facts.categories).toEqual(["Ops"]);
+    expect(facts.filteredOut).toBe(2);
+    expect(facts.latestTotal).toBe("160");
+  });
+
+  it("names what emptied the table when a filter leaves no rows", () => {
+    const table = travelTable();
+    let caught: unknown;
+    try {
+      compileTablePlan(
+        planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+          "summary",
+        ]),
+        table,
+        options(table),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeUndefined();
+    try {
+      compileTablePlan(
+        planWith(
+          { amount: "Amount", period: "Date", category: "Category" },
+          ["summary"],
+          {
+            filters: [
+              { column: "Category", op: "exclude", values: ["Travel"] },
+              { column: "Category", op: "include", values: ["Travel"] },
+            ],
+          },
+        ),
+        table,
+        options(table),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PlanRejected);
+    const findings = (caught as PlanRejected).findings;
+    expect(findings[0]!.code).toBe("empty_after_filters");
+    expect(findings[0]!.message).toContain("Travel");
+    expect(findings[0]!.message).toContain("Category");
   });
 });
