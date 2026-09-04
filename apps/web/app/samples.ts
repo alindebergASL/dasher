@@ -13,7 +13,9 @@ export const SAMPLE_NAME = "sample-transactions.csv";
 let cached: Uint8Array | undefined;
 
 export function sampleBytes(): Uint8Array {
-  if (cached !== undefined) return cached;
+  // A copy per caller: the reader hands these bytes on to parsing and storage,
+  // and one shared buffer would make any mutation everyone's.
+  if (cached !== undefined) return Uint8Array.from(cached);
   const candidates = [
     path.join(process.cwd(), "samples", "transactions.csv"),
     path.join(process.cwd(), "apps", "web", "samples", "transactions.csv"),
@@ -21,7 +23,7 @@ export function sampleBytes(): Uint8Array {
   for (const candidate of candidates) {
     try {
       cached = new Uint8Array(readFileSync(candidate));
-      return cached;
+      return Uint8Array.from(cached);
     } catch {
       continue;
     }

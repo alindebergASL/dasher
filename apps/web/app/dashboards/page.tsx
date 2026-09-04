@@ -4,6 +4,7 @@ import {
 } from "@dasher/control-plane";
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 import { archiveDashboard } from "../actions";
 import { getPool, isPersistenceConfigured } from "../database";
@@ -13,7 +14,12 @@ export const dynamic = "force-dynamic";
 
 const LIST_LIMIT = 50;
 
-export default async function YourDashboards() {
+export default async function YourDashboards({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const failure = (await searchParams).error;
   if (!isPersistenceConfigured()) {
     return (
       <Shell>
@@ -64,12 +70,24 @@ export default async function YourDashboards() {
 
   async function archive(formData: FormData): Promise<void> {
     "use server";
-    await archiveDashboard(formData);
+    const outcome = await archiveDashboard(formData);
     revalidatePath("/dashboards");
+    // A stale revision, a viewer's role, and a success all left the row in
+    // place and said nothing, so the three were indistinguishable.
+    if (!outcome.ok) {
+      redirect(
+        `/dashboards?error=${encodeURIComponent(outcome.error ?? "That dashboard could not be archived.")}`,
+      );
+    }
   }
 
   return (
     <Shell>
+      {failure === undefined ? null : (
+        <p className="request-error" role="alert">
+          {failure}
+        </p>
+      )}
       <ul className="dashboard-list">
         {entries.map((entry) => (
           <li className="dashboard-list-item" key={entry.dashboardId}>

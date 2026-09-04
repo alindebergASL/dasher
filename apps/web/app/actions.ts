@@ -105,12 +105,15 @@ export async function buildDashboard(formData: FormData): Promise<PlanResult> {
     return { ok: false, error: refine.message };
   }
 
-  const provider = planner();
   const asOf = new Date().toISOString();
   let dashboard: DashboardSpec;
   let plan: TablePlan;
   let attempts: number;
+  let provider: PlanningProvider;
   try {
+    // Inside the try: a misconfigured DASHER_PLANNER throws here, and the
+    // landing page renders this action's result, so an escape becomes a 500.
+    provider = planner();
     const run = await runTablePlanner({
       requestText: request,
       table: upload.table,
@@ -163,7 +166,13 @@ export async function archiveDashboard(
   formData: FormData,
 ): Promise<{ ok: boolean; error?: string }> {
   const dashboardId = String(formData.get("dashboardId") ?? "");
-  const revision = Number(formData.get("revision") ?? "");
+  const rawRevision = formData.get("revision");
+  // Number("") is 0 and Number.isInteger(0) is true, so an absent field would
+  // pass a bare Number() check and reach the database as a real revision.
+  const revision =
+    typeof rawRevision === "string" && rawRevision.trim() !== ""
+      ? Number(rawRevision)
+      : Number.NaN;
   if (!isPersistenceConfigured() || !Number.isInteger(revision)) {
     return { ok: false, error: "Nothing to archive." };
   }
@@ -247,6 +256,11 @@ function samePlan(one: TablePlan, two: TablePlan): boolean {
 }
 
 function buildFailureMessage(error: unknown): string {
+  // The reader gets a sentence; the operator needs the cause. Without this a
+  // provider outage is indistinguishable from a bad request in the logs.
+  if (!(error instanceof PlanRejected)) {
+    console.error("dashboard build failed", error);
+  }
   if (error instanceof PlannerBudgetExceeded) {
     return "Dasher has used today's planning budget. Try again tomorrow, or switch to the built-in planner.";
   }
