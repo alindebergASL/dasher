@@ -5,29 +5,25 @@
 export {
   abs,
   add,
-  compare,
-  fromText,
-  round,
-  sign,
-  subtract,
-  toFixed,
-  ZERO,
-  type Exact,
-} from "../../workbook/src/exact";
-export {
   bucketPeriod,
+  compare,
   comparePeriods,
   detectCurrency,
+  fromText,
   parseAmount,
   parseDate,
   parsePeriodHeader,
   periodGrain,
   periodLabel,
   periodStartIso,
-} from "../../workbook/src/parse-values";
-export type {
-  ColumnProfile,
-  ColumnType,
-  Grain,
-  Table,
-} from "../../workbook/src/table";
+  round,
+  sign,
+  subtract,
+  toFixed,
+  ZERO,
+  type ColumnProfile,
+  type ColumnType,
+  type Exact,
+  type Grain,
+  type Table,
+} from "@dasher/workbook";

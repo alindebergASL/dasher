@@ -6,7 +6,7 @@ test.describe("the sample dashboard", () => {
     await expect(
       page.getByRole("heading", { level: 1 }).first(),
     ).toBeVisible();
-    await expect(page.getByText(/what is known/i).first()).toBeVisible();
+    await expect(page.getByText("Known", { exact: true }).first()).toBeVisible();
     await expect(
       page.getByRole("button", { name: /architecture/i }).first(),
     ).toBeVisible();
@@ -41,7 +41,9 @@ test.describe("the sample dashboard", () => {
     await page.getByRole("button", { name: "Apply change" }).click();
     await expect(page.getByRole("button", { name: "Apply change" })).toBeEnabled();
     await expect(page.getByRole("alert")).toHaveCount(0);
-    await expect(page.getByRole("tab")).toHaveCount(1);
+    await expect(
+      page.getByRole("navigation", { name: "Dashboard pages" }).getByRole("button"),
+    ).toHaveCount(1);
   });
 
   test("refuses an empty request with a sentence", async ({ page }) => {
