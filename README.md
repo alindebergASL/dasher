@@ -21,11 +21,11 @@ and archiving work.
 
 ### The planner
 
-| Variable                | Values                                              |
-| ----------------------- | --------------------------------------------------- |
-| `DASHER_PLANNER`        | `fake` (default, deterministic) or `anthropic`      |
-| `ANTHROPIC_API_KEY`     | required when `DASHER_PLANNER=anthropic`            |
-| `DASHER_PLANNER_MODEL`  | model id, default `claude-opus-5`                   |
+| Variable                     | Values                                         |
+| ---------------------------- | ---------------------------------------------- |
+| `DASHER_PLANNER`             | `fake` (default, deterministic) or `anthropic` |
+| `ANTHROPIC_API_KEY`          | required when `DASHER_PLANNER=anthropic`       |
+| `DASHER_PLANNER_MODEL`       | model id, default `claude-opus-5`              |
 | `DASHER_PLANNER_DAILY_LIMIT` | max model calls per UTC day, default `500`     |
 
 The fake planner is the permanent test substrate and what CI runs. A missing
@@ -41,11 +41,11 @@ pnpm test:postgres        # control-plane integration tests, needs PostgreSQL
 
 ## Layout
 
-| Path                        | What                                                   |
-| --------------------------- | ------------------------------------------------------ |
-| `apps/web`                  | Next.js app: upload, request, dashboard, sign-in, list |
-| `packages/workbook`         | CSV to `Table`: parsing, typing, unpivot, exact decimals |
+| Path                        | What                                                          |
+| --------------------------- | ------------------------------------------------------------- |
+| `apps/web`                  | Next.js app: upload, request, dashboard, sign-in, list        |
+| `packages/workbook`         | CSV to `Table`: parsing, typing, unpivot, exact decimals      |
 | `packages/planner`          | `TablePlan`, fake and Anthropic planners, compile, retry loop |
-| `packages/dashboard-schema` | The `DashboardSpec` contract, layout, claims           |
-| `packages/control-plane`    | PostgreSQL schema, migrator, sign-in, repository       |
-| `deploy`                    | Single-instance Docker Compose, Caddy, backups         |
+| `packages/dashboard-schema` | The `DashboardSpec` contract, layout, claims                  |
+| `packages/control-plane`    | PostgreSQL schema, migrator, sign-in, repository              |
+| `deploy`                    | Single-instance Docker Compose, Caddy, backups                |

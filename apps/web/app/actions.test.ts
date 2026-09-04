@@ -33,7 +33,15 @@ import { buildDashboard } from "./actions";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const wideCsv = readFileSync(
-  path.join(here, "..", "..", "..", "fixtures", "sample", "operating-spend-wide.csv"),
+  path.join(
+    here,
+    "..",
+    "..",
+    "..",
+    "fixtures",
+    "sample",
+    "operating-spend-wide.csv",
+  ),
 );
 
 function sampleForm(request: string): FormData {

@@ -33,7 +33,11 @@ function initialDashboard(): Promise<PlanResult> {
 
 export default async function Home() {
   const result = await initialDashboard();
-  if (!result.ok || result.dashboard === undefined || result.plan === undefined) {
+  if (
+    !result.ok ||
+    result.dashboard === undefined ||
+    result.plan === undefined
+  ) {
     throw new Error(result.error ?? "Could not build the sample dashboard");
   }
   return <RequestWorkspace initial={result} initialRequest={DEFAULT_REQUEST} />;

@@ -65,7 +65,10 @@ export interface TableFacts {
   readonly latestPeriod?: string;
   readonly previousPeriod?: string;
   readonly totalsByPeriod: ReadonlyMap<string, Exact>;
-  readonly categoryTotalsByPeriod: ReadonlyMap<string, ReadonlyMap<string, Exact>>;
+  readonly categoryTotalsByPeriod: ReadonlyMap<
+    string,
+    ReadonlyMap<string, Exact>
+  >;
   /** Total for the latest period, or for every row when there is no period. */
   readonly latestTotal: Exact;
   readonly previousTotal?: Exact;
@@ -79,15 +82,26 @@ export interface TableFacts {
   readonly wholeAmounts: boolean;
 }
 
-const GRAIN_RANK: Readonly<Record<Grain, number>> = { month: 2, quarter: 1, year: 0 };
+const GRAIN_RANK: Readonly<Record<Grain, number>> = {
+  month: 2,
+  quarter: 1,
+  year: 0,
+};
 
-function columnIndex(table: Table, name: string | undefined): number | undefined {
+function columnIndex(
+  table: Table,
+  name: string | undefined,
+): number | undefined {
   if (name === undefined) return undefined;
   const column = table.columns.find((one) => one.name === name);
   return column?.index;
 }
 
-function cellPeriod(text: string, isDate: boolean, grain: Grain): string | undefined {
+function cellPeriod(
+  text: string,
+  isDate: boolean,
+  grain: Grain,
+): string | undefined {
   if (isDate) {
     const date = parseDate(text);
     return date === null ? undefined : bucketPeriod(date.iso, grain);
@@ -99,7 +113,11 @@ function cellPeriod(text: string, isDate: boolean, grain: Grain): string | undef
     : header.key;
 }
 
-function passesFilters(cells: readonly string[], plan: TablePlan, table: Table): boolean {
+function passesFilters(
+  cells: readonly string[],
+  plan: TablePlan,
+  table: Table,
+): boolean {
   return plan.filters.every((filter) => {
     const index = columnIndex(table, filter.column);
     if (index === undefined) return true;
@@ -109,7 +127,11 @@ function passesFilters(cells: readonly string[], plan: TablePlan, table: Table):
   });
 }
 
-function sumBy<T>(items: readonly T[], key: (item: T) => string, value: (item: T) => Exact): Map<string, Exact> {
+function sumBy<T>(
+  items: readonly T[],
+  key: (item: T) => string,
+  value: (item: T) => Exact,
+): Map<string, Exact> {
   const totals = new Map<string, Exact>();
   for (const item of items) {
     const k = key(item);
@@ -133,7 +155,8 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   const periodAt = columnIndex(table, plan.roles.period);
   const periodIsDate =
     periodAt !== undefined && table.columns[periodAt]?.type === "date";
-  if (amountAt === undefined) throw new Error(`Column "${plan.roles.amount}" is not in the table`);
+  if (amountAt === undefined)
+    throw new Error(`Column "${plan.roles.amount}" is not in the table`);
 
   let skipped = 0;
   let filteredOut = 0;
@@ -148,9 +171,12 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       skipped += 1;
       continue;
     }
-    const budgetText = budgetAt === undefined ? null : parseAmount(cells[budgetAt] ?? "");
+    const budgetText =
+      budgetAt === undefined ? null : parseAmount(cells[budgetAt] ?? "");
     const period =
-      periodAt === undefined ? undefined : cellPeriod(cells[periodAt] ?? "", periodIsDate, plan.grain);
+      periodAt === undefined
+        ? undefined
+        : cellPeriod(cells[periodAt] ?? "", periodIsDate, plan.grain);
     if (periodAt !== undefined && period === undefined) {
       skipped += 1;
       continue;
@@ -160,58 +186,113 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       cells,
       amount,
       ...(budgetText === null ? {} : { budget: budgetText }),
-      ...(categoryAt === undefined ? {} : { category: cells[categoryAt] || "(blank)" }),
+      ...(categoryAt === undefined
+        ? {}
+        : { category: cells[categoryAt] || "(blank)" }),
       ...(labelAt === undefined ? {} : { label: cells[labelAt] ?? "" }),
       ...(period === undefined ? {} : { period }),
     });
   }
 
-  let periods = [...new Set(rows.flatMap((row) => (row.period === undefined ? [] : [row.period])))].sort(comparePeriods);
+  let periods = [
+    ...new Set(
+      rows.flatMap((row) => (row.period === undefined ? [] : [row.period])),
+    ),
+  ].sort(comparePeriods);
   if (plan.lastPeriods !== undefined && periods.length > plan.lastPeriods) {
     const kept = new Set(periods.slice(-plan.lastPeriods));
     const before = rows.length;
-    rows = rows.filter((row) => row.period !== undefined && kept.has(row.period));
+    rows = rows.filter(
+      (row) => row.period !== undefined && kept.has(row.period),
+    );
     filteredOut += before - rows.length;
     periods = periods.filter((period) => kept.has(period));
   }
 
   const latestPeriod = periods.at(-1);
   const previousPeriod = periods.length >= 2 ? periods.at(-2) : undefined;
-  const totalsByPeriod = sumBy(rows.filter((row) => row.period !== undefined), (row) => row.period as string, (row) => row.amount);
+  const totalsByPeriod = sumBy(
+    rows.filter((row) => row.period !== undefined),
+    (row) => row.period as string,
+    (row) => row.amount,
+  );
   const categoryTotalsByPeriod = new Map<string, Map<string, Exact>>();
   for (const period of periods) {
     categoryTotalsByPeriod.set(
       period,
-      sumBy(rows.filter((row) => row.period === period && row.category !== undefined), (row) => row.category as string, (row) => row.amount),
+      sumBy(
+        rows.filter(
+          (row) => row.period === period && row.category !== undefined,
+        ),
+        (row) => row.category as string,
+        (row) => row.amount,
+      ),
     );
   }
 
-  const latestRows = latestPeriod === undefined ? rows : rows.filter((row) => row.period === latestPeriod);
-  const latestTotal = latestRows.reduce((sum, row) => add(sum, row.amount), ZERO);
-  const previousTotal = previousPeriod === undefined ? undefined : totalsByPeriod.get(previousPeriod);
-  const change = previousTotal === undefined ? undefined : subtract(latestTotal, previousTotal);
-  const changePercent = change === undefined || previousTotal === undefined ? undefined : percentOf(change, previousTotal);
+  const latestRows =
+    latestPeriod === undefined
+      ? rows
+      : rows.filter((row) => row.period === latestPeriod);
+  const latestTotal = latestRows.reduce(
+    (sum, row) => add(sum, row.amount),
+    ZERO,
+  );
+  const previousTotal =
+    previousPeriod === undefined
+      ? undefined
+      : totalsByPeriod.get(previousPeriod);
+  const change =
+    previousTotal === undefined
+      ? undefined
+      : subtract(latestTotal, previousTotal);
+  const changePercent =
+    change === undefined || previousTotal === undefined
+      ? undefined
+      : percentOf(change, previousTotal);
 
-  const latestByCategory = sortedDesc(sumBy(latestRows.filter((row) => row.category !== undefined), (row) => row.category as string, (row) => row.amount));
-  const shareValues = allocatePercents(latestByCategory.map(([, total]) => total));
-  const shares: CategoryShare[] = latestByCategory.map(([category, total], index) => ({
-    category,
-    total,
-    share: shareValues[index] as Exact,
-  }));
+  const latestByCategory = sortedDesc(
+    sumBy(
+      latestRows.filter((row) => row.category !== undefined),
+      (row) => row.category as string,
+      (row) => row.amount,
+    ),
+  );
+  const shareValues = allocatePercents(
+    latestByCategory.map(([, total]) => total),
+  );
+  const shares: CategoryShare[] = latestByCategory.map(
+    ([category, total], index) => ({
+      category,
+      total,
+      share: shareValues[index] as Exact,
+    }),
+  );
 
   const movers: Mover[] = [];
   if (latestPeriod !== undefined && previousPeriod !== undefined) {
-    const latest = categoryTotalsByPeriod.get(latestPeriod) ?? new Map<string, Exact>();
-    const previous = categoryTotalsByPeriod.get(previousPeriod) ?? new Map<string, Exact>();
+    const latest =
+      categoryTotalsByPeriod.get(latestPeriod) ?? new Map<string, Exact>();
+    const previous =
+      categoryTotalsByPeriod.get(previousPeriod) ?? new Map<string, Exact>();
     for (const category of new Set([...latest.keys(), ...previous.keys()])) {
       const now = latest.get(category) ?? ZERO;
       const then = previous.get(category) ?? ZERO;
       const delta = subtract(now, then);
       const pct = percentOf(delta, then);
-      movers.push({ category, latest: now, previous: then, change: delta, ...(pct === undefined ? {} : { changePercent: pct }) });
+      movers.push({
+        category,
+        latest: now,
+        previous: then,
+        change: delta,
+        ...(pct === undefined ? {} : { changePercent: pct }),
+      });
     }
-    movers.sort((a, b) => compareAbsDesc(a.change, b.change) || a.category.localeCompare(b.category));
+    movers.sort(
+      (a, b) =>
+        compareAbsDesc(a.change, b.change) ||
+        a.category.localeCompare(b.category),
+    );
   }
 
   const largestRows = [...rows]
@@ -221,16 +302,26 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   const budget: BudgetLine[] = [];
   if (budgetAt !== undefined) {
     const budgeted = latestRows.filter((row) => row.budget !== undefined);
-    const nameOf = (row: FactRow): string => row.category ?? row.label ?? "All rows";
+    const nameOf = (row: FactRow): string =>
+      row.category ?? row.label ?? "All rows";
     const amounts = sumBy(budgeted, nameOf, (row) => row.amount);
     const budgets = sumBy(budgeted, nameOf, (row) => row.budget as Exact);
     for (const [name, amount] of amounts) {
       const allowed = budgets.get(name) ?? ZERO;
       const variance = subtract(amount, allowed);
       const pct = percentOf(variance, allowed);
-      budget.push({ name, amount, budget: allowed, variance, ...(pct === undefined ? {} : { variancePercent: pct }), over: sign(variance) > 0 });
+      budget.push({
+        name,
+        amount,
+        budget: allowed,
+        variance,
+        ...(pct === undefined ? {} : { variancePercent: pct }),
+        over: sign(variance) > 0,
+      });
     }
-    budget.sort((a, b) => compare(b.variance, a.variance) || a.name.localeCompare(b.name));
+    budget.sort(
+      (a, b) => compare(b.variance, a.variance) || a.name.localeCompare(b.name),
+    );
   }
 
   return {
@@ -250,13 +341,29 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     movers,
     largestRows,
     budget,
-    categories: [...new Set(rows.flatMap((row) => (row.category === undefined ? [] : [row.category])))].sort(),
-    wholeAmounts: rows.every((row) => isWhole(row.amount) && (row.budget === undefined || isWhole(row.budget))),
+    categories: [
+      ...new Set(
+        rows.flatMap((row) =>
+          row.category === undefined ? [] : [row.category],
+        ),
+      ),
+    ].sort(),
+    wholeAmounts: rows.every(
+      (row) =>
+        isWhole(row.amount) &&
+        (row.budget === undefined || isWhole(row.budget)),
+    ),
   };
 }
 
 /** The five largest categories over the whole window, for trend series. */
 export function largestCategories(facts: TableFacts, limit: number): string[] {
-  const totals = sumBy(facts.rows.filter((row) => row.category !== undefined), (row) => row.category as string, (row) => abs(row.amount));
-  return sortedDesc(totals).slice(0, limit).map(([category]) => category);
+  const totals = sumBy(
+    facts.rows.filter((row) => row.category !== undefined),
+    (row) => row.category as string,
+    (row) => abs(row.amount),
+  );
+  return sortedDesc(totals)
+    .slice(0, limit)
+    .map(([category]) => category);
 }

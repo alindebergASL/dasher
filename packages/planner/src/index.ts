@@ -3,8 +3,8 @@
  * to read an uploaded table and how to compose the dashboard; trusted code
  * computes every figure with exact decimals and cites its evidence.
  *
- * The model-backed provider lives at `@dasher/planner/anthropic` so importing
- * this entry point never pulls an HTTP client into a bundle.
+ * The model-backed provider is also reachable alone at
+ * `@dasher/planner/anthropic`.
  */
 export {
   TABLE_PLAN_MAX_FILTERS,
@@ -32,7 +32,11 @@ export {
   type PlanningRevision,
   type PlanningTable,
 } from "./provider";
-export { compileTablePlan, type CompileOptions, type CompileSource } from "./compile";
+export {
+  compileTablePlan,
+  type CompileOptions,
+  type CompileSource,
+} from "./compile";
 export { computeFacts, type TableFacts } from "./facts";
 export {
   describePlan,
@@ -42,3 +46,9 @@ export {
   type PlannerRun,
   type RunTablePlannerOptions,
 } from "./run";
+export {
+  AnthropicPlanningProvider,
+  DEFAULT_PLANNING_MODEL,
+  type AnthropicPlanningProviderOptions,
+  type PlanningClient,
+} from "./anthropic";

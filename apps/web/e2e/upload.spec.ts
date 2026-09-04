@@ -16,7 +16,9 @@ test.describe("uploading a spreadsheet", () => {
       .getByRole("textbox", { name: "What do you want to see?" })
       .fill("Spending by category and what changed");
     await page.getByRole("button", { name: "Build dashboard" }).click();
-    await expect(page.getByRole("button", { name: "Build dashboard" })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(page.getByRole("status").first()).toContainText(/Amount/);
     await expect(page.getByText(/Salaries and benefits/).first()).toBeVisible();
@@ -31,7 +33,9 @@ test.describe("uploading a spreadsheet", () => {
       .getByRole("textbox", { name: "What do you want to see?" })
       .fill("Which lines are over budget?");
     await page.getByRole("button", { name: "Build dashboard" }).click();
-    await expect(page.getByRole("button", { name: "Build dashboard" })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(page.getByText(/Cloud infrastructure/).first()).toBeVisible();
   });
@@ -61,12 +65,16 @@ test.describe("uploading a spreadsheet", () => {
       .getByRole("textbox", { name: "What do you want to see?" })
       .fill("Spending by category");
     await page.getByRole("button", { name: "Build dashboard" }).click();
-    await expect(page.getByRole("button", { name: "Build dashboard" })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
     await page
       .getByRole("textbox", { name: "Change this dashboard" })
       .fill("Exclude Salaries and benefits");
     await page.getByRole("button", { name: "Apply change" }).click();
-    await expect(page.getByRole("button", { name: "Apply change" })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Apply change" }),
+    ).toBeEnabled();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(page.getByText(/Salaries and benefits/)).toHaveCount(0);
   });

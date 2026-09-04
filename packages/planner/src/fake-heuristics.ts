@@ -19,15 +19,24 @@ const BUDGET_NAME = /budget/iu;
 const CATEGORY_NAME =
   /category|type|department|dept|line|account|vendor|class|group|label/iu;
 const LABEL_NAME = /description|memo|label|name|item/iu;
+const ID_NAME = /(?:^|_| )id$/iu;
 
-export function isPeriodLike(column: ColumnProfile, unpivoted: boolean): boolean {
+export function isPeriodLike(
+  column: ColumnProfile,
+  unpivoted: boolean,
+): boolean {
   if (column.type === "date") return true;
   if (unpivoted && column.name === "period") return true;
   const filled = column.samples.filter((sample) => sample !== "");
-  return filled.length > 0 && filled.every((sample) => parsePeriodHeader(sample) !== null);
+  return (
+    filled.length > 0 &&
+    filled.every((sample) => parsePeriodHeader(sample) !== null)
+  );
 }
 
-function pickAmount(columns: readonly ColumnProfile[]): ColumnProfile | undefined {
+function pickAmount(
+  columns: readonly ColumnProfile[],
+): ColumnProfile | undefined {
   const numbers = columns.filter((column) => column.type === "number");
   const named = numbers.find(
     (column) => AMOUNT_NAME.test(column.name) && !BUDGET_NAME.test(column.name),
@@ -46,10 +55,13 @@ function pickCategory(
   const texts = columns.filter(
     (column) => column.type === "text" && !taken.has(column.name),
   );
+  // An id column is a key, not a name a reader wants to see, so it loses to any other candidate.
+  const readable = texts.filter((column) => !ID_NAME.test(column.name));
+  const pool = readable.length > 0 ? readable : texts;
   return (
-    texts.find((column) => CATEGORY_NAME.test(column.name) && !LABEL_NAME.test(column.name)) ??
-    texts.find((column) => CATEGORY_NAME.test(column.name)) ??
-    texts.find((column) => column.distinct >= 2 && column.distinct <= 50)
+    pool.find((column) => CATEGORY_NAME.test(column.name)) ??
+    pool.find((column) => column.distinct >= 2 && column.distinct <= 50) ??
+    texts.find((column) => CATEGORY_NAME.test(column.name))
   );
 }
 
@@ -63,7 +75,10 @@ export function chooseRoles(table: TableSummary): Roles {
   const taken = new Set<string>([roles.amount]);
 
   const budget = columns.find(
-    (column) => column.type === "number" && BUDGET_NAME.test(column.name) && !taken.has(column.name),
+    (column) =>
+      column.type === "number" &&
+      BUDGET_NAME.test(column.name) &&
+      !taken.has(column.name),
   );
   if (budget !== undefined) {
     roles.budget = budget.name;
@@ -85,7 +100,10 @@ export function chooseRoles(table: TableSummary): Roles {
   }
 
   const label = columns.find(
-    (column) => column.type === "text" && !taken.has(column.name) && LABEL_NAME.test(column.name),
+    (column) =>
+      column.type === "text" &&
+      !taken.has(column.name) &&
+      LABEL_NAME.test(column.name),
   );
   if (label !== undefined) roles.label = label.name;
 
@@ -93,19 +111,38 @@ export function chooseRoles(table: TableSummary): Roles {
 }
 
 const NUMBER_WORDS: Readonly<Record<string, number>> = {
-  two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
-  ten: 10, eleven: 11, twelve: 12, eighteen: 18, twenty: 20, thirty: 30,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  eighteen: 18,
+  twenty: 20,
+  thirty: 30,
 };
 
 /** "last 12 months" → 12 periods at month grain. */
-export function readLastPeriods(text: string): { count: number; grain: Grain } | undefined {
-  const match = /\blast\s+(\d{1,2}|[a-z]+)\s+(months?|quarters?|years?)\b/iu.exec(text);
+export function readLastPeriods(
+  text: string,
+): { count: number; grain: Grain } | undefined {
+  const match =
+    /\blast\s+(\d{1,2}|[a-z]+)\s+(months?|quarters?|years?)\b/iu.exec(text);
   if (match === null) return undefined;
   const word = (match[1] as string).toLowerCase();
   const count = /^\d+$/u.test(word) ? Number(word) : NUMBER_WORDS[word];
   if (count === undefined || count < 2 || count > 60) return undefined;
   const unit = (match[2] as string).toLowerCase();
-  const grain: Grain = unit.startsWith("quarter") ? "quarter" : unit.startsWith("year") ? "year" : "month";
+  const grain: Grain = unit.startsWith("quarter")
+    ? "quarter"
+    : unit.startsWith("year")
+      ? "year"
+      : "month";
   return { count, grain };
 }
 
@@ -132,7 +169,10 @@ export function readFilters(
     const keyword = (match[1] as string).toLowerCase();
     const phrase = (match[2] as string).trim().toLowerCase();
     const values = category.samples.filter(
-      (sample) => sample !== "" && (phrase.includes(sample.toLowerCase()) || sample.toLowerCase().includes(phrase)),
+      (sample) =>
+        sample !== "" &&
+        (phrase.includes(sample.toLowerCase()) ||
+          sample.toLowerCase().includes(phrase)),
     );
     if (values.length === 0) continue;
     const op = keyword === "only" || keyword === "just" ? "include" : "exclude";
@@ -140,28 +180,43 @@ export function readFilters(
     if (existing === undefined) {
       filters.push({ column: category.name, op, values });
     } else {
-      existing.values.push(...values.filter((value) => !existing.values.includes(value)));
+      existing.values.push(
+        ...values.filter((value) => !existing.values.includes(value)),
+      );
     }
   }
   return filters;
 }
 
-const OVERVIEW: TableSectionKind[] = ["summary", "headline-totals", "by-category", "trend"];
+const OVERVIEW: TableSectionKind[] = [
+  "summary",
+  "headline-totals",
+  "by-category",
+  "trend",
+];
 const DETAIL: TableSectionKind[] = ["movers", "largest-rows", "table"];
 
 /** The section the request leads with, if it names one. */
-export function leadSection(text: string, roles: Roles): TableSectionKind | undefined {
+export function leadSection(
+  text: string,
+  roles: Roles,
+): TableSectionKind | undefined {
   if (/\b(?:largest|biggest|top)\b/iu.test(text)) return "largest-rows";
   if (/\btrend|over time\b/iu.test(text)) return "trend";
-  if (roles.budget !== undefined && /\bbudget/iu.test(text)) return "budget-variance";
+  if (roles.budget !== undefined && /\bbudget/iu.test(text))
+    return "budget-variance";
   return undefined;
 }
 
 /** Drops the sections the roles cannot support. */
-export function supported(sections: readonly TableSectionKind[], roles: Roles): TableSectionKind[] {
+export function supported(
+  sections: readonly TableSectionKind[],
+  roles: Roles,
+): TableSectionKind[] {
   return sections.filter((section) => {
     if (section === "by-category") return roles.category !== undefined;
-    if (section === "movers") return roles.category !== undefined && roles.period !== undefined;
+    if (section === "movers")
+      return roles.category !== undefined && roles.period !== undefined;
     if (section === "trend") return roles.period !== undefined;
     if (section === "budget-variance") return roles.budget !== undefined;
     return true;
@@ -169,8 +224,12 @@ export function supported(sections: readonly TableSectionKind[], roles: Roles): 
 }
 
 function titleFrom(sourceName: string): string {
-  const stem = sourceName.replace(/\.[a-z0-9]+$/iu, "").replace(/[-_]+/gu, " ").trim();
-  if (stem === "" || findMeasurement(stem) !== undefined) return "Spend overview";
+  const stem = sourceName
+    .replace(/\.[a-z0-9]+$/iu, "")
+    .replace(/[-_]+/gu, " ")
+    .trim();
+  if (stem === "" || findMeasurement(stem) !== undefined)
+    return "Spend overview";
   return `${stem.charAt(0).toUpperCase()}${stem.slice(1)} overview`;
 }
 
@@ -182,7 +241,9 @@ export function defaultPlan(
 ): TablePlan {
   const last = readLastPeriods(requestText);
   const grain = readGrain(requestText) ?? last?.grain ?? "month";
-  const category = table.columns.find((column) => column.name === roles.category);
+  const category = table.columns.find(
+    (column) => column.name === roles.category,
+  );
 
   let overview = supported(OVERVIEW, roles);
   const detail = supported(DETAIL, roles);
@@ -198,7 +259,8 @@ export function defaultPlan(
     {
       id: "overview",
       title: "Overview",
-      description: "Totals for the latest period, how they compare with the one before, and where the money went.",
+      description:
+        "Totals for the latest period, how they compare with the one before, and where the money went.",
       sections: overview.slice(0, 6),
     },
   ];
@@ -206,7 +268,8 @@ export function defaultPlan(
     pages.push({
       id: "detail",
       title: "Detail",
-      description: "The lines that moved most, the largest single rows, and the rows themselves.",
+      description:
+        "The lines that moved most, the largest single rows, and the rows themselves.",
       sections: detail.slice(0, 6),
     });
   }
@@ -215,7 +278,8 @@ export function defaultPlan(
     planVersion: "table-plan-v1",
     title: titleFrom(sourceName),
     audience: "Whoever asked for this view of the file",
-    framing: "Totals first, then the breakdown by category and the rows behind it.",
+    framing:
+      "Totals first, then the breakdown by category and the rows behind it.",
     roles,
     grain,
     filters: readFilters(requestText, category),

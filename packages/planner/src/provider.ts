@@ -59,7 +59,11 @@ export class FakePlanningProvider implements PlanningProvider {
     };
     if (request.revision !== undefined) {
       return Promise.resolve(
-        applyRevision(request.revision.previousPlan, request.revision.findings, summary),
+        applyRevision(
+          request.revision.previousPlan,
+          request.revision.findings,
+          summary,
+        ),
       );
     }
     if (request.refinement !== undefined) {

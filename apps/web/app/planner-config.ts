@@ -52,7 +52,7 @@ export class DailyLimitedProvider implements PlanningProvider {
 }
 
 export function plannerFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): PlanningProvider {
   const choice = (env["DASHER_PLANNER"] ?? "fake").trim().toLowerCase();
   if (choice === "fake" || choice === "") return new FakePlanningProvider();

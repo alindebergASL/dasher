@@ -12,7 +12,11 @@ import {
   supported,
   type TableSummary,
 } from "./fake-heuristics";
-import { TABLE_SECTION_KINDS, type TablePlan, type TableSectionKind } from "./table-plan";
+import {
+  TABLE_SECTION_KINDS,
+  type TablePlan,
+  type TableSectionKind,
+} from "./table-plan";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type Page = TablePlan["pages"][number];
@@ -29,9 +33,12 @@ const SECTION_WORDS: ReadonlyArray<[RegExp, TableSectionKind]> = [
 ];
 
 function namedSections(text: string): TableSectionKind[] {
-  const found = SECTION_WORDS.filter(([pattern]) => pattern.test(text)).map(([, kind]) => kind);
+  const found = SECTION_WORDS.filter(([pattern]) => pattern.test(text)).map(
+    ([, kind]) => kind,
+  );
   for (const kind of TABLE_SECTION_KINDS) {
-    if (text.toLowerCase().includes(kind) && !found.includes(kind)) found.push(kind);
+    if (text.toLowerCase().includes(kind) && !found.includes(kind))
+      found.push(kind);
   }
   return found;
 }
@@ -40,13 +47,22 @@ function clone(plan: TablePlan): Mutable<TablePlan> {
   return JSON.parse(JSON.stringify(plan)) as Mutable<TablePlan>;
 }
 
-function dropSections(pages: Page[], kinds: readonly TableSectionKind[]): Page[] {
+function dropSections(
+  pages: Page[],
+  kinds: readonly TableSectionKind[],
+): Page[] {
   return pages
-    .map((page) => ({ ...page, sections: page.sections.filter((section) => !kinds.includes(section)) }))
+    .map((page) => ({
+      ...page,
+      sections: page.sections.filter((section) => !kinds.includes(section)),
+    }))
     .filter((page) => page.sections.length > 0);
 }
 
-function addSections(pages: Page[], kinds: readonly TableSectionKind[]): Page[] {
+function addSections(
+  pages: Page[],
+  kinds: readonly TableSectionKind[],
+): Page[] {
   const present = new Set(pages.flatMap((page) => page.sections));
   const next = pages.map((page) => ({ ...page, sections: [...page.sections] }));
   for (const kind of kinds) {
@@ -84,7 +100,8 @@ export function applyRefinement(
     }
   }
 
-  const drop = /\b(?:drop|remove|hide|delete|without the|no more)\b(.*)$/iu.exec(text);
+  const drop =
+    /\b(?:drop|remove|hide|delete|without the|no more)\b(.*)$/iu.exec(text);
   if (drop !== null) {
     const kinds = namedSections(drop[1] as string);
     const pages = dropSections(plan.pages, kinds);
@@ -104,11 +121,16 @@ export function applyRefinement(
     }
   }
 
-  const category = table.columns.find((column) => column.name === plan.roles.category);
+  const category = table.columns.find(
+    (column) => column.name === plan.roles.category,
+  );
   const filters = readFilters(text, category);
   if (filters.length > 0) {
     const kept = plan.filters.filter(
-      (filter) => !filters.some((next) => next.column === filter.column && next.op === filter.op),
+      (filter) =>
+        !filters.some(
+          (next) => next.column === filter.column && next.op === filter.op,
+        ),
     );
     plan.filters = [...kept, ...filters].slice(0, 8);
     changed = true;
@@ -150,12 +172,16 @@ export function applyRevision(
     switch (finding.code) {
       case "unknown_column":
       case "role_type": {
-        const role = /^roles\.(\w+)$/u.exec(finding.path)?.[1] as keyof TablePlan["roles"] | undefined;
+        const role = /^roles\.(\w+)$/u.exec(finding.path)?.[1] as
+          keyof TablePlan["roles"] | undefined;
         if (role === "amount") roles.amount = fresh.amount;
         else if (role !== undefined) {
           if (fresh[role] !== undefined) roles[role] = fresh[role];
           else delete roles[role];
-        } else if (finding.path.startsWith("filters[") && indexes[0] !== undefined) {
+        } else if (
+          finding.path.startsWith("filters[") &&
+          indexes[0] !== undefined
+        ) {
           filtersToDrop.add(indexes[0]);
         }
         break;
@@ -166,18 +192,21 @@ export function applyRevision(
         break;
       case "duplicate_page_id": {
         const page = plan.pages[indexes[0] ?? -1];
-        if (page !== undefined) page.id = `${page.id}-${String((indexes[0] ?? 0) + 1)}`;
+        if (page !== undefined)
+          page.id = `${page.id}-${String((indexes[0] ?? 0) + 1)}`;
         break;
       }
       case "free_text_measurement": {
         const replacement = defaultPlan("", "", roles, table);
         if (finding.path === "title") plan.title = replacement.title;
-        else if (finding.path === "audience") plan.audience = replacement.audience;
+        else if (finding.path === "audience")
+          plan.audience = replacement.audience;
         else if (finding.path === "framing") plan.framing = replacement.framing;
         else {
           const page = plan.pages[indexes[0] ?? -1];
           if (page !== undefined) {
-            if (finding.path.endsWith(".title")) page.title = `Page ${String((indexes[0] ?? 0) + 1)}`;
+            if (finding.path.endsWith(".title"))
+              page.title = `Page ${String((indexes[0] ?? 0) + 1)}`;
             else page.description = "Composed from the file's own figures.";
           }
         }
@@ -198,7 +227,8 @@ export function applyRevision(
     .map((page, pageIndex) => ({
       ...page,
       sections: page.sections.filter(
-        (_, sectionIndex) => !sectionsToDrop.has(`pages[${pageIndex}].sections[${sectionIndex}]`),
+        (_, sectionIndex) =>
+          !sectionsToDrop.has(`pages[${pageIndex}].sections[${sectionIndex}]`),
       ),
     }))
     .filter((page) => page.sections.length > 0);

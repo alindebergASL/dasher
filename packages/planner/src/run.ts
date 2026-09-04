@@ -35,7 +35,9 @@ export interface PlannerRun {
   readonly attempts: readonly PlannerAttempt[];
 }
 
-export async function runTablePlanner(options: RunTablePlannerOptions): Promise<PlannerRun> {
+export async function runTablePlanner(
+  options: RunTablePlannerOptions,
+): Promise<PlannerRun> {
   const maxAttempts = options.maxAttempts ?? PLANNER_MAX_ATTEMPTS;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     throw new Error("maxAttempts must be a positive integer");
@@ -56,7 +58,13 @@ export async function runTablePlanner(options: RunTablePlannerOptions): Promise<
       ...(options.refine === undefined ? {} : { refinement: options.refine }),
       ...(previousPlan === undefined
         ? {}
-        : { revision: { attempt: attempt - 1, previousPlan, findings: previousFindings } }),
+        : {
+            revision: {
+              attempt: attempt - 1,
+              previousPlan,
+              findings: previousFindings,
+            },
+          }),
     });
 
     const parsed = TablePlanSchema.safeParse(raw);
@@ -83,7 +91,10 @@ export async function runTablePlanner(options: RunTablePlannerOptions): Promise<
     try {
       const dashboard = compileTablePlan(plan, options.table, {
         asOf: options.asOf,
-        planner: { id: options.provider.id, usesModel: options.provider.usesModel },
+        planner: {
+          id: options.provider.id,
+          usesModel: options.provider.usesModel,
+        },
         source: options.source,
       });
       attempts.push({ attempt, findings: [], accepted: true });
@@ -93,7 +104,16 @@ export async function runTablePlanner(options: RunTablePlannerOptions): Promise<
       previousFindings =
         error instanceof PlanRejected
           ? error.findings
-          : [{ code: "spec_rejected", path: "pages", message: error instanceof Error ? error.message : "The compiled dashboard failed contract validation." }];
+          : [
+              {
+                code: "spec_rejected",
+                path: "pages",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "The compiled dashboard failed contract validation.",
+              },
+            ];
       attempts.push({ attempt, findings: previousFindings, accepted: false });
     }
   }
@@ -104,11 +124,17 @@ export async function runTablePlanner(options: RunTablePlannerOptions): Promise<
 /** One reader-facing sentence on how the plan reads the table. */
 export function describePlan(plan: TablePlan, table: Table): string {
   const parts = [`${plan.roles.amount} as the figure`];
-  if (plan.roles.category !== undefined) parts.push(`${plan.roles.category} as the grouping`);
-  if (plan.roles.budget !== undefined) parts.push(`${plan.roles.budget} as the budget`);
+  if (plan.roles.category !== undefined)
+    parts.push(`${plan.roles.category} as the grouping`);
+  if (plan.roles.budget !== undefined)
+    parts.push(`${plan.roles.budget} as the budget`);
   if (plan.roles.period !== undefined) {
-    const reshaped = table.unpivoted !== undefined && plan.roles.period === table.unpivoted.periodColumn;
-    parts.push(`${reshaped ? "the period columns" : plan.roles.period} by ${plan.grain}`);
+    const reshaped =
+      table.unpivoted !== undefined &&
+      plan.roles.period === table.unpivoted.periodColumn;
+    parts.push(
+      `${reshaped ? "the period columns" : plan.roles.period} by ${plan.grain}`,
+    );
   }
   return `Read ${parts.join(", ")}.`;
 }

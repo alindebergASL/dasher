@@ -153,7 +153,10 @@ async function readSource(
   }
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {
-    return { ok: false, message: "Choose a CSV file to build a dashboard from." };
+    return {
+      ok: false,
+      message: "Choose a CSV file to build a dashboard from.",
+    };
   }
   const read = readUpload(
     file.name.trim() === "" ? "upload.csv" : file.name,

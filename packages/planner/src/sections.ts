@@ -3,7 +3,14 @@
  * undefined when its section would have nothing to show.
  */
 import type { DashboardComponent } from "@dasher/dashboard-schema";
-import { compare, periodLabel, periodStartIso, sign, type Exact, type Table } from "./workbook";
+import {
+  compare,
+  periodLabel,
+  periodStartIso,
+  sign,
+  type Exact,
+  type Table,
+} from "./workbook";
 import {
   formatMoney,
   formatPercent,
@@ -14,7 +21,10 @@ import {
 import { largestCategories, type FactRow, type TableFacts } from "./facts";
 import type { TablePlan, TableSectionKind } from "./table-plan";
 
-type Alert = Extract<DashboardComponent, { kind: "alert-list" }>["alerts"][number];
+type Alert = Extract<
+  DashboardComponent,
+  { kind: "alert-list" }
+>["alerts"][number];
 
 export interface SectionContext {
   readonly plan: TablePlan;
@@ -30,19 +40,27 @@ export const EVIDENCE = {
   composition: "composition",
 } as const;
 
-function direction(value: Exact | undefined): "up" | "down" | "steady" | "unknown" {
+function direction(
+  value: Exact | undefined,
+): "up" | "down" | "steady" | "unknown" {
   if (value === undefined) return "unknown";
   const s = sign(value);
   return s > 0 ? "up" : s < 0 ? "down" : "steady";
 }
 
 export function windowLabel(facts: TableFacts): string {
-  return facts.latestPeriod === undefined ? "the whole file" : periodLabel(facts.latestPeriod);
+  return facts.latestPeriod === undefined
+    ? "the whole file"
+    : periodLabel(facts.latestPeriod);
 }
 
 function changeText(facts: TableFacts, money: MoneyFormat): string | undefined {
-  if (facts.change === undefined || facts.previousPeriod === undefined) return undefined;
-  const pct = facts.changePercent === undefined ? "" : ` (${formatSignedPercent(facts.changePercent)})`;
+  if (facts.change === undefined || facts.previousPeriod === undefined)
+    return undefined;
+  const pct =
+    facts.changePercent === undefined
+      ? ""
+      : ` (${formatSignedPercent(facts.changePercent)})`;
   return `${formatSignedMoney(facts.change, money)}${pct} vs ${periodLabel(facts.previousPeriod)}`;
 }
 
@@ -64,7 +82,10 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
   ];
   const change = changeText(facts, money);
   claims.push({
-    text: change === undefined ? "There is no earlier period in this file to compare with." : `Change: ${change}.`,
+    text:
+      change === undefined
+        ? "There is no earlier period in this file to compare with."
+        : `Change: ${change}.`,
     evidenceIds: [...evidenceIds],
   });
   const largest = facts.shares[0];
@@ -77,7 +98,10 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
   const over = facts.budget.filter((line) => line.over);
   if (facts.budget.length > 0) {
     claims.push({
-      text: over.length === 0 ? "Every budgeted line is within budget." : `${String(over.length)} of ${String(facts.budget.length)} budgeted lines are over budget.`,
+      text:
+        over.length === 0
+          ? "Every budgeted line is within budget."
+          : `${String(over.length)} of ${String(facts.budget.length)} budgeted lines are over budget.`,
       evidenceIds: [...evidenceIds],
     });
   }
@@ -95,8 +119,15 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
 function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
   const { facts, money, evidenceIds } = ctx;
   const ids = [...evidenceIds];
-  const metrics: Extract<DashboardComponent, { kind: "metric-grid" }>["metrics"] = [
-    { label: `Total, ${windowLabel(facts)}`, value: formatMoney(facts.latestTotal, money), evidenceIds: ids },
+  const metrics: Extract<
+    DashboardComponent,
+    { kind: "metric-grid" }
+  >["metrics"] = [
+    {
+      label: `Total, ${windowLabel(facts)}`,
+      value: formatMoney(facts.latestTotal, money),
+      evidenceIds: ids,
+    },
   ];
   const change = changeText(facts, money);
   if (facts.change !== undefined) {
@@ -108,18 +139,40 @@ function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
       evidenceIds: ids,
     });
   }
-  metrics.push({ label: "Rows counted", value: String(facts.rows.length), evidenceIds: ids });
+  metrics.push({
+    label: "Rows counted",
+    value: String(facts.rows.length),
+    evidenceIds: ids,
+  });
   if (facts.categories.length > 0) {
-    metrics.push({ label: "Categories", value: String(facts.categories.length), evidenceIds: ids });
+    metrics.push({
+      label: "Categories",
+      value: String(facts.categories.length),
+      evidenceIds: ids,
+    });
   }
   const largest = facts.shares[0];
   if (largest !== undefined) {
-    metrics.push({ label: "Largest category", value: largest.category, change: formatPercent(largest.share), evidenceIds: ids });
+    metrics.push({
+      label: "Largest category",
+      value: largest.category,
+      change: formatPercent(largest.share),
+      evidenceIds: ids,
+    });
   }
-  return { id, kind: "metric-grid", title: "Headline totals", evidenceIds: ids, metrics };
+  return {
+    id,
+    kind: "metric-grid",
+    title: "Headline totals",
+    evidenceIds: ids,
+    metrics,
+  };
 }
 
-function byCategory(id: string, ctx: SectionContext): DashboardComponent | undefined {
+function byCategory(
+  id: string,
+  ctx: SectionContext,
+): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
   if (facts.shares.length === 0) return undefined;
   return {
@@ -137,9 +190,17 @@ function byCategory(id: string, ctx: SectionContext): DashboardComponent | undef
   };
 }
 
-function movers(id: string, ctx: SectionContext): DashboardComponent | undefined {
+function movers(
+  id: string,
+  ctx: SectionContext,
+): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
-  if (facts.movers.length === 0 || facts.previousPeriod === undefined || facts.latestPeriod === undefined) return undefined;
+  if (
+    facts.movers.length === 0 ||
+    facts.previousPeriod === undefined ||
+    facts.latestPeriod === undefined
+  )
+    return undefined;
   return {
     id,
     kind: "ranking",
@@ -155,12 +216,20 @@ function movers(id: string, ctx: SectionContext): DashboardComponent | undefined
   };
 }
 
-function trend(id: string, ctx: SectionContext): DashboardComponent | undefined {
+function trend(
+  id: string,
+  ctx: SectionContext,
+): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
   if (facts.periods.length < 2) return undefined;
   const unit = money.currency ?? "amount";
-  const points = (value: (period: string) => Exact): { at: string; value: number }[] =>
-    facts.periods.map((period) => ({ at: periodStartIso(period), value: Number(value(period)) }));
+  const points = (
+    value: (period: string) => Exact,
+  ): { at: string; value: number }[] =>
+    facts.periods.map((period) => ({
+      at: periodStartIso(period),
+      value: Number(value(period)),
+    }));
   const series = [
     {
       id: `${id}-total`,
@@ -174,13 +243,25 @@ function trend(id: string, ctx: SectionContext): DashboardComponent | undefined 
       label: category,
       unit,
       evidenceIds: [...evidenceIds],
-      points: points((period) => facts.categoryTotalsByPeriod.get(period)?.get(category) ?? "0"),
+      points: points(
+        (period) =>
+          facts.categoryTotalsByPeriod.get(period)?.get(category) ?? "0",
+      ),
     })),
   ];
-  return { id, kind: "trend-list", title: `Trend by ${ctx.plan.grain}`, evidenceIds: [...evidenceIds], series };
+  return {
+    id,
+    kind: "trend-list",
+    title: `Trend by ${ctx.plan.grain}`,
+    evidenceIds: [...evidenceIds],
+    series,
+  };
 }
 
-function largestRows(id: string, ctx: SectionContext): DashboardComponent | undefined {
+function largestRows(
+  id: string,
+  ctx: SectionContext,
+): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
   if (facts.largestRows.length === 0) return undefined;
   return {
@@ -192,19 +273,32 @@ function largestRows(id: string, ctx: SectionContext): DashboardComponent | unde
       id: `${id}-row-${String(row.index + 1)}`,
       label: rowLabel(row).slice(0, 256),
       value: formatMoney(row.amount, money),
-      note: [row.category, row.period === undefined ? undefined : periodLabel(row.period)].filter((part) => part !== undefined).join(" · ") || `Row ${String(row.index + 1)}`,
+      note:
+        [
+          row.category,
+          row.period === undefined ? undefined : periodLabel(row.period),
+        ]
+          .filter((part) => part !== undefined)
+          .join(" · ") || `Row ${String(row.index + 1)}`,
       evidenceIds: [...evidenceIds],
     })),
   };
 }
 
-function budgetVariance(id: string, ctx: SectionContext): DashboardComponent | undefined {
+function budgetVariance(
+  id: string,
+  ctx: SectionContext,
+): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
   if (facts.budget.length === 0) return undefined;
   const over = facts.budget.filter((line) => line.over);
   const alerts: Alert[] = over.slice(0, 200).map((line, index) => ({
     id: `${id}-${String(index + 1)}`,
-    severity: line.variancePercent !== undefined && compare(line.variancePercent, "10") > 0 ? "warning" : "attention",
+    severity:
+      line.variancePercent !== undefined &&
+      compare(line.variancePercent, "10") > 0
+        ? "warning"
+        : "attention",
     title: `${line.name} over budget by ${formatMoney(line.variance, money)}`,
     detail: `${formatMoney(line.amount, money)} against a budget of ${formatMoney(line.budget, money)} for ${windowLabel(facts)}${line.variancePercent === undefined ? "" : ` (${formatSignedPercent(line.variancePercent)})`}.`,
     evidenceIds: [...evidenceIds],
@@ -218,16 +312,37 @@ function budgetVariance(id: string, ctx: SectionContext): DashboardComponent | u
       evidenceIds: [...evidenceIds],
     });
   }
-  return { id, kind: "alert-list", title: "Budget variance", evidenceIds: [...evidenceIds], alerts };
+  return {
+    id,
+    kind: "alert-list",
+    title: "Budget variance",
+    evidenceIds: [...evidenceIds],
+    alerts,
+  };
 }
 
-function tableComponent(id: string, ctx: SectionContext): DashboardComponent | undefined {
+function tableComponent(
+  id: string,
+  ctx: SectionContext,
+): DashboardComponent | undefined {
   const { plan, table, facts, evidenceIds } = ctx;
   if (facts.rows.length === 0) return undefined;
-  const roleNames = [plan.roles.period, plan.roles.label, plan.roles.category, plan.roles.account, plan.roles.amount, plan.roles.budget].filter((name): name is string => name !== undefined);
-  const others = table.columns.map((column) => column.name).filter((name) => !roleNames.includes(name)).slice(0, 6);
+  const roleNames = [
+    plan.roles.period,
+    plan.roles.label,
+    plan.roles.category,
+    plan.roles.account,
+    plan.roles.amount,
+    plan.roles.budget,
+  ].filter((name): name is string => name !== undefined);
+  const others = table.columns
+    .map((column) => column.name)
+    .filter((name) => !roleNames.includes(name))
+    .slice(0, 6);
   const names = [...new Set([...roleNames, ...others])].slice(0, 12);
-  const indexes = names.map((name) => table.columns.find((column) => column.name === name)?.index ?? 0);
+  const indexes = names.map(
+    (name) => table.columns.find((column) => column.name === name)?.index ?? 0,
+  );
   return {
     id,
     kind: "table",
@@ -242,7 +357,12 @@ function tableComponent(id: string, ctx: SectionContext): DashboardComponent | u
   };
 }
 
-export const SECTION_BUILDERS: Readonly<Record<TableSectionKind, (id: string, ctx: SectionContext) => DashboardComponent | undefined>> = {
+export const SECTION_BUILDERS: Readonly<
+  Record<
+    TableSectionKind,
+    (id: string, ctx: SectionContext) => DashboardComponent | undefined
+  >
+> = {
   summary,
   "headline-totals": headlineTotals,
   "by-category": byCategory,

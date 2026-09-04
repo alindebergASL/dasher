@@ -25,33 +25,27 @@ function fromScaled(units: bigint, scale: number): Exact {
   return negative && /[1-9]/u.test(body) ? `-${body}` : body;
 }
 
-/** `numerator / denominator` truncated to `places` decimals. Undefined on zero. */
-export function divide(
-  numerator: Exact,
-  denominator: Exact,
-  places: number,
-): Exact | undefined {
-  if (sign(denominator) === 0) return undefined;
-  const top = parts(numerator);
-  const bottom = parts(denominator);
-  const shift = BigInt(places + bottom.scale - top.scale);
-  const scaled =
-    shift >= 0n ? top.units * 10n ** shift : top.units / 10n ** -shift;
-  return fromScaled(scaled / bottom.units, places);
+function absBig(value: bigint): bigint {
+  return value < 0n ? -value : value;
 }
 
-/** `part / whole * 100` to one decimal, half away from zero. */
+/** `part / whole * 100` to one decimal, half away from zero. Undefined when `whole` is zero. */
 export function percentOf(part: Exact, whole: Exact): Exact | undefined {
-  const ratio = divide(part, whole, 6);
-  if (ratio === undefined) return undefined;
-  const { units } = parts(ratio);
-  // ratio has scale 6; percent to one decimal is scale 3 of the ratio's units.
-  const divisor = 1000n;
-  const magnitude = units < 0n ? -units : units;
-  const quotient = magnitude / divisor;
-  const carry = magnitude % divisor >= 500n ? 1n : 0n;
-  const rounded = quotient + carry;
-  return fromScaled(units < 0n ? -rounded : rounded, 1);
+  if (sign(whole) === 0) return undefined;
+  const top = parts(part);
+  const bottom = parts(whole);
+  // Tenths of a percent: shift by two for percent and one more for the decimal.
+  const shift = bottom.scale - top.scale + 3;
+  let numerator = top.units;
+  let denominator = bottom.units;
+  if (shift >= 0) numerator *= 10n ** BigInt(shift);
+  else denominator *= 10n ** BigInt(-shift);
+  const negative = numerator < 0n !== denominator < 0n;
+  const n = absBig(numerator);
+  const d = absBig(denominator);
+  let quotient = n / d;
+  if ((n % d) * 2n >= d) quotient += 1n;
+  return fromScaled(negative ? -quotient : quotient, 1);
 }
 
 /**
@@ -69,8 +63,7 @@ export function allocatePercents(parts_: readonly Exact[]): Exact[] {
     const one = parts(value);
     const shift = BigInt(whole.scale - one.scale);
     const units = shift >= 0n ? one.units * 10n ** shift : one.units;
-    const denominator =
-      shift >= 0n ? whole.units : whole.units * 10n ** -shift;
+    const denominator = shift >= 0n ? whole.units : whole.units * 10n ** -shift;
     // Tenths of a percent, floored, with the remainder kept for allocation.
     const numerator = units * 1000n;
     return {
@@ -81,7 +74,13 @@ export function allocatePercents(parts_: readonly Exact[]): Exact[] {
   let leftover = 1000n - scaled.reduce((sum, one) => sum + one.floor, 0n);
   const order = scaled
     .map((one, index) => ({ index, remainder: one.remainder }))
-    .sort((a, b) => (a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1));
+    .sort((a, b) =>
+      a.remainder === b.remainder
+        ? a.index - b.index
+        : a.remainder > b.remainder
+          ? -1
+          : 1,
+    );
   const tenths = scaled.map((one) => one.floor);
   for (const { index } of order) {
     if (leftover <= 0n) break;

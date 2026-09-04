@@ -3,12 +3,28 @@
  * the result is computed here from the table's cells; the plan only says
  * which columns to read and which sections to show.
  */
-import { parseDashboardSpec, type DashboardComponent, type DashboardSpec, type Evidence, type Page } from "@dasher/dashboard-schema";
+import {
+  parseDashboardSpec,
+  type DashboardComponent,
+  type DashboardSpec,
+  type Evidence,
+  type Page,
+} from "@dasher/dashboard-schema";
 import { periodLabel, type Table } from "./workbook";
-import { formatMoney, formatSignedMoney, formatSignedPercent, type MoneyFormat } from "./arith";
+import {
+  formatMoney,
+  formatSignedMoney,
+  formatSignedPercent,
+  type MoneyFormat,
+} from "./arith";
 import { computeFacts, type TableFacts } from "./facts";
 import { PlanRejected } from "./plan";
-import { EVIDENCE, SECTION_BUILDERS, windowLabel, type SectionContext } from "./sections";
+import {
+  EVIDENCE,
+  SECTION_BUILDERS,
+  windowLabel,
+  type SectionContext,
+} from "./sections";
 import type { TablePlan } from "./table-plan";
 
 export interface CompileSource {
@@ -25,25 +41,49 @@ export interface CompileOptions {
   readonly source: CompileSource;
 }
 
-function moneyFormat(plan: TablePlan, table: Table, facts: TableFacts): MoneyFormat {
-  const currency = table.columns.find((column) => column.name === plan.roles.amount)?.currency;
-  return { ...(currency === undefined ? {} : { currency }), decimals: facts.wholeAmounts ? 0 : 2 };
+function moneyFormat(
+  plan: TablePlan,
+  table: Table,
+  facts: TableFacts,
+): MoneyFormat {
+  const currency = table.columns.find(
+    (column) => column.name === plan.roles.amount,
+  )?.currency;
+  return {
+    ...(currency === undefined ? {} : { currency }),
+    decimals: facts.wholeAmounts ? 0 : 2,
+  };
 }
 
-function evidence(plan: TablePlan, table: Table, facts: TableFacts, options: CompileOptions): Evidence[] {
+function evidence(
+  plan: TablePlan,
+  table: Table,
+  facts: TableFacts,
+  options: CompileOptions,
+): Evidence[] {
   const { source } = options;
   const detail = [
     `${String(source.rowCount)} rows and ${String(table.columns.length)} columns`,
-    source.byteLength === undefined ? undefined : `${String(source.byteLength)} bytes`,
+    source.byteLength === undefined
+      ? undefined
+      : `${String(source.byteLength)} bytes`,
     source.sha256 === undefined ? undefined : `sha256 ${source.sha256}`,
-    table.unpivoted === undefined ? undefined : `one column per period (${table.unpivoted.periodColumns.join(", ")}) reshaped into one row per line and period`,
+    table.unpivoted === undefined
+      ? undefined
+      : `one column per period (${table.unpivoted.periodColumns.join(", ")}) reshaped into one row per line and period`,
   ].filter((part) => part !== undefined);
   const arithmetic = [
     `Amounts were read from "${plan.roles.amount}" as exact decimals; ${String(facts.skipped)} rows whose amount or period could not be read were skipped and ${String(facts.filteredOut)} rows were left out by the plan's filters.`,
-    plan.roles.period === undefined ? "There is no period column, so every figure covers the whole file." : `Rows were grouped by ${plan.grain} from "${plan.roles.period}"${plan.lastPeriods === undefined ? "" : `, keeping the last ${String(plan.lastPeriods)} periods`}.`,
+    plan.roles.period === undefined
+      ? "There is no period column, so every figure covers the whole file."
+      : `Rows were grouped by ${plan.grain} from "${plan.roles.period}"${plan.lastPeriods === undefined ? "" : `, keeping the last ${String(plan.lastPeriods)} periods`}.`,
     "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total.",
-    plan.roles.category === undefined ? undefined : `Shares divide each category's total by the period total and are allocated in tenths of a percent so they sum to exactly one hundred. Movers are each category's latest total minus its previous total, ordered by size of change.`,
-    plan.roles.budget === undefined ? undefined : `Budget variance sums "${plan.roles.budget}" per line for the latest period and subtracts it from the amount; a positive variance is over budget.`,
+    plan.roles.category === undefined
+      ? undefined
+      : `Shares divide each category's total by the period total and are allocated in tenths of a percent so they sum to exactly one hundred. Movers are each category's latest total minus its previous total, ordered by size of change.`,
+    plan.roles.budget === undefined
+      ? undefined
+      : `Budget variance sums "${plan.roles.budget}" per line for the latest period and subtracts it from the amount; a positive variance is over budget.`,
   ].filter((part) => part !== undefined);
   const items: Evidence[] = [
     {
@@ -72,14 +112,19 @@ function evidence(plan: TablePlan, table: Table, facts: TableFacts, options: Com
       label: "How the dashboard was composed",
       sourceName: options.planner.id,
       retrievedAt: options.asOf,
-      detail: "A planning model chose the column roles and layout; it saw column names and samples, never totals.",
+      detail:
+        "A planning model chose the column roles and layout; it saw column names and samples, never totals.",
       confidence: "medium",
     });
   }
   return items;
 }
 
-function brief(facts: TableFacts, money: MoneyFormat, ids: string[]): DashboardSpec["executiveBrief"] {
+function brief(
+  facts: TableFacts,
+  money: MoneyFormat,
+  ids: string[],
+): DashboardSpec["executiveBrief"] {
   const window = windowLabel(facts);
   const known = {
     statementTypes: ["calculated" as const],
@@ -89,7 +134,13 @@ function brief(facts: TableFacts, money: MoneyFormat, ids: string[]): DashboardS
   };
   const changed =
     facts.change === undefined || facts.previousPeriod === undefined
-      ? { statementTypes: ["calculated" as const], headline: "No prior period in this file", detail: "There is nothing earlier in the file to compare the latest period with.", evidenceIds: ids }
+      ? {
+          statementTypes: ["calculated" as const],
+          headline: "No prior period in this file",
+          detail:
+            "There is nothing earlier in the file to compare the latest period with.",
+          evidenceIds: ids,
+        }
       : {
           statementTypes: ["calculated" as const],
           headline: `${formatSignedMoney(facts.change, money)} vs ${periodLabel(facts.previousPeriod)}`,
@@ -101,50 +152,143 @@ function brief(facts: TableFacts, money: MoneyFormat, ids: string[]): DashboardS
   const largest = facts.shares[0];
   const important =
     over !== undefined
-      ? { headline: `${over.name} is over budget by ${formatMoney(over.variance, money)}`, detail: `${formatMoney(over.amount, money)} spent against ${formatMoney(over.budget, money)} budgeted for ${window}.` }
+      ? {
+          headline: `${over.name} is over budget by ${formatMoney(over.variance, money)}`,
+          detail: `${formatMoney(over.amount, money)} spent against ${formatMoney(over.budget, money)} budgeted for ${window}.`,
+        }
       : mover !== undefined && facts.previousPeriod !== undefined
-        ? { headline: `${mover.category} moved ${formatSignedMoney(mover.change, money)}`, detail: `The largest change between ${periodLabel(facts.previousPeriod)} and ${window}, from ${formatMoney(mover.previous, money)} to ${formatMoney(mover.latest, money)}.` }
+        ? {
+            headline: `${mover.category} moved ${formatSignedMoney(mover.change, money)}`,
+            detail: `The largest change between ${periodLabel(facts.previousPeriod)} and ${window}, from ${formatMoney(mover.previous, money)} to ${formatMoney(mover.latest, money)}.`,
+          }
         : largest !== undefined
-          ? { headline: `${largest.category} is the largest category`, detail: `${formatMoney(largest.total, money)} in ${window}.` }
-          : { headline: `${String(facts.rows.length)} rows were read`, detail: `Every row's amount was summed into the total for ${window}.` };
-  return { known, changed, important: { statementTypes: ["calculated"], ...important, evidenceIds: ids } };
+          ? {
+              headline: `${largest.category} is the largest category`,
+              detail: `${formatMoney(largest.total, money)} in ${window}.`,
+            }
+          : {
+              headline: `${String(facts.rows.length)} rows were read`,
+              detail: `Every row's amount was summed into the total for ${window}.`,
+            };
+  return {
+    known,
+    changed,
+    important: {
+      statementTypes: ["calculated"],
+      ...important,
+      evidenceIds: ids,
+    },
+  };
 }
 
-function architecture(plan: TablePlan, options: CompileOptions, pages: readonly Page[]): DashboardSpec["architecture"] {
+function architecture(
+  plan: TablePlan,
+  options: CompileOptions,
+  pages: readonly Page[],
+): DashboardSpec["architecture"] {
   const planNode = options.planner.usesModel
-    ? { id: "plan", kind: "ai" as const, label: "Planning model", detail: `${options.planner.id} chose column roles and layout from column names and samples.` }
-    : { id: "plan", kind: "process" as const, label: "Deterministic planner", detail: `${options.planner.id} chose column roles and layout from column names and types.` };
+    ? {
+        id: "plan",
+        kind: "ai" as const,
+        label: "Planning model",
+        detail: `${options.planner.id} chose column roles and layout from column names and samples.`,
+      }
+    : {
+        id: "plan",
+        kind: "process" as const,
+        label: "Deterministic planner",
+        detail: `${options.planner.id} chose column roles and layout from column names and types.`,
+      };
   const nodes = [
-    { id: "file", kind: "input" as const, label: options.source.name, detail: `${String(options.source.rowCount)} rows uploaded by the reader.` },
-    { id: "read", kind: "process" as const, label: "Read columns", detail: "Cells kept as text; each column profiled by type, distinct values, and samples." },
+    {
+      id: "file",
+      kind: "input" as const,
+      label: options.source.name,
+      detail: `${String(options.source.rowCount)} rows uploaded by the reader.`,
+    },
+    {
+      id: "read",
+      kind: "process" as const,
+      label: "Read columns",
+      detail:
+        "Cells kept as text; each column profiled by type, distinct values, and samples.",
+    },
     planNode,
-    { id: "compute", kind: "process" as const, label: "Compute figures", detail: `Exact decimal sums, changes, and shares over "${plan.roles.amount}".` },
-    ...pages.map((page) => ({ id: `page-${page.id}`, kind: "page" as const, label: page.title, detail: page.description })),
-    { id: "output", kind: "output" as const, label: "Dashboard", detail: "Validated against the dashboard contract before rendering." },
+    {
+      id: "compute",
+      kind: "process" as const,
+      label: "Compute figures",
+      detail: `Exact decimal sums, changes, and shares over "${plan.roles.amount}".`,
+    },
+    ...pages.map((page) => ({
+      id: `page-${page.id}`,
+      kind: "page" as const,
+      label: page.title,
+      detail: page.description,
+    })),
+    {
+      id: "output",
+      kind: "output" as const,
+      label: "Dashboard",
+      detail: "Validated against the dashboard contract before rendering.",
+    },
   ];
   const edges = [
     { from: "file", to: "read", label: "cells" },
     { from: "read", to: "plan", label: "column profiles" },
     { from: "plan", to: "compute", label: "roles and sections" },
-    ...pages.map((page) => ({ from: "compute", to: `page-${page.id}`, label: "figures" })),
-    ...pages.map((page) => ({ from: `page-${page.id}`, to: "output", label: "components" })),
+    ...pages.map((page) => ({
+      from: "compute",
+      to: `page-${page.id}`,
+      label: "figures",
+    })),
+    ...pages.map((page) => ({
+      from: `page-${page.id}`,
+      to: "output",
+      label: "components",
+    })),
   ];
-  return { title: "How this dashboard was built", summary: "The file is read by trusted code, a planner chooses how to read it, and every figure is computed from the cells with exact arithmetic.", nodes, edges };
+  return {
+    title: "How this dashboard was built",
+    summary:
+      "The file is read by trusted code, a planner chooses how to read it, and every figure is computed from the cells with exact arithmetic.",
+    nodes,
+    edges,
+  };
 }
 
-function notice(plan: TablePlan, facts: TableFacts, options: CompileOptions): string {
+function notice(
+  plan: TablePlan,
+  facts: TableFacts,
+  options: CompileOptions,
+): string {
   const read = [
     `"${plan.roles.amount}" as the amount`,
-    plan.roles.category === undefined ? undefined : `"${plan.roles.category}" as the category`,
-    plan.roles.period === undefined ? undefined : `"${plan.roles.period}" as the period by ${plan.grain}`,
+    plan.roles.category === undefined
+      ? undefined
+      : `"${plan.roles.category}" as the category`,
+    plan.roles.period === undefined
+      ? undefined
+      : `"${plan.roles.period}" as the period by ${plan.grain}`,
   ].filter((part) => part !== undefined);
   return `Built from ${options.source.name} (${String(options.source.rowCount)} rows), reading ${read.join(", ")}. ${String(facts.skipped)} rows were skipped because their amount or period could not be read.`;
 }
 
-export function compileTablePlan(plan: TablePlan, table: Table, options: CompileOptions): DashboardSpec {
+export function compileTablePlan(
+  plan: TablePlan,
+  table: Table,
+  options: CompileOptions,
+): DashboardSpec {
   const facts = computeFacts(plan, table);
   if (facts.rows.length === 0) {
-    throw new PlanRejected([{ code: "empty_after_filters", path: "filters", message: "No rows are left once the filters and period window are applied." }]);
+    throw new PlanRejected([
+      {
+        code: "empty_after_filters",
+        path: "filters",
+        message:
+          "No rows are left once the filters and period window are applied.",
+      },
+    ]);
   }
   const money = moneyFormat(plan, table, facts);
   const items = evidence(plan, table, facts, options);
@@ -155,11 +299,26 @@ export function compileTablePlan(plan: TablePlan, table: Table, options: Compile
   for (const page of plan.pages) {
     const components = page.sections
       .map((section) => SECTION_BUILDERS[section](`${page.id}-${section}`, ctx))
-      .filter((component): component is DashboardComponent => component !== undefined);
-    if (components.length > 0) pages.push({ id: page.id, title: page.title, description: page.description, components });
+      .filter(
+        (component): component is DashboardComponent => component !== undefined,
+      );
+    if (components.length > 0)
+      pages.push({
+        id: page.id,
+        title: page.title,
+        description: page.description,
+        components,
+      });
   }
   if (pages.length === 0) {
-    throw new PlanRejected([{ code: "empty_after_filters", path: "pages", message: "Every section would be empty for this table; the data has too few periods or categories for them." }]);
+    throw new PlanRejected([
+      {
+        code: "empty_after_filters",
+        path: "pages",
+        message:
+          "Every section would be empty for this table; the data has too few periods or categories for them.",
+      },
+    ]);
   }
 
   return parseDashboardSpec({
@@ -169,10 +328,15 @@ export function compileTablePlan(plan: TablePlan, table: Table, options: Compile
     audience: plan.audience,
     generatedAt: options.asOf,
     dataMode: "live",
-    freshness: { status: "fresh", label: `As of ${options.asOf.slice(0, 10)}`, latestObservationAt: options.source.retrievedAt },
+    freshness: {
+      status: "fresh",
+      label: `As of ${options.asOf.slice(0, 10)}`,
+      latestObservationAt: options.source.retrievedAt,
+    },
     nextAction: {
       title: "Open the evidence",
-      detail: "Each figure links to the file it came from and the arithmetic that produced it; check those before acting on a number.",
+      detail:
+        "Each figure links to the file it came from and the arithmetic that produced it; check those before acting on a number.",
       evidenceIds,
     },
     notice: notice(plan, facts, options),

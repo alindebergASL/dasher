@@ -55,8 +55,8 @@ export default async function YourDashboards() {
       <Shell>
         <p className="dashboard-list-empty">
           Nothing saved yet. Build a dashboard on the{" "}
-          <Link href="/">request page</Link> while signed in and it will
-          appear here.
+          <Link href="/">request page</Link> while signed in and it will appear
+          here.
         </p>
       </Shell>
     );
@@ -83,7 +83,11 @@ export default async function YourDashboards() {
               {formatCreatedAt(entry.createdAt)}
             </time>
             <form action={archive} className="dashboard-list-archive">
-              <input name="dashboardId" type="hidden" value={entry.dashboardId} />
+              <input
+                name="dashboardId"
+                type="hidden"
+                value={entry.dashboardId}
+              />
               <input
                 name="revision"
                 type="hidden"

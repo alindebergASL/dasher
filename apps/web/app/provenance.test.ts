@@ -5,9 +5,9 @@ import { provenanceOf } from "./provenance";
 
 describe("provenanceOf", () => {
   it("records a deterministic planner as such", () => {
-    expect(provenanceOf({ id: "fake-table-planner", usesModel: false })).toEqual(
-      { provider: "deterministic", model: "fake-table-planner" },
-    );
+    expect(
+      provenanceOf({ id: "fake-table-planner", usesModel: false }),
+    ).toEqual({ provider: "deterministic", model: "fake-table-planner" });
   });
 
   it("splits a model planner's id into provider and model", () => {

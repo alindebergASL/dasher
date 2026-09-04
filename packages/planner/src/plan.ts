@@ -48,7 +48,10 @@ const ROLE_NEEDS: Readonly<Partial<Record<TableSectionKind, RoleName[]>>> = {
 /** A column that can play the period role: a date, or cells that name periods. */
 export function isPeriodColumn(column: ColumnProfile, table: Table): boolean {
   if (column.type === "date") return true;
-  if (table.unpivoted !== undefined && column.name === table.unpivoted.periodColumn) {
+  if (
+    table.unpivoted !== undefined &&
+    column.name === table.unpivoted.periodColumn
+  ) {
     return true;
   }
   const filled = column.samples.filter((sample) => sample !== "");
@@ -58,9 +61,16 @@ export function isPeriodColumn(column: ColumnProfile, table: Table): boolean {
   );
 }
 
-function checkRoles(plan: TablePlan, table: Table, findings: PlanFinding[]): void {
+function checkRoles(
+  plan: TablePlan,
+  table: Table,
+  findings: PlanFinding[],
+): void {
   const byName = new Map(table.columns.map((column) => [column.name, column]));
-  for (const [role, name] of Object.entries(plan.roles) as [RoleName, string | undefined][]) {
+  for (const [role, name] of Object.entries(plan.roles) as [
+    RoleName,
+    string | undefined,
+  ][]) {
     if (name === undefined) continue;
     const column = byName.get(name);
     if (column === undefined) {
@@ -132,8 +142,10 @@ function checkPages(plan: TablePlan, findings: PlanFinding[]): void {
   }
 }
 
-const CURRENCY_AMOUNT = /[$€£¥₹]\s?\d|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CAD|AUD|CHF)\b/u;
-const PERCENT_AMOUNT = /\d\s?(?:%|percent\b|per cent\b|pct\b)/iu;
+const CURRENCY_AMOUNT =
+  /[$€£¥₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CAD|AUD|CHF)\b/u;
+const PERCENT_AMOUNT =
+  /\b\d[\d,]*(?:\.\d+)?\s?(?:%|percent\b|per cent\b|pct\b)/iu;
 const BARE_DECIMAL = /(?<![\w.])\d+\.\d+(?![\w.])/u;
 const GROUPED_INTEGER = /\b\d{1,3}(?:,\d{3})+\b/u;
 
@@ -142,14 +154,21 @@ const GROUPED_INTEGER = /\b\d{1,3}(?:,\d{3})+\b/u;
  * and years ("2026") carry no amount and are allowed.
  */
 export function findMeasurement(text: string): string | undefined {
-  for (const pattern of [CURRENCY_AMOUNT, PERCENT_AMOUNT, BARE_DECIMAL, GROUPED_INTEGER]) {
+  for (const pattern of [
+    CURRENCY_AMOUNT,
+    PERCENT_AMOUNT,
+    BARE_DECIMAL,
+    GROUPED_INTEGER,
+  ]) {
     const match = pattern.exec(text);
     if (match !== null) return match[0];
   }
   return undefined;
 }
 
-export function planFreeText(plan: TablePlan): { path: string; text: string }[] {
+export function planFreeText(
+  plan: TablePlan,
+): { path: string; text: string }[] {
   return [
     { path: "title", text: plan.title },
     { path: "audience", text: plan.audience },

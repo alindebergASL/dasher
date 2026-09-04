@@ -19,9 +19,10 @@ export const DEFAULT_PLANNING_MODEL = "claude-opus-5";
 /** The slice of the SDK client the provider uses, so a test can hand in a stub. */
 export interface PlanningClient {
   readonly messages: {
-    parse(
-      params: Anthropic.MessageCreateParamsNonStreaming,
-    ): Promise<{ parsed_output: unknown; content: readonly Anthropic.ContentBlock[] }>;
+    parse(params: Anthropic.MessageCreateParamsNonStreaming): Promise<{
+      parsed_output: unknown;
+      content: readonly Anthropic.ContentBlock[];
+    }>;
   };
 }
 
@@ -37,14 +38,22 @@ export interface AnthropicPlanningProviderOptions {
 }
 
 const SECTION_GUIDANCE: Readonly<Record<string, string>> = {
-  summary: "a few sentences of computed claims about the latest period; almost always first",
-  "headline-totals": "the latest total, its change, row and category counts, as metric tiles",
-  "by-category": "categories ranked by total with their share of the period; needs a category role",
-  movers: "categories ranked by change between the last two periods; needs category and period roles",
-  trend: "totals per period as a series, plus the largest categories; needs a period role and at least two periods",
-  "largest-rows": "the ten largest individual rows with their label, category, and period",
-  "budget-variance": "lines over budget as alerts, or a note that all are within budget; needs a budget role",
-  table: "the first fifty rows as they appear in the file, for readers who want the raw lines",
+  summary:
+    "a few sentences of computed claims about the latest period; almost always first",
+  "headline-totals":
+    "the latest total, its change, row and category counts, as metric tiles",
+  "by-category":
+    "categories ranked by total with their share of the period; needs a category role",
+  movers:
+    "categories ranked by change between the last two periods; needs category and period roles",
+  trend:
+    "totals per period as a series, plus the largest categories; needs a period role and at least two periods",
+  "largest-rows":
+    "the ten largest individual rows with their label, category, and period",
+  "budget-variance":
+    "lines over budget as alerts, or a note that all are within budget; needs a budget role",
+  table:
+    "the first fifty rows as they appear in the file, for readers who want the raw lines",
 };
 
 export const SYSTEM_PROMPT = `You are Dasher's table planner.
@@ -125,7 +134,9 @@ export class AnthropicPlanningProvider implements PlanningProvider {
       this.client = options.client;
     } else {
       if (options.apiKey === undefined || options.apiKey.trim() === "") {
-        throw new Error("AnthropicPlanningProvider requires an API key or a client");
+        throw new Error(
+          "AnthropicPlanningProvider requires an API key or a client",
+        );
       }
       this.client = new Anthropic({
         apiKey: options.apiKey,
@@ -142,7 +153,10 @@ export class AnthropicPlanningProvider implements PlanningProvider {
       messages: [{ role: "user", content: requestMessage(request) }],
       output_config: { format: zodOutputFormat(TablePlanSchema) },
     });
-    if (response.parsed_output !== null && response.parsed_output !== undefined) {
+    if (
+      response.parsed_output !== null &&
+      response.parsed_output !== undefined
+    ) {
       return response.parsed_output;
     }
     const text = response.content

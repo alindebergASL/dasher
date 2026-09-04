@@ -73,7 +73,10 @@ describe("RequestWorkspace", () => {
   });
 
   it("shows a refusal as an alert and keeps the dashboard", async () => {
-    buildDashboard.mockResolvedValue({ ok: false, error: "Say what you want." });
+    buildDashboard.mockResolvedValue({
+      ok: false,
+      error: "Say what you want.",
+    });
     render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
     await waitFor(() =>
