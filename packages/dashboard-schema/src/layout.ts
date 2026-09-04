@@ -43,8 +43,7 @@ export const COMPONENT_LAYOUT: Readonly<
 > = {
   summary: { minSpan: 6, maxSpan: 6 },
   "metric-grid": { minSpan: 6, maxSpan: 6 },
-  "station-map": { minSpan: 3, maxSpan: 6 },
-  "station-table": { minSpan: 6, maxSpan: 6 },
+  table: { minSpan: 6, maxSpan: 6 },
   ranking: { minSpan: 2, maxSpan: 6 },
   "trend-list": { minSpan: 3, maxSpan: 6 },
   "alert-list": { minSpan: 2, maxSpan: 6 },

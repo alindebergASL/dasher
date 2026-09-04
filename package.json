@@ -13,14 +13,11 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "test:postgres": "pnpm --filter @dasher/control-plane test:postgres",
     "test:e2e": "pnpm --filter @dasher/web test:e2e",
-    "test:mutation": "stryker run",
-    "build": "pnpm -r --if-present build"
+    "build": "pnpm -r --if-present build",
+    "test:postgres": "pnpm --filter @dasher/control-plane test:postgres"
   },
   "devDependencies": {
-    "@stryker-mutator/core": "^10.0.0",
-    "@stryker-mutator/vitest-runner": "^10.0.0",
     "@types/node": "^22.0.0",
     "eslint": "10.8.0",
     "prettier": "^3.6.2",

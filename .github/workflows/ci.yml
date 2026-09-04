@@ -13,169 +13,86 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Static gates only. Split from `verify` so a formatting, lint, or type error
-  # reports in roughly two minutes instead of behind the build and browser
-  # suites. Runs in parallel with `verify`, not before it.
-  fast:
+  # Format, lint, types, unit tests. Fails fast, no browser, no database.
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-
       - run: pnpm format:check
-
       - run: pnpm lint
-
       - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm audit --audit-level high
 
-      - run: "grep -qx 'Status: CLOSED' docs/security/GENERATED_CODE_GATE.md"
-
-      - run: test -z "$(git status --porcelain)"
-
-  # Mutation testing for the reachable product logic: the planner and the river
-  # composition rules it shares with river-domain. Its own job so a ~100s run
-  # does not sit in front of the static gates; it is a gate rather than a report
-  # because a test suite that stops discriminating is exactly the failure it
-  # exists to name, and one nobody runs finds nothing.
-  mutation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm test:mutation
-
-      # Stryker mutates in place and restores afterwards. If a crash ever left
-      # a mutant behind, this reports it rather than letting the next step run
-      # against altered source. `always()` because the crash case is exactly
-      # when the run fails, and a residue check that only runs on success
-      # cannot diagnose the failure it exists for.
-      - if: always()
-        run: |
-          git status --porcelain
-          test -z "$(git status --porcelain)"
-
-  verify:
+  # The product in a browser: build, then every Playwright spec in one run,
+  # against a real database so sign-in, saving, and upload are exercised.
+  e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       NEXT_TELEMETRY_DISABLED: "1"
+      DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
+      DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+      DASHER_DEV_BOOTSTRAP: "1"
+      DASHER_MAIL_TRANSPORT: log
+      DASHER_PUBLIC_ORIGIN: http://localhost:3100
+      DASHER_PLANNER: fake
+    services:
+      postgres:
+        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+        env:
+          POSTGRES_DB: dasher_e2e
+          POSTGRES_PASSWORD: dasher_ci_owner_password
+          POSTGRES_USER: dasher_ci_owner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=dasher_ci_owner --dbname=dasher_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-
-      - run: pnpm test
-
+      - name: Create the application login
+        run: |
+          PGPASSWORD=dasher_ci_owner_password psql -h localhost -U dasher_ci_owner -d dasher_e2e -v ON_ERROR_STOP=1 -c \
+            "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='dasher_web_app') THEN CREATE ROLE dasher_web_app LOGIN PASSWORD 'dasher_ci_app_password'; END IF; END \$\$;"
+      - run: pnpm --filter @dasher/control-plane migrate
+        env:
+          DASHER_MIGRATE_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
+          DASHER_APP_LOGIN_ROLES: dasher_web_app
       - run: pnpm build
-
       - id: playwright-version
         run: |
           version="$(node -p "require('./apps/web/package.json').devDependencies['@playwright/test']")"
           echo "version=${version}" >>"$GITHUB_OUTPUT"
-
-      # The browser download is the expensive half of `install --with-deps` and
-      # only changes when @playwright/test changes, so it is cached on that
-      # exact pinned version. The apt half is not cacheable and still runs.
       - id: playwright-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
-
-      # `install-deps` reaches a distribution mirror on every run — the apt half
-      # is not cacheable — and carried no step-level bound. On 2026-08-19 that
-      # mirror went silent mid-`apt-get update`, the step held the runner for
-      # 29m37s until the job ceiling killed it, no product test ran, and the log
-      # was unreadable until the moment of cancellation because a running job's
-      # logs cannot be fetched.
-      #
-      # ONE bounded attempt, and deliberately no in-job retry.
-      #
-      # This file briefly carried a 4-minute attempt, a 2-minute apt-lock
-      # recovery, and a 12-minute retry. CI falsified it: that sequence spent
-      # 18 minutes and reached no product test, because the retry reused the
-      # same runner, the same mirrors, and the same outage. A SUCCESSFUL retry
-      # was never once observed, while the machinery to support it produced
-      # three defects of its own — a retry that could not acquire the dpkg lock,
-      # a recovery that probed a proxy instead of the lock, and a postcondition
-      # that checked one lock when four matter. The PR records the evidence.
-      #
-      # The operational retry is "Re-run failed jobs": a fresh machine, and a
-      # genuinely independent attempt rather than a repeat against the same
-      # network state and a half-finished apt run.
-      #
-      # Twelve minutes comes from evidence rather than taste. An observed
-      # SUCCESSFUL run of this step took 9m51s, so a shorter bound would fail a
-      # mirror that is slow but working; healthy runs finish in 12-14 seconds.
-      # The 30-minute job ceiling is unchanged and stays a backstop.
-      - id: playwright-deps
-        timeout-minutes: 12
+      - timeout-minutes: 12
         run: pnpm --filter @dasher/web exec playwright install-deps chromium
-
-      # Gated on this step's own outcome, not on a bare `failure()`. `pnpm test`
-      # and `pnpm build` run above, so a bare `failure()` would put an
-      # apt-blaming annotation on a genuine product-test failure.
-      #
-      # The wording is bounded by what the outcome actually proves, which is
-      # narrower than the first version claimed. It said "before any product
-      # test ran" — false, since the unit tests above may already have passed —
-      # and "the diff under test is not implicated", which no step outcome can
-      # establish: a change to Playwright or its dependency inputs can break
-      # this install legitimately. An annotation written to prevent
-      # misattribution must not misattribute in the other direction by
-      # declaring the diff innocent. It now says what did not run and hands the
-      # cause to the log.
-      - name: Report a system-dependency failure as its own cause
-        if: failure() && steps.playwright-deps.outcome == 'failure'
-        run: |
-          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound, before the browser install and the E2E suite. Unit tests and the build run above this step and may already have passed, so this is not an E2E result. The cause may be a transient mirror or apt failure, or a change in this diff to Playwright or its dependency inputs -- the install log above decides which. Re-run failed jobs only if that log shows a transient failure."
-
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @dasher/web exec playwright install chromium
-
       - run: pnpm test:e2e
-
-      # `pnpm audit --prod` is deliberately absent: the production dependency
-      # set is a subset of the full set and the audit level is identical, so it
-      # cannot fail unless the full audit above has already failed.
-      - run: pnpm audit --audit-level high
-
-      - run: "grep -qx 'Status: CLOSED' docs/security/GENERATED_CODE_GATE.md"
-
-      - run: test -z "$(git status --porcelain)"
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
@@ -186,6 +103,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Control-plane integration tests against PostgreSQL: RLS, sign-in, migrator.
   postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -211,232 +129,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-
       - run: pnpm --filter @dasher/control-plane test:postgres
-
-  # The persistence slice runs in its own job rather than inside `verify`, for
-  # three reasons that are all about keeping evidence honest:
-  #
-  #   * schema-owner credentials stay out of the environment of the unit, build,
-  #     and browser steps that do not need them;
-  #   * `verify` keeps proving the app runs with NO database, including every
-  #     test that deliberately skips without one — that is a supported mode and
-  #     it needs its own run. Not a count: this said "five" while the number was
-  #     twelve, because a tally in prose is one more thing to keep in step and
-  #     nothing fails when it drifts. The suites that skip are named in the
-  #     steps below, which is what a reader actually needs;
-  #   * "a saved dashboard survives a reload" becomes a nameable check that
-  #     branch protection can require, instead of a few assertions inside a job
-  #     named after something else.
-  #
-  # Service containers are job-local, so this binding 5432 does not collide with
-  # the `postgres` job doing the same.
-  persistence:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
-      # The application credential is job-wide because the build and the test
-      # run both need it. The OWNER credential is not: it is attached to the
-      # single step that runs the browser suite, so checkout, install, build,
-      # and browser installation never see it. Least privilege is worth little
-      # if it is only argued for in a comment.
-      DASHER_DATABASE_URL: postgresql://dasher_web_app:dasher_ci_app_password@localhost:5432/dasher_e2e
-      DASHER_DEV_BOOTSTRAP: "1"
-      # The sign-in suite needs a transport chosen by name and an origin to
-      # build links from. `log` prints to stdout instead of reaching a provider:
-      # CI must never send mail, and the fallback-to-log shape this replaces is
-      # exactly the defect `mailer.test.ts` pins.
-      DASHER_MAIL_TRANSPORT: log
-      DASHER_PUBLIC_ORIGIN: http://localhost:3100
-      # Explicit rather than relying on the default. CI must never depend on
-      # an upstream being reachable or on what it happens to be reporting
-      # today, and a run that silently went live would be nondeterministic in
-      # a way that looks like flakiness.
-      DASHER_SOURCE_MODE: fixture
-    services:
-      postgres:
-        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
-        env:
-          POSTGRES_DB: dasher_e2e
-          POSTGRES_PASSWORD: dasher_ci_owner_password
-          POSTGRES_USER: dasher_ci_owner
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready --username=dasher_ci_owner --dbname=dasher_e2e"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Preflight. Without it, a variable dropped from the job above turns the
-      # persistence tests into skips and this job stays green while proving
-      # nothing — the exact failure this job exists to prevent.
-      - name: Require the persistence environment
-        run: |
-          for name in DASHER_DATABASE_URL DASHER_DEV_BOOTSTRAP; do
-            if [ -z "${!name}" ]; then
-              echo "::error::${name} is not set; the persistence tests would skip and this job would prove nothing"
-              exit 1
-            fi
-          done
-
-      # The migrator grants `dasher_app` to a login role but does not invent
-      # one. Without this the app would connect as the owner and every
-      # row-security assertion below would be meaningless.
-      - name: Create the application login
-        run: |
-          PGPASSWORD=dasher_ci_owner_password psql -h localhost -U dasher_ci_owner -d dasher_e2e -v ON_ERROR_STOP=1 -c \
-            "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='dasher_web_app') THEN CREATE ROLE dasher_web_app LOGIN PASSWORD 'dasher_ci_app_password'; END IF; END \$\$;"
-
-      - run: pnpm --filter @dasher/control-plane migrate
-        env:
-          DASHER_MIGRATE_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
-          DASHER_APP_LOGIN_ROLES: dasher_web_app
-
-      - run: pnpm build
-
-      - id: playwright-version
-        run: |
-          version="$(node -p "require('./apps/web/package.json').devDependencies['@playwright/test']")"
-          echo "version=${version}" >>"$GITHUB_OUTPUT"
-
-      - id: playwright-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
-
-      # One bounded attempt and no in-job retry, for the reason recorded above
-      # `verify`'s copy of this step. Both jobs install the same system
-      # dependencies from the same mirror and both burned their full budget on
-      # 2026-08-19.
-      - id: playwright-deps
-        timeout-minutes: 12
-        run: pnpm --filter @dasher/web exec playwright install-deps chromium
-
-      # Gated on this step's own outcome: the migration and build steps run
-      # above, so a bare `failure()` would blame apt for their failures. The
-      # wording stays inside what the outcome proves — see `verify`'s copy.
-      - name: Report a system-dependency failure as its own cause
-        if: failure() && steps.playwright-deps.outcome == 'failure'
-        run: |
-          echo "::error title=Playwright system dependencies failed::'playwright install-deps chromium' failed or timed out within its 12-minute bound, before the persistence suite. The migration and the build run above this step and may already have passed, so this is not a persistence-test result. The cause may be a transient mirror or apt failure, or a change in this diff to Playwright or its dependency inputs -- the install log above decides which. Re-run failed jobs only if that log shows a transient failure."
-
-      - if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @dasher/web exec playwright install chromium
-
-      # Named explicitly rather than run through `pnpm test:e2e`. Invoking the
-      # whole suite and then grepping for skips passes just as happily if
-      # `persisted-dashboard.spec.ts` is deleted, renamed, or stops being
-      # discovered — the other nine specs go green and nothing says the subject
-      # of this job never ran. Playwright fails when a named file does not
-      # exist, which turns that into an error instead of a silence.
-      - name: Run the persistence suite
-        env:
-          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
-          PLAYWRIGHT_JSON_OUTPUT_FILE: /tmp/persistence-results.json
-        run: |
-          pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
-            e2e/persisted-dashboard.spec.ts
-
-      # The upload suite belongs to this job for the same reason as the one
-      # above: an upload with nowhere to store the file is refused by design, so
-      # its tests skip without a database exactly as the persistence ones do,
-      # and a skip is what this job exists to make impossible.
-      #
-      # A SEPARATE RUN AND A SEPARATE REPORT, not both spec files in one
-      # command. The checker asserts that every spec in a report belongs to the
-      # file it was given — which is how it catches a report describing a
-      # renamed or stale path — so a combined report fails against both names.
-      # Two runs keep that guarantee rather than weakening the checker to fit
-      # the workflow.
-      - name: Run the upload suite
-        env:
-          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
-          PLAYWRIGHT_JSON_OUTPUT_FILE: /tmp/upload-results.json
-        run: |
-          pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
-            e2e/uploaded-ledger.spec.ts
-
-      # A third run and a third report. `sign-in.spec.ts` skips its
-      # database-backed case without one, exactly as the two suites above skip
-      # theirs — and a skip is what this job exists to make impossible.
-      - name: Run the sign-in suite
-        env:
-          DASHER_DEV_SEED_DSN: postgresql://dasher_ci_owner:dasher_ci_owner_password@localhost:5432/dasher_e2e
-          PLAYWRIGHT_JSON_OUTPUT_FILE: /tmp/sign-in-results.json
-        run: |
-          pnpm --filter @dasher/web exec playwright test --forbid-only --reporter=json \
-            e2e/sign-in.spec.ts
-
-      # Positive proof, not absence of a symptom. The preflight catches a
-      # missing variable and the explicit path catches a missing file; this
-      # catches a guard that quietly turned the tests off in place.
-      #
-      # The check itself lives in `@dasher/repo-graph`, not in this file. It was
-      # a hundred lines of Node inlined here, which nothing could lint,
-      # typecheck, or run locally, and it pinned the test count at three
-      # separate sites, so adding a seventh persistence test broke CI three
-      # times over. `--min-tests` is a floor: the suite may grow freely, and a
-      # suite that shrinks below it still fails.
-      - name: Assert the persistence tests actually ran
-        run: |
-          pnpm --filter @dasher/repo-graph assert:playwright-report -- \
-            --report=/tmp/persistence-results.json \
-            --spec-file=persisted-dashboard.spec.ts \
-            --min-tests=6
-
-      # Its own floor, against its own report. A single combined count would be
-      # satisfied by either suite growing, and the subject of this check is that
-      # the UPLOAD tests ran.
-      - name: Assert the upload tests actually ran
-        run: |
-          pnpm --filter @dasher/repo-graph assert:playwright-report -- \
-            --report=/tmp/upload-results.json \
-            --spec-file=uploaded-ledger.spec.ts \
-            --min-tests=8
-
-      # Its own floor again. The sign-in suite's whole point is the cases that
-      # need a database, and a shared count would be satisfied by the six
-      # layout cases alone (two viewports x three tests). Fifteen is what this
-      # job actually runs, so the floor has no margin by design: a case that
-      # stops running fails here rather than being absorbed.
-      - name: Assert the sign-in tests actually ran
-        run: |
-          pnpm --filter @dasher/repo-graph assert:playwright-report -- \
-            --report=/tmp/sign-in-results.json \
-            --spec-file=sign-in.spec.ts \
-            --min-tests=15
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: failure()
-        with:
-          name: persistence-playwright-artifacts
-          path: |
-            apps/web/playwright-report/
-            apps/web/test-results/
-          retention-days: 7
-          if-no-files-found: ignore

@@ -153,9 +153,8 @@ function assertionItems(
       return ["claims", component.claims];
     case "metric-grid":
       return ["metrics", component.metrics];
-    case "station-map":
-    case "station-table":
-      return ["stations", component.stations];
+    case "table":
+      return ["rows", component.rows];
     case "ranking":
       return ["items", component.items];
     case "trend-list":
