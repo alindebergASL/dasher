@@ -382,6 +382,22 @@ describe("a ledger stamped on the first of every month", () => {
     expect(table.columns[0]?.dates).toBe("month-first");
   });
 
+  it("takes the locale from a column of amounts, not from one stray cell", () => {
+    // One comma-marked value in a column of prose says nothing about the file.
+    const table = readTable(
+      [
+        "Note,Date,Amount",
+        '"12,50",01/02/2026,10',
+        "n/a,01/03/2026,20",
+        "roughly,01/04/2026,30",
+        "unknown,01/05/2026,40",
+        "",
+      ].join("\n"),
+    );
+    expect(table.columns[0]?.type).toBe("text");
+    expect(table.columns[1]?.dates).toBe("month-first");
+  });
+
   it("does not read a comma-delimited file as day-first without evidence", () => {
     const table = readTable("Date,Amount\n01/02/2026,10\n01/03/2026,20\n");
     expect(table.columns[0]?.dates).toBe("month-first");

@@ -6,6 +6,7 @@ import type { PlanFinding } from "./plan";
 import {
   chooseRoles,
   defaultPlan,
+  matchValues,
   readFilters,
   readGrain,
   readLastPeriods,
@@ -100,9 +101,15 @@ export function applyRefinement(
     }
   }
 
+  const category = table.columns.find(
+    (column) => column.name === plan.roles.category,
+  );
+
   const drop =
     /\b(?:drop|remove|hide|delete|without the|no more)\b(.*)$/iu.exec(text);
-  if (drop !== null) {
+  // RULE: a drop phrase naming a category value filters that value out; only a
+  // phrase that names no value removes the section it names.
+  if (drop !== null && matchValues(drop[1] as string, category).length === 0) {
     const kinds = namedSections(drop[1] as string);
     const pages = dropSections(plan.pages, kinds);
     if (kinds.length > 0 && pages.length > 0) {
@@ -121,9 +128,6 @@ export function applyRefinement(
     }
   }
 
-  const category = table.columns.find(
-    (column) => column.name === plan.roles.category,
-  );
   const filters = readFilters(text, category);
   if (filters.length > 0) {
     const kept = plan.filters.filter(
@@ -212,7 +216,7 @@ export function applyRevision(
         }
         break;
       }
-      case "empty_after_filters":
+      case "empty_sections":
         plan.filters = [];
         delete plan.lastPeriods;
         break;

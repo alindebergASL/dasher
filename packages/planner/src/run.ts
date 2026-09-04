@@ -5,6 +5,7 @@
 import type { DashboardSpec } from "@dasher/dashboard-schema";
 import type { Table } from "./workbook";
 import { compileTablePlan, type CompileSource } from "./compile";
+import { planGrain } from "./facts";
 import { findPlanProblems, PlanRejected, type PlanFinding } from "./plan";
 import type { PlanningProvider, PlanningRefinement } from "./provider";
 import { TablePlanSchema, type TablePlan } from "./table-plan";
@@ -45,27 +46,44 @@ export async function runTablePlanner(
   const attempts: PlannerAttempt[] = [];
   let previousPlan: TablePlan | undefined;
   let previousFindings: readonly PlanFinding[] = [];
+  let providerError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const raw = await options.provider.plan({
-      requestText: options.requestText,
-      table: {
-        columns: options.table.columns,
-        rowCount: options.table.rowCount,
-        ...(options.table.unpivoted === undefined ? {} : { unpivoted: true }),
-      },
-      sourceName: options.source.name,
-      ...(options.refine === undefined ? {} : { refinement: options.refine }),
-      ...(previousPlan === undefined
-        ? {}
-        : {
-            revision: {
-              attempt: attempt - 1,
-              previousPlan,
-              findings: previousFindings,
-            },
-          }),
-    });
+    let raw: unknown;
+    try {
+      raw = await options.provider.plan({
+        requestText: options.requestText,
+        table: {
+          columns: options.table.columns,
+          rowCount: options.table.rowCount,
+          ...(options.table.unpivoted === undefined ? {} : { unpivoted: true }),
+        },
+        sourceName: options.source.name,
+        ...(options.refine === undefined ? {} : { refinement: options.refine }),
+        ...(previousPlan === undefined
+          ? {}
+          : {
+              revision: {
+                attempt: attempt - 1,
+                previousPlan,
+                findings: previousFindings,
+              },
+            }),
+      });
+    } catch (error) {
+      // RULE: a provider that fails costs one attempt; it never aborts the run.
+      providerError = error;
+      previousFindings = [
+        {
+          code: "plan_malformed",
+          path: "",
+          message: `The planner did not answer: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ];
+      attempts.push({ attempt, findings: previousFindings, accepted: false });
+      previousPlan = undefined;
+      continue;
+    }
 
     const parsed = TablePlanSchema.safeParse(raw);
     if (!parsed.success) {
@@ -100,8 +118,7 @@ export async function runTablePlanner(
       attempts.push({ attempt, findings: [], accepted: true });
       return { dashboard, plan, attempts };
     } catch (error) {
-      previousPlan = plan;
-      previousFindings =
+      const findings: readonly PlanFinding[] =
         error instanceof PlanRejected
           ? error.findings
           : [
@@ -114,11 +131,19 @@ export async function runTablePlanner(
                     : "The compiled dashboard failed contract validation.",
               },
             ];
-      attempts.push({ attempt, findings: previousFindings, accepted: false });
+      attempts.push({ attempt, findings, accepted: false });
+      // RULE: filters that leave no rows are the answer, not a finding to
+      // repair. Revising them away would show the reader exactly what they
+      // asked to remove, and report it as a success.
+      if (findings.some((finding) => finding.code === "empty_after_filters")) {
+        throw new PlanRejected(findings);
+      }
+      previousPlan = plan;
+      previousFindings = findings;
     }
   }
 
-  throw new PlanRejected(previousFindings);
+  throw new PlanRejected(previousFindings, { cause: providerError });
 }
 
 /** One reader-facing sentence on how the plan reads the table. */
@@ -133,7 +158,7 @@ export function describePlan(plan: TablePlan, table: Table): string {
       table.unpivoted !== undefined &&
       plan.roles.period === table.unpivoted.periodColumn;
     parts.push(
-      `${reshaped ? "the period columns" : plan.roles.period} by ${plan.grain}`,
+      `${reshaped ? "the period columns" : plan.roles.period} by ${planGrain(plan, table)}`,
     );
   }
   return `Read ${parts.join(", ")}.`;

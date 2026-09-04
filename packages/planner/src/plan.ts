@@ -20,6 +20,7 @@ export type PlanFindingCode =
   | "duplicate_page_id"
   | "free_text_measurement"
   | "empty_after_filters"
+  | "empty_sections"
   | "plan_malformed"
   | "spec_rejected";
 
@@ -31,11 +32,21 @@ export interface PlanFinding {
 }
 
 export class PlanRejected extends Error {
-  constructor(readonly findings: readonly PlanFinding[]) {
+  constructor(
+    readonly findings: readonly PlanFinding[],
+    options?: ErrorOptions,
+  ) {
     super(
       findings.length === 0
         ? "The plan was rejected."
-        : `The plan was rejected: ${findings.map((finding) => `${finding.path}: ${finding.message}`).join("; ")}`,
+        : `The plan was rejected: ${findings
+            .map((finding) =>
+              finding.path === ""
+                ? finding.message
+                : `${finding.path}: ${finding.message}`,
+            )
+            .join("; ")}`,
+      options,
     );
     this.name = "PlanRejected";
   }

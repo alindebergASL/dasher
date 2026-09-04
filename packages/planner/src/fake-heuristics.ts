@@ -153,9 +153,66 @@ export function readGrain(text: string): Grain | undefined {
   return undefined;
 }
 
+const FILTER_PHRASE =
+  /\b(exclude|excluding|without|only|just|drop|remove|hide|delete)\s+(?:the\s+)?([^,.;]+?)(?=\s+(?:and|but|for|over|by|in|from|with)\b|[,.;]|$)/giu;
+const INCLUDE_WORDS = new Set(["only", "just"]);
+const TIME_WORDS =
+  /\b(?:second|minute|hour|day|week|month|quarter|year|period|ytd)s?\b/iu;
+
+function normalise(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/gu, " ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/** RULE: a time window is a period, never a category filter. */
+function isTimeWindow(phrase: string): boolean {
+  return TIME_WORDS.test(phrase) || parsePeriodHeader(phrase) !== null;
+}
+
 /**
- * "exclude X", "without X", "only X", "just X" where X is a category value
- * the profile shows. The phrase stops at punctuation or a joining word.
+ * The values a filter may name.
+ *
+ * RULE: only values the profile actually lists. A profile shows a handful of
+ * samples, so a value beyond them cannot be filtered; the phrase then matches
+ * nothing and no filter is emitted, rather than a guess being made.
+ */
+function knownValues(column: ColumnProfile): readonly string[] {
+  const listed = (column as ColumnProfile & { readonly values?: readonly string[] })
+    .values;
+  return (listed ?? column.samples).filter((value) => value.trim() !== "");
+}
+
+/**
+ * The category values a phrase names.
+ *
+ * RULE: a phrase names a value only by saying the whole of it — as the whole
+ * phrase, or as whole words within it. Never a substring in either direction,
+ * so "travel" cannot pick "A", and "marketing" cannot pick "IN".
+ */
+export function matchValues(
+  phrase: string,
+  column: ColumnProfile | undefined,
+): string[] {
+  if (column === undefined) return [];
+  const text = normalise(phrase);
+  if (text === "" || isTimeWindow(text)) return [];
+  return knownValues(column).filter((value) => {
+    const target = normalise(value);
+    if (target === "") return false;
+    if (target === text) return true;
+    return new RegExp(
+      `(?<![\\p{L}\\p{N}])${escapeRegExp(target)}(?![\\p{L}\\p{N}])`,
+      "u",
+    ).test(text);
+  });
+}
+
+/**
+ * "exclude X", "without X", "only X", "just X", "drop X" where X names category
+ * values the profile lists. The phrase stops at punctuation or a joining word.
  */
 export function readFilters(
   text: string,
@@ -163,19 +220,11 @@ export function readFilters(
 ): Filter[] {
   if (category === undefined) return [];
   const filters: Filter[] = [];
-  const pattern =
-    /\b(exclude|excluding|without|only|just)\s+(?:the\s+)?([^,.;]+?)(?=\s+(?:and|but|for|over|by|in|from|with)\b|[,.;]|$)/giu;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of text.matchAll(FILTER_PHRASE)) {
     const keyword = (match[1] as string).toLowerCase();
-    const phrase = (match[2] as string).trim().toLowerCase();
-    const values = category.samples.filter(
-      (sample) =>
-        sample !== "" &&
-        (phrase.includes(sample.toLowerCase()) ||
-          sample.toLowerCase().includes(phrase)),
-    );
+    const values = matchValues(match[2] as string, category);
     if (values.length === 0) continue;
-    const op = keyword === "only" || keyword === "just" ? "include" : "exclude";
+    const op = INCLUDE_WORDS.has(keyword) ? "include" : "exclude";
     const existing = filters.find((filter) => filter.op === op);
     if (existing === undefined) {
       filters.push({ column: category.name, op, values });

@@ -98,6 +98,22 @@ export function profileColumn(
   return profile;
 }
 
+/** A column that is amounts, and whose amounts put the comma where the point goes. */
+function readsAsCommaAmounts(
+  cells: readonly string[],
+  threshold: number,
+): boolean {
+  if (decimalConvention(cells) !== "comma") return false;
+  let nonEmpty = 0;
+  let amounts = 0;
+  for (const cell of cells) {
+    if (cell.length === 0) continue;
+    nonEmpty += 1;
+    if (parseAmount(cell, { decimal: "comma" }) !== null) amounts += 1;
+  }
+  return nonEmpty > 0 && amounts / nonEmpty >= threshold;
+}
+
 function decideType(
   nonEmpty: number,
   amounts: number,

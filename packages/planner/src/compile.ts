@@ -10,7 +10,7 @@ import {
   type Evidence,
   type Page,
 } from "@dasher/dashboard-schema";
-import { periodLabel, type Table } from "./workbook";
+import { periodLabel, sign, type Table } from "./workbook";
 import {
   formatMoney,
   formatSignedMoney,
@@ -21,6 +21,7 @@ import { computeFacts, type TableFacts } from "./facts";
 import { PlanRejected } from "./plan";
 import {
   EVIDENCE,
+  RANKING_LIMIT,
   SECTION_BUILDERS,
   windowLabel,
   type SectionContext,
@@ -41,6 +42,11 @@ export interface CompileOptions {
   readonly source: CompileSource;
 }
 
+/** RULE: a count and the words around it agree, so "1 row" never reads "1 rows". */
+function plural(count: number, one: string, many: string): string {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
+
 function moneyFormat(
   plan: TablePlan,
   table: Table,
@@ -55,6 +61,25 @@ function moneyFormat(
   };
 }
 
+/**
+ * How the shares on this page were actually produced. The allocation only sums
+ * to one hundred when every category total is positive.
+ */
+function sharesSentence(facts: TableFacts): string | undefined {
+  if (facts.shares.length === 0) return undefined;
+  const how = facts.sharesSumToHundred
+    ? "and are allocated in tenths of a percent so they sum to exactly one hundred"
+    : sign(facts.latestTotal) === 0
+      ? `and every share is reported as zero because the total for ${windowLabel(facts)} is zero`
+      : "and are each rounded to a tenth of a percent on their own, because a total is negative, so they need not sum to one hundred";
+  const omitted = facts.shares.length - RANKING_LIMIT;
+  const cut =
+    omitted > 0
+      ? ` The ranking lists the largest ${String(RANKING_LIMIT)} categories; ${plural(omitted, "more is", "more are")} not shown.`
+      : "";
+  return `Shares divide each category's total by the period total ${how}. Movers are each category's latest total minus its previous total, ordered by size of change.${cut}`;
+}
+
 function evidence(
   plan: TablePlan,
   table: Table,
@@ -63,7 +88,7 @@ function evidence(
 ): Evidence[] {
   const { source } = options;
   const detail = [
-    `${String(source.rowCount)} rows and ${String(table.columns.length)} columns`,
+    `${plural(source.rowCount, "row", "rows")} and ${plural(table.columns.length, "column", "columns")}`,
     source.byteLength === undefined
       ? undefined
       : `${String(source.byteLength)} bytes`,
@@ -73,17 +98,18 @@ function evidence(
       : `one column per period (${table.unpivoted.periodColumns.join(", ")}) reshaped into one row per line and period`,
   ].filter((part) => part !== undefined);
   const arithmetic = [
-    `Amounts were read from "${plan.roles.amount}" as exact decimals; ${String(facts.skipped)} rows whose amount or period could not be read were skipped and ${String(facts.filteredOut)} rows were left out by the plan's filters.`,
+    `Amounts were read from "${plan.roles.amount}" as exact decimals; ${plural(facts.skipped, "row whose amount or period could not be read was", "rows whose amount or period could not be read were")} skipped and ${plural(facts.filteredOut, "row was", "rows were")} left out by the plan's filters.`,
     plan.roles.period === undefined
       ? "There is no period column, so every figure covers the whole file."
-      : `Rows were grouped by ${plan.grain} from "${plan.roles.period}"${plan.lastPeriods === undefined ? "" : `, keeping the last ${String(plan.lastPeriods)} periods`}.`,
-    "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total.",
-    plan.roles.category === undefined
+      : `Rows were grouped by ${facts.grain} from "${plan.roles.period}".`,
+    plan.lastPeriods === undefined
       ? undefined
-      : `Shares divide each category's total by the period total and are allocated in tenths of a percent so they sum to exactly one hundred. Movers are each category's latest total minus its previous total, ordered by size of change.`,
+      : `${plural(facts.outsideWindow, "row fell", "rows fell")} outside the last ${String(plan.lastPeriods)} periods and ${facts.outsideWindow === 1 ? "was" : "were"} not counted.`,
+    "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total.",
+    plan.roles.category === undefined ? undefined : sharesSentence(facts),
     plan.roles.budget === undefined
       ? undefined
-      : `Budget variance sums "${plan.roles.budget}" per line for the latest period and subtracts it from the amount; a positive variance is over budget.`,
+      : `Budget variance sums every row a line has in the latest period and subtracts the "${plan.roles.budget}" cells that line states; a positive variance is over budget.`,
   ].filter((part) => part !== undefined);
   const items: Evidence[] = [
     {
@@ -167,7 +193,7 @@ function brief(
               detail: `${formatMoney(largest.total, money)} in ${window}.`,
             }
           : {
-              headline: `${String(facts.rows.length)} rows were read`,
+              headline: `${plural(facts.rows.length, "row was", "rows were")} read`,
               detail: `Every row's amount was summed into the total for ${window}.`,
             };
   return {
@@ -269,9 +295,28 @@ function notice(
       : `"${plan.roles.category}" as the category`,
     plan.roles.period === undefined
       ? undefined
-      : `"${plan.roles.period}" as the period by ${plan.grain}`,
+      : `"${plan.roles.period}" as the period by ${facts.grain}`,
   ].filter((part) => part !== undefined);
-  return `Built from ${options.source.name} (${String(options.source.rowCount)} rows), reading ${read.join(", ")}. ${String(facts.skipped)} rows were skipped because their amount or period could not be read.`;
+  return `Built from ${options.source.name} (${plural(options.source.rowCount, "row", "rows")}), reading ${read.join(", ")}. ${plural(facts.skipped, "row was", "rows were")} skipped because ${facts.skipped === 1 ? "its" : "their"} amount or period could not be read.`;
+}
+
+/** What emptied the table, named so the reader can undo it. */
+function emptyReason(plan: TablePlan, facts: TableFacts): string {
+  const causes = plan.filters.map(
+    (filter) =>
+      `${filter.op === "include" ? "keeping only" : "excluding"} ${filter.values
+        .map((value) => `"${value}"`)
+        .join(", ")} in "${filter.column}"`,
+  );
+  if (plan.lastPeriods !== undefined && facts.outsideWindow > 0) {
+    causes.push(`keeping only the last ${String(plan.lastPeriods)} periods`);
+  }
+  if (causes.length > 0) {
+    return `No rows are left after ${causes.join(" and ")}. Ask for a view that keeps some rows.`;
+  }
+  return facts.skipped === 0
+    ? "The table has no rows to read."
+    : `No rows could be read: ${plural(facts.skipped, "row was", "rows were")} skipped because their amount or period could not be read.`;
 }
 
 export function compileTablePlan(
@@ -285,8 +330,7 @@ export function compileTablePlan(
       {
         code: "empty_after_filters",
         path: "filters",
-        message:
-          "No rows are left once the filters and period window are applied.",
+        message: emptyReason(plan, facts),
       },
     ]);
   }
@@ -313,7 +357,7 @@ export function compileTablePlan(
   if (pages.length === 0) {
     throw new PlanRejected([
       {
-        code: "empty_after_filters",
+        code: "empty_sections",
         path: "pages",
         message:
           "Every section would be empty for this table; the data has too few periods or categories for them.",
