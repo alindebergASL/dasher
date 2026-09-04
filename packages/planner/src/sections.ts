@@ -14,6 +14,8 @@ import {
 import { largestCategories, type FactRow, type TableFacts } from "./facts";
 import type { TablePlan, TableSectionKind } from "./table-plan";
 
+type Alert = Extract<DashboardComponent, { kind: "alert-list" }>["alerts"][number];
+
 export interface SectionContext {
   readonly plan: TablePlan;
   readonly table: Table;
@@ -200,9 +202,9 @@ function budgetVariance(id: string, ctx: SectionContext): DashboardComponent | u
   const { facts, money, evidenceIds } = ctx;
   if (facts.budget.length === 0) return undefined;
   const over = facts.budget.filter((line) => line.over);
-  const alerts = over.slice(0, 200).map((line, index) => ({
+  const alerts: Alert[] = over.slice(0, 200).map((line, index) => ({
     id: `${id}-${String(index + 1)}`,
-    severity: (line.variancePercent !== undefined && compare(line.variancePercent, "10") > 0 ? "warning" : "attention") as "warning" | "attention",
+    severity: line.variancePercent !== undefined && compare(line.variancePercent, "10") > 0 ? "warning" : "attention",
     title: `${line.name} over budget by ${formatMoney(line.variance, money)}`,
     detail: `${formatMoney(line.amount, money)} against a budget of ${formatMoney(line.budget, money)} for ${windowLabel(facts)}${line.variancePercent === undefined ? "" : ` (${formatSignedPercent(line.variancePercent)})`}.`,
     evidenceIds: [...evidenceIds],
@@ -210,7 +212,7 @@ function budgetVariance(id: string, ctx: SectionContext): DashboardComponent | u
   if (alerts.length === 0) {
     alerts.push({
       id: `${id}-within`,
-      severity: "info" as never,
+      severity: "info",
       title: "All lines within budget",
       detail: `Every budgeted line spent at or under its budget for ${windowLabel(facts)}.`,
       evidenceIds: [...evidenceIds],
