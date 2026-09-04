@@ -203,16 +203,12 @@ describe("the decimal mark a column uses", () => {
   it("reads every cell of a column under one convention", () => {
     // `1.250` and `1,250` are the same shape; a column may not read one as
     // thousands and the other as a fraction.
-    expect(parseAmountsInColumn(["1.234,56", "1.250", "980,50"])).toStrictEqual([
-      "1234.56",
-      "1250",
-      "980.5",
-    ]);
-    expect(parseAmountsInColumn(["1,234.56", "1,250", "980.50"])).toStrictEqual([
-      "1234.56",
-      "1250",
-      "980.5",
-    ]);
+    expect(parseAmountsInColumn(["1.234,56", "1.250", "980,50"])).toStrictEqual(
+      ["1234.56", "1250", "980.5"],
+    );
+    expect(parseAmountsInColumn(["1,234.56", "1,250", "980.50"])).toStrictEqual(
+      ["1234.56", "1250", "980.5"],
+    );
   });
 
   it("keeps the US reading when no cell shows the convention", () => {

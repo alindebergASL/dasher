@@ -10,12 +10,7 @@ import {
   parseAmount,
   parseDate,
 } from "./parse-values";
-import type {
-  ColumnProfile,
-  ColumnType,
-  DateConvention,
-  Table,
-} from "./table";
+import type { ColumnProfile, ColumnType, DateConvention, Table } from "./table";
 
 export interface ProfileOptions {
   /** Share of non-empty cells that must parse for a column to take a type. */
@@ -37,14 +32,18 @@ export function profileTable(
   options: ProfileOptions = {},
 ): Table {
   const rows = csv.rows.map((row) => row.map((cell) => cell.trim()));
-  const cells = csv.headers.map((_, index) => rows.map((row) => row[index] ?? ""));
+  const cells = csv.headers.map((_, index) =>
+    rows.map((row) => row[index] ?? ""),
+  );
   /*
    * A comma decimal mark anywhere in the file says which locale wrote it, and
    * that locale writes the day first. A ledger stamped on the first of every
    * month holds no date that says so on its own, so this is the only evidence
    * there is that its months are not all January.
    */
-  const european = cells.some((column) => decimalConvention(column) === "comma");
+  const european = cells.some(
+    (column) => decimalConvention(column) === "comma",
+  );
   const dates = options.dates ?? (european ? "day-first" : "month-first");
   const columns = csv.headers.map((name, index) =>
     profileColumn(name, index, cells[index] ?? [], { ...options, dates }),

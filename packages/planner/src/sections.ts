@@ -7,6 +7,7 @@ import {
   compare,
   periodLabel,
   periodStartIso,
+  round,
   sign,
   type Exact,
   type Table,
@@ -34,6 +35,9 @@ export interface SectionContext {
   readonly evidenceIds: readonly string[];
 }
 
+/** How many entries a ranking shows; the rest are counted, never dropped silently. */
+export const RANKING_LIMIT = 100;
+
 export const EVIDENCE = {
   source: "source-file",
   calculations: "calculations",
@@ -46,6 +50,13 @@ function direction(
   if (value === undefined) return "unknown";
   const s = sign(value);
   return s > 0 ? "up" : s < 0 ? "down" : "steady";
+}
+
+/** RULE: a truncated ranking says what it left out. */
+export function rankingTitle(title: string, shown: number, total: number): string {
+  return total > shown
+    ? `${title} (largest ${String(shown)} of ${String(total)})`
+    : title;
 }
 
 export function windowLabel(facts: TableFacts): string {
@@ -178,9 +189,13 @@ function byCategory(
   return {
     id,
     kind: "ranking",
-    title: `By category, ${windowLabel(facts)}`,
+    title: rankingTitle(
+      `By category, ${windowLabel(facts)}`,
+      RANKING_LIMIT,
+      facts.shares.length,
+    ),
     evidenceIds: [...evidenceIds],
-    items: facts.shares.slice(0, 100).map((share, index) => ({
+    items: facts.shares.slice(0, RANKING_LIMIT).map((share, index) => ({
       id: `${id}-${String(index + 1)}`,
       label: share.category,
       value: formatMoney(share.total, money),
@@ -204,9 +219,13 @@ function movers(
   return {
     id,
     kind: "ranking",
-    title: `Movers, ${periodLabel(facts.previousPeriod)} to ${periodLabel(facts.latestPeriod)}`,
+    title: rankingTitle(
+      `Movers, ${periodLabel(facts.previousPeriod)} to ${periodLabel(facts.latestPeriod)}`,
+      RANKING_LIMIT,
+      facts.movers.length,
+    ),
     evidenceIds: [...evidenceIds],
-    items: facts.movers.slice(0, 100).map((mover, index) => ({
+    items: facts.movers.slice(0, RANKING_LIMIT).map((mover, index) => ({
       id: `${id}-${String(index + 1)}`,
       label: mover.category,
       value: formatSignedMoney(mover.change, money),
@@ -223,12 +242,14 @@ function trend(
   const { facts, money, evidenceIds } = ctx;
   if (facts.periods.length < 2) return undefined;
   const unit = money.currency ?? "amount";
+  // RULE: a chart point carries the same figure the page prints, rounded to the
+  // money scale before it becomes a JavaScript number.
   const points = (
     value: (period: string) => Exact,
   ): { at: string; value: number }[] =>
     facts.periods.map((period) => ({
       at: periodStartIso(period),
-      value: Number(value(period)),
+      value: Number(round(value(period), money.decimals)),
     }));
   const series = [
     {
@@ -252,7 +273,7 @@ function trend(
   return {
     id,
     kind: "trend-list",
-    title: `Trend by ${ctx.plan.grain}`,
+    title: `Trend by ${facts.grain}`,
     evidenceIds: [...evidenceIds],
     series,
   };

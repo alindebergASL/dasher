@@ -4,7 +4,12 @@
  * support, or writes a figure into reader-facing text is returned as findings
  * the planner can repair, never compiled.
  */
-import { parsePeriodHeader, type ColumnProfile, type Table } from "./workbook";
+import {
+  parsePeriodHeader,
+  type ColumnProfile,
+  type ColumnType,
+  type Table,
+} from "./workbook";
 import type { TablePlan, TableSectionKind } from "./table-plan";
 
 export type PlanFindingCode =
@@ -45,6 +50,15 @@ const ROLE_NEEDS: Readonly<Partial<Record<TableSectionKind, RoleName[]>>> = {
   "budget-variance": ["budget"],
 };
 
+/** RULE: every role states the column type it can read; period has its own test. */
+const ROLE_TYPE: Readonly<Partial<Record<RoleName, ColumnType>>> = {
+  amount: "number",
+  budget: "number",
+  category: "text",
+  label: "text",
+  account: "text",
+};
+
 /** A column that can play the period role: a date, or cells that name periods. */
 export function isPeriodColumn(column: ColumnProfile, table: Table): boolean {
   if (column.type === "date") return true;
@@ -81,11 +95,12 @@ function checkRoles(
       });
       continue;
     }
-    if ((role === "amount" || role === "budget") && column.type !== "number") {
+    const needed = ROLE_TYPE[role];
+    if (needed !== undefined && column.type !== needed) {
       findings.push({
         code: "role_type",
         path: `roles.${role}`,
-        message: `"${name}" is a ${column.type} column; the ${role} role needs a number column.`,
+        message: `"${name}" is a ${column.type} column; the ${role} role needs a ${needed} column.`,
       });
     }
     if (role === "period" && !isPeriodColumn(column, table)) {
@@ -142,26 +157,68 @@ function checkPages(plan: TablePlan, findings: PlanFinding[]): void {
   }
 }
 
-const CURRENCY_AMOUNT =
-  /[$€£¥₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CAD|AUD|CHF)\b/u;
-const PERCENT_AMOUNT =
-  /\b\d[\d,]*(?:\.\d+)?\s?(?:%|percent\b|per cent\b|pct\b)/iu;
-const BARE_DECIMAL = /(?<![\w.])\d+\.\d+(?![\w.])/u;
-const GROUPED_INTEGER = /\b\d{1,3}(?:,\d{3})+\b/u;
+/**
+ * RULE: reader-facing text describes the composition; Dasher computes and
+ * formats every figure.
+ *
+ * A bounded detector, not a proof. It masks the composition language a plan may
+ * legitimately use — time windows, years, quarters, "top 5" — and then looks for
+ * a figure in what is left. It sits behind the planner's prompt and in front of
+ * arithmetic that never reads these strings, so what it misses is caught by the
+ * fact that no figure on the page comes from them.
+ */
+const WORD_NUMBER =
+  "(?:a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)";
+
+const COMPOSITION: readonly RegExp[] = [
+  new RegExp(
+    `\\b(?:the\\s+)?(?:last|past|previous|next|first|latest|trailing|recent)\\s+(?:\\d{1,3}|${WORD_NUMBER})\\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|quarters?|years?)\\b`,
+    "giu",
+  ),
+  /\b(?:top|bottom|first|last|next)\s+\d{1,3}\b/giu,
+  /\bfy\s?\d{2,4}\b/giu,
+  /\b(?:19|20)\d{2}\b/gu,
+  /\b[qh][1-4]\b/giu,
+  /\b\d{1,2}(?:st|nd|rd|th)\b/giu,
+];
+
+const FIGURES: readonly RegExp[] = [
+  /[$€£¥₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|dollars?|euros?|pounds?|cents?)\b/iu,
+  /\b\d[\d,]*(?:\.\d+)?\s?(?:%|percent\b|per cent\b|pct\b)/iu,
+  new RegExp(
+    `\\b${WORD_NUMBER}(?:[ -]${WORD_NUMBER})?\\s+(?:percent|per cent|pct)\\b`,
+    "iu",
+  ),
+  new RegExp(
+    `\\b(?:${WORD_NUMBER}|\\d[\\d,]*(?:\\.\\d+)?)\\s?(?:hundred|thousand|million|billion|trillion|k|m|bn|mm)\\b`,
+    "iu",
+  ),
+  /\b(?:half|halves|halved|double[ds]?|doubling|triple[ds]?|tripling|twice|quadruple[ds]?)\b/iu,
+  /(?<![\w.])\d+\.\d+(?![\w.])/u,
+  /\b\d{1,3}(?:,\d{3})+\b/u,
+  /\b\d{2,}\b/u,
+];
+
+/** Blanks out a span, keeping every other character where it was. */
+function mask(text: string): string {
+  let masked = text;
+  for (const pattern of COMPOSITION) {
+    masked = masked.replace(pattern, (match) => " ".repeat(match.length));
+  }
+  return masked;
+}
 
 /**
- * A figure in text the reader sees verbatim. Time windows ("last 12 months")
- * and years ("2026") carry no amount and are allowed.
+ * A figure in text the reader sees verbatim, as it reads in the original.
+ * Time windows ("last 12 months"), years, quarters and ranks ("top 5") carry no
+ * figure and are allowed.
  */
 export function findMeasurement(text: string): string | undefined {
-  for (const pattern of [
-    CURRENCY_AMOUNT,
-    PERCENT_AMOUNT,
-    BARE_DECIMAL,
-    GROUPED_INTEGER,
-  ]) {
-    const match = pattern.exec(text);
-    if (match !== null) return match[0];
+  const masked = mask(text);
+  for (const pattern of FIGURES) {
+    const match = pattern.exec(masked);
+    if (match !== null)
+      return text.slice(match.index, match.index + match[0].length);
   }
   return undefined;
 }

@@ -305,7 +305,9 @@ describe("a European file", () => {
 
 describe("a column of quantities", () => {
   it("is text, not an amount: PCS is not a currency", () => {
-    const table = readTable("Part,Count,Cost\nbolt,100 PCS,10\nnut,50 PCS,20\n");
+    const table = readTable(
+      "Part,Count,Cost\nbolt,100 PCS,10\nnut,50 PCS,20\n",
+    );
     expect(table.columns[1]?.type).toBe("text");
     expect(table.columns[2]?.type).toBe("number");
   });
@@ -334,5 +336,54 @@ describe("unpivoting a file whose columns already use the new names", () => {
       period: "text",
       amount: "number",
     });
+  });
+});
+
+describe("a ledger stamped on the first of every month", () => {
+  /**
+   * No component is ever over twelve, so the date column cannot say which
+   * order it is in. The rest of the file can: a semicolon delimiter and a comma
+   * decimal mark come from the locale that writes the day first.
+   */
+  const monthly = [
+    "Datum;Kategorie;Betrag",
+    "01/01/2026;Miete;1.250",
+    "01/02/2026;Miete;1.250",
+    "01/03/2026;Gehalt;12.500",
+    '01/04/2026;Gehalt;"12.500,50"',
+    "",
+  ].join("\n");
+
+  it("reads four months rather than four days of January", () => {
+    const table = readTable(monthly);
+    expect(table.columns[0]?.type).toBe("date");
+    expect(table.columns[0]?.dates).toBe("day-first");
+    const dates = table.columns[0]?.dates;
+    expect(
+      table.rows.map((row) =>
+        parseDate(row[0] ?? "", { dates })?.iso.slice(0, 7),
+      ),
+    ).toStrictEqual(["2026-01", "2026-02", "2026-03", "2026-04"]);
+  });
+
+  it("reads the dotted thousands as thousands", () => {
+    const table = readTable(monthly);
+    const decimal = table.columns[2]?.decimal;
+    expect(decimal).toBe("comma");
+    expect(
+      table.rows.map((row) => parseAmount(row[2] ?? "", { decimal })),
+    ).toStrictEqual(["1250", "1250", "12500", "12500.5"]);
+  });
+
+  it("lets a date in the column itself overrule the file's locale", () => {
+    const table = readTable(
+      "Datum;Betrag\n03/15/2026;1.250\n04/01/2026;2.500\n",
+    );
+    expect(table.columns[0]?.dates).toBe("month-first");
+  });
+
+  it("does not read a comma-delimited file as day-first without evidence", () => {
+    const table = readTable("Date,Amount\n01/02/2026,10\n01/03/2026,20\n");
+    expect(table.columns[0]?.dates).toBe("month-first");
   });
 });

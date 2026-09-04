@@ -214,9 +214,7 @@ function readDigits(value: string, decimal: DecimalConvention): string | null {
   if (dots + commas > 1) return grouped;
   const isMark = separator === markOf(decimal);
   if (!isMark && fractionLength(value, separator) === 3) return grouped;
-  return FRACTION[separator].test(value)
-    ? value.replace(separator, ".")
-    : null;
+  return FRACTION[separator].test(value) ? value.replace(separator, ".") : null;
 }
 
 function markOf(decimal: DecimalConvention): Separator {
@@ -257,9 +255,7 @@ function decimalEvidence(value: string): DecimalConvention | null {
  * way decide for the rest. A column with no such cell is read as US, which is
  * what a string on its own is.
  */
-export function decimalConvention(
-  cells: readonly string[],
-): DecimalConvention {
+export function decimalConvention(cells: readonly string[]): DecimalConvention {
   let dot = 0;
   let comma = 0;
   for (const cell of cells) {
