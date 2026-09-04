@@ -120,7 +120,7 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
       text:
         over.length === 0
           ? "Every budgeted line is within budget."
-          : `${String(over.length)} of ${plural(facts.budget.length, "budgeted line is", "budgeted lines is")} over budget.`,
+          : `${String(over.length)} of ${plural(facts.budget.length, "budgeted line", "budgeted lines")} ${over.length === 1 ? "is" : "are"} over budget.`,
       evidenceIds: [...evidenceIds],
     });
   }

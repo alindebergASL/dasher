@@ -16,6 +16,7 @@ import {
   sign,
   subtract,
   ZERO,
+  type ColumnProfile,
   type Exact,
   type Grain,
   type Table,
@@ -95,13 +96,19 @@ const GRAIN_RANK: Readonly<Record<Grain, number>> = {
   year: 0,
 };
 
+function columnOf(
+  table: Table,
+  name: string | undefined,
+): ColumnProfile | undefined {
+  if (name === undefined) return undefined;
+  return table.columns.find((one) => one.name === name);
+}
+
 function columnIndex(
   table: Table,
   name: string | undefined,
 ): number | undefined {
-  if (name === undefined) return undefined;
-  const column = table.columns.find((one) => one.name === name);
-  return column?.index;
+  return columnOf(table, name)?.index;
 }
 
 const BLANK = "(blank)";
@@ -111,13 +118,17 @@ function categoryValue(cell: string | undefined): string {
   return cell === undefined || cell.trim() === "" ? BLANK : cell;
 }
 
+/**
+ * RULE: a cell is re-read under the convention its own column was profiled
+ * with, so `1.250` and `01/02/2026` mean here what they mean in the file.
+ */
 function cellPeriod(
   text: string,
-  isDate: boolean,
+  column: ColumnProfile | undefined,
   grain: Grain,
 ): string | undefined {
-  if (isDate) {
-    const date = parseDate(text);
+  if (column?.type === "date") {
+    const date = parseDate(text, { dates: column.dates });
     return date === null ? undefined : bucketPeriod(date.iso, grain);
   }
   const header = parsePeriodHeader(text);
@@ -187,13 +198,14 @@ function sortedAbsDesc(totals: ReadonlyMap<string, Exact>): [string, Exact][] {
 
 /** Reads the rows a plan selects and computes every figure from them. */
 export function computeFacts(plan: TablePlan, table: Table): TableFacts {
-  const amountAt = columnIndex(table, plan.roles.amount);
-  const budgetAt = columnIndex(table, plan.roles.budget);
+  const amountColumn = columnOf(table, plan.roles.amount);
+  const budgetColumn = columnOf(table, plan.roles.budget);
+  const periodColumn = columnOf(table, plan.roles.period);
+  const amountAt = amountColumn?.index;
+  const budgetAt = budgetColumn?.index;
   const categoryAt = columnIndex(table, plan.roles.category);
   const labelAt = columnIndex(table, plan.roles.label);
-  const periodAt = columnIndex(table, plan.roles.period);
-  const periodIsDate =
-    periodAt !== undefined && table.columns[periodAt]?.type === "date";
+  const periodAt = periodColumn?.index;
   if (amountAt === undefined)
     throw new Error(`Column "${plan.roles.amount}" is not in the table`);
 
@@ -207,17 +219,21 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       filteredOut += 1;
       continue;
     }
-    const amount = parseAmount(cells[amountAt] ?? "");
+    const amount = parseAmount(cells[amountAt] ?? "", {
+      decimal: amountColumn?.decimal,
+    });
     if (amount === null) {
       skipped += 1;
       continue;
     }
     const budgetText =
-      budgetAt === undefined ? null : parseAmount(cells[budgetAt] ?? "");
+      budgetAt === undefined
+        ? null
+        : parseAmount(cells[budgetAt] ?? "", { decimal: budgetColumn?.decimal });
     const period =
       periodAt === undefined
         ? undefined
-        : cellPeriod(cells[periodAt] ?? "", periodIsDate, grain);
+        : cellPeriod(cells[periodAt] ?? "", periodColumn, grain);
     if (periodAt !== undefined && period === undefined) {
       skipped += 1;
       continue;
@@ -309,8 +325,11 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       share: shareValues[index] as Exact,
     }),
   );
+  // The allocation only holds when every part is positive; otherwise each share
+  // is rounded on its own and the sentence about them has to say so.
   const sharesSumToHundred =
     shares.length > 0 &&
+    latestByCategory.every(([, total]) => sign(total) >= 0) &&
     compare(
       shares.reduce((sum, share) => add(sum, share.share), ZERO),
       "100",

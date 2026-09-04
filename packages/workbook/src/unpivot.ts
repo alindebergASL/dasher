@@ -65,7 +65,7 @@ export function unpivotIfWide(
       rows.map((row) => row[index] ?? ""),
       options,
     );
-    return name === "period" ? { ...profile, type: "text" as const } : profile;
+    return name === "period" ? periodColumnProfile(profile) : profile;
   });
 
   return {
@@ -78,6 +78,21 @@ export function unpivotIfWide(
       amountColumn: "amount",
       ...(budget === undefined ? {} : { budgetColumn: "budget" as const }),
     },
+  };
+}
+
+/**
+ * The period column holds bucket keys, not dates, so it is text by
+ * construction and carries none of the conventions a typed column carries.
+ */
+function periodColumnProfile(profile: ColumnProfile): ColumnProfile {
+  return {
+    name: profile.name,
+    index: profile.index,
+    type: "text",
+    nonEmpty: profile.nonEmpty,
+    distinct: profile.distinct,
+    samples: profile.samples,
   };
 }
 

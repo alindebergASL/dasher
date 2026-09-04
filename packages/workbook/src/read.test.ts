@@ -144,6 +144,15 @@ describe("a wide file with one column per period", () => {
       period: "text",
       amount: "number",
     });
+    // The period column is bucket keys; it carries no date convention of its own.
+    expect(table.columns[3]).toStrictEqual({
+      name: "period",
+      index: 3,
+      type: "text",
+      nonEmpty: 36,
+      distinct: 6,
+      samples: ["2026-03", "2026-04", "2026-05", "2026-06", "2026-07"],
+    });
   });
 
   it("uses month headers written the way a spreadsheet writes them", () => {

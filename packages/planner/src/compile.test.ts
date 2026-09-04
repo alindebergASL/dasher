@@ -377,9 +377,7 @@ describe("compileTablePlan", () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(PlanRejected);
-    expect((caught as PlanRejected).findings[0]!.code).toBe(
-      "empty_after_filters",
-    );
+    expect((caught as PlanRejected).findings[0]!.code).toBe("empty_sections");
   });
 
   it("limits the table component to fifty rows and role columns first", () => {
@@ -424,7 +422,7 @@ describe("compileTablePlan", () => {
     expect(
       summary.kind === "summary" &&
         summary.claims.some((claim) =>
-          claim.text.includes("1 of 2 budgeted lines are over budget"),
+          claim.text.includes("1 of 2 budgeted lines is over budget"),
         ),
     ).toBe(true);
     const alerts = spec.pages[0]!.components[1]!;
