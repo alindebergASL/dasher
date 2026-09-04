@@ -1,205 +1,184 @@
-import { z } from "zod";
-
-import { findSmuggledText } from "./freetext";
-import {
-  patternFor,
-  PLAN_SECTION_KINDS,
-  type PlanSectionKind,
-} from "./registry";
-
-export { PLAN_SECTION_KINDS, type PlanSectionKind };
-
 /**
- * The `DashboardPlan` is the only structure a planning model is permitted to
- * emit. It carries composition and framing decisions — what the dashboard is
- * called, who it is for, which gauges are in scope, and how the pages are laid
- * out — and it carries no facts.
- *
- * Every number, evidence item, freshness state, and claim on the rendered
- * dashboard is computed by `compilePlan` from the observations. No field of
- * this schema is a place to put a reading.
- *
- * That last sentence used to read "a model cannot assert a measurement through
- * this contract because there is nowhere in it to put one", and it was false as
- * written. `title`, `audience`, `framing`, and the page headings are free text
- * rendered verbatim, so a plan titled "Sacramento at 12.4 ft" asserted a reading
- * that no field was named for. The shape of the object was doing the arguing;
- * the strings inside it were unexamined. `findPlanProblems` now checks them —
- * see `freetext.ts` for exactly which categories are caught and which are
- * knowingly not.
+ * Checks a parsed plan against the table it will be compiled from. A plan
+ * that names a column the table lacks, asks for a section its roles cannot
+ * support, or writes a figure into reader-facing text is returned as findings
+ * the planner can repair, never compiled.
  */
+import { parsePeriodHeader, type ColumnProfile, type Table } from "./workbook";
+import type { TablePlan, TableSectionKind } from "./table-plan";
 
-export const PLAN_MAX_PAGES = 4;
-export const PLAN_MAX_SECTIONS_PER_PAGE = 6;
-export const PLAN_MAX_SITES = 50;
-
-export const PLAN_STRING_LIMITS = {
-  id: 64,
-  shortText: 256,
-  longText: 1_024,
-} as const;
-
-const PlanIdSchema = z
-  .string()
-  .min(1)
-  .max(PLAN_STRING_LIMITS.id)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Plan IDs must be lowercase kebab-case");
-
-const PlanPageSchema = z.strictObject({
-  id: PlanIdSchema,
-  title: z.string().min(1).max(PLAN_STRING_LIMITS.shortText),
-  description: z.string().min(1).max(PLAN_STRING_LIMITS.longText),
-  sections: z
-    .array(z.enum(PLAN_SECTION_KINDS))
-    .min(1)
-    .max(PLAN_MAX_SECTIONS_PER_PAGE),
-});
-
-export const DashboardPlanSchema = z.strictObject({
-  planVersion: z.literal("plan-v1"),
-  title: z.string().min(1).max(PLAN_STRING_LIMITS.shortText),
-  audience: z.string().min(1).max(PLAN_STRING_LIMITS.shortText),
-  /** One sentence of narrative framing, shown as the summary subtitle. */
-  framing: z.string().min(1).max(PLAN_STRING_LIMITS.longText),
-  /** USGS site IDs to include, in display order. */
-  siteIds: z
-    .array(z.string().min(1).max(PLAN_STRING_LIMITS.id))
-    .max(PLAN_MAX_SITES),
-  pages: z.array(PlanPageSchema).min(1).max(PLAN_MAX_PAGES),
-});
-
-export type DashboardPlan = z.infer<typeof DashboardPlanSchema>;
-export type PlanPage = z.infer<typeof PlanPageSchema>;
-
-/**
- * A structured rejection. These are fed back to the provider verbatim so a
- * revision pass can repair the plan without a human in the loop, and they are
- * the only channel by which validation influences a model.
- */
 export type PlanFindingCode =
-  | "plan_malformed"
-  | "unknown_site"
-  | "no_known_sites"
-  | "duplicate_site"
-  | "duplicate_page_id"
+  | "unknown_column"
+  | "role_type"
+  | "section_needs_role"
   | "duplicate_section"
-  | "section_needs_sites"
+  | "duplicate_page_id"
   | "free_text_measurement"
-  | "free_text_directive"
+  | "empty_after_filters"
+  | "plan_malformed"
   | "spec_rejected";
 
 export interface PlanFinding {
-  code: PlanFindingCode;
-  /** Dot path into the plan, e.g. `siteIds[2]` or `pages[0].sections[1]`. */
-  path: string;
-  message: string;
+  readonly code: PlanFindingCode;
+  /** Dot path into the plan, e.g. `roles.amount` or `pages[1].sections[0]`. */
+  readonly path: string;
+  readonly message: string;
 }
 
 export class PlanRejected extends Error {
-  readonly findings: readonly PlanFinding[];
-
-  constructor(findings: readonly PlanFinding[]) {
+  constructor(readonly findings: readonly PlanFinding[]) {
     super(
-      `Plan rejected: ${findings.map((finding) => finding.code).join(", ")}`,
+      findings.length === 0
+        ? "The plan was rejected."
+        : `The plan was rejected: ${findings.map((finding) => `${finding.path}: ${finding.message}`).join("; ")}`,
     );
     this.name = "PlanRejected";
-    this.findings = findings;
   }
 }
 
-/**
- * Structural validation of a plan against the observations actually available.
- * Returns findings rather than throwing so the caller can decide whether to
- * request a revision or fail.
- */
-export function findPlanProblems(
-  plan: DashboardPlan,
-  knownSiteIds: readonly string[],
-): PlanFinding[] {
-  const findings: PlanFinding[] = [];
-  const known = new Set(knownSiteIds);
-  const seenSites = new Set<string>();
+type RoleName = keyof TablePlan["roles"];
 
-  for (const [index, siteId] of plan.siteIds.entries()) {
-    if (!known.has(siteId)) {
+const ROLE_NEEDS: Readonly<Partial<Record<TableSectionKind, RoleName[]>>> = {
+  "by-category": ["category"],
+  movers: ["category", "period"],
+  trend: ["period"],
+  "budget-variance": ["budget"],
+};
+
+/** A column that can play the period role: a date, or cells that name periods. */
+export function isPeriodColumn(column: ColumnProfile, table: Table): boolean {
+  if (column.type === "date") return true;
+  if (table.unpivoted !== undefined && column.name === table.unpivoted.periodColumn) {
+    return true;
+  }
+  const filled = column.samples.filter((sample) => sample !== "");
+  return (
+    filled.length > 0 &&
+    filled.every((sample) => parsePeriodHeader(sample) !== null)
+  );
+}
+
+function checkRoles(plan: TablePlan, table: Table, findings: PlanFinding[]): void {
+  const byName = new Map(table.columns.map((column) => [column.name, column]));
+  for (const [role, name] of Object.entries(plan.roles) as [RoleName, string | undefined][]) {
+    if (name === undefined) continue;
+    const column = byName.get(name);
+    if (column === undefined) {
       findings.push({
-        code: "unknown_site",
-        path: `siteIds[${index}]`,
-        message: `Site ${siteId} is not present in the available observations. Available sites: ${knownSiteIds.join(", ")}.`,
+        code: "unknown_column",
+        path: `roles.${role}`,
+        message: `The table has no column named "${name}".`,
       });
-    } else if (seenSites.has(siteId)) {
+      continue;
+    }
+    if ((role === "amount" || role === "budget") && column.type !== "number") {
       findings.push({
-        code: "duplicate_site",
-        path: `siteIds[${index}]`,
-        message: `Site ${siteId} is listed more than once.`,
+        code: "role_type",
+        path: `roles.${role}`,
+        message: `"${name}" is a ${column.type} column; the ${role} role needs a number column.`,
       });
     }
-    seenSites.add(siteId);
+    if (role === "period" && !isPeriodColumn(column, table)) {
+      findings.push({
+        code: "role_type",
+        path: "roles.period",
+        message: `"${name}" holds neither dates nor period names such as 2026-03 or Q1 2026.`,
+      });
+    }
   }
-
-  const resolvedSites = plan.siteIds.filter((siteId) => known.has(siteId));
-  if (resolvedSites.length === 0) {
-    findings.push({
-      code: "no_known_sites",
-      path: "siteIds",
-      message: `No requested site is available. Choose from: ${knownSiteIds.join(", ")}.`,
-    });
+  for (const [index, filter] of plan.filters.entries()) {
+    if (!byName.has(filter.column)) {
+      findings.push({
+        code: "unknown_column",
+        path: `filters[${index}].column`,
+        message: `The table has no column named "${filter.column}".`,
+      });
+    }
   }
+}
 
-  const seenPageIds = new Set<string>();
-  const seenSections = new Set<PlanSectionKind>();
-
+function checkPages(plan: TablePlan, findings: PlanFinding[]): void {
+  const seenIds = new Set<string>();
+  const seenSections = new Set<TableSectionKind>();
   for (const [pageIndex, page] of plan.pages.entries()) {
-    if (seenPageIds.has(page.id)) {
+    if (seenIds.has(page.id)) {
       findings.push({
         code: "duplicate_page_id",
         path: `pages[${pageIndex}].id`,
         message: `Page id "${page.id}" is used more than once.`,
       });
     }
-    seenPageIds.add(page.id);
-
+    seenIds.add(page.id);
     for (const [sectionIndex, section] of page.sections.entries()) {
       const path = `pages[${pageIndex}].sections[${sectionIndex}]`;
       if (seenSections.has(section)) {
         findings.push({
           code: "duplicate_section",
           path,
-          message: `Section "${section}" already appears earlier in the plan. Each section may be used once.`,
+          message: `Section "${section}" appears more than once; each section is used at most once.`,
         });
       }
       seenSections.add(section);
-
-      // Which sections need a station is the registry's fact, not this
-      // function's. It was a private `Set` here whose comment named two of its
-      // four exclusions and quietly omitted `headline-metrics` and
-      // `fastest-rising` — the kind of drift that a list of names in one file
-      // and a reason in another produces on its own.
-      if (resolvedSites.length === 0 && patternFor(section).requiresSites) {
-        findings.push({
-          code: "section_needs_sites",
-          path,
-          message: `Section "${section}" needs at least one available gauge.`,
-        });
+      for (const role of ROLE_NEEDS[section] ?? []) {
+        if (plan.roles[role] === undefined) {
+          findings.push({
+            code: "section_needs_role",
+            path,
+            message: `Section "${section}" needs a ${role} column; set roles.${role} or drop the section.`,
+          });
+        }
       }
     }
   }
+}
 
-  for (const smuggled of findSmuggledText(plan)) {
-    findings.push(
-      smuggled.kind === "measurement"
-        ? {
-            code: "free_text_measurement",
-            path: smuggled.path,
-            message: `Free text may not carry a measurement, and "${smuggled.excerpt}" is one. Dasher computes and displays every reading itself from the observations; describe the composition instead and leave the numbers to the dashboard.`,
-          }
-        : {
-            code: "free_text_directive",
-            path: smuggled.path,
-            message: `Free text may not instruct the reader to act, and "${smuggled.excerpt}" does. Dasher has no basis for a safety instruction and no evidence record that could support one; describe what the dashboard shows instead.`,
-          },
-    );
+const CURRENCY_AMOUNT = /[$€£¥₹]\s?\d|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CAD|AUD|CHF)\b/u;
+const PERCENT_AMOUNT = /\d\s?(?:%|percent\b|per cent\b|pct\b)/iu;
+const BARE_DECIMAL = /(?<![\w.])\d+\.\d+(?![\w.])/u;
+const GROUPED_INTEGER = /\b\d{1,3}(?:,\d{3})+\b/u;
+
+/**
+ * A figure in text the reader sees verbatim. Time windows ("last 12 months")
+ * and years ("2026") carry no amount and are allowed.
+ */
+export function findMeasurement(text: string): string | undefined {
+  for (const pattern of [CURRENCY_AMOUNT, PERCENT_AMOUNT, BARE_DECIMAL, GROUPED_INTEGER]) {
+    const match = pattern.exec(text);
+    if (match !== null) return match[0];
   }
+  return undefined;
+}
 
+export function planFreeText(plan: TablePlan): { path: string; text: string }[] {
+  return [
+    { path: "title", text: plan.title },
+    { path: "audience", text: plan.audience },
+    { path: "framing", text: plan.framing },
+    ...plan.pages.flatMap((page, index) => [
+      { path: `pages[${index}].title`, text: page.title },
+      { path: `pages[${index}].description`, text: page.description },
+    ]),
+  ];
+}
+
+function checkFreeText(plan: TablePlan, findings: PlanFinding[]): void {
+  for (const { path, text } of planFreeText(plan)) {
+    const excerpt = findMeasurement(text);
+    if (excerpt !== undefined) {
+      findings.push({
+        code: "free_text_measurement",
+        path,
+        message: `"${excerpt}" reads as a figure. Describe the composition; Dasher computes every number.`,
+      });
+    }
+  }
+}
+
+/** Every problem with a well-formed plan, in plan order. Empty means compilable. */
+export function findPlanProblems(plan: TablePlan, table: Table): PlanFinding[] {
+  const findings: PlanFinding[] = [];
+  checkRoles(plan, table, findings);
+  checkPages(plan, findings);
+  checkFreeText(plan, findings);
   return findings;
 }

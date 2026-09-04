@@ -20,17 +20,6 @@ export {
 } from "./migrator";
 
 export {
-  SecretKeyRing,
-  SecretPrimitiveError,
-  constantTimeDigestEqual,
-  type IssuedSecret,
-  type SecretKeyRingConfig,
-  type SecretKind,
-  type SecretPersistenceMaterial,
-  type SecretPrimitiveErrorCode,
-} from "./secrets";
-
-export {
   EmailNormalizationError,
   normalizeEmailAddress,
   type EmailNormalizationErrorCode,
@@ -42,14 +31,6 @@ export {
   type SessionCookieMetadata,
   type SessionCookieMetadataErrorCode,
 } from "./session-cookie";
-
-export {
-  VerifiedPrincipal,
-  VerifiedPrincipalError,
-  createVerifiedPrincipalFromServerVerification,
-  type ServerVerifiedPrincipalInput,
-  type VerifiedPrincipalErrorCode,
-} from "./verified-principal";
 
 export { renderSchemaSnapshot } from "./schema-snapshot";
 
@@ -67,6 +48,7 @@ export {
   type DashboardRepository,
   type DashboardRepositoryErrorCode,
   type LoadedDashboard,
+  type LoadedSourceSnapshot,
   type PersistedClaim,
   type RecordEvidenceInput,
   type RecordSourceSnapshotInput,

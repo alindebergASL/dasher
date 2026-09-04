@@ -117,10 +117,9 @@ const MetricGridComponentSchema = ComponentBaseSchema.extend({
 });
 
 /**
- * A reading with the unit it was reported in. The unit rides with the value
- * because the contract has no domain: nothing else in the spec knows whether
- * this station measures feet, micrograms, or degrees, so the number alone
- * would be unrenderable.
+ * Cells are display strings rather than typed values: the contract has no
+ * domain, so the compiler formats numbers, units, and dates before they land
+ * here. Every row cites the evidence its cells rest on.
  */
 const TableComponentSchema = ComponentBaseSchema.extend({
   kind: z.literal("table"),
@@ -320,6 +319,26 @@ export type ArchitectureNode = z.infer<typeof ArchitectureNodeSchema>;
 export type ArchitectureEdge = z.infer<typeof ArchitectureEdgeSchema>;
 export type DashboardSpec = z.infer<typeof DashboardSpecSchema>;
 
+/** The per-kind item array whose entries each cite their own evidence. */
+function evidenceLinkedItems(
+  component: DashboardComponent,
+): readonly { readonly evidenceIds: string[] }[] {
+  switch (component.kind) {
+    case "summary":
+      return component.claims;
+    case "metric-grid":
+      return component.metrics;
+    case "table":
+      return component.rows;
+    case "ranking":
+      return component.items;
+    case "trend-list":
+      return component.series;
+    case "alert-list":
+      return component.alerts;
+  }
+}
+
 function assertUnique(ids: string[], label: string): Set<string> {
   const unique = new Set(ids);
   if (unique.size !== ids.length) {
@@ -374,21 +393,9 @@ function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
     for (const component of page.components) {
       totalEvidenceReferences += component.evidenceIds.length;
 
-      const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
-        component.kind === "summary"
-          ? component.claims
-          : component.kind === "metric-grid"
-            ? component.metrics
-            : component.kind === "table"
-              ? component.rows
-              : component.kind === "ranking"
-                ? component.items
-                : component.kind === "trend-list"
-                  ? component.series
-                  : component.alerts;
-
-      totalItems += evidenceLinkedItems.length;
-      totalEvidenceReferences += evidenceLinkedItems.reduce(
+      const items = evidenceLinkedItems(component);
+      totalItems += items.length;
+      totalEvidenceReferences += items.reduce(
         (total, item) => total + item.evidenceIds.length,
         0,
       );
@@ -490,24 +497,14 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
           `Metric labels in component ${component.id}`,
         );
       }
-      const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
-        component.kind === "metric-grid"
-          ? component.metrics
-          : component.kind === "table"
-            ? component.rows
-            : component.kind === "ranking"
-              ? component.items
-              : component.kind === "trend-list"
-                ? component.series
-                : component.kind === "alert-list"
-                  ? component.alerts
-                  : [];
-      for (const [index, item] of evidenceLinkedItems.entries()) {
-        for (const evidenceId of item.evidenceIds) {
-          if (!evidenceIds.has(evidenceId)) {
-            throw new Error(
-              `Item ${index + 1} in component ${component.id} references missing evidence ${evidenceId}`,
-            );
+      if (component.kind !== "summary") {
+        for (const [index, item] of evidenceLinkedItems(component).entries()) {
+          for (const evidenceId of item.evidenceIds) {
+            if (!evidenceIds.has(evidenceId)) {
+              throw new Error(
+                `Item ${index + 1} in component ${component.id} references missing evidence ${evidenceId}`,
+              );
+            }
           }
         }
       }

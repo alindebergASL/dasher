@@ -6,9 +6,9 @@ import { SessionNav } from "@/components/session-nav";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Dasher · River Conditions",
+  title: "Dasher",
   description:
-    "Evidence-backed dashboards created from a plain-language request.",
+    "Upload a spreadsheet, say what you want to see, get an evidence-backed dashboard.",
 };
 
 export default function RootLayout({

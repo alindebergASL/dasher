@@ -1,124 +1,105 @@
 "use client";
 
-import type { DashboardSpec } from "@dasher/dashboard-schema";
-import type { DashboardPlan } from "@dasher/planner";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 
-import { planDashboard, refineDashboard } from "@/app/actions";
+import { buildDashboard } from "@/app/actions";
 import {
   REFINEMENT_MAX_LENGTH,
   REQUEST_MAX_LENGTH,
+  UPLOAD_MAX_BYTES,
   type PlanResult,
 } from "@/app/planning";
 
 import { DashboardShell } from "./dashboard-shell";
-import { LedgerUpload } from "./ledger-upload";
 
-const EXAMPLES = [
-  "Create a live dashboard monitoring river gauges near Sacramento",
-  "Air quality across Sacramento",
-  "Current student enrollment at UC Riverside",
-  "Operating spend by category",
-  "Which gauges are rising fastest?",
-  "How is the American river doing?",
+const REQUESTS = [
+  "Where is the money going, and what changed last month?",
+  "Spending by category, quarterly",
+  "Which lines are over budget?",
+  "Largest transactions and the biggest movers",
 ] as const;
 
-/**
- * One sentence per reason a dashboard cannot be changed.
- *
- * A table rather than a chain of conditionals, because the chain is how the
- * combined dashboard came to be described as an official snapshot: a new reason
- * that nobody added a branch for silently inherited the last `else`. Here a
- * reason without a sentence does not compile.
- */
-const NO_REFINEMENT_SENTENCE: Readonly<
-  Record<"official-snapshot" | "combined-sources" | "uploaded-file", string>
-> = {
-  "official-snapshot":
-    "This official snapshot has no refinement path yet. Build a new dashboard to ask a different question.",
-  "combined-sources":
-    "This combined dashboard has no refinement path yet, because a change would have to say which of its two sources it means. Build a new dashboard to ask a different question.",
-  "uploaded-file":
-    "This dashboard was built from a file you uploaded, and changing it would mean reading that file again — which this cannot do yet. Upload it again with a different brief to ask something else.",
-};
-
 const REFINEMENTS = [
-  "Drop the map",
-  "Add the history chart",
-  "Make it shorter",
-  "Just the American river",
+  "Exclude salaries",
+  "Quarterly",
+  "Just the overview",
+  "Show the last 3 months",
 ] as const;
 
 export function RequestWorkspace({
-  initialDashboard,
-  initialPlan,
+  initial,
   initialRequest,
 }: {
-  initialDashboard: DashboardSpec;
-  initialPlan: DashboardPlan;
+  initial: PlanResult;
   initialRequest: string;
 }) {
-  const [dashboard, setDashboard] = useState(initialDashboard);
-  const [plan, setPlan] = useState<DashboardPlan | undefined>(initialPlan);
+  const [result, setResult] = useState<PlanResult>(initial);
   const [request, setRequest] = useState(initialRequest);
   const [activeRequest, setActiveRequest] = useState(initialRequest);
   const [change, setChange] = useState("");
-  const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | undefined>(undefined);
-  const [revised, setRevised] = useState(false);
-  const [refinement, setRefinement] = useState<
-    "not-understood" | "already-satisfied" | undefined
-  >(undefined);
-  const [savedId, setSavedId] = useState<string | undefined>(undefined);
-  const [noRefinement, setNoRefinement] = useState<
-    "official-snapshot" | "combined-sources" | "uploaded-file" | undefined
-  >(undefined);
+  const [fileName, setFileName] = useState<string | undefined>(undefined);
+  const [version, setVersion] = useState(0);
   const [pending, startTransition] = useTransition();
+  const fileInput = useRef<HTMLInputElement>(null);
 
-  function apply(result: PlanResult, nextRequest: string) {
-    if (!result.ok || !result.dashboard) {
-      setError(result.error ?? "That request could not be built.");
-      setRefinement(undefined);
+  const dashboard = result.dashboard;
+  const plan = result.plan;
+
+  function currentFile(): File | undefined {
+    const file = fileInput.current?.files?.[0];
+    return file !== undefined && file.size > 0 ? file : undefined;
+  }
+
+  function apply(next: PlanResult, nextRequest: string) {
+    if (!next.ok || next.dashboard === undefined) {
+      setError(next.error ?? "That request could not be built.");
       return;
     }
-    setDashboard(result.dashboard);
-    setPlan(result.plan);
+    setResult(next);
     setActiveRequest(nextRequest);
-    // NOT unconditionally cleared. A dashboard can be built and still fail to
-    // save, and `actions.ts` deliberately returns it with `ok: true` and an
-    // error saying so. Clearing here discarded that message before render — the
-    // "the page looked fine" failure the two domains were split to prevent, put
-    // back by the component that displays them.
-    setError(result.error);
-    setRevised((result.attempts ?? 1) > 1);
-    setRefinement(result.refinement);
-    // A refinement returns no id: it produces a new version of a dashboard
-    // that is not persisted by this slice, so keeping the previous link would
-    // point at a dashboard the reader is no longer looking at.
-    setSavedId(result.dashboardId);
-    setNoRefinement(result.noRefinement);
-    // Remounts the dashboard so a refinement visibly redraws. Keying on the
-    // request alone would leave a refinement of the same request looking like
-    // nothing happened.
+    setError(next.error);
+    setChange("");
     setVersion((current) => current + 1);
   }
 
-  function submit(text: string) {
+  function sourceForm(): FormData | undefined {
+    const form = new FormData();
+    const file = currentFile();
+    if (file !== undefined) {
+      if (file.size > UPLOAD_MAX_BYTES) {
+        setError(
+          `That file is bigger than the ${String(Math.floor(UPLOAD_MAX_BYTES / (1024 * 1024)))} MB this accepts.`,
+        );
+        return undefined;
+      }
+      form.set("file", file);
+    } else {
+      form.set("source", "sample");
+    }
+    return form;
+  }
+
+  function build(text: string) {
+    const form = sourceForm();
+    if (form === undefined) return;
+    form.set("request", text);
     setRequest(text);
     startTransition(async () => {
-      apply(await planDashboard(text), text);
-      setChange("");
+      apply(await buildDashboard(form), text);
     });
   }
 
-  function submitChange(instruction: string) {
+  function refine(instruction: string) {
     if (plan === undefined) return;
+    const form = sourceForm();
+    if (form === undefined) return;
+    form.set("request", activeRequest);
+    form.set("plan", JSON.stringify(plan));
+    form.set("instruction", instruction);
     setChange(instruction);
     startTransition(async () => {
-      apply(
-        await refineDashboard(activeRequest, instruction, plan),
-        activeRequest,
-      );
+      apply(await buildDashboard(form), activeRequest);
     });
   }
 
@@ -128,11 +109,32 @@ export function RequestWorkspace({
         className="request-bar"
         onSubmit={(event) => {
           event.preventDefault();
-          submit(request);
+          build(request);
         }}
       >
+        <div className="request-source">
+          <label className="request-label" htmlFor="dashboard-file">
+            Your spreadsheet (CSV)
+          </label>
+          <input
+            accept=".csv,text/csv,text/tab-separated-values"
+            className="upload-file"
+            id="dashboard-file"
+            name="file"
+            onChange={(event) => {
+              setFileName(event.target.files?.[0]?.name);
+            }}
+            ref={fileInput}
+            type="file"
+          />
+          <p className="request-note">
+            {fileName === undefined
+              ? "No file chosen, so requests run against the sample: eight months of operating transactions."
+              : `Building from ${fileName}. The file is read on the server and, when you are signed in, kept as the evidence behind the dashboard.`}
+          </p>
+        </div>
         <label className="request-label" htmlFor="dashboard-request">
-          What do you want to monitor?
+          What do you want to see?
         </label>
         <div className="request-row">
           <input
@@ -142,7 +144,7 @@ export function RequestWorkspace({
             maxLength={REQUEST_MAX_LENGTH}
             name="request"
             onChange={(event) => setRequest(event.target.value)}
-            placeholder="Create a live dashboard monitoring river gauges near Sacramento"
+            placeholder="Where is the money going?"
             type="text"
             value={request}
           />
@@ -150,34 +152,33 @@ export function RequestWorkspace({
             {pending ? "Building…" : "Build dashboard"}
           </button>
         </div>
-
         <div className="request-examples">
           <span className="request-examples-label">Try:</span>
-          {EXAMPLES.map((example) => (
+          {REQUESTS.map((example) => (
             <button
               className="request-example"
               disabled={pending}
               key={example}
-              onClick={() => submit(example)}
+              onClick={() => build(example)}
               type="button"
             >
               {example}
             </button>
           ))}
         </div>
-
         {error ? (
           <p className="request-error" role="alert">
             {error}
           </p>
         ) : null}
-
-        <p className="request-note">
-          Deterministic generation. Dasher used a bounded builder or planner for
-          this request. Every number below is parsed or calculated from cited
-          source data.
-          {revised
-            ? " Its first plan was rejected by Dasher and corrected before anything rendered."
+        <p className="request-note" role="status">
+          {result.mapping ?? ""}{" "}
+          {result.usesModel
+            ? "A planning model chose the layout; it saw column names and samples, never a total."
+            : "The built-in planner chose the layout."}{" "}
+          Every number below is computed from the file.
+          {(result.attempts ?? 1) > 1
+            ? " The first plan was rejected by Dasher and corrected before anything rendered."
             : ""}{" "}
           <a className="request-permalink" href="/dashboards">
             Your dashboards
@@ -185,34 +186,12 @@ export function RequestWorkspace({
         </p>
       </form>
 
-      {/*
-        A SIBLING of the request form, not a child of it, and the difference is
-        not cosmetic: a form inside a form is invalid HTML, the parser drops the
-        inner one, and React's hydration then fails against a DOM that is
-        missing an element it rendered. The whole tree stops being interactive.
-        Nothing caught that except a real browser — jsdom builds the nested
-        form quite happily, so the component tests passed while the page was
-        dead.
-
-        `apply` is the same function the typed path uses, so an uploaded
-        dashboard reaches the shell, the saved link, and the no-refinement note
-        through exactly one code path.
-      */}
-      <LedgerUpload disabled={pending} onBuilt={apply} />
-
-      {plan === undefined ? (
-        // Same missing plan, two different reasons, two different sentences.
-        // Calling a river-and-air dashboard an "official snapshot" described a
-        // product the reader was not looking at.
-        <p className="request-note" role="status">
-          {NO_REFINEMENT_SENTENCE[noRefinement ?? "official-snapshot"]}
-        </p>
-      ) : (
+      {plan === undefined ? null : (
         <form
           className="refine-bar"
           onSubmit={(event) => {
             event.preventDefault();
-            submitChange(change);
+            refine(change);
           }}
         >
           <label className="request-label" htmlFor="dashboard-change">
@@ -226,7 +205,7 @@ export function RequestWorkspace({
               maxLength={REFINEMENT_MAX_LENGTH}
               name="change"
               onChange={(event) => setChange(event.target.value)}
-              placeholder="Drop the map"
+              placeholder="Exclude salaries"
               type="text"
               value={change}
             />
@@ -234,7 +213,6 @@ export function RequestWorkspace({
               {pending ? "Changing…" : "Apply change"}
             </button>
           </div>
-
           <div className="request-examples">
             <span className="request-examples-label">Try:</span>
             {REFINEMENTS.map((example) => (
@@ -242,22 +220,14 @@ export function RequestWorkspace({
                 className="request-example"
                 disabled={pending}
                 key={example}
-                onClick={() => submitChange(example)}
+                onClick={() => refine(example)}
                 type="button"
               >
                 {example}
               </button>
             ))}
           </div>
-
-          {refinement === "not-understood" ? (
-            <p className="request-note" role="status">
-              Dasher did not understand that change, so it left the dashboard as
-              it was. Naming a section — the map, the table, the history chart —
-              works better than describing a mood.
-            </p>
-          ) : null}
-          {refinement === "already-satisfied" ? (
+          {result.refinement === "already-satisfied" ? (
             <p className="request-note" role="status">
               The dashboard already looks like that, so nothing changed.
             </p>
@@ -265,20 +235,22 @@ export function RequestWorkspace({
         </form>
       )}
 
-      {savedId !== undefined ? (
+      {result.dashboardId !== undefined ? (
         <p className="request-note" role="status">
           Saved.{" "}
-          <a className="request-permalink" href={`/d/${savedId}`}>
+          <a className="request-permalink" href={`/d/${result.dashboardId}`}>
             Open this dashboard by link
           </a>{" "}
           — it will still be here after a reload.
         </p>
       ) : null}
 
-      <DashboardShell
-        dashboard={dashboard}
-        key={`${activeRequest}#${version}`}
-      />
+      {dashboard === undefined ? null : (
+        <DashboardShell
+          dashboard={dashboard}
+          key={`${activeRequest}#${String(version)}`}
+        />
+      )}
     </div>
   );
 }

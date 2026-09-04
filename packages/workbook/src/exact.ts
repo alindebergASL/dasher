@@ -1,21 +1,11 @@
 /**
  * Exact decimal values, as text, for money and the ratios derived from it.
  *
- * WHY THIS EXISTS. Every figure on a ledger dashboard was a JavaScript `number`.
- * The defect that made the cost concrete was small and completely silent: the
- * committed fixture's shares summed to 99.99999999999999 rather than 100, and
- * the test written for that property asserted `toBeCloseTo(100, 6)` — a
- * tolerance chosen to fit what the code did rather than what a finance dashboard
- * needs. A tolerance is the right tool for a sensor reading. It is the wrong
- * tool for an amount of money, where the arithmetic has an exact answer and
- * anything else is an error the reader cannot see.
- *
- * WHY TEXT rather than the engine's `{coefficient, scale}` pair. These values
- * cross three boundaries — into evidence a reader is shown, into a compiled
- * `DashboardSpec` that is hashed and persisted, and into test expectations. A
- * decimal string is the same thing in all three, and `"0.6662881571"` says what
- * it is where `{coefficient: "6662881571", scale: "i64:10"}` needs decoding.
- * The pair remains the engine's wire form; this is the shape it is read into.
+ * A JavaScript `number` cannot carry an amount of money exactly: shares that
+ * should sum to 100 come out at 99.99999999999999, and a tolerance is the
+ * wrong tool for arithmetic that has an exact answer. A decimal string is the
+ * same thing in evidence a reader is shown, in a persisted spec, and in a test
+ * expectation, so that is the representation.
  *
  * Every value here is canonical: no leading zeros, no trailing fractional
  * zeros, a single optional leading `-`, and never `-0`.
@@ -71,11 +61,8 @@ export function fromParts(units: bigint, scale: number): Exact {
  * exact at all.
  *
  * It refuses rather than approximates on the two forms where that guarantee
- * fails — a magnitude large or small enough that `toString` switches to
- * exponent notation, and any non-finite value. THIS IS A BOUNDARY, NOT A FIX:
- * the snapshot still carries `number`, and a workbook carrying real cents
- * should carry decimal text instead. That change belongs with the slice that
- * parses workbooks, where there is a wire format to change.
+ * fails: a magnitude large or small enough that `toString` switches to
+ * exponent notation, and any non-finite value.
  */
 export function fromNumber(value: number): Exact {
   const text = value.toString(10);
@@ -162,9 +149,7 @@ export function ratioToPercent(ratio: Exact): Exact {
  * Rounds half away from zero to `places`, for display only.
  *
  * Half-away rather than half-even because this is the last step before a reader
- * sees the number, and `+7.5%` reading as `+8%` is what a person expects. The
- * engine's own arithmetic uses half-even, where the bias matters because
- * results are summed again.
+ * sees the number, and `+7.5%` reading as `+8%` is what a person expects.
  */
 export function round(value: Exact, places: number): Exact {
   const one = parts(value);

@@ -75,6 +75,40 @@ describe("parseProvisionArgs", () => {
     );
   });
 
+  it("reads a uuid as an existing organization to join rather than a name", () => {
+    const parsed = parseProvisionArgs([
+      "--organization",
+      "  6F1E3C2A-9B4D-4E8F-A1B2-C3D4E5F60718 ",
+      "--email",
+      "a@b.co",
+      "--role",
+      "viewer",
+    ]);
+
+    expect(parsed).toEqual({
+      organizationId: "6f1e3c2a-9b4d-4e8f-a1b2-c3d4e5f60718",
+      email: "a@b.co",
+      role: "viewer",
+    });
+    expect(parsed.organizationName).toBeUndefined();
+  });
+
+  it("treats anything that is not a uuid as a display name", () => {
+    // A name that merely resembles an id must still create an organization.
+    expect(
+      parseProvisionArgs([
+        "--organization",
+        "6f1e3c2a-9b4d-4e8f-a1b2",
+        "--email",
+        "a@b.co",
+      ]),
+    ).toEqual({
+      organizationName: "6f1e3c2a-9b4d-4e8f-a1b2",
+      email: "a@b.co",
+      role: "admin",
+    });
+  });
+
   it("trims the organization name the column would reject untrimmed", () => {
     // `organizations_display_name_check` requires `display_name = btrim(...)`.
     expect(

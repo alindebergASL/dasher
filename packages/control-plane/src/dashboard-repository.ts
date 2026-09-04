@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   RequestContextError,
   withRequestContext,
@@ -165,6 +167,18 @@ export interface LoadedDashboard {
   readonly canonicalSpecBytes: Buffer;
   readonly lifecycleState: string;
   readonly lifecycleRevision: number;
+  /** The `source_snapshots` row the head version cites, when it cites one. */
+  readonly sourceSnapshotId: string | undefined;
+}
+
+/** Stored bytes read back, with what was recorded about their retrieval. */
+export interface LoadedSourceSnapshot {
+  readonly snapshotId: string;
+  readonly sourceKind: string;
+  readonly sourceRef: string;
+  readonly bytes: Buffer;
+  readonly observedAt: string;
+  readonly retrievedAt: string;
 }
 
 export type DashboardRepositoryErrorCode =
@@ -203,6 +217,8 @@ export interface DashboardListEntry {
   readonly dashboardId: string;
   readonly title: string;
   readonly createdAt: string;
+  /** What `archive` must be told to expect. */
+  readonly lifecycleRevision: number;
 }
 
 export interface DashboardRepository {
@@ -248,15 +264,39 @@ export interface DashboardRepository {
   loadById(dashboardId: string): Promise<LoadedDashboard | undefined>;
 
   /**
-   * The organization's dashboards, newest first, bounded.
+   * Read stored bytes back by id.
    *
-   * Identity only — id, title, creation time — because a listing is a way to
-   * find a dashboard, not a way to render one. Row-level security is the
-   * entire isolation story here, exactly as it is for `loadById`; note that
+   * `undefined` for "no such snapshot" and "not yours" alike, for the same
+   * reason `loadById` gives one answer: row-level security makes them the same
+   * result.
+   */
+  loadSourceSnapshot(
+    snapshotId: string,
+  ): Promise<LoadedSourceSnapshot | undefined>;
+
+  /**
+   * The organization's unarchived dashboards, newest first, bounded.
+   *
+   * Identity only — id, title, creation time, revision — because a listing is
+   * a way to find a dashboard, not a way to render one. Row-level security is
+   * the entire isolation story here, exactly as it is for `loadById`; note that
    * this read touches `dashboards` UNJOINED, so it runs directly against the
    * policy the joined read only exercises in depth.
    */
   listRecent(limit: number): Promise<readonly DashboardListEntry[]>;
+
+  /**
+   * Archive a dashboard, through the seam.
+   *
+   * `expectedRevision` is the `lifecycleRevision` the caller last saw. The
+   * seam compares and swaps on it, so a stale view raises `conflict` rather
+   * than archiving a dashboard somebody else has just changed.
+   */
+  archive(dashboardId: string, expectedRevision: number): Promise<void>;
+}
+
+function deploymentRevision(): string {
+  return process.env["DASHER_DEPLOYMENT_REVISION"] ?? "dev";
 }
 
 const FIRST_REVISION = 1;
@@ -441,11 +481,14 @@ export function createDashboardRepository(
         dashboard_id: string;
         title: string;
         created_at: string;
+        lifecycle_revision: string;
       }>(
         `SELECT dashboard_id,
                 title,
-                created_at::text AS created_at
+                created_at::text AS created_at,
+                lifecycle_revision::text AS lifecycle_revision
            FROM dasher.dashboards
+          WHERE lifecycle_state <> 'archived'
           ORDER BY created_at DESC, dashboard_id DESC
           LIMIT $1`,
         [limit],
@@ -455,7 +498,80 @@ export function createDashboardRepository(
         dashboardId: row.dashboard_id,
         title: row.title,
         createdAt: new Date(row.created_at).toISOString(),
+        lifecycleRevision: Number(row.lifecycle_revision),
       }));
+    },
+
+    async archive(
+      dashboardId: string,
+      expectedRevision: number,
+    ): Promise<void> {
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+        throw new DashboardRepositoryError(
+          "unexpected_shape",
+          "archive expectedRevision must be a positive integer",
+        );
+      }
+      void principal;
+
+      const result = await handle
+        .query<{ next_revision: string }>(
+          "SELECT dasher_api.set_dashboard_archived($1, $2, true, $3, $4) AS next_revision",
+          [dashboardId, expectedRevision, randomUUID(), deploymentRevision()],
+        )
+        .catch((error: unknown) => {
+          if (isConflict(error)) {
+            throw new DashboardRepositoryError(
+              "conflict",
+              "the dashboard changed before it could be archived",
+            );
+          }
+          throw error;
+        });
+
+      if (result.rows[0]?.next_revision === undefined) {
+        throw new DashboardRepositoryError(
+          "unexpected_shape",
+          "set_dashboard_archived returned no revision",
+        );
+      }
+    },
+
+    async loadSourceSnapshot(
+      snapshotId: string,
+    ): Promise<LoadedSourceSnapshot | undefined> {
+      void principal;
+
+      const result = await handle.query<{
+        snapshot_id: string;
+        source_kind: string;
+        source_ref: string;
+        canonical_bytes: Buffer;
+        observed_at: string;
+        retrieved_at: string;
+      }>(
+        `SELECT snapshot_id,
+                source_kind,
+                source_ref,
+                canonical_bytes,
+                observed_at::text AS observed_at,
+                retrieved_at::text AS retrieved_at
+           FROM dasher.source_snapshots
+          WHERE snapshot_id = $1`,
+        [snapshotId],
+      );
+
+      const row = result.rows[0];
+      if (row === undefined) return undefined;
+
+      return {
+        snapshotId: row.snapshot_id,
+        sourceKind: row.source_kind,
+        sourceRef: row.source_ref,
+        bytes: row.canonical_bytes,
+        observedAt: new Date(row.observed_at).toISOString(),
+        retrievedAt: new Date(row.retrieved_at).toISOString(),
+      };
     },
 
     async loadById(dashboardId: string): Promise<LoadedDashboard | undefined> {
@@ -473,13 +589,15 @@ export function createDashboardRepository(
         canonical_spec_bytes: Buffer;
         lifecycle_state: string;
         lifecycle_revision: string;
+        source_snapshot_id: string | null;
       }>(
         `SELECT d.dashboard_id,
                 d.title,
                 v.version_id,
                 v.canonical_spec_bytes,
                 d.lifecycle_state,
-                d.lifecycle_revision::text AS lifecycle_revision
+                d.lifecycle_revision::text AS lifecycle_revision,
+                v.source_snapshot_id
            FROM dasher.dashboards AS d
            JOIN dasher.dashboard_versions AS v
              ON v.organization_id = d.organization_id
@@ -502,6 +620,7 @@ export function createDashboardRepository(
         // way through a double; the revisions this counts stay small, but the
         // cast is where that assumption would otherwise hide.
         lifecycleRevision: Number(row.lifecycle_revision),
+        sourceSnapshotId: row.source_snapshot_id ?? undefined,
       };
     },
   };

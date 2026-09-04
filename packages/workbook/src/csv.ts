@@ -1,25 +1,10 @@
 /**
  * Reading a delimited file into a rectangular table, deterministically.
  *
- * WHERE THIS SITS IN THE PROVENANCE MODEL. ADR-008 divides how a number reaches
- * a dashboard: `parsed`, where trusted code reads a structured source, and
- * `extracted`, where a model proposes that some characters in a document denote
- * a value and trusted code verifies that at coordinates. Its Context paragraph
- * names the first category exactly — "a hand-written parser over a structured
- * source" — and lists USGS, OpenAQ and the UCR capture as its members.
- *
- * THIS IS THAT CATEGORY. Nothing here proposes a meaning. It splits characters
- * on delimiters under a fixed grammar and hands back the cells it found, and
- * every decision it makes is one a reader of this file can check.
- *
- * THE LINE, SO THAT CROSSING IT IS DELIBERATE. It becomes extraction the moment
- * a model decides which row is the header, which column holds an amount, or
- * which of several tables on a sheet is the one meant — because then the model's
- * answer decides which numbers reach the page, and that binding is semantically
- * unverified. The measured finding of the ADR-008 spike is that a lexical
- * checker catches none of the seven semantic error classes, zero of seven. Keep
- * the mapping declared and deterministic and none of that machinery is needed;
- * make it a model's judgement and all of it is.
+ * Nothing here proposes a meaning. It splits characters on delimiters under a
+ * fixed grammar and hands back the cells it found, and every decision it makes
+ * is one a reader of this file can check. Deciding which column holds an
+ * amount, or what a header means, happens above this layer.
  */
 
 /** What a reader is allowed to hand over, so a hostile file cannot exhaust us. */
@@ -51,28 +36,22 @@ export type CsvRefusal =
   | "duplicate_header"
   | "blank_header"
   /**
-   * A column the caller's mapping named is not in the file.
-   *
-   * Distinct from `blank_header`, which is a column in the file with no name.
-   * Both used to report `blank_header`, so a file whose columns are all
-   * perfectly well named told its author to go looking for an unnamed one. The
-   * reasons are a closed set precisely so that the layer above can turn each
-   * into a sentence, and two different problems sharing one reason means one of
-   * those sentences is wrong.
+   * A column the caller's mapping named is not in the file. Distinct from
+   * `blank_header`, which is a column in the file with no name.
    */
   | "missing_column";
 
 export class CsvRefused extends Error {
   constructor(
     readonly reason: CsvRefusal,
-    detail: string,
+    readonly detail: string,
   ) {
     super(`The file was refused (${reason}): ${detail}`);
     this.name = "CsvRefused";
   }
 }
 
-export interface Table {
+export interface CsvTable {
   /** Column names, in file order, trimmed. */
   readonly headers: readonly string[];
   /** One entry per data row, each the same length as `headers`. */
@@ -100,7 +79,7 @@ export function parseCsv(
   text: string,
   limits: CsvLimits = CSV_LIMITS,
   delimiter = ",",
-): Table {
+): CsvTable {
   const bytes = new TextEncoder().encode(text).byteLength;
   if (bytes > limits.maxBytes) {
     throw new CsvRefused(
@@ -150,12 +129,8 @@ export function parseCsv(
     seen.add(header);
   }
 
-  // No row-count check here. `splitRecords` applies it while walking, because
-  // by this point the whole file is already an array of arrays and refusing it
-  // then would be refusing something we have finished building. A check here as
-  // well was unreachable — the walk cannot hand back more rows than it allows —
-  // and the mutation run reported it as covered by nothing, which is how it was
-  // found.
+  // The row count is checked in `splitRecords` while walking, before the whole
+  // file has been turned into arrays.
   const rows = records.slice(1);
   for (const [index, row] of rows.entries()) {
     if (row.length !== headers.length) {
@@ -213,14 +188,9 @@ function splitRecords(
   let quoted = false;
   let index = 0;
   /**
-   * Blank records pushed since the last one that held anything.
-   *
-   * `parseCsv` drops these from the end before counting rows, so counting them
-   * against the row limit refuses files that are within it. `maxRows` data rows
-   * written with the trailing newline that every editor and exporter adds
-   * produced `maxRows + 2` records — header, rows, and the empty record after
-   * the last newline — and was refused as too many rows. At the shipping limit
-   * that is every ten-thousand-row export.
+   * Blank records pushed since the last one that held anything. `parseCsv`
+   * drops these from the end, so they must not count against the row limit:
+   * a file of exactly `maxRows` rows ending in a newline is within it.
    */
   let trailingBlanks = 0;
 
@@ -241,28 +211,14 @@ function splitRecords(
     record = [];
 
     /*
-     * TWO BOUNDS, AND EACH EXISTS BECAUSE THE OTHER DOES NOT COVER IT.
-     *
-     * `kept` is the row limit as stated: records that will still be here after
-     * `parseCsv` drops the trailing blanks. It is the one a reader's file is
-     * judged by.
-     *
-     * `records.length` is the memory bound, and leaving it out was a defect in
-     * this file's own history worth stating plainly. `trailingBlanks` rises in
-     * lockstep with `records.length` across a RUN of blank records, so their
-     * difference never moves — which means a file that is nothing but newlines
-     * never trips `kept` at all. Measured on the shipping limits before this
-     * line existed: a 4 MB file of newlines was ACCEPTED as zero rows after
-     * allocating 804 MB of heap and blocking the event loop for 1.9 seconds.
-     * The text is bounded by `maxBytes`, but one byte of it becomes an array
-     * holding a string, and that amplification is what this stops.
+     * Two bounds. `kept` is the row limit as stated: records that survive once
+     * `parseCsv` drops the trailing blanks. `records.length` is the memory
+     * bound: a file that is nothing but newlines never moves `kept`, yet every
+     * byte of it becomes an array holding a string.
      */
     const kept = records.length - trailingBlanks;
     if (kept > limits.maxRows + 1 || records.length > recordCeiling(limits)) {
-      // Deliberately not a count. Refusing mid-walk means the true total is not
-      // known yet — the previous wording computed one from `kept` and was
-      // therefore always `maxRows + 1`, telling a fifty-thousand-row export it
-      // had ten thousand and one.
+      // Not a count: refusing mid-walk means the true total is not known yet.
       throw new CsvRefused(
         "too_many_rows",
         `more than ${String(limits.maxRows)} rows`,
@@ -324,7 +280,7 @@ function splitRecords(
 
 /** The column indexes a mapping asked for, or a refusal naming what is absent. */
 export function columnIndexes(
-  table: Table,
+  table: CsvTable,
   wanted: readonly string[],
 ): readonly number[] {
   const missing = wanted.filter((name) => !table.headers.includes(name));

@@ -49,7 +49,7 @@ describe("packComponents invariants", () => {
   it("covers every sequence of four kinds", () => {
     // Guards the generator itself: if it silently produced nothing, every
     // invariant below would pass vacuously.
-    expect(all).toHaveLength(1 + 7 + 7 ** 2 + 7 ** 3 + 7 ** 4);
+    expect(all).toHaveLength(1 + 6 + 6 ** 2 + 6 ** 3 + 6 ** 4);
   });
 
   it("preserves input order and places each component exactly once", () => {
@@ -111,10 +111,10 @@ describe("packComponents balance", () => {
     ]);
   });
 
-  it("splits a map and a ranking into equal halves on one row", () => {
-    expect(packComponents(seq("station-map", "ranking"))).toEqual([
+  it("splits a trend list and a ranking into equal halves on one row", () => {
+    expect(packComponents(seq("trend-list", "ranking"))).toEqual([
       {
-        component: { kind: "station-map", id: "station-map:0" },
+        component: { kind: "trend-list", id: "trend-list:0" },
         span: 3,
         row: 0,
       },
@@ -139,19 +139,28 @@ describe("packComponents balance", () => {
   });
 
   it("lets a half-width kind hold a run to two per row", () => {
-    // The map's minSpan is the binding constraint for the whole run: without
-    // it these three would sit three-across at a third each.
-    const placed = packComponents(seq("station-map", "ranking", "alert-list"));
+    // The trend list's minSpan is the binding constraint for the whole run:
+    // without it these three would sit three-across at a third each.
+    const placed = packComponents(seq("trend-list", "ranking", "alert-list"));
     expect(placed.map((entry) => entry.row)).toEqual([0, 0, 1]);
     expect(placed.map((entry) => entry.span)).toEqual([3, 3, 6]);
   });
 
   it("gives a full-width kind its own row", () => {
     const placed = packComponents(
-      seq("ranking", "metric-grid", "alert-list", "summary"),
+      seq("ranking", "metric-grid", "alert-list", "summary", "table"),
     );
-    expect(placed.map((entry) => entry.row)).toEqual([0, 1, 2, 3]);
-    expect(placed.map((entry) => entry.span)).toEqual([6, 6, 6, 6]);
+    expect(placed.map((entry) => entry.row)).toEqual([0, 1, 2, 3, 4]);
+    expect(placed.map((entry) => entry.span)).toEqual([6, 6, 6, 6, 6]);
+  });
+
+  it("never lets a table share its row", () => {
+    // A table is as wide as the spreadsheet made it, so even between two
+    // kinds that would otherwise pair up it takes the full row and the
+    // neighbours pair with nothing.
+    const placed = packComponents(seq("ranking", "table", "ranking"));
+    expect(placed.map((entry) => entry.row)).toEqual([0, 1, 2]);
+    expect(placed.map((entry) => entry.span)).toEqual([6, 6, 6]);
   });
 
   it("does not let a full-width kind drag its neighbours to full width", () => {

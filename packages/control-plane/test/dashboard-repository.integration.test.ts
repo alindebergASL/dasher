@@ -964,3 +964,218 @@ it("refuses to edit or delete an assertion once it is recorded", async () => {
     ]),
   ).rejects.toMatchObject({ code: "55000" });
 });
+
+/**
+ * Reading stored bytes back, and archiving what was built from them.
+ */
+
+it("reads stored bytes back through the same policy that guards the listing", async () => {
+  const snapshotId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.recordSourceSnapshot(uploadInput()),
+  );
+
+  const loaded = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadSourceSnapshot(snapshotId),
+  );
+
+  expect(loaded?.snapshotId).toBe(snapshotId);
+  expect(loaded?.sourceKind).toBe("csv-upload");
+  expect(loaded?.sourceRef).toBe("operating-spend.csv");
+  expect(loaded?.bytes.equals(Buffer.from(UPLOAD))).toBe(true);
+  expect(loaded?.observedAt).toBe("2026-08-24T09:00:00.000Z");
+  // Stamped by the seam at retrieval, so it is a real instant, not the one the
+  // caller supplied for observation.
+  expect(Number.isNaN(Date.parse(loaded!.retrievedAt))).toBe(false);
+  expect(Date.parse(loaded!.retrievedAt)).toBeGreaterThanOrEqual(
+    Date.parse(loaded!.observedAt),
+  );
+});
+
+it("does not return another organization's stored bytes, nor an id that does not exist", async () => {
+  const snapshotId = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.recordSourceSnapshot(uploadInput()),
+  );
+
+  const seenByCarol = await withDashboardRepository(
+    appPool,
+    credential(carol),
+    async (repository) => repository.loadSourceSnapshot(snapshotId),
+  );
+  const missing = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadSourceSnapshot(randomUUID()),
+  );
+
+  expect(seenByCarol).toBeUndefined();
+  expect(missing).toBeUndefined();
+});
+
+it("names on a loaded dashboard the stored bytes its head version cites", async () => {
+  const { snapshotId, cited, uncited } = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => {
+      const id = await repository.recordSourceSnapshot(uploadInput());
+      const withSource = await repository.save({
+        ...saveInput("cites bytes"),
+        sourceSnapshotId: id,
+      });
+      const withoutSource = await repository.save(saveInput("live read"));
+      return {
+        snapshotId: id,
+        cited: withSource.dashboardId,
+        uncited: withoutSource.dashboardId,
+      };
+    },
+  );
+
+  const loaded = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => ({
+      cited: await repository.loadById(cited),
+      uncited: await repository.loadById(uncited),
+    }),
+  );
+
+  expect(loaded.cited?.sourceSnapshotId).toBe(snapshotId);
+  expect(loaded.uncited?.sourceSnapshotId).toBeUndefined();
+});
+
+it("archives a dashboard at the revision the caller saw, and the listing drops it", async () => {
+  const seeder = await ownerPool.connect();
+  let frank: DevPrincipalSeed;
+  try {
+    await seeder.query("BEGIN");
+    frank = await seedDevPrincipal(seeder, { organizationName: "frank org" });
+    await seeder.query("COMMIT");
+  } catch (error) {
+    await seeder.query("ROLLBACK");
+    throw error;
+  } finally {
+    seeder.release();
+  }
+
+  const kept = await withDashboardRepository(
+    appPool,
+    credential(frank),
+    async (repository) => repository.save(saveInput("kept")),
+  );
+  const archived = await withDashboardRepository(
+    appPool,
+    credential(frank),
+    async (repository) => repository.save(saveInput("archived")),
+  );
+
+  const before = await withDashboardRepository(
+    appPool,
+    credential(frank),
+    async (repository) => repository.listRecent(10),
+  );
+  expect(before.map((entry) => entry.dashboardId)).toEqual([
+    archived.dashboardId,
+    kept.dashboardId,
+  ]);
+  // The listing carries the revision `archive` must be told to expect, which
+  // after `finalize_run`'s promotion is 2.
+  for (const entry of before) {
+    expect(entry.lifecycleRevision).toBe(2);
+  }
+
+  await withDashboardRepository(
+    appPool,
+    credential(frank),
+    async (repository) => repository.archive(archived.dashboardId, 2),
+  );
+
+  const after = await withDashboardRepository(
+    appPool,
+    credential(frank),
+    async (repository) => ({
+      listed: await repository.listRecent(10),
+      loaded: await repository.loadById(archived.dashboardId),
+    }),
+  );
+
+  expect(after.listed.map((entry) => entry.dashboardId)).toEqual([
+    kept.dashboardId,
+  ]);
+  // Archived is not deleted: the dashboard is still readable by id, at the
+  // revision the seam advanced it to.
+  expect(after.loaded?.lifecycleState).toBe("archived");
+  expect(after.loaded?.lifecycleRevision).toBe(3);
+
+  const audited = await ownerPool.query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM dasher.audit_events
+      WHERE target_id = $1 AND action = 'dashboard.archived'`,
+    [archived.dashboardId],
+  );
+  expect(audited.rows[0]?.count).toBe("1");
+});
+
+it("refuses to archive at a stale revision, in its own vocabulary", async () => {
+  const saved = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.save(saveInput("stale archive")),
+  );
+
+  // Revision 1 is what `create_dashboard` wrote; `finalize_run` has since
+  // moved it to 2, so a caller holding 1 is looking at an old view.
+  const rejection = withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.archive(saved.dashboardId, 1),
+  );
+
+  await expect(rejection).rejects.toBeInstanceOf(DashboardRepositoryError);
+  await expect(rejection).rejects.toMatchObject({ code: "conflict" });
+
+  const loaded = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadById(saved.dashboardId),
+  );
+  expect(loaded?.lifecycleState).toBe("active");
+});
+
+it("does not let one organization archive another's dashboard", async () => {
+  const saved = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.save(saveInput("alice keeps this")),
+  );
+
+  // The seam scopes its UPDATE to the acting organization, so Carol's attempt
+  // matches nothing and is indistinguishable from a stale revision.
+  await expect(
+    withDashboardRepository(appPool, credential(carol), async (repository) =>
+      repository.archive(saved.dashboardId, 2),
+    ),
+  ).rejects.toMatchObject({ code: "conflict" });
+
+  const loaded = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadById(saved.dashboardId),
+  );
+  expect(loaded?.lifecycleState).toBe("active");
+});
+
+it("refuses a malformed expected revision before reaching the seam", async () => {
+  for (const revision of [0, -1, 1.5, Number.NaN]) {
+    await expect(
+      withDashboardRepository(appPool, credential(alice), async (repository) =>
+        repository.archive(randomUUID(), revision),
+      ),
+    ).rejects.toMatchObject({ code: "unexpected_shape" });
+  }
+});

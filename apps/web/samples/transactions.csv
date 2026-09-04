@@ -1,0 +1,143 @@
+Date,Description,Category,Amount,Account
+2026-01-02,Datadog,Cloud infrastructure,$991.42,Operating
+2026-01-02,Hotel,Travel and events,"$1,178.63",Operating
+2026-01-03,Cloudflare,Cloud infrastructure,$246.04,Operating
+2026-01-03,Health insurance,Salaries and benefits,"$4,113.97",Payroll
+2026-01-04,Slack,Software licences,$485.77,Corporate card
+2026-01-05,AWS monthly invoice,Cloud infrastructure,"$4,253.37",Corporate card
+2026-01-08,Paid search,Marketing,"$2,476.27",Operating
+2026-01-13,Flights,Travel and events,"$1,265.65",Operating
+2026-01-14,Payroll run,Salaries and benefits,"$24,563.74",Payroll
+2026-01-15,Cleaning,Facilities,$404.41,Operating
+2026-01-18,Notion,Software licences,$174.90,Operating
+2026-01-18,Utilities,Facilities,$748.92,Operating
+2026-01-19,Design contractor,Contractors,"$3,395.06",Operating
+2026-01-19,GitHub,Software licences,$628.24,Operating
+2026-01-19,Security review,Contractors,"$3,027.00",Operating
+2026-01-19,Sponsored newsletter,Marketing,$610.24,Corporate card
+2026-01-20,Office rent,Facilities,"$8,500.00",Operating
+2026-01-22,Figma,Software licences,$316.81,Operating
+2026-02-02,Slack,Software licences,$506.57,Corporate card
+2026-02-03,Cloudflare,Cloud infrastructure,$245.41,Operating
+2026-02-03,Hotel,Travel and events,$361.89,Corporate card
+2026-02-04,Office rent,Facilities,"$8,500.00",Operating
+2026-02-06,Datadog,Cloud infrastructure,"$1,089.66",Corporate card
+2026-02-08,Cleaning,Facilities,$359.05,Operating
+2026-02-11,AWS monthly invoice,Cloud infrastructure,"$4,807.39",Corporate card
+2026-02-13,GitHub,Software licences,$642.77,Corporate card
+2026-02-15,Notion,Software licences,$160.90,Corporate card
+2026-02-16,Flights,Travel and events,$925.27,Corporate card
+2026-02-16,Payroll run,Salaries and benefits,"$24,758.37",Payroll
+2026-02-19,Design contractor,Contractors,"$5,265.24",Corporate card
+2026-02-22,Figma,Software licences,$319.41,Corporate card
+2026-02-22,Health insurance,Salaries and benefits,"$4,107.84",Payroll
+2026-02-25,Utilities,Facilities,$617.69,Operating
+2026-02-28,Paid search,Marketing,"$2,555.56",Corporate card
+2026-03-05,Health insurance,Salaries and benefits,"$4,291.55",Payroll
+2026-03-05,Hotel,Travel and events,$553.74,Corporate card
+2026-03-06,Flights,Travel and events,"$1,646.64",Corporate card
+2026-03-07,Office rent,Facilities,"$8,500.00",Operating
+2026-03-08,Design contractor,Contractors,"$3,176.48",Operating
+2026-03-09,Datadog,Cloud infrastructure,"$1,249.92",Corporate card
+2026-03-11,Conference booth,Travel and events,"$3,658.87",Operating
+2026-03-11,Utilities,Facilities,$648.69,Operating
+2026-03-12,Paid search,Marketing,"$2,948.87",Operating
+2026-03-13,GitHub,Software licences,$651.85,Operating
+2026-03-13,Notion,Software licences,$179.26,Operating
+2026-03-17,Slack,Software licences,$507.62,Operating
+2026-03-18,AWS monthly invoice,Cloud infrastructure,"$4,960.33",Corporate card
+2026-03-19,Cleaning,Facilities,$357.17,Operating
+2026-03-22,Payroll run,Salaries and benefits,"$26,176.99",Payroll
+2026-03-27,Cloudflare,Cloud infrastructure,$285.98,Corporate card
+2026-03-28,Figma,Software licences,$313.70,Corporate card
+2026-04-01,Slack,Software licences,$501.73,Corporate card
+2026-04-01,Sponsored newsletter,Marketing,$888.91,Operating
+2026-04-03,Health insurance,Salaries and benefits,"$4,196.77",Payroll
+2026-04-04,Datadog,Cloud infrastructure,"$1,201.87",Corporate card
+2026-04-08,Paid search,Marketing,"$3,497.66",Operating
+2026-04-09,GitHub,Software licences,$675.70,Corporate card
+2026-04-11,Design contractor,Contractors,"$2,688.29",Corporate card
+2026-04-12,Cloudflare,Cloud infrastructure,$289.54,Corporate card
+2026-04-12,Notion,Software licences,$196.33,Operating
+2026-04-13,AWS monthly invoice,Cloud infrastructure,"$4,827.54",Operating
+2026-04-15,Payroll run,Salaries and benefits,"$26,188.27",Payroll
+2026-04-17,Flights,Travel and events,"$1,438.09",Operating
+2026-04-17,Hotel,Travel and events,$484.69,Corporate card
+2026-04-20,Utilities,Facilities,$790.93,Operating
+2026-04-25,Office rent,Facilities,"$8,500.00",Operating
+2026-04-27,Cleaning,Facilities,$406.43,Operating
+2026-04-28,Figma,Software licences,$329.36,Operating
+2026-05-01,Sponsored newsletter,Marketing,$327.46,Operating
+2026-05-03,Hotel,Travel and events,"$1,019.68",Operating
+2026-05-05,Cleaning,Facilities,$406.46,Operating
+2026-05-06,Office rent,Facilities,"$8,500.00",Operating
+2026-05-06,Slack,Software licences,$499.12,Corporate card
+2026-05-07,Design contractor,Contractors,"$2,617.41",Corporate card
+2026-05-08,Health insurance,Salaries and benefits,"$4,144.09",Payroll
+2026-05-11,Figma,Software licences,$323.67,Operating
+2026-05-12,Paid search,Marketing,"$3,274.62",Operating
+2026-05-12,Payroll run,Salaries and benefits,"$26,123.50",Payroll
+2026-05-14,Conference booth refund,Travel and events,"(1,800.00)",Corporate card
+2026-05-16,AWS monthly invoice,Cloud infrastructure,"$6,083.64",Corporate card
+2026-05-19,Utilities,Facilities,$608.26,Operating
+2026-05-20,Cloudflare,Cloud infrastructure,$282.40,Corporate card
+2026-05-21,Flights,Travel and events,"$1,119.21",Corporate card
+2026-05-24,Datadog,Cloud infrastructure,"$1,254.64",Corporate card
+2026-05-24,GitHub,Software licences,$684.07,Corporate card
+2026-05-24,Notion,Software licences,$178.53,Operating
+2026-05-25,Conference booth,Travel and events,"$4,693.82",Operating
+2026-05-27,Security review,Contractors,"$2,938.61",Operating
+2026-06-04,Notion,Software licences,$191.37,Operating
+2026-06-05,AWS monthly invoice,Cloud infrastructure,"$5,898.38",Corporate card
+2026-06-05,Slack,Software licences,$511.04,Operating
+2026-06-07,Cloudflare,Cloud infrastructure,$337.30,Operating
+2026-06-07,Datadog,Cloud infrastructure,"$1,179.10",Corporate card
+2026-06-09,Office rent,Facilities,"$8,500.00",Operating
+2026-06-11,GitHub,Software licences,$664.52,Corporate card
+2026-06-14,Health insurance,Salaries and benefits,"$4,151.87",Payroll
+2026-06-17,Flights,Travel and events,"$1,640.71",Operating
+2026-06-17,Hotel,Travel and events,$778.64,Operating
+2026-06-17,Utilities,Facilities,$831.68,Operating
+2026-06-18,Sponsored newsletter,Marketing,"$2,148.64",Corporate card
+2026-06-20,Conference booth,Travel and events,"$4,659.04",Operating
+2026-06-20,Figma,Software licences,$304.25,Operating
+2026-06-20,Paid search,Marketing,"$5,123.86",Operating
+2026-06-24,Design contractor,Contractors,"$2,040.59",Corporate card
+2026-06-25,Cleaning,Facilities,$389.32,Operating
+2026-06-25,Payroll run,Salaries and benefits,"$25,351.98",Payroll
+2026-06-27,Security review,Contractors,"$1,907.93",Corporate card
+2026-07-01,Office rent,Facilities,"$8,500.00",Operating
+2026-07-03,Cleaning,Facilities,$385.86,Operating
+2026-07-03,Payroll run,Salaries and benefits,"$25,251.60",Payroll
+2026-07-04,Datadog,Cloud infrastructure,"$1,270.63",Corporate card
+2026-07-04,Hotel,Travel and events,$497.63,Corporate card
+2026-07-05,Flights,Travel and events,$779.66,Corporate card
+2026-07-07,Cloudflare,Cloud infrastructure,$349.40,Corporate card
+2026-07-07,Figma,Software licences,$310.17,Corporate card
+2026-07-07,Health insurance,Salaries and benefits,"$4,185.67",Payroll
+2026-07-08,AWS monthly invoice,Cloud infrastructure,"$6,134.76",Corporate card
+2026-07-09,Sponsored newsletter,Marketing,$497.70,Corporate card
+2026-07-12,Security review,Contractors,"$1,606.07",Operating
+2026-07-14,Slack,Software licences,$486.46,Corporate card
+2026-07-18,Notion,Software licences,$160.78,Corporate card
+2026-07-20,Utilities,Facilities,$699.45,Operating
+2026-07-22,Conference booth,Travel and events,$976.77,Operating
+2026-07-24,GitHub,Software licences,$645.48,Corporate card
+2026-07-25,Design contractor,Contractors,"$3,009.23",Operating
+2026-07-26,Paid search,Marketing,"$7,903.48",Operating
+2026-08-01,Flights,Travel and events,$508.62,Operating
+2026-08-03,Health insurance,Salaries and benefits,"$4,240.08",Payroll
+2026-08-03,Hotel,Travel and events,"$1,021.47",Operating
+2026-08-05,Cloudflare,Cloud infrastructure,$327.76,Corporate card
+2026-08-06,Office rent,Facilities,"$8,500.00",Operating
+2026-08-07,Utilities,Facilities,$615.11,Operating
+2026-08-09,GitHub,Software licences,$694.13,Operating
+2026-08-15,Slack,Software licences,$514.51,Operating
+2026-08-17,Cleaning,Facilities,$394.01,Operating
+2026-08-17,Paid search,Marketing,"$4,337.50",Operating
+2026-08-18,Figma,Software licences,$310.17,Corporate card
+2026-08-18,Payroll run,Salaries and benefits,"$25,190.11",Payroll
+2026-08-22,Datadog,Cloud infrastructure,"$1,579.60",Corporate card
+2026-08-23,Design contractor,Contractors,"$1,491.53",Operating
+2026-08-23,Notion,Software licences,$161.73,Operating
+2026-08-25,AWS monthly invoice,Cloud infrastructure,"$5,474.70",Operating

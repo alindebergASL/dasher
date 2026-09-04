@@ -8,9 +8,7 @@
     "./email": "./src/email.ts",
     "./migrator": "./src/migrator.ts",
     "./preflight": "./src/preflight.ts",
-    "./secrets": "./src/secrets.ts",
     "./session-cookie": "./src/session-cookie.ts",
-    "./verified-principal": "./src/verified-principal.ts",
     "./schema-snapshot": "./src/schema-snapshot.ts"
   },
   "scripts": {

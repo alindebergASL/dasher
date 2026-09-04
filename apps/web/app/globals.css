@@ -603,127 +603,6 @@ td .item-evidence {
   color: var(--muted);
 }
 
-.map-stack {
-  display: grid;
-  gap: 12px;
-}
-.map-panel {
-  height: 325px;
-  border-radius: 13px;
-  background:
-    radial-gradient(circle at 30% 20%, #f4f1df 0 2px, transparent 3px),
-    linear-gradient(145deg, #edf2e9, #e3ede7);
-  background-size:
-    35px 35px,
-    auto;
-  position: relative;
-  overflow: hidden;
-  border: 1px solid #dbe5dd;
-}
-.map-river {
-  position: absolute;
-  width: 440px;
-  height: 95px;
-  border: 8px solid transparent;
-  border-top-color: rgba(55, 127, 150, 0.7);
-  border-radius: 50%;
-  transform: rotate(68deg);
-}
-.river-one {
-  left: 2%;
-  top: 15%;
-}
-.river-two {
-  left: 19%;
-  top: 53%;
-  transform: rotate(-12deg);
-  width: 310px;
-}
-.map-city {
-  position: absolute;
-  left: 46%;
-  top: 54%;
-  padding: 3px 6px;
-  /* Opaque, not translucent. This plate floats over the map's gradient, and
-     text over a gradient has no single background colour — neither a reader
-     nor the contrast guard can say what it is painted on. */
-  background: var(--card);
-  border-radius: 5px;
-  font-size: 10px;
-  font-weight: 700;
-}
-.map-marker {
-  position: absolute;
-  width: 44px;
-  height: 44px;
-  transform: translate(-50%, -50%);
-  border: 3px solid white;
-  border-radius: 50%;
-  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.22);
-  cursor: pointer;
-}
-.marker-rising,
-.legend-dot.rising {
-  background: var(--green);
-}
-.marker-falling,
-.legend-dot.falling {
-  background: var(--blue);
-}
-.marker-steady,
-.legend-dot.steady {
-  background: var(--amber);
-}
-.marker-unknown {
-  background: #77847f;
-}
-.map-marker:hover,
-.map-marker.selected {
-  outline: 3px solid rgba(20, 99, 74, 0.24);
-  outline-offset: 2px;
-}
-.map-legend {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  display: flex;
-  gap: 10px;
-  /* Opaque for the same reason as `.map-city`. */
-  background: var(--card);
-  padding: 7px 9px;
-  border-radius: 8px;
-  font-size: 9px;
-}
-.map-legend span {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.map-selection {
-  display: grid;
-  gap: 2px;
-  width: fit-content;
-  max-width: 100%;
-  padding: 10px 12px;
-  border: 1px solid rgba(23, 108, 82, 0.22);
-  border-radius: 10px;
-  background: var(--card);
-  box-shadow: 0 8px 24px rgba(20, 32, 28, 0.14);
-}
-.map-selection strong {
-  font-size: 11px;
-}
-.map-selection span {
-  color: var(--muted);
-  font-size: 9px;
-}
-.legend-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
 .ranking-list {
   list-style: none;
   margin: 0;
@@ -826,16 +705,22 @@ th {
 td {
   padding: 14px 12px;
   border-bottom: 1px solid #edf1ef;
+  vertical-align: top;
 }
-td strong,
-td small {
-  display: block;
+tbody tr:last-child td {
+  border-bottom: 0;
 }
-td small {
-  color: var(--muted);
-  margin-top: 2px;
+/*
+ * The evidence column hugs its button so the data columns take the width,
+ * and the button sits flush with the panel edge like the other item buttons.
+ */
+th.table-evidence,
+td.table-evidence {
+  width: 1%;
+  padding-right: 0;
+  text-align: right;
+  white-space: nowrap;
 }
-.status,
 .freshness {
   display: inline-flex;
   align-items: center;
@@ -845,18 +730,9 @@ td small {
   font-weight: 800;
   text-transform: capitalize;
 }
-.status-rising,
 .freshness-fresh {
   background: var(--green-soft);
   color: var(--green);
-}
-.status-falling {
-  background: #e9f3f6;
-  color: #276b80;
-}
-.status-steady {
-  background: var(--amber-soft);
-  color: var(--amber);
 }
 .freshness-stale,
 .freshness-partial,
@@ -903,19 +779,6 @@ footer {
   gap: 7px;
   align-items: center;
 }
-.session-feedback-button {
-  display: block;
-  min-height: 34px;
-  margin: 18px 0 0 auto;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 7px 13px;
-  background: var(--card);
-  color: var(--green);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 750;
-}
 
 .modal-backdrop {
   position: fixed;
@@ -941,122 +804,6 @@ footer {
 .evidence-modal {
   width: min(680px, 100%);
   padding: 26px;
-}
-.feedback-modal {
-  width: min(620px, 100%);
-  padding: 26px;
-}
-.feedback-boundary {
-  margin: 16px 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.session-counters {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0 0 18px;
-}
-.session-counters div {
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--paper);
-}
-.session-counters dt {
-  color: var(--muted);
-  font-size: 11px;
-}
-.session-counters dd {
-  margin: 4px 0 0;
-  font-size: 20px;
-  font-weight: 750;
-}
-.evidence-task-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 9px 12px;
-  margin-bottom: 14px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-.evidence-task-controls label {
-  display: grid;
-  gap: 6px;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 750;
-}
-.evidence-task-controls select,
-.evidence-task-controls button {
-  min-height: 38px;
-}
-.evidence-task-controls select {
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
-  color: var(--ink);
-}
-.evidence-task-controls button {
-  align-self: end;
-  padding: 0 14px;
-  border: 1px solid var(--green);
-  border-radius: 8px;
-  background: var(--green);
-  color: white;
-  font-weight: 750;
-}
-.evidence-task-controls button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.evidence-task-controls small {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  line-height: 1.4;
-}
-.feedback-modal fieldset {
-  margin: 0 0 16px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px;
-}
-.feedback-modal legend,
-.need-category {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 750;
-}
-.feedback-modal small {
-  color: var(--muted);
-}
-.bounded-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-bottom: 7px;
-}
-.bounded-options label {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-.need-category {
-  display: grid;
-  gap: 7px;
-}
-.need-category select {
-  min-height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 10px;
-  background: white;
-  color: var(--ink);
 }
 .modal-heading {
   display: flex;
@@ -1353,15 +1100,11 @@ footer {
   .trend-grid {
     grid-template-columns: 1fr;
   }
-  .map-panel {
-    height: 280px;
-  }
   .modal-backdrop {
     padding: 10px;
   }
   .architecture-modal,
-  .evidence-modal,
-  .feedback-modal {
+  .evidence-modal {
     padding: 20px;
   }
   .architecture-connections {

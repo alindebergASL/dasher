@@ -11,8 +11,8 @@ import {
 
 const validSpec = {
   schemaVersion: "1.2",
-  id: "river-demo",
-  title: "River conditions",
+  id: "ledger-demo",
+  title: "Quarterly spend",
   audience: "Leaders",
   generatedAt: "2026-07-29T12:01:00.000Z",
   dataMode: "demo",
@@ -22,22 +22,24 @@ const validSpec = {
     latestObservationAt: "2026-07-29T12:00:00.000Z",
   },
   nextAction: {
-    title: "Review the readings",
+    title: "Review the figures",
     detail: "Confirm the source before publishing.",
     evidenceIds: ["e1"],
   },
-  notice: "Not an official warning system.",
+  notice: "Figures come from the uploaded workbook, not an accounting system.",
   pages: [
     {
       id: "overview",
       title: "Overview",
-      description: "Current conditions",
+      description: "Current position",
       components: [
         {
           id: "summary",
           kind: "summary",
           title: "What matters",
-          claims: [{ text: "Conditions are stable.", evidenceIds: ["e1"] }],
+          claims: [
+            { text: "Spend is tracking to budget.", evidenceIds: ["e1"] },
+          ],
           tone: "normal",
           evidenceIds: ["e1"],
         },
@@ -46,7 +48,7 @@ const validSpec = {
     {
       id: "details",
       title: "Details",
-      description: "Gauge detail",
+      description: "Line-item detail",
       components: [
         {
           id: "alerts",
@@ -55,6 +57,25 @@ const validSpec = {
           alerts: [],
           evidenceIds: [],
         },
+        {
+          id: "by-department",
+          kind: "table",
+          title: "Spend by department",
+          columns: ["Department", "Spend", "Change"],
+          rows: [
+            {
+              id: "operations",
+              cells: ["Operations", "$152,850", "+4%"],
+              evidenceIds: ["e1"],
+            },
+            {
+              id: "marketing",
+              cells: ["Marketing", "$48,200", ""],
+              evidenceIds: ["e1"],
+            },
+          ],
+          evidenceIds: ["e1"],
+        },
       ],
     },
   ],
@@ -62,12 +83,12 @@ const validSpec = {
     {
       id: "e1",
       kind: "observed",
-      label: "USGS reading",
-      sourceName: "USGS",
-      sourceUrl: "https://waterservices.usgs.gov/",
+      label: "Workbook cell",
+      sourceName: "Uploaded workbook",
+      sourceUrl: "https://example.com/uploads/spend.xlsx",
       observedAt: "2026-07-29T12:00:00.000Z",
       retrievedAt: "2026-07-29T12:01:00.000Z",
-      detail: "Gauge observation",
+      detail: "Sheet 1, cell C4",
       confidence: "high",
     },
   ],
@@ -77,8 +98,8 @@ const validSpec = {
     nodes: [
       {
         id: "source",
-        label: "River gauges",
-        detail: "USGS readings",
+        label: "Uploaded workbook",
+        detail: "Spreadsheet cells",
         kind: "input",
       },
       { id: "page", label: "Dashboard", detail: "Two pages", kind: "page" },
@@ -107,6 +128,21 @@ const validSpec = {
   },
 } as const;
 
+interface MutableTableRow {
+  id: string;
+  cells: string[];
+  evidenceIds: string[];
+}
+
+interface MutableTable {
+  id: string;
+  kind: "table";
+  title: string;
+  columns: string[];
+  rows: MutableTableRow[];
+  evidenceIds: string[];
+}
+
 interface MutableBriefClaim {
   statementTypes: string[];
   headline: string;
@@ -128,9 +164,75 @@ function specCopy(input: typeof validSpec = validSpec) {
   };
 }
 
+/** The fixture's table component, on a mutable copy of the spec. */
+function specWithTable() {
+  const input = structuredClone(validSpec) as Record<string, unknown>;
+  const pages = input.pages as Array<{ components: unknown[] }>;
+  const table = pages[1]!.components[1] as MutableTable;
+  return { input, table };
+}
+
 describe("parseDashboardSpec", () => {
   it("accepts a 1.2 multi-page dashboard", () => {
     expect(parseDashboardSpec(validSpec).pages).toHaveLength(2);
+  });
+
+  it("accepts a table whose rows match its columns", () => {
+    const parsed = parseDashboardSpec(validSpec);
+    const table = parsed.pages[1]!.components[1]!;
+
+    expect(table.kind).toBe("table");
+    if (table.kind !== "table") return;
+    expect(table.columns).toEqual(["Department", "Spend", "Change"]);
+    expect(table.rows.map((row) => row.cells)).toEqual([
+      ["Operations", "$152,850", "+4%"],
+      ["Marketing", "$48,200", ""],
+    ]);
+  });
+
+  it("rejects a table row whose cell count differs from the column count", () => {
+    for (const cells of [
+      ["Operations", "$152,850"],
+      ["a", "b", "c", "d"],
+      [],
+    ]) {
+      const { input, table } = specWithTable();
+      table.rows[0]!.cells = cells;
+      expect(() => parseDashboardSpec(input)).toThrow(
+        new RegExp(
+          `Row operations in component by-department has ${cells.length} cells for 3 columns`,
+        ),
+      );
+    }
+  });
+
+  it("rejects duplicate row ids within a table", () => {
+    const { input, table } = specWithTable();
+    table.rows[1]!.id = table.rows[0]!.id;
+    expect(() => parseDashboardSpec(input)).toThrow(
+      /Row IDs in component by-department must be unique/,
+    );
+  });
+
+  it("rejects a table row that cites missing evidence", () => {
+    const { input, table } = specWithTable();
+    table.rows[1]!.evidenceIds = ["missing"];
+    expect(() => parseDashboardSpec(input)).toThrow(
+      /Item 2 in component by-department references missing evidence missing/,
+    );
+  });
+
+  it("requires every table row to cite evidence", () => {
+    const { input, table } = specWithTable();
+    table.rows[0]!.evidenceIds = [];
+    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
+  });
+
+  it("rejects a table with no columns", () => {
+    const { input, table } = specWithTable();
+    table.columns = [];
+    table.rows = [];
+    expect(() => parseDashboardSpec(input)).toThrow(ZodError);
   });
 
   it("rejects the retired 1.0 and 1.1 versions", () => {
@@ -395,7 +497,7 @@ describe("parseDashboardSpec", () => {
       }>;
     }>;
     pages[0]!.components[0]!.claims!.push({
-      text: "Conditions are stable.",
+      text: "Spend is tracking to budget.",
       evidenceIds: ["e1"],
     });
 
@@ -587,21 +689,15 @@ describe("parseDashboardSpec", () => {
     const tooManyItems = structuredClone(validSpec) as Record<string, unknown>;
     const itemPages = tooManyItems.pages as Array<{ components: unknown[] }>;
     itemPages[0]!.components.push(
-      ...Array.from({ length: 10 }, (_, componentIndex) => ({
-        id: `station-map-${componentIndex}`,
-        kind: "station-map",
-        title: `Station map ${componentIndex}`,
+      ...Array.from({ length: 20 }, (_, componentIndex) => ({
+        id: `table-${componentIndex}`,
+        kind: "table",
+        title: `Table ${componentIndex}`,
         evidenceIds: ["e1"],
-        stations: Array.from({ length: 200 }, (_, stationIndex) => ({
-          id: `station-${componentIndex}-${stationIndex}`,
-          name: `Station ${stationIndex}`,
-          group: "River",
-          latitude: 0,
-          longitude: 0,
-          primary: { value: 1, unit: "ft" },
-          secondary: { value: 1, unit: "ft3/s" },
-          direction: "steady",
-          freshness: "fresh",
+        columns: ["Line"],
+        rows: Array.from({ length: 100 }, (_, rowIndex) => ({
+          id: `row-${componentIndex}-${rowIndex}`,
+          cells: [`Line ${rowIndex}`],
           evidenceIds: ["e1"],
         })),
       })),

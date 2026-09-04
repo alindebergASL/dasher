@@ -4,14 +4,11 @@ import type { DashboardComponent, DashboardSpec, Evidence } from "./schema";
 /**
  * Every assertion a dashboard makes, as a list, addressed by JSON pointer.
  *
- * WHY THIS IS A WALK OVER THE SPEC RATHER THAN OUTPUT FROM THE COMPILER. Two
- * compilers produce specs — `compile.ts` for stations and `compile-ledger.ts`
- * for money — and a third will follow. A claim is not a thing either of them
- * decides; it is the relationship between a displayed assertion and the
- * evidence already recorded beside it, which the spec fully determines. Derived
- * here, the answer is the same for every compiler and cannot drift between
- * them. Emitted by each compiler, it would be two implementations of one idea
- * and the second would be wrong first.
+ * WHY THIS IS A WALK OVER THE SPEC RATHER THAN OUTPUT FROM A COMPILER. A claim
+ * is not something a compiler decides; it is the relationship between a
+ * displayed assertion and the evidence already recorded beside it, which the
+ * spec fully determines. Derived here, the answer is the same whatever produced
+ * the spec and cannot drift between producers.
  *
  * WHY A POINTER RATHER THAN AN ID. `claims.json_pointer` has to survive being
  * read back against bytes, and the only identifier guaranteed to address the
@@ -136,13 +133,10 @@ function labelFor(
  * metric that actually says it.
  *
  * WHAT THIS COSTS, stated because it is not nothing. Nothing makes a
- * component's `evidenceIds` the union of its rows': the schema defaults it to
- * `[]` and only checks each id resolves, and `compile-ledger.ts` gives some
- * components the calculation evidence that no individual row names. Where a
- * component cites an item none of its rows cite, that citation appears in the
- * evidence panel and in no claim. Today every such item is also cited by a
- * summary claim, so nothing is actually unrepresented — but that is a property
- * of the current compilers rather than of this walk, and a component kind whose
+ * component's `evidenceIds` the union of its items': the schema defaults it to
+ * `[]` and only checks each id resolves, so a compiler may cite calculation
+ * evidence at the container that no individual item names. Such a citation
+ * appears in the evidence panel and in no claim. A component kind whose
  * container evidence is genuinely its own would need a claim of its own.
  */
 function assertionItems(

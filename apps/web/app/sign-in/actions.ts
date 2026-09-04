@@ -3,9 +3,22 @@
 import { randomUUID } from "node:crypto";
 
 import { beginSignIn, encodeSignInToken } from "@dasher/control-plane";
+import { headers } from "next/headers";
 
 import { getPool, isPersistenceConfigured } from "../database";
 import { mailer, publicOrigin, signInLink, MailerError } from "../mailer";
+import { clientKey, SlidingWindowThrottle } from "./throttle";
+
+/** Per-client cap on link requests, so one address cannot be locked out by a stranger. */
+const THROTTLE_KEY = Symbol.for("dasher.web.signInThrottle");
+interface ThrottleCarrier {
+  [THROTTLE_KEY]?: SlidingWindowThrottle;
+}
+function throttle(): SlidingWindowThrottle {
+  const carrier = globalThis as ThrottleCarrier;
+  carrier[THROTTLE_KEY] ??= new SlidingWindowThrottle(20, 60 * 60 * 1_000);
+  return carrier[THROTTLE_KEY];
+}
 
 /**
  * Ask for a sign-in link.
@@ -66,6 +79,14 @@ export async function requestSignInLink(
       ok: false,
       error:
         "Sign-in is unavailable: this deployment has no public address configured.",
+    };
+  }
+
+  if (!throttle().allow(clientKey(await headers()))) {
+    return {
+      ok: false,
+      error:
+        "Too many sign-in requests from this connection. Try again in an hour.",
     };
   }
 

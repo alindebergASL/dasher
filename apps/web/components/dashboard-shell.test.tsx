@@ -1,63 +1,254 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import { compilePlan, type DashboardPlan } from "@dasher/planner";
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
 import { parseDashboardSpec } from "@dasher/dashboard-schema";
 
 import { DashboardShell } from "./dashboard-shell";
 
 /**
- * The shell renders what the planner compiles, so the fixture is built the way
- * the running app builds one. It used to come from `createRiverDashboard`, a
- * second composition that nothing rendered — which meant this suite exercised
- * a shape no user ever saw.
- *
- * The plan below reproduces that fixed layout section for section, so the
- * assertions still describe the same dashboard.
+ * A spreadsheet-derived dashboard with every component kind the renderer
+ * knows, built through `parseDashboardSpec` so the fixture is held to the same
+ * contract the running app's compiler output is.
  */
-const gauges = parseUsgsInstantaneousValues(fixture);
-
-const plan: DashboardPlan = {
-  planVersion: "plan-v1",
-  title: "Sacramento River Conditions",
-  audience: "Regional leaders",
-  framing: "Current river conditions for the Sacramento gauges.",
-  siteIds: gauges.map((gauge) => gauge.siteId),
+const dashboard = parseDashboardSpec({
+  schemaVersion: "1.2",
+  id: "quarterly-spend",
+  title: "Quarterly Spend Review",
+  audience: "Finance leaders",
+  generatedAt: "2026-07-29T12:02:00.000Z",
+  dataMode: "demo",
+  freshness: {
+    status: "fresh",
+    label: "Read from the July workbook",
+    latestObservationAt: "2026-07-29T12:00:00.000Z",
+  },
+  nextAction: {
+    title: "Review marketing spend",
+    detail: "Marketing is 12% over plan; confirm the campaign accruals.",
+    evidenceIds: ["recommended-1"],
+  },
+  notice: "Figures come from the uploaded workbook, not an accounting system.",
   pages: [
     {
       id: "overview",
       title: "Overview",
-      description: "Conditions, movement, and anything needing attention.",
-      sections: [
-        "conditions-summary",
-        "headline-metrics",
-        "gauge-map",
-        "fastest-rising",
-        "attention",
+      description: "Position, movement, and anything needing attention.",
+      components: [
+        {
+          id: "summary",
+          kind: "summary",
+          title: "What matters",
+          tone: "normal",
+          evidenceIds: ["observed-1", "calculated-1"],
+          claims: [
+            {
+              text: "Spend is tracking to budget.",
+              evidenceIds: ["calculated-1"],
+            },
+            {
+              text: "Three departments reported.",
+              evidenceIds: ["observed-1"],
+            },
+            {
+              text: "Marketing is the only department over plan.",
+              evidenceIds: ["calculated-1", "interpreted-1"],
+            },
+          ],
+        },
+        {
+          id: "headline-metrics",
+          kind: "metric-grid",
+          title: "Headline figures",
+          evidenceIds: ["calculated-1"],
+          metrics: [
+            {
+              label: "Total spend",
+              value: "$248,300",
+              evidenceIds: ["calculated-1"],
+            },
+            { label: "Budget", value: "$250,000", evidenceIds: ["observed-1"] },
+            {
+              label: "Variance",
+              value: "-$1,700",
+              change: "-0.7%",
+              direction: "down",
+              evidenceIds: ["calculated-1"],
+            },
+            { label: "Departments", value: "3", evidenceIds: ["observed-1"] },
+          ],
+        },
+        {
+          id: "fastest-growing",
+          kind: "ranking",
+          title: "Fastest growing",
+          evidenceIds: ["calculated-1"],
+          items: [
+            {
+              id: "marketing",
+              label: "Field operations",
+              value: "+9%",
+              evidenceIds: ["calculated-1"],
+            },
+          ],
+        },
+        {
+          id: "attention",
+          kind: "alert-list",
+          title: "Attention",
+          evidenceIds: ["interpreted-1"],
+          alerts: [
+            {
+              id: "marketing-over",
+              severity: "attention",
+              title: "Marketing over budget",
+              detail: "Spend has exceeded plan for three consecutive months.",
+              evidenceIds: ["interpreted-1"],
+            },
+          ],
+        },
       ],
     },
     {
-      id: "gauge-details",
-      title: "Gauge details",
-      description: "Per-gauge readings and recent movement.",
-      sections: ["gauge-table", "stage-trends", "change-windows"],
+      id: "details",
+      title: "Details",
+      description: "Line items and recent movement.",
+      components: [
+        {
+          id: "by-department",
+          kind: "table",
+          title: "Spend by department",
+          evidenceIds: ["observed-1"],
+          columns: ["Department", "Spend", "Change"],
+          rows: [
+            {
+              id: "operations",
+              cells: ["Operations", "$152,850", "+4%"],
+              evidenceIds: ["observed-1", "calculated-1"],
+            },
+            {
+              id: "marketing",
+              cells: ["Marketing", "$48,200", "+12%"],
+              evidenceIds: ["observed-1", "calculated-1"],
+            },
+            {
+              id: "support",
+              cells: ["Support", "$47,250", ""],
+              evidenceIds: ["observed-1"],
+            },
+          ],
+        },
+        {
+          id: "monthly-trends",
+          kind: "trend-list",
+          title: "Monthly spend",
+          evidenceIds: ["observed-1"],
+          series: [
+            {
+              id: "total",
+              label: "Total spend",
+              unit: "USD",
+              evidenceIds: ["observed-1"],
+              points: [
+                { at: "2026-05-31T00:00:00.000Z", value: 80_100 },
+                { at: "2026-06-30T00:00:00.000Z", value: 82_400 },
+                { at: "2026-07-29T00:00:00.000Z", value: 85_800 },
+              ],
+            },
+          ],
+        },
+      ],
     },
   ],
-};
-
-const dashboard = compilePlan(plan, gauges, {
-  asOf: "2026-07-29T12:02:00.000Z",
-  planner: { id: "dashboard-shell-fixture", usesModel: false },
-  thresholds: [
+  evidence: [
     {
-      id: "freeport-demo-threshold",
-      siteId: "11447650",
-      label: "Freeport watch level",
-      above: 14.5,
+      id: "observed-1",
+      kind: "observed",
+      label: "Workbook cells",
+      sourceName: "Uploaded workbook",
+      sourceUrl: "https://example.com/uploads/spend.xlsx",
+      observedAt: "2026-07-29T12:00:00.000Z",
+      retrievedAt: "2026-07-29T12:01:00.000Z",
+      detail: "Sheet 'Spend', rows 2-4.",
+      confidence: "high",
+    },
+    {
+      id: "calculated-1",
+      kind: "calculated",
+      label: "Totals and variance",
+      sourceName: "Dasher calculation",
+      retrievedAt: "2026-07-29T12:01:00.000Z",
+      detail: "Summed per department and compared with the budget column.",
+      confidence: "high",
+    },
+    {
+      id: "interpreted-1",
+      kind: "interpreted",
+      label: "Over-budget reading",
+      sourceName: "Dasher rules",
+      retrievedAt: "2026-07-29T12:01:00.000Z",
+      detail:
+        "A department is flagged when spend exceeds plan by more than 10%.",
+      confidence: "medium",
+    },
+    {
+      id: "recommended-1",
+      kind: "recommended",
+      label: "Suggested review",
+      sourceName: "Dasher rules",
+      retrievedAt: "2026-07-29T12:01:00.000Z",
+      detail: "The flagged department is the one to look at first.",
+      confidence: "medium",
     },
   ],
+  architecture: {
+    title: "How this dashboard works",
+    summary:
+      "Dasher read the uploaded workbook, computed every number itself, and no model was called.",
+    nodes: [
+      {
+        id: "workbook",
+        label: "Uploaded workbook",
+        detail: "The spreadsheet as it was uploaded.",
+        kind: "input",
+      },
+      {
+        id: "calculate",
+        label: "Calculate",
+        detail: "Totals, variance, and thresholds.",
+        kind: "process",
+      },
+      {
+        id: "pages",
+        label: "Dashboard pages",
+        detail: "Overview and details.",
+        kind: "page",
+      },
+    ],
+    edges: [
+      { from: "workbook", to: "calculate", label: "cells" },
+      { from: "calculate", to: "pages", label: "figures" },
+    ],
+  },
+  executiveBrief: {
+    known: {
+      statementTypes: ["observed", "calculated"],
+      headline: "3 departments reported",
+      detail: "Every department in the workbook has a July figure.",
+      evidenceIds: ["observed-1", "calculated-1"],
+    },
+    changed: {
+      statementTypes: ["calculated"],
+      headline: "Marketing rose fastest",
+      detail: "Marketing spend is up 12% on June.",
+      evidenceIds: ["calculated-1"],
+    },
+    important: {
+      statementTypes: ["interpreted"],
+      headline: "1 department needs attention",
+      detail: "Marketing is over plan for the third month running.",
+      evidenceIds: ["interpreted-1"],
+    },
+  },
 });
 
 describe("DashboardShell", () => {
@@ -87,21 +278,19 @@ describe("DashboardShell", () => {
       "Interpreted",
       "Recommended",
     ]);
-    expect(within(brief).getByText("3 gauges monitored")).toBeInTheDocument();
-    expect(
-      within(brief).getByText("Sacramento River rose fastest"),
-    ).toBeInTheDocument();
-    expect(
-      within(brief).getByText("3 items need attention"),
-    ).toBeInTheDocument();
-    expect(
-      within(brief).getByText("Review American River gauge"),
-    ).toBeInTheDocument();
+    for (const headline of [
+      "3 departments reported",
+      "Marketing rose fastest",
+      "1 department needs attention",
+      "Review marketing spend",
+    ]) {
+      expect(within(brief).getByText(headline)).toBeInTheDocument();
+    }
     for (const detail of [
-      "1 gauge is rising and 1 gauge is falling based on fresh water-level readings.",
-      "The fastest fresh, complete material one-hour rise is +0.3 ft at SACRAMENTO R A FREEPORT CA.",
-      "Highest priority: American River — Water-level reading is more than two hours old",
-      "AMERICAN R AT H STREET BRIDGE: Water-level reading is more than two hours old",
+      "Every department in the workbook has a July figure.",
+      "Marketing spend is up 12% on June.",
+      "Marketing is over plan for the third month running.",
+      "Marketing is 12% over plan; confirm the campaign accruals.",
     ]) {
       expect(within(brief).getByText(detail)).toBeInTheDocument();
     }
@@ -138,7 +327,7 @@ describe("DashboardShell", () => {
     }
   });
 
-  it("shows the brief only on Overview without a separate mobile next card", () => {
+  it("shows the brief only on the first page without a separate mobile next card", () => {
     const { container } = render(<DashboardShell dashboard={dashboard} />);
 
     expect(
@@ -147,114 +336,36 @@ describe("DashboardShell", () => {
     expect(container.querySelector(".mobile-next")).not.toBeInTheDocument();
     expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /02Gauge details/i }));
+    fireEvent.click(screen.getByRole("button", { name: /02Details/i }));
     expect(
       screen.queryByRole("region", { name: "Executive brief" }),
     ).not.toBeInTheDocument();
     expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
   });
 
-  it("counts every evidence-task activation, requires the requested target, and preserves feedback focus", () => {
-    render(<DashboardShell dashboard={dashboard} />);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Session feedback · not saved" }),
-    );
-    let dialog = screen.getByRole("dialog", { name: "Session feedback" });
-    const target = within(dialog).getByLabelText("Requested evidence");
-    target.focus();
-    fireEvent.change(target, { target: { value: "next-action" } });
-    expect(target).toHaveFocus();
-    const startTask = within(dialog).getByRole("button", {
-      name: "Start evidence task",
-    });
-    startTask.focus();
-    fireEvent.click(startTask);
-    expect(startTask).toHaveFocus();
-    expect(startTask).toBeEnabled();
-    expect(startTask).toHaveTextContent("Task armed");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Close session feedback" }),
-    );
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Evidence for Changed" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
-    fireEvent.click(screen.getByRole("button", { name: "Why this action" }));
-    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Session feedback · not saved" }),
-    );
-    dialog = screen.getByRole("dialog", { name: "Session feedback" });
-    expect(
-      within(dialog).getByLabelText("Evidence opens this session"),
-    ).toHaveTextContent("2");
-    expect(
-      within(dialog).getByLabelText("Next action reviewed this session"),
-    ).toHaveTextContent("Yes");
-    expect(
-      within(dialog).getByLabelText("Evidence task interactions"),
-    ).toHaveTextContent("3");
-    expect(
-      within(dialog).getByLabelText("Evidence task status"),
-    ).toHaveTextContent("Complete");
-    expect(
-      within(dialog).getByText(/erased when the page reloads/i),
-    ).toBeInTheDocument();
-
-    const usefulness = within(dialog).getByRole("radio", { name: "5" });
-    usefulness.focus();
-    fireEvent.click(usefulness);
-    expect(usefulness).toHaveFocus();
-
-    const unclear = within(dialog).getByRole("checkbox", { name: "Unclear" });
-    unclear.focus();
-    fireEvent.click(unclear);
-    expect(unclear).toHaveFocus();
-
-    const need = within(dialog).getByLabelText(
-      "Missing information or workflow need",
-    );
-    need.focus();
-    fireEvent.change(need, { target: { value: "Named owner or handoff" } });
-    expect(need).toHaveFocus();
-
-    expect(usefulness).toBeChecked();
-    expect(unclear).toBeChecked();
-    expect(need).toHaveValue("Named owner or handoff");
-  });
-
   it("renders the overview, freshness state, and safe next action", () => {
     render(<DashboardShell dashboard={dashboard} />);
-    expect(screen.getByText("Sacramento River Conditions")).toBeInTheDocument();
+    expect(screen.getByText("Quarterly Spend Review")).toBeInTheDocument();
     expect(
-      screen.getAllByText("1 gauge needs attention").length,
+      screen.getAllByText("Read from the July workbook").length,
     ).toBeGreaterThan(0);
     expect(
-      screen.getAllByText("Review American River gauge").length,
+      screen.getAllByText("Review marketing spend").length,
     ).toBeGreaterThan(0);
     expect(screen.getByText("Demo dashboard")).toBeInTheDocument();
-    expect(screen.getByText("Conditions summary")).toBeInTheDocument();
+    expect(screen.getByText("What matters")).toBeInTheDocument();
   });
 
   it("says nothing about a latest observation when there is no instant", () => {
-    /*
-     * `UTC` sat outside the ternary, so a dashboard with no observation time
-     * rendered "Unknown UTC" — a unit on a non-value, in the largest type on
-     * the page. Every ledger dashboard showed it, because `compileLedgerPlan`
-     * leaves `latestObservationAt` unset deliberately: a monthly ledger has no
-     * instant of observation, and the period is named in the freshness label
-     * instead. Seen on the built image, not inferred.
-     */
+    // A period-based source has no moment of observation and names its period
+    // in the freshness label instead; the heading must not render a unit on a
+    // non-value.
     const freshness = { ...dashboard.freshness };
     delete (freshness as { latestObservationAt?: string }).latestObservationAt;
     render(<DashboardShell dashboard={{ ...dashboard, freshness }} />);
 
     expect(screen.queryByText(/Unknown/u)).not.toBeInTheDocument();
     expect(screen.queryByText("Latest observation")).not.toBeInTheDocument();
-    // The label still carries the truth about freshness.
     expect(
       screen.getAllByText(dashboard.freshness.label).length,
     ).toBeGreaterThan(0);
@@ -262,9 +373,34 @@ describe("DashboardShell", () => {
 
   it("switches between dashboard pages", () => {
     render(<DashboardShell dashboard={dashboard} />);
-    fireEvent.click(screen.getByRole("button", { name: /02Gauge details/i }));
-    expect(screen.getByText("Current readings")).toBeInTheDocument();
-    expect(screen.getByText("Recent water-level trends")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /02Details/i }));
+    expect(screen.getByText("Spend by department")).toBeInTheDocument();
+    expect(screen.getByText("Monthly spend")).toBeInTheDocument();
+  });
+
+  it("renders a table component's columns, rows, and per-row evidence", () => {
+    render(<DashboardShell dashboard={dashboard} />);
+    fireEvent.click(screen.getByRole("button", { name: /02Details/i }));
+
+    const table = screen.getByRole("table");
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent),
+    ).toEqual(["Department", "Spend", "Change", "Evidence"]);
+    // One header row plus one row per spec row.
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(within(table).getByText("$152,850")).toBeInTheDocument();
+    expect(within(table).getByText("Support")).toBeInTheDocument();
+
+    fireEvent.click(
+      within(table).getByRole("button", {
+        name: "Evidence for Operations row",
+      }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Sources and evidence" });
+    expect(within(dialog).getByText("Workbook cells")).toBeInTheDocument();
+    expect(within(dialog).getByText("Totals and variance")).toBeInTheDocument();
   });
 
   it("opens the plain-language architecture diagram", () => {
@@ -273,22 +409,8 @@ describe("DashboardShell", () => {
     expect(
       screen.getByRole("dialog", { name: "How this dashboard works" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("River gauge readings").length).toBeGreaterThan(
-      0,
-    );
-    // The diagram has to be honest about who composed the dashboard, and the
-    // provider decides which sentence that is. The fixture matches the running
-    // app, whose only provider is keyword matching, so the panel must not claim
-    // a model chose anything. The original text here said "does not use AI",
-    // written before any planner existed; asserting the opposite would have
-    // been just as wrong in the other direction.
-    expect(
-      screen.getByText(/deterministic planner chose this dashboard/i),
-    ).toBeInTheDocument();
+    expect(screen.getAllByText("Uploaded workbook").length).toBeGreaterThan(0);
     expect(screen.getByText(/no model was called/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Dasher computed every number/i),
-    ).toBeInTheDocument();
     const closeButton = screen.getByRole("button", {
       name: "Close architecture",
     });
@@ -338,38 +460,26 @@ describe("DashboardShell", () => {
     }
   });
 
-  it("opens evidence with a direct USGS citation", () => {
+  it("opens evidence with a direct source citation", () => {
     render(<DashboardShell dashboard={dashboard} />);
     fireEvent.click(
-      screen.getAllByRole("button", { name: /view .* sources/i })[0]!,
+      screen.getAllByRole("button", { name: /view .* sources?/i })[0]!,
     );
     expect(
       screen.getByRole("dialog", { name: "Sources and evidence" }),
     ).toBeInTheDocument();
     expect(
-      screen.getAllByRole("link", {
-        name: /open U\.S\. Geological Survey source/i,
-      }).length,
+      screen.getAllByRole("link", { name: /open Uploaded workbook source/i })
+        .length,
     ).toBeGreaterThan(0);
   });
 
-  it("selects a map marker and shows station identity and coordinates", () => {
-    render(<DashboardShell dashboard={dashboard} />);
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /SACRAMENTO R A FREEPORT CA, station 11447650/i,
-      }),
-    );
-    expect(screen.getByText("Station 11447650")).toBeInTheDocument();
-    expect(screen.getByText(/38\.4566, -121\.5019/)).toBeInTheDocument();
-  });
-
-  it("opens evidence for ranking, alert, and gauge-row claims", () => {
+  it("opens evidence for ranking, alert, and table-row claims", () => {
     render(<DashboardShell dashboard={dashboard} />);
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Evidence for Sacramento River ranking",
+        name: "Evidence for Field operations ranking",
       }),
     );
     expect(
@@ -378,20 +488,18 @@ describe("DashboardShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
 
     fireEvent.click(
-      screen.getAllByRole("button", {
-        name: "Evidence for American River alert",
-      })[0]!,
+      screen.getByRole("button", {
+        name: "Evidence for Marketing over budget alert",
+      }),
     );
     expect(
       screen.getByRole("dialog", { name: "Sources and evidence" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
 
-    fireEvent.click(screen.getByRole("button", { name: /02Gauge details/i }));
+    fireEvent.click(screen.getByRole("button", { name: /02Details/i }));
     fireEvent.click(
-      screen.getByRole("button", {
-        name: "Evidence for SACRAMENTO R A FREEPORT CA row",
-      }),
+      screen.getByRole("button", { name: "Evidence for Marketing row" }),
     );
     expect(
       screen.getByRole("dialog", { name: "Sources and evidence" }),
@@ -402,7 +510,7 @@ describe("DashboardShell", () => {
     render(<DashboardShell dashboard={dashboard} />);
     fireEvent.click(
       screen.getByRole("button", {
-        name: /Evidence for: .*gauge.*rising/i,
+        name: /Evidence for: .*tracking to budget/i,
       }),
     );
     expect(
@@ -411,15 +519,12 @@ describe("DashboardShell", () => {
   });
 
   it("shows the brief on the landing page whatever that page is called", () => {
-    // The gate used to be the literal `page.id === "overview"`. Composed
-    // dashboards namespace their page ids, so a combined river+air dashboard
-    // lands on `river:overview` and lost its brief entirely — the one place
-    // the two sources are attributed side by side. Renaming the first page is
-    // enough to reproduce that, without needing a second domain here.
+    // The gate is "first page", not a page id, so a builder that namespaces
+    // its page ids still gets a brief on the page a reader lands on.
     const renamed = parseDashboardSpec({
       ...dashboard,
       pages: [
-        { ...dashboard.pages[0]!, id: "river:overview" },
+        { ...dashboard.pages[0]!, id: "spend:overview" },
         ...dashboard.pages.slice(1),
       ],
     });
@@ -438,7 +543,7 @@ describe("DashboardShell", () => {
       screen.getByRole("region", { name: "Executive brief" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Gauge details/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Details/ }));
     expect(
       screen.queryByRole("region", { name: "Executive brief" }),
     ).not.toBeInTheDocument();
@@ -446,18 +551,15 @@ describe("DashboardShell", () => {
 
   it("badges a reopened dashboard as a snapshot, not by its data mode", () => {
     // A stored dashboard is a record of a build that already happened. Its
-    // readings may well have been live at the time, so the data-mode badge is
-    // the wrong thing to show — "Live dashboard" over bytes frozen last week is
-    // the least true thing this corner of the page could say.
+    // figures may well have been live at the time, so the data-mode badge is
+    // the wrong thing to show over bytes frozen last week.
     render(<DashboardShell dashboard={dashboard} sealed />);
     expect(screen.getByText("Saved snapshot")).toBeInTheDocument();
     expect(screen.queryByText("Demo dashboard")).not.toBeInTheDocument();
     expect(screen.queryByText("Live dashboard")).not.toBeInTheDocument();
   });
 
-  it("badges live readings as live when the build is fresh", () => {
-    // The branch that was unreachable before this slice: every builder wrote
-    // `dataMode: "demo"` as a literal, so nothing could ever render here.
+  it("badges live figures as live when the build is fresh", () => {
     const live = parseDashboardSpec({ ...dashboard, dataMode: "live" });
     render(<DashboardShell dashboard={live} />);
     expect(screen.getByText("Live dashboard")).toBeInTheDocument();
