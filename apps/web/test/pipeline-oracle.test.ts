@@ -100,11 +100,23 @@ function categoryRanking(
   return [];
 }
 
-/** One category's displayed total. Exact, so a substring cannot pass for it. */
-function categoryTotal(dashboard: DashboardSpec, label: string): string {
-  return (
-    categoryRanking(dashboard).find((item) => item.label === label)?.value ?? ""
-  );
+/** One trend series' values in period order, which spans the whole file. */
+function periodTotals(dashboard: DashboardSpec, label: string): number[] {
+  for (const page of dashboard.pages) {
+    for (const component of page.components) {
+      if (component.kind === "trend-list") {
+        const series = component.series.find((one) => one.label === label);
+        if (series !== undefined) {
+          return series.points.map((point) => point.value);
+        }
+      }
+    }
+  }
+  return [];
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 describe("accounting-format negatives", () => {
@@ -121,11 +133,16 @@ describe("a European export", () => {
   // Semicolon-delimited, comma decimal mark: 1.250 is one thousand two hundred
   // and fifty. Miete 1250 + 1250 = 2500; Gehalt 12500 + 12500,50 = 25000,50.
   it("reads dotted thousands as thousands", async () => {
-    const dashboard = await build("european.csv", "Ausgaben nach Kategorie");
-    // Read cell by cell, "1.250" becomes 1.25 and Miete totals 2.50. The
-    // assertion is on the exact displayed total because "12,500.50" contains
-    // the substring "2,500" and a looser match passes on the broken output.
-    expect(categoryTotal(dashboard, "Miete")).toMatch(/^2,500(\.00)?$/u);
+    const dashboard = await build("european.csv", "Ausgaben über Zeit");
+    // The trend carries every period; the by-category ranking is scoped to the
+    // latest one, where Miete has no rows at all. An earlier version of this
+    // assertion looked there and failed against correct output.
+    expect(periodTotals(dashboard, "Total")).toEqual([
+      1250, 1250, 12500, 12500.5,
+    ]);
+    // 1250 + 1250 and 12500 + 12500.50, computed from the file in Python.
+    expect(sum(periodTotals(dashboard, "Miete"))).toBe(2500);
+    expect(sum(periodTotals(dashboard, "Gehalt"))).toBe(25000.5);
   });
 
   // Dated the first of four consecutive months. Read as month-first they all

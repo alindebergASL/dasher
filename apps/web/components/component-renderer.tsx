@@ -64,6 +64,25 @@ function ComponentHeader({ component, onEvidence }: ComponentPartProps) {
   );
 }
 
+/**
+ * The series' latest value, formatted the way every other figure on the page
+ * is. `toLocaleString()` printed "1,250 USD" beside a card reading "$1,250.00".
+ * A three-letter unit is a currency; anything else is a bare quantity.
+ */
+function latestPoint(
+  series: Extract<DashboardComponent, { kind: "trend-list" }>["series"][number],
+): string {
+  const value = series.points.at(-1)?.value;
+  if (value === undefined) return "";
+  const currency = /^[A-Z]{3}$/u.test(series.unit) ? series.unit : undefined;
+  const formatted = new Intl.NumberFormat("en-US", {
+    ...(currency === undefined ? {} : { style: "currency", currency }),
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+  return currency === undefined ? `${formatted} ${series.unit}` : formatted;
+}
+
 function MiniTrend({
   points,
 }: {
@@ -254,9 +273,7 @@ export function ComponentRenderer({
               <article className="trend-card" key={series.id}>
                 <div>
                   <strong>{series.label}</strong>
-                  <span>
-                    {series.points.at(-1)?.value.toLocaleString()} {series.unit}
-                  </span>
+                  <span>{latestPoint(series)}</span>
                   <ItemEvidenceButton
                     ids={series.evidenceIds}
                     label={`${series.label} trend`}

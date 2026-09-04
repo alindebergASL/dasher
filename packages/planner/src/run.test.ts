@@ -259,6 +259,23 @@ describe("runTablePlanner", () => {
     expect(grid.kind === "metric-grid" && grid.metrics[0]!.value).toBe("500");
   });
 
+  it("filters a category the column profile's samples never showed", async () => {
+    const table = travelTable();
+    const run = await runTablePlanner({
+      requestText: "only E",
+      table,
+      provider: fake,
+      source: sourceFor(table, "travel.csv"),
+      asOf: AS_OF,
+    });
+    expect(run.plan.filters).toEqual([
+      { column: "Category", op: "include", values: ["E"] },
+    ]);
+    expect(
+      table.columns.find((column) => column.name === "Category")!.samples,
+    ).not.toContain("E");
+  });
+
   it("refuses a non-positive attempt budget", async () => {
     const table = transactionsTable();
     await expect(

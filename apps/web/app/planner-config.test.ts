@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 
+import { PlanRejected } from "@dasher/planner";
+
 import {
+  buildFailureMessage,
   DailyLimitedProvider,
   PlannerBudgetExceeded,
   plannerFromEnv,
@@ -63,5 +66,23 @@ describe("DailyLimitedProvider", () => {
     now = new Date("2026-09-05T00:00:01Z");
     await limited.plan(request);
     expect(calls).toBe(3);
+  });
+});
+
+describe("a budget error through the planner loop", () => {
+  // The planner records a provider throw as a failed attempt and reports the
+  // original on `cause` once the attempts run out, so the budget is only
+  // recognisable through the wrapper.
+  it("still reads as the budget message once wrapped", async () => {
+    const inner = {
+      id: "x",
+      usesModel: true,
+      plan: async () => ({}),
+    };
+    const limited = new DailyLimitedProvider(inner, 1);
+    await limited.plan(request);
+    const error = await limited.plan(request).catch((one: unknown) => one);
+    const wrapped = new PlanRejected([], { cause: error });
+    expect(buildFailureMessage(wrapped)).toMatch(/planning budget/u);
   });
 });

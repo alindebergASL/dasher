@@ -14,6 +14,12 @@ export interface PlanningTable {
   readonly rowCount: number;
   /** True when a wide file was reshaped to one row per line and period. */
   readonly unpivoted?: boolean;
+  /**
+   * Distinct values, by column name, for the columns small enough to list.
+   * A provider may name a filter value only from what it can see here or in a
+   * column's samples.
+   */
+  readonly values?: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface PlanningRevision {
@@ -56,6 +62,9 @@ export class FakePlanningProvider implements PlanningProvider {
     const summary: TableSummary = {
       columns: request.table.columns,
       unpivoted: request.table.unpivoted === true,
+      ...(request.table.values === undefined
+        ? {}
+        : { values: request.table.values }),
     };
     if (request.revision !== undefined) {
       return Promise.resolve(

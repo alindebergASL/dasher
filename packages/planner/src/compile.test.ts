@@ -433,11 +433,10 @@ describe("compileTablePlan", () => {
 
   it("ranks categories by size when every amount is negative", () => {
     const table = negativeTable();
-    const plan = planWith({ amount: "Amount", period: "Date", category: "Category" }, [
-      "summary",
-      "headline-totals",
-      "by-category",
-    ]);
+    const plan = planWith(
+      { amount: "Amount", period: "Date", category: "Category" },
+      ["summary", "headline-totals", "by-category"],
+    );
     const facts = computeFacts(plan, table);
     expect(facts.shares.map((share) => share.category)).toEqual([
       "Payroll",
@@ -507,7 +506,7 @@ describe("compileTablePlan", () => {
         zero,
         options(zero),
       ).evidence[1]!.detail,
-    ).toContain("total is zero");
+    ).toContain("the total for Jan 2026 is zero");
 
     const many = manyCategoriesTable(137);
     const spec = compileTablePlan(
@@ -531,7 +530,9 @@ describe("compileTablePlan", () => {
     );
     const spec = compileTablePlan(plan, table, options(table));
     const grid = spec.pages[0]!.components[0]!;
-    expect(grid.kind === "metric-grid" && grid.metrics[0]!.value).toBe("$10.01");
+    expect(grid.kind === "metric-grid" && grid.metrics[0]!.value).toBe(
+      "$10.01",
+    );
     const trend = spec.pages[0]!.components[1]!;
     expect(
       trend.kind === "trend-list" && trend.series[0]!.points.at(-1)!.value,

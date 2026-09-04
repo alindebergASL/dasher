@@ -12,6 +12,29 @@ import { TablePlanSchema, type TablePlan } from "./table-plan";
 
 export const PLANNER_MAX_ATTEMPTS = 3;
 
+/** Columns with more distinct values than this are shown as samples only. */
+const VALUE_LIST_LIMIT = 200;
+
+/**
+ * The distinct values of every text column small enough to list.
+ *
+ * RULE: a planner may only name a filter value it has been shown, so the values
+ * it can name are read from the table here rather than guessed from samples.
+ */
+function listedValues(table: Table): Record<string, readonly string[]> {
+  const listed: Record<string, readonly string[]> = {};
+  for (const column of table.columns) {
+    if (column.type !== "text" || column.distinct > VALUE_LIST_LIMIT) continue;
+    const values = new Set<string>();
+    for (const cells of table.rows) {
+      const cell = (cells[column.index] ?? "").trim();
+      if (cell !== "") values.add(cell);
+    }
+    listed[column.name] = [...values];
+  }
+  return listed;
+}
+
 export interface RunTablePlannerOptions {
   readonly requestText: string;
   readonly table: Table;
@@ -43,6 +66,7 @@ export async function runTablePlanner(
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     throw new Error("maxAttempts must be a positive integer");
   }
+  const values = listedValues(options.table);
   const attempts: PlannerAttempt[] = [];
   let previousPlan: TablePlan | undefined;
   let previousFindings: readonly PlanFinding[] = [];
@@ -57,6 +81,7 @@ export async function runTablePlanner(
           columns: options.table.columns,
           rowCount: options.table.rowCount,
           ...(options.table.unpivoted === undefined ? {} : { unpivoted: true }),
+          values,
         },
         sourceName: options.source.name,
         ...(options.refine === undefined ? {} : { refinement: options.refine }),

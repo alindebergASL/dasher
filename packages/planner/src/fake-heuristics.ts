@@ -9,6 +9,11 @@ import type { TablePlan, TableSectionKind } from "./table-plan";
 export interface TableSummary {
   readonly columns: readonly ColumnProfile[];
   readonly unpivoted: boolean;
+  /**
+   * Every distinct value of the columns small enough to list, by column name.
+   * A profile shows five samples; without this a sixth value cannot be filtered.
+   */
+  readonly values?: Readonly<Record<string, readonly string[]>>;
 }
 
 export type Roles = TablePlan["roles"];
@@ -153,11 +158,24 @@ export function readGrain(text: string): Grain | undefined {
   return undefined;
 }
 
+/**
+ * The phrase runs to punctuation or the end of the instruction, not to the
+ * next joining word. Stopping at "and" reads "exclude salaries and benefits"
+ * as "salaries", which names no category, so the instruction silently did
+ * nothing. Category names containing "and" are ordinary. Narrowing the phrase
+ * is `matchValues`' job, and it matches whole values and whole words only.
+ */
 const FILTER_PHRASE =
-  /\b(exclude|excluding|without|only|just|drop|remove|hide|delete)\s+(?:the\s+)?([^,.;]+?)(?=\s+(?:and|but|for|over|by|in|from|with)\b|[,.;]|$)/giu;
+  /\b(exclude|excluding|without|only|just|drop|remove|hide|delete)\s+(?:the\s+)?([^,.;]+)/giu;
 const INCLUDE_WORDS = new Set(["only", "just"]);
-const TIME_WORDS =
-  /\b(?:second|minute|hour|day|week|month|quarter|year|period|ytd)s?\b/iu;
+/**
+ * A phrase that is ENTIRELY a time expression, rather than one that merely
+ * mentions a unit. "the last 2 quarters" is a window; "travel for the quarter"
+ * names a category and happens to say when. Testing for a time word anywhere
+ * suppressed the second along with the first.
+ */
+const TIME_WINDOW =
+  /^(?:the\s+)?(?:last|past|previous|next|first|latest|this|current)?\s*\d*\s*(?:second|minute|hour|day|week|month|quarter|year|period|ytd)s?$/iu;
 
 function normalise(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/gu, " ");
@@ -169,24 +187,28 @@ function escapeRegExp(value: string): string {
 
 /** RULE: a time window is a period, never a category filter. */
 function isTimeWindow(phrase: string): boolean {
-  return TIME_WORDS.test(phrase) || parsePeriodHeader(phrase) !== null;
+  return TIME_WINDOW.test(phrase.trim()) || parsePeriodHeader(phrase) !== null;
 }
 
 /**
- * The values a filter may name.
+ * The values a filter may name in a column.
  *
- * RULE: only values the profile actually lists. A profile shows a handful of
- * samples, so a value beyond them cannot be filtered; the phrase then matches
- * nothing and no filter is emitted, rather than a guess being made.
+ * RULE: only values that are actually listed. Where the caller has the column's
+ * distinct values, all of them; otherwise the profile's five samples, and a
+ * value beyond them simply cannot be filtered.
  */
-function knownValues(column: ColumnProfile): readonly string[] {
-  const listed = (column as ColumnProfile & { readonly values?: readonly string[] })
-    .values;
-  return (listed ?? column.samples).filter((value) => value.trim() !== "");
+export function filterValues(
+  table: TableSummary,
+  column: ColumnProfile | undefined,
+): readonly string[] {
+  if (column === undefined) return [];
+  return (table.values?.[column.name] ?? column.samples).filter(
+    (value) => value.trim() !== "",
+  );
 }
 
 /**
- * The category values a phrase names.
+ * The values a phrase names.
  *
  * RULE: a phrase names a value only by saying the whole of it — as the whole
  * phrase, or as whole words within it. Never a substring in either direction,
@@ -194,12 +216,11 @@ function knownValues(column: ColumnProfile): readonly string[] {
  */
 export function matchValues(
   phrase: string,
-  column: ColumnProfile | undefined,
+  values: readonly string[],
 ): string[] {
-  if (column === undefined) return [];
   const text = normalise(phrase);
   if (text === "" || isTimeWindow(text)) return [];
-  return knownValues(column).filter((value) => {
+  return values.filter((value) => {
     const target = normalise(value);
     if (target === "") return false;
     if (target === text) return true;
@@ -211,18 +232,22 @@ export function matchValues(
 }
 
 /**
- * "exclude X", "without X", "only X", "just X", "drop X" where X names category
- * values the profile lists. The phrase stops at punctuation or a joining word.
+ * "exclude X", "without X", "only X", "just X", "drop X", where X names values
+ * the column lists. A phrase that names none of them emits no filter.
  */
 export function readFilters(
   text: string,
   category: ColumnProfile | undefined,
+  known?: readonly string[],
 ): Filter[] {
   if (category === undefined) return [];
+  const listed = (known ?? category.samples).filter(
+    (value) => value.trim() !== "",
+  );
   const filters: Filter[] = [];
   for (const match of text.matchAll(FILTER_PHRASE)) {
     const keyword = (match[1] as string).toLowerCase();
-    const values = matchValues(match[2] as string, category);
+    const values = matchValues(match[2] as string, listed);
     if (values.length === 0) continue;
     const op = INCLUDE_WORDS.has(keyword) ? "include" : "exclude";
     const existing = filters.find((filter) => filter.op === op);
@@ -349,7 +374,7 @@ export function defaultPlan(
       "Totals first, then the breakdown by category and the rows behind it.",
     roles,
     grain,
-    filters: readFilters(requestText, category),
+    filters: readFilters(requestText, category, filterValues(table, category)),
     ...(last === undefined ? {} : { lastPeriods: last.count }),
     pages,
   };

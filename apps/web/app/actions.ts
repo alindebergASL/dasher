@@ -12,7 +12,6 @@ import {
 } from "@dasher/dashboard-schema";
 import {
   describePlan,
-  PlanRejected,
   runTablePlanner,
   TablePlanSchema,
   type PlanningProvider,
@@ -23,7 +22,7 @@ import { headers } from "next/headers";
 
 import { evidenceCitations, persistedClaims } from "./claims";
 import { getPool, isPersistenceConfigured } from "./database";
-import { planner, PlannerBudgetExceeded } from "./planner-config";
+import { buildFailureMessage, planner } from "./planner-config";
 import {
   REFINEMENT_MAX_LENGTH,
   REQUEST_MAX_LENGTH,
@@ -253,22 +252,6 @@ function readRefinement(
 
 function samePlan(one: TablePlan, two: TablePlan): boolean {
   return JSON.stringify(one) === JSON.stringify(two);
-}
-
-function buildFailureMessage(error: unknown): string {
-  // The reader gets a sentence; the operator needs the cause. Without this a
-  // provider outage is indistinguishable from a bad request in the logs.
-  if (!(error instanceof PlanRejected)) {
-    console.error("dashboard build failed", error);
-  }
-  if (error instanceof PlannerBudgetExceeded) {
-    return "Dasher has used today's planning budget. Try again tomorrow, or switch to the built-in planner.";
-  }
-  if (error instanceof PlanRejected) {
-    const first = error.findings[0];
-    return `Dasher could not build a dashboard it could stand behind for that request.${first === undefined ? "" : ` ${first.message}`}`;
-  }
-  return "Something went wrong building that dashboard. Try rewording the request.";
 }
 
 async function persist(

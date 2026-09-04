@@ -54,7 +54,11 @@ function direction(
 }
 
 /** RULE: a truncated ranking says what it left out. */
-export function rankingTitle(title: string, shown: number, total: number): string {
+export function rankingTitle(
+  title: string,
+  shown: number,
+  total: number,
+): string {
   return total > shown
     ? `${title} (largest ${String(shown)} of ${String(total)})`
     : title;
@@ -79,7 +83,8 @@ function changeText(facts: TableFacts, money: MoneyFormat): string | undefined {
 /** The rows behind every figure labelled with the window: the latest period's. */
 function windowRows(facts: TableFacts): number {
   return facts.rows.filter(
-    (row) => facts.latestPeriod === undefined || row.period === facts.latestPeriod,
+    (row) =>
+      facts.latestPeriod === undefined || row.period === facts.latestPeriod,
   ).length;
 }
 

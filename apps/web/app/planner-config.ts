@@ -3,6 +3,7 @@ import "server-only";
 import {
   AnthropicPlanningProvider,
   FakePlanningProvider,
+  PlanRejected,
   type PlanningProvider,
   type PlanningRequest,
 } from "@dasher/planner";
@@ -97,4 +98,27 @@ export function planner(): PlanningProvider {
   const created = plannerFromEnv();
   carrier[PLANNER_KEY] = created;
   return created;
+}
+
+/** The sentence a reader gets when a build fails, and why. */
+export function buildFailureMessage(error: unknown): string {
+  // The reader gets a sentence; the operator needs the cause. Without this a
+  // provider outage is indistinguishable from a bad request in the logs.
+  if (!(error instanceof PlanRejected)) {
+    console.error("dashboard build failed", error);
+  }
+  // The planner turns a provider throw into a failed attempt and reports the
+  // original on `cause` once the attempts run out, so the budget is only
+  // recognisable through the wrapper.
+  if (error instanceof PlanRejected && error.cause !== undefined) {
+    return buildFailureMessage(error.cause);
+  }
+  if (error instanceof PlannerBudgetExceeded) {
+    return "Dasher has used today's planning budget. Try again tomorrow, or switch to the built-in planner.";
+  }
+  if (error instanceof PlanRejected) {
+    const first = error.findings[0];
+    return `Dasher could not build a dashboard it could stand behind for that request.${first === undefined ? "" : ` ${first.message}`}`;
+  }
+  return "Something went wrong building that dashboard. Try rewording the request.";
 }

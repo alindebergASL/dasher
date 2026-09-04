@@ -272,6 +272,14 @@ describe("readFilters", () => {
     expect(readFilters("excluding stationery", category())).toEqual([]);
   });
 
+  it("filters a value beyond the samples once the values are listed", () => {
+    const table = travelTable();
+    const values = table.rows.map((row) => row[1] as string);
+    expect(
+      readFilters("only E", columnNamed(table, "Category"), values),
+    ).toEqual([{ column: "Category", op: "include", values: ["E"] }]);
+  });
+
   it("never turns a time window into a category filter", () => {
     expect(readFilters("just the last 2 quarters", category())).toEqual([]);
     expect(readFilters("only the last 3 months", category())).toEqual([]);

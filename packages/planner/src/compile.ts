@@ -296,19 +296,28 @@ function notice(
   return `Built from ${options.source.name} (${plural(options.source.rowCount, "row", "rows")}), reading ${read.join(", ")}. ${plural(facts.skipped, "row was", "rows were")} skipped because ${facts.skipped === 1 ? "its" : "their"} amount or period could not be read.`;
 }
 
-/** What emptied the table, named so the reader can undo it. */
+/** What actually emptied the table, named so the reader can undo it. */
 function emptyReason(plan: TablePlan, facts: TableFacts): string {
-  const causes = plan.filters.map(
-    (filter) =>
-      `${filter.op === "include" ? "keeping only" : "excluding"} ${filter.values
-        .map((value) => `"${value}"`)
-        .join(", ")} in "${filter.column}"`,
-  );
-  if (plan.lastPeriods !== undefined && facts.outsideWindow > 0) {
-    causes.push(`keeping only the last ${String(plan.lastPeriods)} periods`);
+  const removals: string[] = [];
+  if (facts.filteredOut > 0) {
+    removals.push(
+      ...plan.filters.map(
+        (filter) =>
+          `${filter.op === "include" ? "keeping only" : "excluding"} ${filter.values
+            .map((value) => `"${value}"`)
+            .join(", ")} in "${filter.column}"`,
+      ),
+    );
   }
-  if (causes.length > 0) {
-    return `No rows are left after ${causes.join(" and ")}. Ask for a view that keeps some rows.`;
+  if (plan.lastPeriods !== undefined && facts.outsideWindow > 0) {
+    removals.push(`keeping only the last ${String(plan.lastPeriods)} periods`);
+  }
+  const alsoSkipped =
+    facts.skipped === 0
+      ? ""
+      : `, with ${plural(facts.skipped, "row", "rows")} skipped because their amount or period could not be read`;
+  if (removals.length > 0) {
+    return `No rows are left after ${removals.join(" and ")}${alsoSkipped}. Ask for a view that keeps some rows.`;
   }
   return facts.skipped === 0
     ? "The table has no rows to read."

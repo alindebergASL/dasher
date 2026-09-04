@@ -6,6 +6,7 @@ import type { PlanFinding } from "./plan";
 import {
   chooseRoles,
   defaultPlan,
+  filterValues,
   matchValues,
   readFilters,
   readGrain,
@@ -104,12 +105,13 @@ export function applyRefinement(
   const category = table.columns.find(
     (column) => column.name === plan.roles.category,
   );
+  const values = filterValues(table, category);
 
   const drop =
     /\b(?:drop|remove|hide|delete|without the|no more)\b(.*)$/iu.exec(text);
   // RULE: a drop phrase naming a category value filters that value out; only a
   // phrase that names no value removes the section it names.
-  if (drop !== null && matchValues(drop[1] as string, category).length === 0) {
+  if (drop !== null && matchValues(drop[1] as string, values).length === 0) {
     const kinds = namedSections(drop[1] as string);
     const pages = dropSections(plan.pages, kinds);
     if (kinds.length > 0 && pages.length > 0) {
@@ -128,7 +130,7 @@ export function applyRefinement(
     }
   }
 
-  const filters = readFilters(text, category);
+  const filters = readFilters(text, category, values);
   if (filters.length > 0) {
     const kept = plan.filters.filter(
       (filter) =>

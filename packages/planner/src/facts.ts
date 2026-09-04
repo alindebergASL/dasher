@@ -229,7 +229,9 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     const budgetText =
       budgetAt === undefined
         ? null
-        : parseAmount(cells[budgetAt] ?? "", { decimal: budgetColumn?.decimal });
+        : parseAmount(cells[budgetAt] ?? "", {
+            decimal: budgetColumn?.decimal,
+          });
     const period =
       periodAt === undefined
         ? undefined

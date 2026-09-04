@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { matchValues } from "./fake-heuristics";
 import { findMeasurement, findPlanProblems, PlanRejected } from "./plan";
 import type { TablePlan } from "./table-plan";
 import { flatTable, transactionsTable, wideTable } from "./test-tables";
@@ -118,7 +119,10 @@ describe("findPlanProblems", () => {
         roles: { ...base.roles, category: "Amount", label: "Date" },
       }),
     ).toEqual(
-      expect.arrayContaining(["role_type@roles.category", "role_type@roles.label"]),
+      expect.arrayContaining([
+        "role_type@roles.category",
+        "role_type@roles.label",
+      ]),
     );
   });
 
@@ -170,10 +174,7 @@ describe("findPlanProblems", () => {
         title: "Q3: we spent 89000, up twenty percent",
         framing: "Half the budget is gone",
       }),
-    ).toEqual([
-      "free_text_measurement@title",
-      "free_text_measurement@framing",
-    ]);
+    ).toEqual(["free_text_measurement@title", "free_text_measurement@framing"]);
   });
 
   it("works on a table without a period column", () => {
@@ -244,4 +245,34 @@ it("PlanRejected carries its findings and a readable message", () => {
   expect(error.findings).toHaveLength(1);
   expect(error.message).toContain("roles.amount");
   expect(error.name).toBe("PlanRejected");
+});
+
+describe("a filter phrase containing a joining word", () => {
+  // "Salaries and benefits", "Travel and events", "Research and development":
+  // stopping the phrase at "and" reads the first word only, matches no
+  // category, and silently does nothing while reporting success.
+  it("matches a category value whose own name contains 'and'", () => {
+    expect(
+      matchValues("salaries and benefits", [
+        "Salaries and benefits",
+        "Marketing",
+      ]),
+    ).toEqual(["Salaries and benefits"]);
+  });
+
+  it("still matches a single category named before a joining word", () => {
+    expect(
+      matchValues("travel for the quarter", ["Travel", "Marketing"]),
+    ).toEqual(["Travel"]);
+  });
+
+  it("matches each category an instruction names", () => {
+    expect(
+      matchValues("travel and marketing", ["Travel", "Marketing", "Rent"]),
+    ).toEqual(["Travel", "Marketing"]);
+  });
+
+  it("does not match a category the instruction merely contains letters of", () => {
+    expect(matchValues("travel", ["A", "E", "Travel"])).toEqual(["Travel"]);
+  });
 });
