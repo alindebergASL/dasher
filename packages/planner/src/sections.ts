@@ -17,6 +17,7 @@ import {
   formatPercent,
   formatSignedMoney,
   formatSignedPercent,
+  plural,
   type MoneyFormat,
 } from "./arith";
 import { largestCategories, type FactRow, type TableFacts } from "./facts";
@@ -75,6 +76,13 @@ function changeText(facts: TableFacts, money: MoneyFormat): string | undefined {
   return `${formatSignedMoney(facts.change, money)}${pct} vs ${periodLabel(facts.previousPeriod)}`;
 }
 
+/** The rows behind every figure labelled with the window: the latest period's. */
+function windowRows(facts: TableFacts): number {
+  return facts.rows.filter(
+    (row) => facts.latestPeriod === undefined || row.period === facts.latestPeriod,
+  ).length;
+}
+
 function rowLabel(row: FactRow): string {
   const label = row.label?.trim();
   if (label !== undefined && label !== "") return label;
@@ -87,7 +95,7 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
   const window = windowLabel(facts);
   const claims: { text: string; evidenceIds: string[] }[] = [
     {
-      text: `Total for ${window} is ${formatMoney(facts.latestTotal, money)} across ${String(facts.rows.filter((row) => facts.latestPeriod === undefined || row.period === facts.latestPeriod).length)} rows.`,
+      text: `Total for ${window} is ${formatMoney(facts.latestTotal, money)} across ${plural(windowRows(facts), "row", "rows")}.`,
       evidenceIds: [...evidenceIds],
     },
   ];
@@ -112,7 +120,7 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
       text:
         over.length === 0
           ? "Every budgeted line is within budget."
-          : `${String(over.length)} of ${String(facts.budget.length)} budgeted lines are over budget.`,
+          : `${String(over.length)} of ${plural(facts.budget.length, "budgeted line is", "budgeted lines is")} over budget.`,
       evidenceIds: [...evidenceIds],
     });
   }
@@ -150,9 +158,11 @@ function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
       evidenceIds: ids,
     });
   }
+  // RULE: a count is labelled with the window it counts, so it cannot read as a
+  // contradiction of the total beside it.
   metrics.push({
-    label: "Rows counted",
-    value: String(facts.rows.length),
+    label: `Rows counted, ${windowLabel(facts)}`,
+    value: String(windowRows(facts)),
     evidenceIds: ids,
   });
   if (facts.categories.length > 0) {

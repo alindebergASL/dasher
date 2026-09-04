@@ -90,6 +90,11 @@ export function allocatePercents(parts_: readonly Exact[]): Exact[] {
   return tenths.map((value) => fromScaled(value, 1));
 }
 
+/** RULE: a count and the words around it agree, so "1 row" never reads "1 rows". */
+export function plural(count: number, one: string, many: string): string {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
+
 /** How a reader sees money: a currency symbol from Intl, exact digits. */
 export interface MoneyFormat {
   readonly currency?: string;

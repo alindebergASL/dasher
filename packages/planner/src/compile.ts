@@ -15,6 +15,7 @@ import {
   formatMoney,
   formatSignedMoney,
   formatSignedPercent,
+  plural,
   type MoneyFormat,
 } from "./arith";
 import { computeFacts, type TableFacts } from "./facts";
@@ -40,11 +41,6 @@ export interface CompileOptions {
   readonly asOf: string;
   readonly planner: { readonly id: string; readonly usesModel: boolean };
   readonly source: CompileSource;
-}
-
-/** RULE: a count and the words around it agree, so "1 row" never reads "1 rows". */
-function plural(count: number, one: string, many: string): string {
-  return `${String(count)} ${count === 1 ? one : many}`;
 }
 
 function moneyFormat(

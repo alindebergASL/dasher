@@ -36,13 +36,13 @@ export function profileTable(
     rows.map((row) => row[index] ?? ""),
   );
   /*
-   * A comma decimal mark anywhere in the file says which locale wrote it, and
-   * that locale writes the day first. A ledger stamped on the first of every
-   * month holds no date that says so on its own, so this is the only evidence
-   * there is that its months are not all January.
+   * A column of amounts written with a comma decimal mark says which locale
+   * wrote the file, and that locale writes the day first. A ledger stamped on
+   * the first of every month holds no date that says so on its own, so this is
+   * the only evidence there is that its months are not all January.
    */
-  const european = cells.some(
-    (column) => decimalConvention(column) === "comma",
+  const european = cells.some((column) =>
+    readsAsCommaAmounts(column, options.typeThreshold ?? DEFAULT_THRESHOLD),
   );
   const dates = options.dates ?? (european ? "day-first" : "month-first");
   const columns = csv.headers.map((name, index) =>
@@ -98,7 +98,7 @@ export function profileColumn(
   return profile;
 }
 
-/** A column that is amounts, and whose amounts put the comma where the point goes. */
+/** Amounts, and amounts that put the comma where a decimal point would go. */
 function readsAsCommaAmounts(
   cells: readonly string[],
   threshold: number,
