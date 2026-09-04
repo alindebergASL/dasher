@@ -1,10 +1,8 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const fixtures = path.resolve(here, "../../../fixtures/sample");
+const fixtures = path.resolve(process.cwd(), "..", "..", "fixtures", "sample");
 
 test.describe("uploading a spreadsheet", () => {
   test("a transactions export becomes a dashboard", async ({ page }) => {
@@ -19,7 +17,7 @@ test.describe("uploading a spreadsheet", () => {
     await expect(
       page.getByRole("button", { name: "Build dashboard" }),
     ).toBeEnabled();
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(page.getByRole("status").first()).toContainText(/Amount/);
     await expect(page.getByText(/Salaries and benefits/).first()).toBeVisible();
   });
@@ -36,7 +34,7 @@ test.describe("uploading a spreadsheet", () => {
     await expect(
       page.getByRole("button", { name: "Build dashboard" }),
     ).toBeEnabled();
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(page.getByText(/Cloud infrastructure/).first()).toBeVisible();
   });
 
@@ -53,7 +51,9 @@ test.describe("uploading a spreadsheet", () => {
       .getByRole("textbox", { name: "What do you want to see?" })
       .fill("Anything");
     await page.getByRole("button", { name: "Build dashboard" }).click();
-    await expect(page.getByRole("alert")).toContainText(/could not be read/i);
+    await expect(page.locator(".request-error")).toContainText(
+      /could not be read/i,
+    );
   });
 
   test("a refinement re-reads the uploaded file", async ({ page }) => {
@@ -75,7 +75,7 @@ test.describe("uploading a spreadsheet", () => {
     await expect(
       page.getByRole("button", { name: "Apply change" }),
     ).toBeEnabled();
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(page.getByText(/Salaries and benefits/)).toHaveCount(0);
   });
 });

@@ -223,7 +223,25 @@ export function supported(
   });
 }
 
-function titleFrom(sourceName: string): string {
+/** A title that reflects what was asked, falling back to the file's name. */
+function titleFrom(
+  requestText: string,
+  sourceName: string,
+  roles: Roles,
+): string {
+  const asked = requestText.toLowerCase();
+  if (roles.budget !== undefined && /budget|variance|over\b/u.test(asked)) {
+    return "Budget check";
+  }
+  if (/largest|biggest|top\b|movers?/u.test(asked)) {
+    return "Largest items and biggest movers";
+  }
+  if (/trend|over time|month by month|quarter|year/u.test(asked)) {
+    return "Spend over time";
+  }
+  if (/categor|where.*going|breakdown|mix/u.test(asked)) {
+    return "Where the money goes";
+  }
   const stem = sourceName
     .replace(/\.[a-z0-9]+$/iu, "")
     .replace(/[-_]+/gu, " ")
@@ -276,7 +294,7 @@ export function defaultPlan(
 
   return {
     planVersion: "table-plan-v1",
-    title: titleFrom(sourceName),
+    title: titleFrom(requestText, sourceName, roles),
     audience: "Whoever asked for this view of the file",
     framing:
       "Totals first, then the breakdown by category and the rows behind it.",

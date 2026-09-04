@@ -8,6 +8,15 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:3100",
     trace: "retain-on-failure",
+    // Lets a sandbox with a preinstalled browser run the suite without a
+    // download. Unset in CI, where Playwright installs its own.
+    ...(process.env["PLAYWRIGHT_CHROMIUM_PATH"]
+      ? {
+          launchOptions: {
+            executablePath: process.env["PLAYWRIGHT_CHROMIUM_PATH"],
+          },
+        }
+      : {}),
   },
   webServer: {
     command: "pnpm start --hostname 127.0.0.1 --port 3100",

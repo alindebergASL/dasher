@@ -25,7 +25,7 @@ test.describe("the sample dashboard", () => {
       .textContent();
     await page
       .getByRole("textbox", { name: "What do you want to see?" })
-      .fill("Which lines are over budget?");
+      .fill("Largest transactions and the biggest movers");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
       page.getByRole("button", { name: "Build dashboard" }),
@@ -33,6 +33,9 @@ test.describe("the sample dashboard", () => {
     await expect(
       page.getByRole("heading", { level: 1 }).first(),
     ).not.toHaveText(before ?? "");
+    await expect(
+      page.getByRole("heading", { name: "Largest rows" }).first(),
+    ).toBeVisible();
   });
 
   test("a refinement changes the plan and leaves the rest", async ({
@@ -46,7 +49,7 @@ test.describe("the sample dashboard", () => {
     await expect(
       page.getByRole("button", { name: "Apply change" }),
     ).toBeEnabled();
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(
       page
         .getByRole("navigation", { name: "Dashboard pages" })
@@ -60,6 +63,6 @@ test.describe("the sample dashboard", () => {
       .getByRole("textbox", { name: "What do you want to see?" })
       .fill("");
     await page.getByRole("button", { name: "Build dashboard" }).click();
-    await expect(page.getByRole("alert")).toContainText(/say what/i);
+    await expect(page.locator(".request-error")).toContainText(/say what/i);
   });
 });

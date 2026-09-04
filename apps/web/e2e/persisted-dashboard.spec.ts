@@ -1,10 +1,8 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const fixtures = path.resolve(here, "../../../fixtures/sample");
+const fixtures = path.resolve(process.cwd(), "..", "..", "fixtures", "sample");
 const persistenceConfigured =
   (process.env["DASHER_DATABASE_URL"] ?? "").trim() !== "";
 
