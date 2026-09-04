@@ -117,6 +117,34 @@ async function asTenant<T>(
 }
 
 /** Asserts the database refused the operation, whatever the SQLSTATE. */
+/** Returned by `capture` when the operation resolved instead of rejecting. */
+const RESOLVED = Symbol("the operation resolved");
+
+/**
+ * Captures an operation's outcome at the moment the promise is created.
+ *
+ * A promise that rejects before any handler is attached makes Node report an
+ * unhandled rejection, which fails the whole run even when every assertion
+ * passes. Attaching here rather than at the assertion means the outcome is
+ * held, not raced for.
+ */
+function capture(operation: Promise<unknown>): Promise<unknown> {
+  return operation.then(
+    () => RESOLVED,
+    (error: unknown) => error,
+  );
+}
+
+/** The assertion `expectRejected` makes, against an outcome already captured. */
+function expectCapturedRejection(outcome: unknown): void {
+  expect(outcome).not.toBe(RESOLVED);
+  expect(
+    typeof outcome === "object" &&
+      outcome !== null &&
+      typeof (outcome as { code?: unknown }).code === "string",
+  ).toBe(true);
+}
+
 async function expectRejected(operation: Promise<unknown>): Promise<void> {
   await expect(operation).rejects.toSatisfy(
     (error: unknown) =>
@@ -1436,17 +1464,26 @@ describe("authority and establishment", () => {
         [sessionId],
       );
 
-      // begin_request now blocks behind that lock.
+      // begin_request now blocks behind that lock. Its outcome is captured as
+      // the promise is created: it settles the moment the commit below releases
+      // the lock, which is before an assertion written after that commit could
+      // attach a handler.
       await attacker.query("BEGIN");
-      const establishing = attacker.query(
-        "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
-        [1, raw],
+      const establishing = capture(
+        attacker.query(
+          "SELECT * FROM dasher_api.begin_request($1::smallint, $2)",
+          [1, raw],
+        ),
       );
 
       await new Promise((resolve) => setTimeout(resolve, 300));
       await revoker.query("COMMIT");
+      // Let the release settle the blocked statement before the assertion runs.
+      // Without this the ordering is the scheduler's to choose, and the run
+      // that chose the other one was CI's, not a local one.
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      await expectRejected(establishing);
+      expectCapturedRejection(await establishing);
     } finally {
       await attacker.query("ROLLBACK").catch(() => undefined);
       await revoker.query("ROLLBACK").catch(() => undefined);
