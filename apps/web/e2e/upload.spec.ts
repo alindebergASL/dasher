@@ -22,8 +22,8 @@ test.describe("uploading a spreadsheet", () => {
       page.getByRole("region", { name: "Dataset interpretation" }),
     ).toContainText(/Amount/);
     await expect(
-      page.getByText("Displayed dashboard: transactions.csv."),
-    ).toBeVisible();
+      page.getByRole("status", { name: "Data source" }),
+    ).toContainText("Using transactions.csv.");
     await expect(page.getByText(/Salaries and benefits/).first()).toBeVisible();
   });
 

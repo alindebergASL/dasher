@@ -140,12 +140,12 @@ describe("RequestWorkspace", () => {
       "type",
       "file",
     );
+    const sourceStatus = screen.getByRole("status", { name: "Data source" });
+    expect(sourceStatus).toHaveTextContent(/Using sample data/iu);
+    expect(sourceStatus).toHaveClass("sr-only");
     expect(
-      screen.getByRole("status", { name: "Data source" }),
-    ).toHaveTextContent(/Next build: sample data/iu);
-    expect(
-      screen.getByText(/Displayed dashboard: sample data/iu),
-    ).toBeInTheDocument();
+      screen.queryByText(/Displayed dashboard:/iu),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText(
         /When signed in, uploads are stored as dashboard evidence/iu,
@@ -169,25 +169,26 @@ describe("RequestWorkspace", () => {
 
     expect(
       screen.getByRole("status", { name: "Data source" }),
-    ).toHaveTextContent(/Next build: uploaded file operations\.csv/iu);
-    expect(
-      screen.getByText(/Displayed dashboard: sample data/iu),
-    ).toBeInTheDocument();
+    ).toHaveTextContent(
+      /Next build: operations\.csv\. Currently showing: sample data/iu,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
     await waitFor(() =>
       expect(
-        screen.getByText(/Displayed dashboard: operations\.csv/iu),
-      ).toBeInTheDocument(),
+        screen.getByRole("status", { name: "Data source" }),
+      ).toHaveTextContent(/Using operations\.csv/iu),
+    );
+    expect(screen.getByRole("status", { name: "Data source" })).toHaveClass(
+      "sr-only",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Use sample data" }));
     expect(
       screen.getByRole("status", { name: "Data source" }),
-    ).toHaveTextContent(/Next build: sample data/iu);
-    expect(
-      screen.getByText(/Displayed dashboard: operations\.csv/iu),
-    ).toBeInTheDocument();
+    ).toHaveTextContent(
+      /Next build: sample data\. Currently showing: operations\.csv/iu,
+    );
   });
 
   it("preserves a long wrapping question without functional truncation", () => {

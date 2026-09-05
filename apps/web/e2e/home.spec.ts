@@ -54,14 +54,13 @@ test.describe("the sample dashboard", () => {
     });
     await expect(
       page.getByRole("status", { name: "Data source" }),
-    ).toContainText("Next build: uploaded file operations.csv");
-    await expect(
-      page.getByText("Displayed dashboard: sample data."),
-    ).toBeVisible();
+    ).toContainText(
+      "Next build: operations.csv. Currently showing: sample data.",
+    );
     await page.getByRole("button", { name: "Use sample data" }).click();
     await expect(
       page.getByRole("status", { name: "Data source" }),
-    ).toContainText("Next build: sample data");
+    ).toContainText("Using sample data.");
 
     const question = page.getByRole("textbox", {
       name: "What should this dashboard answer?",
@@ -70,6 +69,61 @@ test.describe("the sample dashboard", () => {
       "Compare customer growth with headcount by quarter, explain where the relationship changed, and identify the one segment an operator should investigate next without hiding any part of this question.";
     await question.fill(longQuestion);
     await expect(question).toHaveValue(longQuestion);
+  });
+
+  test("keeps headline values inside their mobile cards", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const violations = await page.locator(".metric-card").evaluateAll((cards) =>
+      cards.flatMap((card, index) => {
+        const cardRect = card.getBoundingClientRect();
+        const value = card.querySelector("strong")?.getBoundingClientRect();
+        return value !== undefined && value.right > cardRect.right + 0.5
+          ? [String(index)]
+          : [];
+      }),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  test("keeps trend labels, values, and evidence inside their cards", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const cards = page.locator(".trend-card");
+    await expect(cards.first()).toBeVisible();
+    const violations = await cards.evaluateAll((nodes) =>
+      nodes.flatMap((node, cardIndex) => {
+        const card = node.getBoundingClientRect();
+        const parts = [
+          ...node.querySelectorAll(
+            ":scope > div > strong, :scope > div > span, :scope > div > .item-evidence",
+          ),
+        ];
+        const rects = parts.map((part) => part.getBoundingClientRect());
+        const failures = [];
+        for (const [index, rect] of rects.entries()) {
+          if (rect.left < card.left - 0.5 || rect.right > card.right + 0.5) {
+            failures.push(`${String(cardIndex)}:${String(index)}:outside`);
+          }
+          for (let other = index + 1; other < rects.length; other += 1) {
+            const next = rects[other]!;
+            const overlaps =
+              rect.left < next.right &&
+              rect.right > next.left &&
+              rect.top < next.bottom &&
+              rect.bottom > next.top;
+            if (overlaps) {
+              failures.push(
+                `${String(cardIndex)}:${String(index)}-${String(other)}:overlap`,
+              );
+            }
+          }
+        }
+        return failures;
+      }),
+    );
+    expect(violations).toEqual([]);
   });
 
   test("builds a different dashboard for a different request", async ({

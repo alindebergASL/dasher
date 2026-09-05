@@ -36,6 +36,22 @@ type DisplayedSource =
   | { readonly kind: "sample" }
   | { readonly kind: "upload"; readonly name?: string };
 
+function sameSource(left: DisplayedSource, right: DisplayedSource): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind === "sample" ||
+      (right.kind === "upload" && left.name === right.name))
+  );
+}
+
+function sourceDescription(source: DisplayedSource): string {
+  return source.kind === "sample"
+    ? "sample data"
+    : source.name === undefined
+      ? "uploaded data"
+      : source.name;
+}
+
 export function RequestWorkspace({
   initial,
   initialRequest,
@@ -60,6 +76,11 @@ export function RequestWorkspace({
 
   const dashboard = result.dashboard;
   const plan = result.plan;
+  const selectedSource: DisplayedSource =
+    selectedFile === undefined
+      ? { kind: "sample" }
+      : { kind: "upload", name: selectedFile.name };
+  const sourceWillChange = !sameSource(selectedSource, displayedSource);
 
   function currentFile(): File | undefined {
     const file = selectedFile;
@@ -280,14 +301,16 @@ export function RequestWorkspace({
               <p
                 aria-atomic="true"
                 aria-label="Data source"
-                className="source-status"
+                className={sourceWillChange ? "source-status" : "sr-only"}
                 id="dashboard-source-status"
                 role="status"
               >
-                <span aria-hidden="true" className="source-status-dot" />
-                {selectedFile === undefined
-                  ? "Next build: sample data."
-                  : `Next build: uploaded file ${selectedFile.name}.`}
+                {sourceWillChange ? (
+                  <span aria-hidden="true" className="source-status-dot" />
+                ) : null}
+                {sourceWillChange
+                  ? `Next build: ${sourceDescription(selectedSource)}. Currently showing: ${sourceDescription(displayedSource)}.`
+                  : `Using ${sourceDescription(selectedSource)}.`}
               </p>
               {selectedFile === undefined ? null : (
                 <button
@@ -299,14 +322,6 @@ export function RequestWorkspace({
                 </button>
               )}
             </div>
-            <p className="source-current">
-              Displayed dashboard:{" "}
-              {displayedSource.kind === "sample"
-                ? "sample data."
-                : displayedSource.name === undefined
-                  ? "uploaded data."
-                  : `${displayedSource.name}.`}
-            </p>
             <p className="source-hint">
               Files are sent to the server for validation. When signed in,
               uploads are stored as dashboard evidence.
