@@ -16,6 +16,14 @@ export const DEFAULT_REQUEST =
 /** Which bytes a dashboard was built from, so a refinement can rebuild it. */
 export type SourceRef = { kind: "sample" } | { kind: "upload" };
 
+/** A source-neutral read of the canonical dataset, shown before the result. */
+export interface DatasetInterpretation {
+  readonly primaryMeasure: string;
+  readonly period: string;
+  readonly otherMeasures: readonly string[];
+  readonly identifiers: readonly string[];
+}
+
 export interface PlanResult {
   ok: boolean;
   dashboard?: DashboardSpec;
@@ -23,6 +31,8 @@ export interface PlanResult {
   plan?: TablePlan;
   /** One sentence on how the file was read: which column played which part. */
   mapping?: string;
+  /** The trusted semantic roles a reader can inspect and correct. */
+  interpretation?: DatasetInterpretation;
   source?: SourceRef;
   /** Present when `ok` is false. Written for the person who asked. */
   error?: string;

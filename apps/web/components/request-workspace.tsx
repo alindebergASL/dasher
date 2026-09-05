@@ -42,6 +42,7 @@ export function RequestWorkspace({
   const [version, setVersion] = useState(0);
   const [pending, startTransition] = useTransition();
   const fileInput = useRef<HTMLInputElement>(null);
+  const changeInput = useRef<HTMLInputElement>(null);
 
   const dashboard = result.dashboard;
   const plan = result.plan;
@@ -118,6 +119,7 @@ export function RequestWorkspace({
           </label>
           <input
             accept=".csv,text/csv,text/tab-separated-values"
+            aria-label="Your spreadsheet (CSV)"
             className="upload-file"
             id="dashboard-file"
             name="file"
@@ -138,6 +140,7 @@ export function RequestWorkspace({
         </label>
         <div className="request-row">
           <input
+            aria-label="What do you want to see?"
             autoComplete="off"
             className="request-input"
             id="dashboard-request"
@@ -171,12 +174,18 @@ export function RequestWorkspace({
             {error}
           </p>
         ) : null}
-        <p className="request-note" role="status">
-          {result.mapping ?? ""}{" "}
+        <span aria-label="Dashboard update" className="sr-only" role="status">
+          {pending
+            ? "Building dashboard."
+            : version === 0
+              ? ""
+              : `Dashboard updated for ${activeRequest}. Review the dataset interpretation before acting.`}
+        </span>
+        <p aria-label="Planning status" className="request-note" role="status">
           {result.usesModel
-            ? "A planning model chose the layout; it saw column names and samples, never a total."
+            ? "A planning model chose the layout from safe column metadata, never source values or totals."
             : "The built-in planner chose the layout."}{" "}
-          Every number below is computed from the file.
+          Every number below is computed from the dataset.
           {(result.attempts ?? 1) > 1
             ? " The first plan was rejected by Dasher and corrected before anything rendered."
             : ""}{" "}
@@ -185,6 +194,44 @@ export function RequestWorkspace({
           </a>
         </p>
       </form>
+
+      {result.interpretation === undefined ? null : (
+        <section
+          aria-label="Dataset interpretation"
+          className="interpretation-strip"
+        >
+          <div className="interpretation-copy">
+            <span className="interpretation-kicker">Dataset interpreted</span>
+            <p>
+              <strong>{result.interpretation.primaryMeasure}</strong> as the
+              primary measure · <strong>{result.interpretation.period}</strong>{" "}
+              as the period
+              {result.interpretation.otherMeasures.length === 0
+                ? ""
+                : result.interpretation.otherMeasures.length === 1
+                  ? ` · ${result.interpretation.otherMeasures[0]} as a supporting measure`
+                  : ` · ${result.interpretation.otherMeasures.join(", ")} as supporting measures`}
+              {result.interpretation.identifiers.length === 0
+                ? ""
+                : ` · ${result.interpretation.identifiers.join(", ")} as identifiers, codes, or ordinals`}
+            </p>
+          </div>
+          <button
+            className="interpretation-correct"
+            onClick={() => changeInput.current?.focus()}
+            type="button"
+          >
+            Correct interpretation
+          </button>
+        </section>
+      )}
+
+      {dashboard === undefined ? null : (
+        <DashboardShell
+          dashboard={dashboard}
+          key={`${activeRequest}#${String(version)}`}
+        />
+      )}
 
       {plan === undefined ? null : (
         <form
@@ -205,7 +252,8 @@ export function RequestWorkspace({
               maxLength={REFINEMENT_MAX_LENGTH}
               name="change"
               onChange={(event) => setChange(event.target.value)}
-              placeholder="Exclude salaries"
+              placeholder="Use Revenue as the primary measure"
+              ref={changeInput}
               type="text"
               value={change}
             />
@@ -244,13 +292,6 @@ export function RequestWorkspace({
           — it will still be here after a reload.
         </p>
       ) : null}
-
-      {dashboard === undefined ? null : (
-        <DashboardShell
-          dashboard={dashboard}
-          key={`${activeRequest}#${String(version)}`}
-        />
-      )}
     </div>
   );
 }

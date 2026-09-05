@@ -32,6 +32,7 @@ export {
   type PlanningRevision,
   type PlanningTable,
 } from "./provider";
+export { NoSafeMeasureError } from "./fake-heuristics";
 export {
   compileTablePlan,
   type CompileOptions,

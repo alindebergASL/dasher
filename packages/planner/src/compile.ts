@@ -135,7 +135,7 @@ function evidence(
       sourceName: options.planner.id,
       retrievedAt: options.asOf,
       detail:
-        "A planning model chose the column roles and layout; it saw column names and samples, never totals.",
+        "A planning model chose the column roles and layout from safe profile metadata; it never saw source values or totals.",
       confidence: "medium",
     });
   }
@@ -213,7 +213,7 @@ function architecture(
         id: "plan",
         kind: "ai" as const,
         label: "Planning model",
-        detail: `${options.planner.id} chose column roles and layout from column names and samples.`,
+        detail: `${options.planner.id} chose column roles and layout from safe column metadata without source values.`,
       }
     : {
         id: "plan",
@@ -378,9 +378,13 @@ export function compileTablePlan(
     generatedAt: options.asOf,
     dataMode: "live",
     freshness: {
-      status: "fresh",
-      label: `As of ${options.asOf.slice(0, 10)}`,
-      latestObservationAt: options.source.retrievedAt,
+      // An upload is a bounded snapshot. Its latest period is known, but the
+      // file does not prove that period is complete or still current.
+      status: "partial",
+      label:
+        facts.latestPeriod === undefined
+          ? `Built ${options.asOf.slice(0, 10)}`
+          : `Data through ${periodLabel(facts.latestPeriod)}`,
     },
     nextAction: {
       title: "Open the evidence",

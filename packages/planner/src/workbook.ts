@@ -22,6 +22,7 @@ export {
   toFixed,
   ZERO,
   type ColumnProfile,
+  type ColumnSemanticKind,
   type ColumnType,
   type Exact,
   type Grain,

@@ -12,7 +12,6 @@ import { z } from "zod";
 import { SYSTEM_PROMPT, requestMessage } from "./prompt";
 import type { PlanningProvider, PlanningRequest } from "./provider";
 import { TablePlanSchema } from "./table-plan";
-import { parsePeriodHeader } from "./workbook";
 
 export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3";
 export const DEFAULT_OPENROUTER_BASE_URL =
@@ -80,31 +79,21 @@ function schemaFor(request: PlanningRequest): JsonSchemaNode {
   }
 
   const names = request.table.columns.map((column) => column.name);
-  const numbers = request.table.columns
-    .filter((column) => column.type === "number")
+  const measures = request.table.columns
+    .filter((column) => column.semanticKind === "measure")
     .map((column) => column.name);
   const text = request.table.columns
-    .filter((column) => column.type === "text")
+    .filter((column) => column.semanticKind === "dimension")
     .map((column) => column.name);
   const periods = request.table.columns
-    .filter((column) => {
-      if (column.type === "date") return true;
-      if (request.table.unpivoted === true && column.name === "period") {
-        return true;
-      }
-      const samples = column.samples.filter((sample) => sample !== "");
-      return (
-        samples.length > 0 &&
-        samples.every((sample) => parsePeriodHeader(sample) !== null)
-      );
-    })
+    .filter((column) => column.semanticKind === "period")
     .map((column) => column.name);
 
   for (const role of ["amount", "budget"] as const) {
     const node = roles[role];
     if (node === undefined)
       throw new OpenRouterPlanningError("Dasher plan schema is incomplete");
-    node.enum = numbers;
+    node.enum = measures;
   }
   for (const role of ["category", "label", "account"] as const) {
     const node = roles[role];

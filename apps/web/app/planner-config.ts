@@ -4,6 +4,7 @@ import {
   AnthropicPlanningProvider,
   DEFAULT_OPENROUTER_MODEL,
   FakePlanningProvider,
+  NoSafeMeasureError,
   OpenRouterPlanningProvider,
   PlanRejected,
   type OpenRouterReasoningEffort,
@@ -133,6 +134,9 @@ export function planner(): PlanningProvider {
 
 /** The sentence a reader gets when a build fails, and why. */
 export function buildFailureMessage(error: unknown): string {
+  if (error instanceof NoSafeMeasureError) {
+    return "Dasher couldn't find a measure it can safely total. Add or clearly name an amount, revenue, cost, budget, count, quantity, balance, rate, or units column and try again.";
+  }
   // The reader gets a sentence; the operator needs the cause. Without this a
   // provider outage is indistinguishable from a bad request in the logs.
   if (!(error instanceof PlanRejected)) {

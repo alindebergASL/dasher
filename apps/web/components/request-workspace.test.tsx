@@ -18,6 +18,12 @@ beforeAll(async () => {
     dashboard: built.dashboard,
     plan: built.plan,
     mapping: "Read Amount as the figure and Category as the grouping.",
+    interpretation: {
+      primaryMeasure: "Amount",
+      period: "Date",
+      otherMeasures: [],
+      identifiers: [],
+    },
     source: { kind: "sample" },
     attempts: 1,
     usesModel: false,
@@ -35,12 +41,14 @@ function lastForm(): FormData {
 }
 
 describe("RequestWorkspace", () => {
-  it("renders the initial dashboard and how the file was read", () => {
+  it("renders the initial dashboard and one dataset interpretation", () => {
     render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
     expect(
       screen.getByRole("heading", { level: 1, name: initial.dashboard!.title }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Read Amount as the figure/u)).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Dataset interpretation" }),
+    ).toHaveTextContent(/Amount as the primary measure/iu);
     expect(screen.getByText(/built-in planner/u)).toBeInTheDocument();
   });
 

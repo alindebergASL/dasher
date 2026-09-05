@@ -18,7 +18,9 @@ test.describe("uploading a spreadsheet", () => {
       page.getByRole("button", { name: "Build dashboard" }),
     ).toBeEnabled();
     await expect(page.locator(".request-error")).toHaveCount(0);
-    await expect(page.getByRole("status").first()).toContainText(/Amount/);
+    await expect(
+      page.getByRole("region", { name: "Dataset interpretation" }),
+    ).toContainText(/Amount/);
     await expect(page.getByText(/Salaries and benefits/).first()).toBeVisible();
   });
 

@@ -4,11 +4,11 @@
  * support, or writes a figure into reader-facing text is returned as findings
  * the planner can repair, never compiled.
  */
-import {
-  parsePeriodHeader,
-  type ColumnProfile,
-  type ColumnType,
-  type Table,
+import type {
+  ColumnProfile,
+  ColumnSemanticKind,
+  ColumnType,
+  Table,
 } from "./workbook";
 import type { TablePlan, TableSectionKind } from "./table-plan";
 
@@ -70,20 +70,25 @@ const ROLE_TYPE: Readonly<Partial<Record<RoleName, ColumnType>>> = {
   account: "text",
 };
 
-/** A column that can play the period role: a date, or cells that name periods. */
+/** The semantic boundary is authoritative for every non-period plan role. */
+const ROLE_SEMANTIC: Readonly<Partial<Record<RoleName, ColumnSemanticKind>>> = {
+  amount: "measure",
+  budget: "measure",
+  category: "dimension",
+  label: "dimension",
+  account: "dimension",
+};
+
+/** A column that canonical profiling classified as a period. */
 export function isPeriodColumn(column: ColumnProfile, table: Table): boolean {
-  if (column.type === "date") return true;
+  if (column.semanticKind === "period") return true;
   if (
     table.unpivoted !== undefined &&
     column.name === table.unpivoted.periodColumn
   ) {
     return true;
   }
-  const filled = column.samples.filter((sample) => sample !== "");
-  return (
-    filled.length > 0 &&
-    filled.every((sample) => parsePeriodHeader(sample) !== null)
-  );
+  return false;
 }
 
 function checkRoles(
@@ -112,6 +117,14 @@ function checkRoles(
         code: "role_type",
         path: `roles.${role}`,
         message: `"${name}" is a ${column.type} column; the ${role} role needs a ${needed} column.`,
+      });
+    }
+    const semantic = ROLE_SEMANTIC[role];
+    if (semantic !== undefined && column.semanticKind !== semantic) {
+      findings.push({
+        code: "role_type",
+        path: `roles.${role}`,
+        message: `"${name}" is classified as ${column.semanticKind}; the ${role} role needs a semantic ${semantic}.`,
       });
     }
     if (role === "period" && !isPeriodColumn(column, table)) {

@@ -10,6 +10,7 @@ import {
   parseAmount,
   parseDate,
 } from "./parse-values";
+import { classifyColumnSemantic } from "./semantics";
 import type { ColumnProfile, ColumnType, DateConvention, Table } from "./table";
 
 export interface ProfileOptions {
@@ -81,13 +82,20 @@ export function profileColumn(
   }
 
   const type = decideType(nonEmpty, amounts, dated, threshold);
-  const profile: ColumnProfile = {
+  const base = {
     name,
     index,
     type,
     nonEmpty,
     distinct: distinct.size,
     samples: [...distinct].slice(0, SAMPLE_COUNT),
+  };
+  const profile: ColumnProfile = {
+    ...base,
+    semanticKind: classifyColumnSemantic({
+      ...base,
+      ...(currency === undefined ? {} : { currency }),
+    }),
   };
   if (type === "number") {
     return currency === undefined

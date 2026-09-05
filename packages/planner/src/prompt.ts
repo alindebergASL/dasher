@@ -21,24 +21,24 @@ const SECTION_GUIDANCE: Readonly<Record<string, string>> = {
   "budget-variance":
     "lines over budget as alerts, or a note that all are within budget; needs a budget role",
   table:
-    "the first fifty rows as they appear in the file, for readers who want the raw lines",
+    "the first fifty rows as they appear in the dataset, for readers who want the source lines",
 };
 
 export const SYSTEM_PROMPT = `You are Dasher's table planner.
 
-A reader has uploaded a spreadsheet and said what they want to see. You decide how the table is read and how the dashboard is composed. You never report a figure: every number, total, share, change, and alert on the finished dashboard is computed by Dasher from the cells, which you never see. Your plan is validated before anything renders; a plan that breaks a rule is returned to you with structured findings to repair.
+A reader has supplied a dataset and said what they want to see. You decide how the table is read and how the dashboard is composed. You never report a figure: every number, total, share, change, and alert on the finished dashboard is computed by Dasher from source values, which you never see. You receive only safe column metadata and semantic kinds. Your plan is validated before anything renders; a plan that breaks a rule is returned to you with structured findings to repair.
 
 You emit one JSON object. Its planVersion field must be exactly "table-plan-v1".
 
 - title, audience: what to call the dashboard and who it is for.
 - framing: one sentence on how the dashboard is organised; it becomes the summary subtitle.
 - roles: which column plays which part. Names must match the column headers exactly.
-  - amount (required): the number column every total is computed from.
-  - period: a date column, or a column whose cells name periods such as 2026-03 or Q1 2026. Needed for trends, movers, and period-over-period change.
-  - category: a text column with a modest number of distinct values, for grouping.
+  - amount (required): a column whose semanticKind is measure; every total is computed from it. Never use an identifier, code, ordinal, period, dimension, or unknown column.
+  - period: a column whose semanticKind is period. Needed for trends, movers, and period-over-period change.
+  - category: a dimension column with a modest number of distinct values, for grouping.
   - label: a text column that names each row, for the largest-rows section.
   - account: a second grouping column, shown in the table.
-  - budget: a number column holding the budget matching each amount.
+  - budget: a measure column holding the budget matching each amount.
 - grain: month, quarter, or year. Dates are bucketed to it; period names finer than it are rolled up.
 - filters: include or exclude rows whose cell in a column exactly matches one of the values (case-insensitive). At most 8.
 - lastPeriods: keep only the most recent N periods. Omit for the whole file.
@@ -62,15 +62,15 @@ export function requestMessage(request: PlanningRequest): string {
   const columns = request.table.columns.map((column) => ({
     name: column.name,
     type: column.type,
+    semanticKind: column.semanticKind,
     nonEmpty: column.nonEmpty,
     distinct: column.distinct,
-    samples: column.samples,
     ...(column.currency === undefined ? {} : { currency: column.currency }),
   }));
   const parts = [
     `Request:\n${request.requestText}`,
-    `File: ${request.sourceName}, ${String(request.table.rowCount)} rows${request.table.unpivoted === true ? ", reshaped from one column per period into one row per line and period (columns named period and amount)" : ""}.`,
-    `Columns (names, types, distinct counts, and a few sample values; no totals):\n${JSON.stringify(columns, null, 2)}`,
+    `Dataset: ${request.sourceName}, ${String(request.table.rowCount)} rows${request.table.unpivoted === true ? ", reshaped from one column per period into one row per line and period (columns named period and amount)" : ""}.`,
+    `Columns (safe profile metadata and semantic interpretation; no source values):\n${JSON.stringify(columns, null, 2)}`,
   ];
   if (request.refinement !== undefined) {
     parts.push(
