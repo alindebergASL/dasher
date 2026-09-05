@@ -92,6 +92,9 @@ function relationshipUnavailableDetail(
   switch (facts.relationshipSupport) {
     case "no-prior-period":
       return "There is no prior period in this dataset.";
+    case "period-incomplete":
+    case "period-unknown":
+      return facts.periodCoverage.reason;
     case "latest-incomplete":
       return `Not every selected ${plan.roles.amount} row in ${windowLabel(facts)} has a readable ${comparison} value.`;
     case "previous-incomplete":
@@ -127,16 +130,149 @@ function sharesSentence(facts: TableFacts): string | undefined {
     omitted > 0
       ? ` The ranking lists the largest ${String(RANKING_LIMIT)} categories; ${plural(omitted, "more is", "more are")} not shown.`
       : "";
+  const movers =
+    facts.periodCoverage.comparisonDisposition === "available"
+      ? " Movers are each category's latest total minus its previous total, ordered by size of change."
+      : " Category movers are not computed while current-vs-prior period coverage is unavailable.";
   if (facts.mixedSignFlow !== undefined) {
-    return `The latest window has both positive and negative amounts. Gross inflow sums the positive amounts; gross outflow sums the absolute magnitudes of the negative amounts; net movement is their signed sum. Category amounts are grouped by category and direction before inflow shares and outflow shares are independently allocated in tenths of a percent to exactly one hundred; zero is neither direction. Movers are each category's latest signed total minus its previous signed total, ordered by size of change.${cut}`;
+    return `The latest window has both positive and negative amounts. Gross inflow sums the positive amounts; gross outflow sums the absolute magnitudes of the negative amounts; net movement is their signed sum. Category amounts are grouped by category and direction before inflow shares and outflow shares are independently allocated in tenths of a percent to exactly one hundred; zero is neither direction.${movers}${cut}`;
   }
   if (facts.shares.some((share) => sign(share.share) < 0)) {
-    return `The latest window contains positive and negative amounts, but the plan does not classify them as directional flows. Each category's signed contribution divides its signed total by the signed period total; offsets can produce negative shares or shares above one hundred percent. Movers are each category's latest signed total minus its previous signed total, ordered by size of change.${cut}`;
+    return `The latest window contains positive and negative amounts, but the plan does not classify them as directional flows. Each category's signed contribution divides its signed total by the signed period total; offsets can produce negative shares or shares above one hundred percent.${movers}${cut}`;
   }
   const how = facts.sharesSumToHundred
     ? "and are allocated in tenths of a percent so they sum to exactly one hundred"
     : `and every share is reported as zero because the total for ${windowLabel(facts)} is zero`;
-  return `Shares divide each category's total by the period total ${how}. Movers are each category's latest total minus its previous total, ordered by size of change.${cut}`;
+  return `Shares divide each category's total by the period total ${how}.${movers}${cut}`;
+}
+
+function observationAdjective(
+  grain: NonNullable<TableFacts["periodCoverage"]["observationGrain"]>,
+): string {
+  switch (grain) {
+    case "day":
+      return "daily";
+    case "month":
+      return "monthly";
+    case "quarter":
+      return "quarterly";
+    case "year":
+      return "yearly";
+  }
+}
+
+function periodCoverageDetail(facts: TableFacts): string {
+  const coverage = facts.periodCoverage;
+  if (coverage.latestLabel === undefined) {
+    return `Period coverage was assessed from canonical dataset values. Comparison disposition: unavailable — no prior period. Reason: ${coverage.reason}`;
+  }
+  const observedRange =
+    coverage.observedStart === undefined || coverage.observedEnd === undefined
+      ? "unavailable"
+      : `${coverage.observedStart} through ${coverage.observedEnd}`;
+  const expectedRange =
+    coverage.expectedStart === undefined || coverage.expectedEnd === undefined
+      ? "unavailable"
+      : `${coverage.expectedStart} through ${coverage.expectedEnd}`;
+  const observedCoverage =
+    coverage.expectedCount === undefined ||
+    coverage.observationGrain === undefined
+      ? `${String(coverage.observedCount)} distinct date observations`
+      : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} ${observationAdjective(coverage.observationGrain)} observations`;
+  const disposition =
+    coverage.comparisonDisposition === "available"
+      ? "available"
+      : coverage.comparisonDisposition === "unavailable-partial"
+        ? "unavailable — partial latest period"
+        : coverage.comparisonDisposition === "unavailable-no-prior"
+          ? "unavailable — no prior period"
+          : "unavailable — coverage unknown";
+  return `Period coverage was assessed from canonical dataset values. Latest analysis period: ${coverage.latestLabel}. Observed date range: ${observedRange}. Expected ${facts.grain} bounds: ${expectedRange}. Observed coverage: ${observedCoverage}. Comparison disposition: ${disposition}. Reason: ${coverage.reason}`;
+}
+
+function trustedPageDescription(
+  plannedDescription: string,
+  facts: TableFacts,
+): string {
+  const coverage = facts.periodCoverage;
+  if (coverage.comparisonDisposition === "unavailable-partial") {
+    const observation =
+      coverage.observationGrain === undefined
+        ? "period"
+        : observationAdjective(coverage.observationGrain);
+    const observedCoverage =
+      coverage.expectedCount === undefined
+        ? `${String(coverage.observedCount)} observed ${observation} observations`
+        : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
+    return `${coverage.latestLabel ?? "The latest period"} is partial; current-vs-prior change and category movers are unavailable. Coverage includes ${observedCoverage}.`;
+  }
+  if (coverage.comparisonDisposition === "unavailable-unknown") {
+    return `Coverage for ${coverage.latestLabel ?? "the latest period"} is unknown; current-vs-prior change and category movers are unavailable. ${coverage.reason}`;
+  }
+  return plannedDescription;
+}
+
+function periodCoverageImportant(
+  facts: TableFacts,
+  evidenceIds: string[],
+): DashboardSpec["executiveBrief"]["important"] | undefined {
+  const coverage = facts.periodCoverage;
+  if (coverage.comparisonDisposition === "unavailable-partial") {
+    return {
+      statementTypes: ["calculated"],
+      headline: `${coverage.latestLabel ?? "The latest period"} is partial; current-vs-prior change is unavailable`,
+      detail: coverage.reason,
+      evidenceIds: [...evidenceIds],
+    };
+  }
+  if (coverage.comparisonDisposition === "unavailable-unknown") {
+    return {
+      statementTypes: ["calculated"],
+      headline: `Coverage for ${coverage.latestLabel ?? "the latest period"} is unknown; current-vs-prior change is unavailable`,
+      detail: coverage.reason,
+      evidenceIds: [...evidenceIds],
+    };
+  }
+  return undefined;
+}
+
+function periodCoverageNextAction(
+  facts: TableFacts,
+  evidenceIds: string[],
+): DashboardSpec["nextAction"] | undefined {
+  const coverage = facts.periodCoverage;
+  const latest = coverage.latestLabel ?? "the latest period";
+  const prior =
+    coverage.priorPeriod === undefined
+      ? "the prior period"
+      : periodLabel(coverage.priorPeriod);
+  if (coverage.comparisonDisposition === "unavailable-partial") {
+    const observation =
+      coverage.observationGrain === undefined
+        ? "period"
+        : observationAdjective(coverage.observationGrain);
+    const missing =
+      coverage.expectedCount === undefined
+        ? undefined
+        : Math.max(coverage.expectedCount - coverage.observedCount, 0);
+    const missingObservations =
+      missing === undefined
+        ? "the missing expected period observations"
+        : `the ${String(missing)} missing expected ${observation} ${missing === 1 ? "observation" : "observations"}`;
+    return {
+      title: `Complete or confirm ${latest} coverage before comparison`,
+      detail: `${coverage.reason} Complete or confirm ${missingObservations} for ${latest}, then rebuild before comparing it with ${prior}.`,
+      evidenceIds: [...evidenceIds],
+    };
+  }
+  if (coverage.comparisonDisposition === "unavailable-unknown") {
+    return {
+      title: `Verify ${latest} dates and coverage before comparison`,
+      detail: `${coverage.reason} Verify or correct the source dates and coverage, then rebuild before comparing ${latest} with ${prior}.`,
+      evidenceIds: [...evidenceIds],
+    };
+  }
+  return undefined;
 }
 
 function evidence(
@@ -160,12 +296,14 @@ function evidence(
   const arithmetic = [
     `Amounts were read from "${plan.roles.amount}" as exact decimals; ${plural(facts.skipped, "row whose amount or period could not be read was", "rows whose amount or period could not be read were")} skipped and ${plural(facts.filteredOut, "row was", "rows were")} left out by the plan's filters.`,
     plan.roles.period === undefined
-      ? "There is no period column, so every figure covers the whole file."
+      ? "There is no period column, so every figure covers the whole dataset."
       : `Rows were grouped by ${facts.grain} from "${plan.roles.period}".`,
     plan.lastPeriods === undefined
       ? undefined
       : `${plural(facts.outsideWindow, "row fell", "rows fell")} outside the last ${String(plan.lastPeriods)} periods and ${facts.outsideWindow === 1 ? "was" : "were"} not counted.`,
-    "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total.",
+    facts.periodCoverage.comparisonDisposition === "available"
+      ? "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total."
+      : "Totals are sums of the amounts in each group. Current-vs-prior change and category movers are not computed while period coverage is unavailable.",
     !activeRelationship || plan.roles.comparison === undefined
       ? undefined
       : `The comparison measure was read from "${plan.roles.comparison}" as exact decimals; ${plural(facts.comparisonSkipped, "selected row had", "selected rows had")} no readable comparison value. A relationship period is unavailable unless every selected amount row has a readable comparison value. Both growth rates require complete latest and prior support.${plan.relationship?.operation === "ratio" ? ` ${plan.roles.amount} per ${plan.roles.comparison} is shown only with complete support and non-zero denominators; ratios are rounded half away from zero to two decimals, with whole ratios shown without decimals, and ratio change is computed from unrounded exact cross-products.` : " No denominator or ratio is inferred for this side-by-side comparison."}`,
@@ -193,6 +331,18 @@ function evidence(
       detail: arithmetic.join(" "),
       confidence: "high",
     },
+    {
+      id: EVIDENCE.periodCoverage,
+      kind: "calculated",
+      label:
+        facts.periodCoverage.latestLabel === undefined
+          ? "Period coverage unavailable"
+          : `Period coverage for ${facts.periodCoverage.latestLabel}`,
+      sourceName: source.name,
+      retrievedAt: options.asOf,
+      detail: periodCoverageDetail(facts),
+      confidence: "high",
+    },
   ];
   if (options.planner.usesModel) {
     items.push({
@@ -218,6 +368,7 @@ function brief(
 ): DashboardSpec["executiveBrief"] {
   const window = windowLabel(facts);
   const comparison = plan.roles.comparison;
+  const trustedImportant = periodCoverageImportant(facts, ids);
   if (comparison !== undefined && hasActiveRelationship(plan)) {
     const comparisonMoney = comparisonMoneyFormat(plan, table, facts);
     const comparisonValue =
@@ -314,11 +465,13 @@ function brief(
     return {
       known,
       changed,
-      important: {
-        statementTypes: ["calculated"],
-        ...important,
-        evidenceIds: ids,
-      },
+      important:
+        trustedImportant ??
+        ({
+          statementTypes: ["calculated"],
+          ...important,
+          evidenceIds: ids,
+        } satisfies DashboardSpec["executiveBrief"]["important"]),
     };
   }
 
@@ -348,7 +501,7 @@ function brief(
           "At least one selected amount is positive and at least one is negative; zero counts as neither direction.",
         evidenceIds: ids,
       },
-      important: {
+      important: trustedImportant ?? {
         statementTypes: ["calculated"],
         headline: importantHeadline,
         detail:
@@ -363,16 +516,22 @@ function brief(
   const known = {
     statementTypes: ["calculated" as const],
     headline: `${formatMoney(facts.latestTotal, money)} total for ${window}`,
-    detail: `The sum of every amount in ${window}, computed from the file.`,
+    detail: `The sum of every amount in ${window}, computed from the dataset.`,
     evidenceIds: ids,
   };
   const changed =
-    facts.change === undefined || facts.previousPeriod === undefined
+    facts.periodCoverage.comparisonDisposition !== "available" ||
+    facts.change === undefined ||
+    facts.previousPeriod === undefined
       ? {
           statementTypes: ["calculated" as const],
-          headline: "No prior period in this file",
-          detail:
-            "There is nothing earlier in the file to compare the latest period with.",
+          headline:
+            facts.periodCoverage.status === "incomplete"
+              ? `Change unavailable for partial ${facts.periodCoverage.latestLabel as string}`
+              : facts.previousPeriod === undefined
+                ? "No prior period in this dataset"
+                : "Change unavailable because period coverage is unknown",
+          detail: facts.periodCoverage.reason,
           evidenceIds: ids,
         }
       : {
@@ -407,11 +566,13 @@ function brief(
   return {
     known,
     changed,
-    important: {
-      statementTypes: ["calculated"],
-      ...important,
-      evidenceIds: ids,
-    },
+    important:
+      trustedImportant ??
+      ({
+        statementTypes: ["calculated"],
+        ...important,
+        evidenceIds: ids,
+      } satisfies DashboardSpec["executiveBrief"]["important"]),
   };
 }
 
@@ -676,7 +837,7 @@ export function compileTablePlan(
       pages.push({
         id: page.id,
         title: page.title,
-        description: page.description,
+        description: trustedPageDescription(page.description, facts),
         components,
       });
   }
@@ -691,7 +852,8 @@ export function compileTablePlan(
     ]);
   }
 
-  const action = relationshipNextAction(plan, facts, evidenceIds) ??
+  const action = periodCoverageNextAction(facts, evidenceIds) ??
+    relationshipNextAction(plan, facts, evidenceIds) ??
     mixedSignNextAction(facts, money, evidenceIds) ?? {
       title: "Open the evidence",
       detail:
@@ -713,7 +875,7 @@ export function compileTablePlan(
       label:
         facts.latestPeriod === undefined
           ? `Built ${options.asOf.slice(0, 10)}`
-          : `Data through ${periodLabel(facts.latestPeriod)}`,
+          : `Data through ${windowLabel(facts)}`,
     },
     nextAction: action,
     notice: notice(plan, facts, options),
