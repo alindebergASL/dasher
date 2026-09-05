@@ -223,4 +223,30 @@ describe("stage 1 canonical column semantics", () => {
 
     expect(table.columns[0]?.semanticKind).toBe("measure");
   });
+
+  it("treats Customers as a measure only when its values are numeric", () => {
+    const numeric = profileTable({
+      headers: ["Customers", "Headcount"],
+      rows: [
+        ["100", "12"],
+        ["120", "15"],
+      ],
+    });
+    const named = profileTable({
+      headers: ["Customers", "Revenue"],
+      rows: [
+        ["Acme", "100"],
+        ["Bravo", "120"],
+      ],
+    });
+
+    expect(semanticKinds(numeric.columns)).toStrictEqual({
+      Customers: "measure",
+      Headcount: "measure",
+    });
+    expect(semanticKinds(named.columns)).toStrictEqual({
+      Customers: "dimension",
+      Revenue: "measure",
+    });
+  });
 });

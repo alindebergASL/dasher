@@ -9,6 +9,7 @@ import { z } from "zod";
 
 export const TABLE_SECTION_KINDS = [
   "summary",
+  "relationship",
   "headline-totals",
   "by-category",
   "movers",
@@ -39,12 +40,19 @@ export const TablePlanSchema = z.strictObject({
   /** Which column plays which part. Names must match table headers exactly. */
   roles: z.strictObject({
     amount: ColumnName,
+    comparison: ColumnName.optional(),
     period: ColumnName.optional(),
     category: ColumnName.optional(),
     label: ColumnName.optional(),
     account: ColumnName.optional(),
     budget: ColumnName.optional(),
   }),
+  /** The bounded meaning of the selected pair; it carries no computed value. */
+  relationship: z
+    .strictObject({
+      operation: z.enum(["compare", "ratio"]),
+    })
+    .optional(),
   grain: z.enum(["month", "quarter", "year"]),
   filters: z
     .array(

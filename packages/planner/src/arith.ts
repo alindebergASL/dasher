@@ -3,7 +3,16 @@
  * scaled division, a percent allocation that always sums to one hundred, and
  * the two number formats a reader sees.
  */
-import { abs, add, compare, sign, toFixed, ZERO, type Exact } from "./workbook";
+import {
+  abs,
+  add,
+  compare,
+  sign,
+  subtract,
+  toFixed,
+  ZERO,
+  type Exact,
+} from "./workbook";
 
 function parts(value: Exact): { units: bigint; scale: number } {
   const dot = value.indexOf(".");
@@ -46,6 +55,49 @@ export function percentOf(part: Exact, whole: Exact): Exact | undefined {
   let quotient = n / d;
   if ((n % d) * 2n >= d) quotient += 1n;
   return fromScaled(negative ? -quotient : quotient, 1);
+}
+
+/** `part / whole` rounded half away from zero for display. */
+export function divide(
+  part: Exact,
+  whole: Exact,
+  places: number,
+): Exact | undefined {
+  if (sign(whole) === 0) return undefined;
+  const top = parts(part);
+  const bottom = parts(whole);
+  const shift = bottom.scale - top.scale + places;
+  let numerator = top.units;
+  let denominator = bottom.units;
+  if (shift >= 0) numerator *= 10n ** BigInt(shift);
+  else denominator *= 10n ** BigInt(-shift);
+  const negative = numerator < 0n !== denominator < 0n;
+  const n = absBig(numerator);
+  const d = absBig(denominator);
+  let quotient = n / d;
+  if ((n % d) * 2n >= d) quotient += 1n;
+  return fromScaled(negative ? -quotient : quotient, places);
+}
+
+function multiply(left: Exact, right: Exact): Exact {
+  const one = parts(left);
+  const two = parts(right);
+  return fromScaled(one.units * two.units, one.scale + two.scale);
+}
+
+/** Percent change between two ratios without rounding either ratio first. */
+export function ratioPercentChange(
+  latestNumerator: Exact,
+  latestDenominator: Exact,
+  previousNumerator: Exact,
+  previousDenominator: Exact,
+): Exact | undefined {
+  if (sign(latestDenominator) === 0 || sign(previousDenominator) === 0) {
+    return undefined;
+  }
+  const latestCross = multiply(latestNumerator, previousDenominator);
+  const previousCross = multiply(previousNumerator, latestDenominator);
+  return percentOf(subtract(latestCross, previousCross), previousCross);
 }
 
 /**

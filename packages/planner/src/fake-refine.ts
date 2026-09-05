@@ -11,6 +11,7 @@ import {
   readFilters,
   readGrain,
   readLastPeriods,
+  isSafeMeasureColumn,
   supported,
   type TableSummary,
 } from "./fake-heuristics";
@@ -25,6 +26,7 @@ type Page = TablePlan["pages"][number];
 
 const SECTION_WORDS: ReadonlyArray<[RegExp, TableSectionKind]> = [
   [/\bsummary\b/iu, "summary"],
+  [/\b(?:relationship|comparison|compare)\b/iu, "relationship"],
   [/\b(?:headline|totals?|metrics?|kpis?)\b/iu, "headline-totals"],
   [/\b(?:categor(?:y|ies)|breakdown|ranking)\b/iu, "by-category"],
   [/\b(?:movers?|changes?|what moved)\b/iu, "movers"],
@@ -115,7 +117,7 @@ export function applyRefinement(
     const requested = requestedPrimaryMeasure.trim().toLocaleLowerCase("en-US");
     const measure = table.columns.find(
       (column) =>
-        column.semanticKind === "measure" &&
+        isSafeMeasureColumn(column) &&
         column.name.toLocaleLowerCase("en-US") === requested,
     );
     if (measure !== undefined && measure.name !== plan.roles.amount) {
@@ -157,6 +159,11 @@ export function applyRefinement(
     const pages = dropSections(plan.pages, kinds);
     if (kinds.length > 0 && pages.length > 0) {
       plan.pages = pages;
+      if (kinds.includes("relationship")) {
+        const roles = plan.roles as Mutable<TablePlan["roles"]>;
+        delete roles.comparison;
+        delete plan.relationship;
+      }
       changed = true;
     }
   }
@@ -263,6 +270,10 @@ export function applyRevision(
         plan.filters = [];
         delete plan.lastPeriods;
         break;
+      case "relationship_inconsistent":
+        delete roles.comparison;
+        delete plan.relationship;
+        break;
       case "plan_malformed":
       case "spec_rejected":
         return defaultPlan("", "", fresh, table);
@@ -279,6 +290,7 @@ export function applyRevision(
       ),
     }))
     .filter((page) => page.sections.length > 0);
+  if (roles.comparison === undefined) delete plan.relationship;
   // Roles may have changed under the sections; keep only what they still support.
   plan.pages = plan.pages
     .map((page) => ({ ...page, sections: supported(page.sections, roles) }))

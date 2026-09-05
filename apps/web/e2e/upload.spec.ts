@@ -43,6 +43,52 @@ test.describe("uploading a spreadsheet", () => {
     await expect(page.getByText(/Cloud infrastructure/).first()).toBeVisible();
   });
 
+  test("a named two-measure comparison renders relationship metrics", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "monthly-metrics.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Month,Customers,Headcount",
+          "2026-01,100,12",
+          "2026-02,120,15",
+          "2026-03,126,18",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Compare customers vs headcount");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
+    await expect(page.locator(".request-error")).toHaveCount(0);
+    const relationship = page.locator("section.panel").filter({
+      has: page.getByRole("heading", { name: "Customers vs Headcount" }),
+    });
+    await expect(relationship).toContainText("Customers, Mar 2026");
+    await expect(relationship).toContainText("120 in Feb 2026 · +5.0%");
+    await expect(relationship).toContainText("Headcount, Mar 2026");
+    await expect(relationship).toContainText("15 in Feb 2026 · +20.0%");
+    await expect(relationship).toContainText(
+      "Customers per Headcount, Mar 2026",
+    );
+    await expect(relationship.getByText("7", { exact: true })).toBeVisible();
+    await expect(relationship).toContainText("8 in Feb 2026 · -12.5%");
+    const cards = relationship.locator(".metric-card");
+    const first = await cards.nth(0).boundingBox();
+    const second = await cards.nth(1).boundingBox();
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second!.y).toBeGreaterThan(first!.y + first!.height - 1);
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {
@@ -56,6 +102,9 @@ test.describe("uploading a spreadsheet", () => {
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Anything");
     await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
     await expect(page.locator(".request-error")).toContainText(
       /could not be read/i,
     );

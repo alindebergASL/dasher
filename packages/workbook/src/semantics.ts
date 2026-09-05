@@ -111,6 +111,15 @@ export function classifyColumnSemantic(
     return "code";
   if (endsWith(tokens, ORDINALS)) return "ordinal";
   if (column.type === "date" || endsWith(tokens, PERIODS)) return "period";
+  // "Customers" is commonly either a customer-name dimension or a numeric
+  // customer count. Only the profiled value type can safely distinguish them.
+  if (
+    column.type === "number" &&
+    tokens.length === 1 &&
+    tokens[0] === "customers"
+  ) {
+    return "measure";
+  }
   if (column.currency !== undefined || hasToken(tokens, MEASURES)) {
     return "measure";
   }

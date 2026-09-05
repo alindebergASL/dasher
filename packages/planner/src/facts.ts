@@ -21,7 +21,14 @@ import {
   type Grain,
   type Table,
 } from "./workbook";
-import { allocatePercents, compareAbsDesc, isWhole, percentOf } from "./arith";
+import {
+  allocatePercents,
+  compareAbsDesc,
+  divide,
+  isWhole,
+  percentOf,
+  ratioPercentChange,
+} from "./arith";
 import type { TablePlan } from "./table-plan";
 
 export interface FactRow {
@@ -29,6 +36,7 @@ export interface FactRow {
   readonly index: number;
   readonly cells: readonly string[];
   readonly amount: Exact;
+  readonly comparison?: Exact;
   readonly budget?: Exact;
   readonly category?: string;
   readonly label?: string;
@@ -61,6 +69,8 @@ export interface BudgetLine {
 export interface TableFacts {
   readonly rows: readonly FactRow[];
   readonly skipped: number;
+  /** Selected rows whose comparison cell could not be read. */
+  readonly comparisonSkipped: number;
   /** Rows the plan's own filters removed. */
   readonly filteredOut: number;
   /** Rows dropped because they fall outside the plan's period window. */
@@ -71,6 +81,7 @@ export interface TableFacts {
   readonly latestPeriod?: string;
   readonly previousPeriod?: string;
   readonly totalsByPeriod: ReadonlyMap<string, Exact>;
+  readonly comparisonTotalsByPeriod: ReadonlyMap<string, Exact>;
   readonly categoryTotalsByPeriod: ReadonlyMap<
     string,
     ReadonlyMap<string, Exact>
@@ -80,6 +91,18 @@ export interface TableFacts {
   readonly previousTotal?: Exact;
   readonly change?: Exact;
   readonly changePercent?: Exact;
+  readonly latestComparison?: Exact;
+  readonly previousComparison?: Exact;
+  readonly comparisonChange?: Exact;
+  readonly comparisonChangePercent?: Exact;
+  readonly relationshipSupport?:
+    | "complete"
+    | "no-prior-period"
+    | "latest-incomplete"
+    | "previous-incomplete";
+  readonly relationshipRatio?: Exact;
+  readonly previousRelationshipRatio?: Exact;
+  readonly relationshipRatioChangePercent?: Exact;
   readonly shares: readonly CategoryShare[];
   /** True when the shares were allocated so they add up to exactly 100. */
   readonly sharesSumToHundred: boolean;
@@ -189,6 +212,20 @@ function sumBy<T>(
   return totals;
 }
 
+function completeComparisonSum(
+  rows: readonly FactRow[],
+  hasComparison: boolean,
+): Exact | undefined {
+  if (
+    !hasComparison ||
+    rows.length === 0 ||
+    rows.some((row) => row.comparison === undefined)
+  ) {
+    return undefined;
+  }
+  return rows.reduce((sum, row) => add(sum, row.comparison as Exact), ZERO);
+}
+
 /** RULE: "largest" means largest in size, so a negative total ranks by magnitude. */
 function sortedAbsDesc(totals: ReadonlyMap<string, Exact>): [string, Exact][] {
   return [...totals.entries()].sort(
@@ -199,9 +236,11 @@ function sortedAbsDesc(totals: ReadonlyMap<string, Exact>): [string, Exact][] {
 /** Reads the rows a plan selects and computes every figure from them. */
 export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   const amountColumn = columnOf(table, plan.roles.amount);
+  const comparisonColumn = columnOf(table, plan.roles.comparison);
   const budgetColumn = columnOf(table, plan.roles.budget);
   const periodColumn = columnOf(table, plan.roles.period);
   const amountAt = amountColumn?.index;
+  const comparisonAt = comparisonColumn?.index;
   const budgetAt = budgetColumn?.index;
   const categoryAt = columnIndex(table, plan.roles.category);
   const labelAt = columnIndex(table, plan.roles.label);
@@ -211,6 +250,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
 
   const grain = planGrain(plan, table);
   let skipped = 0;
+  let comparisonSkipped = 0;
   let filteredOut = 0;
   let outsideWindow = 0;
   let rows: FactRow[] = [];
@@ -240,10 +280,17 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       skipped += 1;
       continue;
     }
+    const comparison =
+      comparisonAt === undefined
+        ? null
+        : parseAmount(cells[comparisonAt] ?? "", {
+            decimal: comparisonColumn?.decimal,
+          });
     rows.push({
       index,
       cells,
       amount,
+      ...(comparison === null ? {} : { comparison }),
       ...(budgetText === null ? {} : { budget: budgetText }),
       ...(categoryAt === undefined
         ? {}
@@ -267,6 +314,9 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     outsideWindow += before - rows.length;
     periods = periods.filter((period) => kept.has(period));
   }
+  comparisonSkipped = rows.filter(
+    (row) => comparisonAt !== undefined && row.comparison === undefined,
+  ).length;
 
   const latestPeriod = periods.at(-1);
   const previousPeriod = periods.length >= 2 ? periods.at(-2) : undefined;
@@ -275,6 +325,14 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     (row) => row.period as string,
     (row) => row.amount,
   );
+  const comparisonTotalsByPeriod = new Map<string, Exact>();
+  for (const period of periods) {
+    const total = completeComparisonSum(
+      rows.filter((row) => row.period === period),
+      comparisonAt !== undefined,
+    );
+    if (total !== undefined) comparisonTotalsByPeriod.set(period, total);
+  }
   const categoryTotalsByPeriod = new Map<string, Map<string, Exact>>();
   for (const period of periods) {
     categoryTotalsByPeriod.set(
@@ -309,6 +367,54 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     change === undefined || previousTotal === undefined
       ? undefined
       : percentOf(change, previousTotal);
+  const latestComparison =
+    latestPeriod === undefined
+      ? completeComparisonSum(rows, comparisonAt !== undefined)
+      : comparisonTotalsByPeriod.get(latestPeriod);
+  const previousComparison =
+    previousPeriod === undefined
+      ? undefined
+      : comparisonTotalsByPeriod.get(previousPeriod);
+  const comparisonChange =
+    latestComparison === undefined || previousComparison === undefined
+      ? undefined
+      : subtract(latestComparison, previousComparison);
+  const comparisonChangePercent =
+    comparisonChange === undefined || previousComparison === undefined
+      ? undefined
+      : percentOf(comparisonChange, previousComparison);
+  const relationshipSupport =
+    comparisonAt === undefined
+      ? undefined
+      : previousPeriod === undefined
+        ? "no-prior-period"
+        : latestComparison === undefined
+          ? "latest-incomplete"
+          : previousComparison === undefined
+            ? "previous-incomplete"
+            : "complete";
+  const ratioRequested = plan.relationship?.operation === "ratio";
+  const relationshipRatio =
+    ratioRequested && relationshipSupport === "complete"
+      ? divide(latestTotal, latestComparison as Exact, 2)
+      : undefined;
+  const previousRelationshipRatio =
+    ratioRequested &&
+    relationshipSupport === "complete" &&
+    previousTotal !== undefined
+      ? divide(previousTotal, previousComparison as Exact, 2)
+      : undefined;
+  const relationshipRatioChangePercent =
+    ratioRequested &&
+    relationshipSupport === "complete" &&
+    previousTotal !== undefined
+      ? ratioPercentChange(
+          latestTotal,
+          latestComparison as Exact,
+          previousTotal,
+          previousComparison as Exact,
+        )
+      : undefined;
 
   const latestByCategory = sortedAbsDesc(
     sumBy(
@@ -403,6 +509,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   return {
     rows,
     skipped,
+    comparisonSkipped,
     filteredOut,
     outsideWindow,
     grain,
@@ -410,11 +517,26 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     ...(latestPeriod === undefined ? {} : { latestPeriod }),
     ...(previousPeriod === undefined ? {} : { previousPeriod }),
     totalsByPeriod,
+    comparisonTotalsByPeriod,
     categoryTotalsByPeriod,
     latestTotal,
     ...(previousTotal === undefined ? {} : { previousTotal }),
     ...(change === undefined ? {} : { change }),
     ...(changePercent === undefined ? {} : { changePercent }),
+    ...(latestComparison === undefined ? {} : { latestComparison }),
+    ...(previousComparison === undefined ? {} : { previousComparison }),
+    ...(comparisonChange === undefined ? {} : { comparisonChange }),
+    ...(comparisonChangePercent === undefined
+      ? {}
+      : { comparisonChangePercent }),
+    ...(relationshipSupport === undefined ? {} : { relationshipSupport }),
+    ...(relationshipRatio === undefined ? {} : { relationshipRatio }),
+    ...(previousRelationshipRatio === undefined
+      ? {}
+      : { previousRelationshipRatio }),
+    ...(relationshipRatioChangePercent === undefined
+      ? {}
+      : { relationshipRatioChangePercent }),
     shares,
     sharesSumToHundred,
     movers,

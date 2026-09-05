@@ -26,6 +26,11 @@ export class NoSafeMeasureError extends Error {
   }
 }
 
+/** A deterministic measure candidate must pass both canonical type and semantics. */
+export function isSafeMeasureColumn(column: ColumnProfile): boolean {
+  return column.type === "number" && column.semanticKind === "measure";
+}
+
 const BUDGET_NAME = /budget/iu;
 const CATEGORY_NAME =
   /category|type|department|dept|line|account|vendor|class|group|label/iu;
@@ -44,9 +49,7 @@ export function isPeriodLike(
 function pickAmount(
   columns: readonly ColumnProfile[],
 ): ColumnProfile | undefined {
-  const measures = columns.filter(
-    (column) => column.semanticKind === "measure",
-  );
+  const measures = columns.filter(isSafeMeasureColumn);
   const candidates = measures.filter(
     (column) => !BUDGET_NAME.test(column.name),
   );
@@ -89,7 +92,7 @@ export function chooseRoles(table: TableSummary): Roles {
 
   const budget = columns.find(
     (column) =>
-      column.semanticKind === "measure" &&
+      isSafeMeasureColumn(column) &&
       BUDGET_NAME.test(column.name) &&
       !taken.has(column.name),
   );
@@ -297,6 +300,8 @@ export function supported(
   roles: Roles,
 ): TableSectionKind[] {
   return sections.filter((section) => {
+    if (section === "relationship")
+      return roles.comparison !== undefined && roles.period !== undefined;
     if (section === "by-category") return roles.category !== undefined;
     if (section === "movers")
       return roles.category !== undefined && roles.period !== undefined;
@@ -313,6 +318,9 @@ function titleFrom(
   roles: Roles,
 ): string {
   const asked = requestText.toLowerCase();
+  if (roles.comparison !== undefined) {
+    return `${roles.amount} vs ${roles.comparison}`;
+  }
   if (roles.budget !== undefined && /budget|variance|over\b/u.test(asked)) {
     return "Budget check";
   }
@@ -336,6 +344,51 @@ function titleFrom(
   return `${stem.charAt(0).toUpperCase()}${stem.slice(1)} overview`;
 }
 
+export function chooseRelationshipRoles(
+  text: string,
+  roles: TablePlan["roles"],
+  table: TableSummary,
+): TablePlan["roles"] {
+  if (!/\b(?:compare|comparison|relationship|versus|vs\.?)\b/iu.test(text)) {
+    return roles;
+  }
+  const matches = table.columns
+    .filter(isSafeMeasureColumn)
+    .map((column) => {
+      const escaped = column.name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      const match = new RegExp(
+        `(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+        "iu",
+      ).exec(text);
+      return match === null ? null : { column, index: match.index };
+    })
+    .filter((match): match is NonNullable<typeof match> => match !== null)
+    .sort((left, right) => left.index - right.index);
+  if (matches.length !== 2) return roles;
+  const [primary, comparison] = matches;
+  if (primary === undefined || comparison === undefined) return roles;
+  return {
+    ...roles,
+    amount: primary.column.name,
+    comparison: comparison.column.name,
+  };
+}
+
+function relationshipOperation(
+  text: string,
+  roles: TablePlan["roles"],
+): NonNullable<TablePlan["relationship"]>["operation"] {
+  if (/\b(?:per|ratio|efficien(?:cy|t))\b/iu.test(text)) return "ratio";
+  const pair = new Set(
+    [roles.amount, roles.comparison]
+      .filter((name): name is string => name !== undefined)
+      .map((name) => name.trim().toLocaleLowerCase("en-US")),
+  );
+  return pair.size === 2 && pair.has("customers") && pair.has("headcount")
+    ? "ratio"
+    : "compare";
+}
+
 export function defaultPlan(
   requestText: string,
   sourceName: string,
@@ -348,10 +401,23 @@ export function defaultPlan(
     (column) => column.name === roles.category,
   );
 
-  let overview = supported(OVERVIEW, roles);
-  const detail = supported(DETAIL, roles);
+  const relationship =
+    roles.comparison === undefined
+      ? undefined
+      : ({ operation: relationshipOperation(requestText, roles) } as const);
+  let overview =
+    relationship === undefined
+      ? supported(OVERVIEW, roles)
+      : ["relationship" as const, ...supported(["by-category"], roles)];
+  const detail = supported(
+    relationship === undefined ? DETAIL : ["largest-rows", "table"],
+    roles,
+  );
   if (roles.budget !== undefined) overview.push("budget-variance");
-  const lead = leadSection(requestText, roles);
+  const lead =
+    roles.comparison === undefined
+      ? leadSection(requestText, roles)
+      : "relationship";
   if (lead !== undefined) {
     overview = [lead, ...overview.filter((section) => section !== lead)];
     const index = detail.indexOf(lead);
@@ -362,7 +428,12 @@ export function defaultPlan(
     {
       id: "overview",
       title: "Overview",
-      description: `Latest ${roles.amount}, its change from the prior period, and ${roles.category === undefined ? "the contributing rows" : `the breakdown by ${roles.category}`}.`,
+      description:
+        relationship === undefined
+          ? `Latest ${roles.amount}, its change from the prior period, and ${roles.category === undefined ? "the contributing rows" : `the breakdown by ${roles.category}`}.`
+          : relationship.operation === "ratio"
+            ? `Latest ${roles.amount} and ${roles.comparison}, both prior-period changes, and ${roles.amount} per ${roles.comparison}.`
+            : `Latest ${roles.amount} and ${roles.comparison} with both prior-period changes.`,
       sections: overview.slice(0, 6),
     },
   ];
@@ -380,8 +451,12 @@ export function defaultPlan(
     planVersion: "table-plan-v1",
     title: titleFrom(requestText, sourceName, roles),
     audience: "Whoever asked for this view of the dataset",
-    framing: `${roles.amount} first, then ${roles.category === undefined ? "the rows behind it" : `the breakdown by ${roles.category} and the rows behind it`}.`,
+    framing:
+      roles.comparison === undefined
+        ? `${roles.amount} first, then ${roles.category === undefined ? "the rows behind it" : `the breakdown by ${roles.category} and the rows behind it`}.`
+        : `${roles.amount} and ${roles.comparison} first, then the relationship and the rows behind it.`,
     roles,
+    ...(relationship === undefined ? {} : { relationship }),
     grain,
     filters: readFilters(requestText, category, filterValues(table, category)),
     ...(last === undefined ? {} : { lastPeriods: last.count }),

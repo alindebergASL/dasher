@@ -80,7 +80,9 @@ function schemaFor(request: PlanningRequest): JsonSchemaNode {
 
   const names = request.table.columns.map((column) => column.name);
   const measures = request.table.columns
-    .filter((column) => column.semanticKind === "measure")
+    .filter(
+      (column) => column.type === "number" && column.semanticKind === "measure",
+    )
     .map((column) => column.name);
   const text = request.table.columns
     .filter((column) => column.semanticKind === "dimension")
@@ -89,7 +91,7 @@ function schemaFor(request: PlanningRequest): JsonSchemaNode {
     .filter((column) => column.semanticKind === "period")
     .map((column) => column.name);
 
-  for (const role of ["amount", "budget"] as const) {
+  for (const role of ["amount", "comparison", "budget"] as const) {
     const node = roles[role];
     if (node === undefined)
       throw new OpenRouterPlanningError("Dasher plan schema is incomplete");
