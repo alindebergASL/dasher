@@ -192,6 +192,30 @@ test.describe("uploading a spreadsheet", () => {
     await expect(page.getByText("0 total for Jun 2026")).toHaveCount(0);
   });
 
+  test("a nonblank unreadable newest wide period is refused instead of omitted", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "wide-unreadable-latest.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        ["Category,2026-01,2026-02,2026-03", "A,100,120,not-an-amount"].join(
+          "\n",
+        ),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Show amount over time");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(page.locator(".request-error")).toContainText(
+      /Mar 2026 contains one or more unreadable amount values.*no total/iu,
+    );
+    await expect(page.getByText("120 total for Feb 2026")).toHaveCount(0);
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {

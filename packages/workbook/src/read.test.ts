@@ -172,6 +172,27 @@ describe("a wide file with one column per period", () => {
     expect(table.rows[1]).toStrictEqual(["Ops", "30", "2026-04", "20"]);
   });
 
+  it("retains a nonblank unreadable period once numeric periods establish the wide shape", () => {
+    const table = readTable(
+      "Category,2026-01,2026-02,2026-03\nA,100,120,not-an-amount\n",
+    );
+
+    expect(table.unpivoted?.periodColumns).toStrictEqual([
+      "2026-01",
+      "2026-02",
+      "2026-03",
+    ]);
+    expect(table.rows.at(-1)).toStrictEqual(["A", "2026-03", "not-an-amount"]);
+  });
+
+  it("does not infer a wide numeric table from period-headed text alone", () => {
+    const table = readTable(
+      "Category,2026-01,2026-02,2026-03,Total\nA,100,note,later,100\n",
+    );
+
+    expect(table.unpivoted).toBeUndefined();
+  });
+
   it("leaves a long file alone", () => {
     const long = profileTable({
       headers: ["period", "amount"],

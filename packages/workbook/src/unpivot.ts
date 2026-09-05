@@ -65,7 +65,9 @@ export function unpivotIfWide(
       rows.map((row) => row[index] ?? ""),
       options,
     );
-    return name === "period" ? periodColumnProfile(profile) : profile;
+    if (name === "period") return periodColumnProfile(profile);
+    if (name === "amount") return amountColumnProfile(profile, periods);
+    return profile;
   });
 
   return {
@@ -97,6 +99,40 @@ function periodColumnProfile(profile: ColumnProfile): ColumnProfile {
   };
 }
 
+/**
+ * Period headers already proved that this is a wide numeric table. Preserve
+ * that numeric contract even when one period contains unreadable cells, so
+ * canonical parsing can report those cells instead of losing the period.
+ */
+function amountColumnProfile(
+  profile: ColumnProfile,
+  periods: readonly PeriodColumn[],
+): ColumnProfile {
+  const decimals = new Set(
+    periods.flatMap(({ column }) =>
+      column.decimal === undefined ? [] : [column.decimal],
+    ),
+  );
+  const currencies = new Set(
+    periods.flatMap(({ column }) =>
+      column.currency === undefined ? [] : [column.currency],
+    ),
+  );
+  const decimal = [...decimals][0];
+  const currency = [...currencies][0];
+  return {
+    name: profile.name,
+    index: profile.index,
+    type: "number",
+    semanticKind: "measure",
+    nonEmpty: profile.nonEmpty,
+    distinct: profile.distinct,
+    samples: profile.samples,
+    ...(decimals.size === 1 && decimal !== undefined ? { decimal } : {}),
+    ...(currencies.size === 1 && currency !== undefined ? { currency } : {}),
+  };
+}
+
 /** `period_1`, or the next suffix no other column in the table answers to. */
 function freeName(name: string, taken: ReadonlySet<string>): string {
   let suffix = 1;
@@ -104,23 +140,31 @@ function freeName(name: string, taken: ReadonlySet<string>): string {
   return `${name}_${String(suffix)}`;
 }
 
-/** The numeric period-headed columns at the most common grain, in file order. */
+/**
+ * Period-headed columns at an established wide-table grain, in file order.
+ * Two numeric or blank columns establish the shape. Once established, every
+ * header at that grain is retained so a nonblank unreadable latest value
+ * reaches canonical validation instead of disappearing with its column.
+ */
 function periodColumns(table: Table): readonly PeriodColumn[] {
   const candidates: PeriodColumn[] = [];
   for (const column of table.columns) {
-    if (column.type !== "number" && column.nonEmpty > 0) continue;
     const parsed = parsePeriodHeader(column.name);
     if (parsed !== null) candidates.push({ column, ...parsed });
   }
-  if (candidates.length === 0) return candidates;
+  const establishing = candidates.filter(
+    ({ column }) => column.type === "number" || column.nonEmpty === 0,
+  );
+  if (establishing.length < 2) return [];
 
   const counts = new Map<Grain, number>();
-  for (const candidate of candidates) {
+  for (const candidate of establishing) {
     counts.set(candidate.grain, (counts.get(candidate.grain) ?? 0) + 1);
   }
-  let chosen: Grain = candidates[0]?.grain ?? "month";
+  let chosen: Grain = establishing[0]?.grain ?? "month";
   for (const grain of FINER_FIRST) {
     if ((counts.get(grain) ?? 0) > (counts.get(chosen) ?? 0)) chosen = grain;
   }
+  if ((counts.get(chosen) ?? 0) < 2) return [];
   return candidates.filter((candidate) => candidate.grain === chosen);
 }

@@ -532,6 +532,30 @@ describe("period completeness safety", () => {
     );
   });
 
+  it("refuses a nonblank unreadable newest period from a canonicalized wide table", () => {
+    const source = readTable(
+      ["Category,2026-01,2026-02,2026-03", "A,100,120,not-an-amount"].join(
+        "\n",
+      ),
+    );
+    const widePlan: TablePlan = {
+      ...plan("month"),
+      roles: { amount: "amount", period: "period", category: "Category" },
+    };
+    const facts = computeFacts(widePlan, source);
+
+    expect(source.unpivoted?.periodColumns).toEqual([
+      "2026-01",
+      "2026-02",
+      "2026-03",
+    ]);
+    expect(facts.latestPeriod).toBe("2026-03");
+    expect(facts.latestAmountComplete).toBe(false);
+    expect(() => compileTablePlan(widePlan, source, options(source))).toThrow(
+      /Mar 2026 contains one or more unreadable amount values.*no total/iu,
+    );
+  });
+
   it("derives identical coverage evidence with or without a planning model", async () => {
     const source = table(monthlyRows(false));
     const planned = plan("quarter");
