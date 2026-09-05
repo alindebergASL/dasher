@@ -29,6 +29,11 @@ import {
   percentOf,
   ratioPercentChange,
 } from "./arith";
+import {
+  analyzePeriodCoverage,
+  type PeriodCoverage,
+  type PeriodObservation,
+} from "./period-coverage";
 import type { TablePlan } from "./table-plan";
 
 export interface FactRow {
@@ -41,6 +46,10 @@ export interface FactRow {
   readonly category?: string;
   readonly label?: string;
   readonly period?: string;
+  /** Canonical date behind the analysis bucket, used only for coverage proof. */
+  readonly observedAt?: string;
+  /** Present when the source cell explicitly names a period grain. */
+  readonly observedGrain?: Grain;
 }
 
 export interface CategoryShare {
@@ -89,6 +98,7 @@ export interface TableFacts {
   readonly periods: readonly string[];
   readonly latestPeriod?: string;
   readonly previousPeriod?: string;
+  readonly periodCoverage: PeriodCoverage;
   readonly totalsByPeriod: ReadonlyMap<string, Exact>;
   readonly comparisonTotalsByPeriod: ReadonlyMap<string, Exact>;
   readonly categoryTotalsByPeriod: ReadonlyMap<
@@ -107,6 +117,8 @@ export interface TableFacts {
   readonly relationshipSupport?:
     | "complete"
     | "no-prior-period"
+    | "period-incomplete"
+    | "period-unknown"
     | "latest-incomplete"
     | "previous-incomplete";
   readonly relationshipRatio?: Exact;
@@ -156,20 +168,36 @@ function categoryValue(cell: string | undefined): string {
  * RULE: a cell is re-read under the convention its own column was profiled
  * with, so `1.250` and `01/02/2026` mean here what they mean in the file.
  */
+interface CellPeriod {
+  readonly period: string;
+  readonly observedAt: string;
+  readonly observedGrain?: Grain;
+}
+
 function cellPeriod(
   text: string,
   column: ColumnProfile | undefined,
   grain: Grain,
-): string | undefined {
+): CellPeriod | undefined {
   if (column?.type === "date") {
     const date = parseDate(text, { dates: column.dates });
-    return date === null ? undefined : bucketPeriod(date.iso, grain);
+    return date === null
+      ? undefined
+      : {
+          period: bucketPeriod(date.iso, grain),
+          observedAt: date.iso.slice(0, 10),
+        };
   }
   const header = parsePeriodHeader(text);
   if (header === null) return undefined;
-  return GRAIN_RANK[periodGrain(header.key)] > GRAIN_RANK[grain]
-    ? bucketPeriod(periodStartIso(header.key), grain)
-    : header.key;
+  return {
+    period:
+      GRAIN_RANK[periodGrain(header.key)] > GRAIN_RANK[grain]
+        ? bucketPeriod(periodStartIso(header.key), grain)
+        : header.key,
+    observedAt: periodStartIso(header.key).slice(0, 10),
+    observedGrain: header.grain,
+  };
 }
 
 /** RULE: a filter compares against the value the dashboard shows for the cell. */
@@ -320,17 +348,41 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   let comparisonSkipped = 0;
   let filteredOut = 0;
   let outsideWindow = 0;
+  let invalidPeriodCount = 0;
+  let periodObservations: PeriodObservation[] = [];
+  let unreadableAmountPeriods = new Set<string>();
   let rows: FactRow[] = [];
   for (const [index, cells] of table.rows.entries()) {
     if (!passesFilters(cells, plan, table, categoryAt)) {
       filteredOut += 1;
       continue;
     }
+    const parsedPeriod =
+      periodAt === undefined
+        ? undefined
+        : cellPeriod(cells[periodAt] ?? "", periodColumn, grain);
+    if (periodAt !== undefined && parsedPeriod === undefined) {
+      skipped += 1;
+      invalidPeriodCount += 1;
+      continue;
+    }
+    if (parsedPeriod !== undefined) {
+      periodObservations.push({
+        period: parsedPeriod.period,
+        at: parsedPeriod.observedAt,
+        ...(parsedPeriod.observedGrain === undefined
+          ? {}
+          : { grain: parsedPeriod.observedGrain }),
+      });
+    }
     const amount = parseAmount(cells[amountAt] ?? "", {
       decimal: amountColumn?.decimal,
     });
     if (amount === null) {
       skipped += 1;
+      if (parsedPeriod !== undefined) {
+        unreadableAmountPeriods.add(parsedPeriod.period);
+      }
       continue;
     }
     const budgetText =
@@ -339,14 +391,6 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
         : parseAmount(cells[budgetAt] ?? "", {
             decimal: budgetColumn?.decimal,
           });
-    const period =
-      periodAt === undefined
-        ? undefined
-        : cellPeriod(cells[periodAt] ?? "", periodColumn, grain);
-    if (periodAt !== undefined && period === undefined) {
-      skipped += 1;
-      continue;
-    }
     const comparison =
       comparisonAt === undefined
         ? null
@@ -363,20 +407,32 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
         ? {}
         : { category: categoryValue(cells[categoryAt]) }),
       ...(labelAt === undefined ? {} : { label: cells[labelAt] ?? "" }),
-      ...(period === undefined ? {} : { period }),
+      ...(parsedPeriod === undefined
+        ? {}
+        : {
+            period: parsedPeriod.period,
+            observedAt: parsedPeriod.observedAt,
+            ...(parsedPeriod.observedGrain === undefined
+              ? {}
+              : { observedGrain: parsedPeriod.observedGrain }),
+          }),
     });
   }
 
   let periods = [
-    ...new Set(
-      rows.flatMap((row) => (row.period === undefined ? [] : [row.period])),
-    ),
+    ...new Set(periodObservations.map((observation) => observation.period)),
   ].sort(comparePeriods);
   if (plan.lastPeriods !== undefined && periods.length > plan.lastPeriods) {
     const kept = new Set(periods.slice(-plan.lastPeriods));
     const before = rows.length;
     rows = rows.filter(
       (row) => row.period !== undefined && kept.has(row.period),
+    );
+    periodObservations = periodObservations.filter((observation) =>
+      kept.has(observation.period),
+    );
+    unreadableAmountPeriods = new Set(
+      [...unreadableAmountPeriods].filter((period) => kept.has(period)),
     );
     outsideWindow += before - rows.length;
     periods = periods.filter((period) => kept.has(period));
@@ -387,6 +443,15 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
 
   const latestPeriod = periods.at(-1);
   const previousPeriod = periods.length >= 2 ? periods.at(-2) : undefined;
+  const periodCoverage = analyzePeriodCoverage(
+    grain,
+    periods,
+    periodObservations,
+    invalidPeriodCount,
+    unreadableAmountPeriods,
+  );
+  const periodsComparable =
+    periodCoverage.comparisonDisposition === "available";
   const totalsByPeriod = sumBy(
     rows.filter((row) => row.period !== undefined),
     (row) => row.period as string,
@@ -441,7 +506,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       ? undefined
       : totalsByPeriod.get(previousPeriod);
   const change =
-    previousTotal === undefined
+    previousTotal === undefined || !periodsComparable
       ? undefined
       : subtract(latestTotal, previousTotal);
   const changePercent =
@@ -457,7 +522,9 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       ? undefined
       : comparisonTotalsByPeriod.get(previousPeriod);
   const comparisonChange =
-    latestComparison === undefined || previousComparison === undefined
+    latestComparison === undefined ||
+    previousComparison === undefined ||
+    !periodsComparable
       ? undefined
       : subtract(latestComparison, previousComparison);
   const comparisonChangePercent =
@@ -469,11 +536,15 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       ? undefined
       : previousPeriod === undefined
         ? "no-prior-period"
-        : latestComparison === undefined
-          ? "latest-incomplete"
-          : previousComparison === undefined
-            ? "previous-incomplete"
-            : "complete";
+        : periodCoverage.status === "incomplete"
+          ? "period-incomplete"
+          : periodCoverage.status === "unknown"
+            ? "period-unknown"
+            : latestComparison === undefined
+              ? "latest-incomplete"
+              : previousComparison === undefined
+                ? "previous-incomplete"
+                : "complete";
   const ratioRequested = plan.relationship?.operation === "ratio";
   const relationshipRatio =
     ratioRequested && relationshipSupport === "complete"
@@ -543,7 +614,11 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
         directionalSharesSumToHundred("outflow"));
 
   const movers: Mover[] = [];
-  if (latestPeriod !== undefined && previousPeriod !== undefined) {
+  if (
+    periodsComparable &&
+    latestPeriod !== undefined &&
+    previousPeriod !== undefined
+  ) {
     const latest =
       categoryTotalsByPeriod.get(latestPeriod) ?? new Map<string, Exact>();
     const previous =
@@ -615,6 +690,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     periods,
     ...(latestPeriod === undefined ? {} : { latestPeriod }),
     ...(previousPeriod === undefined ? {} : { previousPeriod }),
+    periodCoverage,
     totalsByPeriod,
     comparisonTotalsByPeriod,
     categoryTotalsByPeriod,

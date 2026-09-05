@@ -317,6 +317,47 @@ describe("DashboardShell", () => {
     ).toBeTruthy();
   });
 
+  it("omits Changed when a trusted period-coverage finding is primary", () => {
+    const periodCoverageDashboard = structuredClone(dashboard);
+    periodCoverageDashboard.evidence.push({
+      id: "period-coverage",
+      kind: "calculated",
+      label: "Period coverage for Q3 2026",
+      sourceName: "Uploaded workbook",
+      retrievedAt: "2026-07-29T12:01:00.000Z",
+      detail: "Full period date ranges and the coverage reason.",
+      confidence: "high",
+    });
+    periodCoverageDashboard.executiveBrief.important = {
+      statementTypes: ["calculated"],
+      headline: "Q3 2026 is partial; current-vs-prior change is unavailable",
+      detail:
+        "Q3 2026 has 2 of 3 expected monthly observations; Q2 2026 is complete with 3. These periods are not like-for-like, so current-vs-prior change is unavailable.",
+      evidenceIds: ["period-coverage"],
+    };
+
+    render(<DashboardShell dashboard={periodCoverageDashboard} />);
+
+    const support = screen.getByRole("group", { name: "Supporting context" });
+    expect(
+      within(support)
+        .getAllByRole("listitem")
+        .map(
+          (item) => item.querySelector(".executive-brief-label")?.textContent,
+        ),
+    ).toEqual(["Known"]);
+    expect(within(support).queryByText("Changed")).not.toBeInTheDocument();
+    expect(
+      within(support).getByText("3 departments reported"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Evidence for Important" }),
+    );
+    expect(
+      screen.getByText("high confidence in coverage assessment"),
+    ).toBeInTheDocument();
+  });
+
   it("opens each brief item's evidence on its first activation and restores focus", () => {
     render(<DashboardShell dashboard={dashboard} />);
 
@@ -480,7 +521,7 @@ describe("DashboardShell", () => {
   it("opens evidence with a direct source citation", () => {
     render(<DashboardShell dashboard={dashboard} />);
     fireEvent.click(
-      screen.getAllByRole("button", { name: /view .* sources?/i })[0]!,
+      screen.getAllByRole("button", { name: /view .* evidence items?/i })[0]!,
     );
     expect(
       screen.getByRole("dialog", { name: "Sources and evidence" }),

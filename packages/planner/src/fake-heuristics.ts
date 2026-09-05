@@ -504,7 +504,7 @@ export function defaultPlan(
       measureLabel,
       explicitCashFlow,
     ),
-    audience: "Whoever asked for this view of the dataset",
+    audience: "Decision-makers reviewing this dataset",
     framing:
       roles.comparison === undefined
         ? `${measureLabel} first, then ${roles.category === undefined ? "the rows behind it" : `the breakdown by ${roles.category} and the rows behind it`}.`
