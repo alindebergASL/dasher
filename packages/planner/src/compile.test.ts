@@ -519,20 +519,22 @@ describe("compileTablePlan", () => {
       negatives,
       options(negatives),
     ).evidence[1]!.detail;
-    expect(negativeDetail).not.toContain("sum to exactly one hundred");
-    expect(negativeDetail).toContain("need not sum to one hundred");
+    expect(negativeDetail).toContain("sum to exactly one hundred");
 
     const zero = zeroTotalTable();
     expect(
       compileTablePlan(
-        planWith({ amount: "Amount", period: "Date", category: "Category" }, [
-          "summary",
-          "by-category",
-        ]),
+        {
+          ...planWith(
+            { amount: "Amount", period: "Date", category: "Category" },
+            ["summary", "by-category"],
+          ),
+          flow: { operation: "gross-net" },
+        },
         zero,
         options(zero),
       ).evidence[1]!.detail,
-    ).toContain("the total for Jan 2026 is zero");
+    ).toContain("Gross inflow sums the positive amounts");
 
     const many = manyCategoriesTable(137);
     const spec = compileTablePlan(

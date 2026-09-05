@@ -4,6 +4,7 @@
  */
 import type { DashboardComponent } from "@dasher/dashboard-schema";
 import {
+  abs,
   compare,
   periodLabel,
   periodStartIso,
@@ -99,6 +100,42 @@ function rowLabel(row: FactRow): string {
 function summary(id: string, ctx: SectionContext): DashboardComponent {
   const { facts, money, evidenceIds } = ctx;
   const window = windowLabel(facts);
+  if (facts.mixedSignFlow !== undefined) {
+    const flow = facts.mixedSignFlow;
+    const largestInflow = facts.shares.find(
+      (share) => share.direction === "inflow",
+    );
+    const largestOutflow = facts.shares.find(
+      (share) => share.direction === "outflow",
+    );
+    const claims: { text: string; evidenceIds: string[] }[] = [
+      {
+        text: `Gross inflow was ${formatMoney(flow.grossInflow, money)} and gross outflow was ${formatMoney(flow.grossOutflow, money)}, producing ${formatSignedMoney(flow.netMovement, money)} net movement for ${window}.`,
+        evidenceIds: [...evidenceIds],
+      },
+    ];
+    if (largestOutflow !== undefined) {
+      claims.push({
+        text: `${largestOutflow.category} was the largest outflow driver at ${formatMoney(abs(largestOutflow.total), money)}, ${formatPercent(largestOutflow.share)} of outflow.`,
+        evidenceIds: [...evidenceIds],
+      });
+    }
+    if (largestInflow !== undefined) {
+      claims.push({
+        text: `${largestInflow.category} was the largest inflow driver at ${formatMoney(largestInflow.total, money)}, ${formatPercent(largestInflow.share)} of inflow.`,
+        evidenceIds: [...evidenceIds],
+      });
+    }
+    return {
+      id,
+      kind: "summary",
+      title: "Flow summary",
+      subtitle: ctx.plan.framing,
+      evidenceIds: [...evidenceIds],
+      claims,
+      tone: "normal",
+    };
+  }
   const claims: { text: string; evidenceIds: string[] }[] = [
     {
       text: `Total for ${window} is ${formatMoney(facts.latestTotal, money)} across ${plural(windowRows(facts), "row", "rows")}.`,
@@ -144,6 +181,33 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
 function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
   const { facts, money, evidenceIds } = ctx;
   const ids = [...evidenceIds];
+  if (facts.mixedSignFlow !== undefined) {
+    const flow = facts.mixedSignFlow;
+    return {
+      id,
+      kind: "metric-grid",
+      title: "Flow totals",
+      evidenceIds: ids,
+      metrics: [
+        {
+          label: "Gross inflow",
+          value: formatMoney(flow.grossInflow, money),
+          evidenceIds: ids,
+        },
+        {
+          label: "Gross outflow",
+          value: formatMoney(flow.grossOutflow, money),
+          evidenceIds: ids,
+        },
+        {
+          label: "Net movement",
+          value: formatSignedMoney(flow.netMovement, money),
+          direction: direction(flow.netMovement),
+          evidenceIds: ids,
+        },
+      ],
+    };
+  }
   const metrics: Extract<
     DashboardComponent,
     { kind: "metric-grid" }
@@ -378,7 +442,9 @@ function byCategory(
     id,
     kind: "ranking",
     title: rankingTitle(
-      `By category, ${windowLabel(facts)}`,
+      facts.mixedSignFlow === undefined
+        ? `By category, ${windowLabel(facts)}`
+        : `By flow direction and category, ${windowLabel(facts)}`,
       RANKING_LIMIT,
       facts.shares.length,
     ),
@@ -386,8 +452,16 @@ function byCategory(
     items: facts.shares.slice(0, RANKING_LIMIT).map((share, index) => ({
       id: `${id}-${String(index + 1)}`,
       label: share.category,
-      value: formatMoney(share.total, money),
-      note: `${formatPercent(share.share)} of the total`,
+      value: formatMoney(
+        share.direction === "outflow" ? abs(share.total) : share.total,
+        money,
+      ),
+      note:
+        share.direction === undefined
+          ? facts.mixedSignFlow === undefined
+            ? `${formatPercent(share.share)} of the total`
+            : "No inflow or outflow"
+          : `${formatPercent(share.share)} share of ${share.direction}`,
       evidenceIds: [...evidenceIds],
     })),
   };

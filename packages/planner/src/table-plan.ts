@@ -53,6 +53,12 @@ export const TablePlanSchema = z.strictObject({
       operation: z.enum(["compare", "ratio"]),
     })
     .optional(),
+  /** Explicit reader intent for treating signed amounts as directional flows. */
+  flow: z
+    .strictObject({
+      operation: z.literal("gross-net"),
+    })
+    .optional(),
   grain: z.enum(["month", "quarter", "year"]),
   filters: z
     .array(

@@ -91,6 +91,47 @@ describe("FakePlanningProvider roles", () => {
 });
 
 describe("FakePlanningProvider request phrases", () => {
+  it("uses explicit cash-flow wording without changing generic category copy", async () => {
+    const cashFlow = await planFor(
+      transactionsTable(),
+      "Analyze operating cash flow by category",
+    );
+    expect(cashFlow.title).toBe("Cash flow by Category");
+    expect(cashFlow.pages[0]?.description).toBe(
+      "Gross inflow, gross outflow, net movement, and the directional breakdown by Category.",
+    );
+    expect(cashFlow.framing).toBe(
+      "Cash flow first, then the breakdown by Category and the rows behind it.",
+    );
+    expect(cashFlow.flow).toEqual({ operation: "gross-net" });
+    expect(sections(cashFlow)).not.toContain("summary");
+
+    for (const phrase of [
+      "Analyze cash flows by category",
+      "Show inflows and outflows",
+      "Review outflows versus inflows",
+      "Analyze cash movement",
+      "Review signed flows",
+    ]) {
+      expect((await planFor(transactionsTable(), phrase)).flow).toEqual({
+        operation: "gross-net",
+      });
+    }
+
+    const generic = await planFor(
+      transactionsTable(),
+      "Analyze amount by category",
+    );
+    expect(generic.title).toBe("Amount by Category");
+    expect(generic.pages[0]?.description).toBe(
+      "Latest Amount, its change from the prior period, and the breakdown by Category.",
+    );
+    expect(generic.framing).toBe(
+      "Amount first, then the breakdown by Category and the rows behind it.",
+    );
+    expect(generic.flow).toBeUndefined();
+  });
+
   it("reads filters from exclude and only phrases matching category samples", async () => {
     const excluded = await planFor(
       transactionsTable(),

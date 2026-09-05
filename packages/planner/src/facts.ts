@@ -47,6 +47,15 @@ export interface CategoryShare {
   readonly category: string;
   readonly total: Exact;
   readonly share: Exact;
+  /** Present only when a mixed-sign window is split into gross directions. */
+  readonly direction?: "inflow" | "outflow";
+}
+
+export interface MixedSignFlow {
+  readonly grossInflow: Exact;
+  /** Absolute magnitude of the negative amounts. */
+  readonly grossOutflow: Exact;
+  readonly netMovement: Exact;
 }
 
 export interface Mover {
@@ -103,8 +112,10 @@ export interface TableFacts {
   readonly relationshipRatio?: Exact;
   readonly previousRelationshipRatio?: Exact;
   readonly relationshipRatioChangePercent?: Exact;
+  /** Present only when the latest analysis window has both positive and negative amounts. */
+  readonly mixedSignFlow?: MixedSignFlow;
   readonly shares: readonly CategoryShare[];
-  /** True when the shares were allocated so they add up to exactly 100. */
+  /** True when one share group, or each mixed-sign direction, adds to exactly 100. */
   readonly sharesSumToHundred: boolean;
   readonly movers: readonly Mover[];
   readonly largestRows: readonly FactRow[];
@@ -233,6 +244,62 @@ function sortedAbsDesc(totals: ReadonlyMap<string, Exact>): [string, Exact][] {
   );
 }
 
+function mixedCategoryShares(latestRows: readonly FactRow[]): CategoryShare[] {
+  const categorized = latestRows.filter((row) => row.category !== undefined);
+  const inflows = sortedAbsDesc(
+    sumBy(
+      categorized.filter((row) => sign(row.amount) > 0),
+      (row) => row.category as string,
+      (row) => row.amount,
+    ),
+  );
+  const outflows = sortedAbsDesc(
+    sumBy(
+      categorized.filter((row) => sign(row.amount) < 0),
+      (row) => row.category as string,
+      (row) => row.amount,
+    ),
+  );
+  const inflowShares = allocatePercents(inflows.map(([, total]) => total));
+  const outflowShares = allocatePercents(
+    outflows.map(([, total]) => abs(total)),
+  );
+  const directional: CategoryShare[] = [
+    ...inflows.map(([category, total], index) => ({
+      category,
+      total,
+      share: inflowShares[index] as Exact,
+      direction: "inflow" as const,
+    })),
+    ...outflows.map(([category, total], index) => ({
+      category,
+      total,
+      share: outflowShares[index] as Exact,
+      direction: "outflow" as const,
+    })),
+  ];
+  const directionalCategories = new Set(
+    directional.map((share) => share.category),
+  );
+  const zeroOnly: CategoryShare[] = sortedAbsDesc(
+    sumBy(
+      categorized.filter(
+        (row) =>
+          sign(row.amount) === 0 &&
+          !directionalCategories.has(row.category as string),
+      ),
+      (row) => row.category as string,
+      (row) => row.amount,
+    ),
+  ).map(([category, total]) => ({ category, total, share: ZERO }));
+  return [...directional, ...zeroOnly].sort(
+    (left, right) =>
+      compareAbsDesc(left.total, right.total) ||
+      left.category.localeCompare(right.category) ||
+      (left.direction ?? "").localeCompare(right.direction ?? ""),
+  );
+}
+
 /** Reads the rows a plan selects and computes every figure from them. */
 export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   const amountColumn = columnOf(table, plan.roles.amount);
@@ -355,6 +422,20 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     (sum, row) => add(sum, row.amount),
     ZERO,
   );
+  const hasInflow = latestRows.some((row) => sign(row.amount) > 0);
+  const hasOutflow = latestRows.some((row) => sign(row.amount) < 0);
+  const mixedSignFlow: MixedSignFlow | undefined =
+    plan.flow?.operation === "gross-net" && hasInflow && hasOutflow
+      ? {
+          grossInflow: latestRows
+            .filter((row) => sign(row.amount) > 0)
+            .reduce((sum, row) => add(sum, row.amount), ZERO),
+          grossOutflow: latestRows
+            .filter((row) => sign(row.amount) < 0)
+            .reduce((sum, row) => add(sum, abs(row.amount)), ZERO),
+          netMovement: latestTotal,
+        }
+      : undefined;
   const previousTotal =
     previousPeriod === undefined
       ? undefined
@@ -423,25 +504,43 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       (row) => row.amount,
     ),
   );
+  const nonFlowMixedSigns =
+    mixedSignFlow === undefined && hasInflow && hasOutflow;
   const shareValues = allocatePercents(
-    latestByCategory.map(([, total]) => total),
+    latestByCategory.map(([, total]) => abs(total)),
   );
-  const shares: CategoryShare[] = latestByCategory.map(
-    ([category, total], index) => ({
-      category,
-      total,
-      share: shareValues[index] as Exact,
-    }),
-  );
-  // The allocation only holds when every part is positive; otherwise each share
-  // is rounded on its own and the sentence about them has to say so.
+  const shares: CategoryShare[] =
+    mixedSignFlow === undefined
+      ? latestByCategory.map(([category, total], index) => ({
+          category,
+          total,
+          share: nonFlowMixedSigns
+            ? (percentOf(total, latestTotal) ?? ZERO)
+            : (shareValues[index] as Exact),
+        }))
+      : mixedCategoryShares(latestRows);
+  const directionalSharesSumToHundred = (
+    direction: "inflow" | "outflow",
+  ): boolean => {
+    const group = shares.filter((share) => share.direction === direction);
+    return (
+      group.length > 0 &&
+      compare(
+        group.reduce((sum, share) => add(sum, share.share), ZERO),
+        "100",
+      ) === 0
+    );
+  };
   const sharesSumToHundred =
     shares.length > 0 &&
-    latestByCategory.every(([, total]) => sign(total) >= 0) &&
-    compare(
-      shares.reduce((sum, share) => add(sum, share.share), ZERO),
-      "100",
-    ) === 0;
+    (mixedSignFlow === undefined
+      ? sign(latestTotal) !== 0 &&
+        compare(
+          shares.reduce((sum, share) => add(sum, share.share), ZERO),
+          "100",
+        ) === 0
+      : directionalSharesSumToHundred("inflow") &&
+        directionalSharesSumToHundred("outflow"));
 
   const movers: Mover[] = [];
   if (latestPeriod !== undefined && previousPeriod !== undefined) {
@@ -537,6 +636,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     ...(relationshipRatioChangePercent === undefined
       ? {}
       : { relationshipRatioChangePercent }),
+    ...(mixedSignFlow === undefined ? {} : { mixedSignFlow }),
     shares,
     sharesSumToHundred,
     movers,

@@ -10,9 +10,10 @@ import {
   type Evidence,
   type Page,
 } from "@dasher/dashboard-schema";
-import { compare, periodLabel, sign, type Table } from "./workbook";
+import { abs, compare, periodLabel, sign, type Table } from "./workbook";
 import {
   formatMoney,
+  formatPercent,
   formatSignedMoney,
   formatSignedPercent,
   isWhole,
@@ -118,22 +119,23 @@ function relationshipUnavailableDetail(
   }
 }
 
-/**
- * How the shares on this page were actually produced. The allocation only sums
- * to one hundred when every category total is positive.
- */
+/** How the shares on this page were actually produced. */
 function sharesSentence(facts: TableFacts): string | undefined {
   if (facts.shares.length === 0) return undefined;
-  const how = facts.sharesSumToHundred
-    ? "and are allocated in tenths of a percent so they sum to exactly one hundred"
-    : sign(facts.latestTotal) === 0
-      ? `and every share is reported as zero because the total for ${windowLabel(facts)} is zero`
-      : "and are each rounded to a tenth of a percent on their own, because a total is negative, so they need not sum to one hundred";
   const omitted = facts.shares.length - RANKING_LIMIT;
   const cut =
     omitted > 0
       ? ` The ranking lists the largest ${String(RANKING_LIMIT)} categories; ${plural(omitted, "more is", "more are")} not shown.`
       : "";
+  if (facts.mixedSignFlow !== undefined) {
+    return `The latest window has both positive and negative amounts. Gross inflow sums the positive amounts; gross outflow sums the absolute magnitudes of the negative amounts; net movement is their signed sum. Category amounts are grouped by category and direction before inflow shares and outflow shares are independently allocated in tenths of a percent to exactly one hundred; zero is neither direction. Movers are each category's latest signed total minus its previous signed total, ordered by size of change.${cut}`;
+  }
+  if (facts.shares.some((share) => sign(share.share) < 0)) {
+    return `The latest window contains positive and negative amounts, but the plan does not classify them as directional flows. Each category's signed contribution divides its signed total by the signed period total; offsets can produce negative shares or shares above one hundred percent. Movers are each category's latest signed total minus its previous signed total, ordered by size of change.${cut}`;
+  }
+  const how = facts.sharesSumToHundred
+    ? "and are allocated in tenths of a percent so they sum to exactly one hundred"
+    : `and every share is reported as zero because the total for ${windowLabel(facts)} is zero`;
   return `Shares divide each category's total by the period total ${how}. Movers are each category's latest total minus its previous total, ordered by size of change.${cut}`;
 }
 
@@ -320,6 +322,44 @@ function brief(
     };
   }
 
+  if (facts.mixedSignFlow !== undefined) {
+    const flow = facts.mixedSignFlow;
+    const largestOutflow = facts.shares.find(
+      (share) => share.direction === "outflow",
+    );
+    const importantHeadline =
+      sign(flow.netMovement) > 0
+        ? `Inflows exceeded outflows by ${formatMoney(flow.netMovement, money)}`
+        : sign(flow.netMovement) < 0
+          ? `Outflows exceeded inflows by ${formatMoney(abs(flow.netMovement), money)}`
+          : "Inflows and outflows offset exactly";
+    return {
+      known: {
+        statementTypes: ["calculated"],
+        headline: `${formatMoney(flow.grossInflow, money)} gross inflow versus ${formatMoney(flow.grossOutflow, money)} gross outflow for ${window}`,
+        detail:
+          "Positive and negative amounts were summed separately with exact decimals.",
+        evidenceIds: ids,
+      },
+      changed: {
+        statementTypes: ["calculated"],
+        headline: "The latest window contains both inflows and outflows",
+        detail:
+          "At least one selected amount is positive and at least one is negative; zero counts as neither direction.",
+        evidenceIds: ids,
+      },
+      important: {
+        statementTypes: ["calculated"],
+        headline: importantHeadline,
+        detail:
+          largestOutflow === undefined
+            ? "The signed difference between gross inflow and gross outflow is the net movement."
+            : `${largestOutflow.category} is the largest outflow driver at ${formatPercent(largestOutflow.share)} of outflows.`,
+        evidenceIds: ids,
+      },
+    };
+  }
+
   const known = {
     statementTypes: ["calculated" as const],
     headline: `${formatMoney(facts.latestTotal, money)} total for ${window}`,
@@ -456,8 +496,26 @@ function relationshipNextAction(
   };
 }
 
+function mixedSignNextAction(
+  facts: TableFacts,
+  money: MoneyFormat,
+  evidenceIds: string[],
+): DashboardSpec["nextAction"] | undefined {
+  if (facts.mixedSignFlow === undefined) return undefined;
+  const largestOutflow = facts.shares.find(
+    (share) => share.direction === "outflow",
+  );
+  if (largestOutflow === undefined) return undefined;
+  return {
+    title: `Review ${largestOutflow.category}, the largest outflow driver`,
+    detail: `${largestOutflow.category} accounts for ${formatPercent(largestOutflow.share)} of outflows (${formatMoney(abs(largestOutflow.total), money)}) for ${windowLabel(facts)}. Review the linked rows to understand what contributes to this category before deciding whether follow-up is needed.`,
+    evidenceIds,
+  };
+}
+
 function architecture(
   plan: TablePlan,
+  facts: TableFacts,
   options: CompileOptions,
   pages: readonly Page[],
 ): DashboardSpec["architecture"] {
@@ -496,7 +554,9 @@ function architecture(
       label: "Compute figures",
       detail:
         !activeRelationship || plan.roles.comparison === undefined
-          ? `Exact decimal sums, changes, and shares over "${plan.roles.amount}".`
+          ? facts.mixedSignFlow === undefined
+            ? `Exact decimal sums, changes, and shares over "${plan.roles.amount}".`
+            : `Exact decimal gross inflow, gross outflow, net movement, and direction-aware shares over "${plan.roles.amount}".`
           : `Exact decimal sums and changes over "${plan.roles.amount}" and "${plan.roles.comparison}"${plan.relationship?.operation === "ratio" ? ", plus their complete-support ratio and ratio change" : ", without inferring a denominator"}.`,
     },
     ...pages.map((page) => ({
@@ -631,12 +691,13 @@ export function compileTablePlan(
     ]);
   }
 
-  const action = relationshipNextAction(plan, facts, evidenceIds) ?? {
-    title: "Open the evidence",
-    detail:
-      "Each figure links to the file it came from and the arithmetic that produced it; check those before acting on a number.",
-    evidenceIds,
-  };
+  const action = relationshipNextAction(plan, facts, evidenceIds) ??
+    mixedSignNextAction(facts, money, evidenceIds) ?? {
+      title: "Open the evidence",
+      detail:
+        "Each figure links to the file it came from and the arithmetic that produced it; check those before acting on a number.",
+      evidenceIds,
+    };
 
   return parseDashboardSpec({
     schemaVersion: "1.2",
@@ -658,7 +719,7 @@ export function compileTablePlan(
     notice: notice(plan, facts, options),
     pages,
     evidence: items,
-    architecture: architecture(plan, options, pages),
+    architecture: architecture(plan, facts, options, pages),
     executiveBrief: brief(plan, table, facts, money, evidenceIds),
   });
 }

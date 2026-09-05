@@ -316,25 +316,33 @@ function titleFrom(
   requestText: string,
   sourceName: string,
   roles: Roles,
+  measureLabel: string,
+  explicitCashFlow: boolean,
 ): string {
   const asked = requestText.toLowerCase();
+  if (explicitCashFlow && roles.category !== undefined) {
+    return `${measureLabel} by ${roles.category}`;
+  }
   if (roles.comparison !== undefined) {
-    return `${roles.amount} vs ${roles.comparison}`;
+    return `${measureLabel} vs ${roles.comparison}`;
   }
   if (roles.budget !== undefined && /budget|variance|over\b/u.test(asked)) {
-    return "Budget check";
+    return !explicitCashFlow ? "Budget check" : `${measureLabel} budget check`;
   }
   if (/largest|biggest|top\b|movers?/u.test(asked)) {
-    return "Largest items and biggest movers";
+    return !explicitCashFlow
+      ? "Largest items and biggest movers"
+      : `${measureLabel}: largest items and biggest movers`;
   }
   if (/trend|over time|month by month|quarter|year/u.test(asked)) {
-    return `${roles.amount} over time`;
+    return `${measureLabel} over time`;
   }
   if (/categor|where.*going|breakdown|mix/u.test(asked)) {
     return roles.category === undefined
-      ? `${roles.amount} breakdown`
-      : `${roles.amount} by ${roles.category}`;
+      ? `${measureLabel} breakdown`
+      : `${measureLabel} by ${roles.category}`;
   }
+  if (explicitCashFlow) return `${measureLabel} overview`;
   const stem = sourceName
     .replace(/\.[a-z0-9]+$/iu, "")
     .replace(/[-_]+/gu, " ")
@@ -395,6 +403,11 @@ export function defaultPlan(
   roles: Roles,
   table: TableSummary,
 ): TablePlan {
+  const explicitCashFlow =
+    /\b(?:cash flows?|cash movement|signed flows?|inflows?(?:\s+(?:and|versus|vs\.?)\s+outflows?)?|outflows?(?:\s+(?:and|versus|vs\.?)\s+inflows?)?)\b/iu.test(
+      requestText,
+    );
+  const measureLabel = explicitCashFlow ? "Cash flow" : roles.amount;
   const last = readLastPeriods(requestText);
   const grain = readGrain(requestText) ?? last?.grain ?? "month";
   const category = table.columns.find(
@@ -409,6 +422,9 @@ export function defaultPlan(
     relationship === undefined
       ? supported(OVERVIEW, roles)
       : ["relationship" as const, ...supported(["by-category"], roles)];
+  if (explicitCashFlow) {
+    overview = overview.filter((section) => section !== "summary");
+  }
   const detail = supported(
     relationship === undefined ? DETAIL : ["largest-rows", "table"],
     roles,
@@ -428,12 +444,13 @@ export function defaultPlan(
     {
       id: "overview",
       title: "Overview",
-      description:
-        relationship === undefined
-          ? `Latest ${roles.amount}, its change from the prior period, and ${roles.category === undefined ? "the contributing rows" : `the breakdown by ${roles.category}`}.`
+      description: explicitCashFlow
+        ? `Gross inflow, gross outflow, net movement, and ${roles.category === undefined ? "the rows behind them" : `the directional breakdown by ${roles.category}`}.`
+        : relationship === undefined
+          ? `Latest ${measureLabel}, its change from the prior period, and ${roles.category === undefined ? "the contributing rows" : `the breakdown by ${roles.category}`}.`
           : relationship.operation === "ratio"
-            ? `Latest ${roles.amount} and ${roles.comparison}, both prior-period changes, and ${roles.amount} per ${roles.comparison}.`
-            : `Latest ${roles.amount} and ${roles.comparison} with both prior-period changes.`,
+            ? `Latest ${measureLabel} and ${roles.comparison}, both prior-period changes, and ${measureLabel} per ${roles.comparison}.`
+            : `Latest ${measureLabel} and ${roles.comparison} with both prior-period changes.`,
       sections: overview.slice(0, 6),
     },
   ];
@@ -449,14 +466,21 @@ export function defaultPlan(
 
   return {
     planVersion: "table-plan-v1",
-    title: titleFrom(requestText, sourceName, roles),
+    title: titleFrom(
+      requestText,
+      sourceName,
+      roles,
+      measureLabel,
+      explicitCashFlow,
+    ),
     audience: "Whoever asked for this view of the dataset",
     framing:
       roles.comparison === undefined
-        ? `${roles.amount} first, then ${roles.category === undefined ? "the rows behind it" : `the breakdown by ${roles.category} and the rows behind it`}.`
-        : `${roles.amount} and ${roles.comparison} first, then the relationship and the rows behind it.`,
+        ? `${measureLabel} first, then ${roles.category === undefined ? "the rows behind it" : `the breakdown by ${roles.category} and the rows behind it`}.`
+        : `${measureLabel} and ${roles.comparison} first, then the relationship and the rows behind it.`,
     roles,
     ...(relationship === undefined ? {} : { relationship }),
+    ...(explicitCashFlow ? { flow: { operation: "gross-net" as const } } : {}),
     grain,
     filters: readFilters(requestText, category, filterValues(table, category)),
     ...(last === undefined ? {} : { lastPeriods: last.count }),

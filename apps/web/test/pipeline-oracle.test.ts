@@ -124,8 +124,10 @@ describe("accounting-format negatives", () => {
   // "$(5,000.00)", which is what Excel's Accounting format produces.
   it("counts a parenthesised refund rather than dropping it", async () => {
     const shown = text(await build("accounting-negatives.csv", "Total spend"));
+
     expect(shown).toContain("5,000");
     expect(shown).not.toContain("10,000");
+    expect(shown).not.toMatch(/Gross inflow|Gross outflow|Net movement/iu);
   });
 });
 

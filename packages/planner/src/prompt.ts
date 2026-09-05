@@ -43,6 +43,7 @@ You emit one JSON object. Its planVersion field must be exactly "table-plan-v1".
   - account: a second grouping column, shown in the table.
   - budget: a measure column holding the budget matching each amount.
 - relationship: required when roles.comparison is set. Set operation to "compare" for side-by-side values and growth only. Set operation to "ratio" only when the request explicitly asks for per/ratio/efficiency semantics, or for the well-defined Customers-per-Headcount pair. Never infer denominator semantics from generic compare/vs wording.
+- flow: set operation to "gross-net" only when the reader explicitly asks for cash flow, inflows/outflows, or another signed-flow analysis. It authorizes splitting mixed signs into gross inflow, gross outflow, and net movement. Never set it merely because a measure contains positive and negative values; profit, variance, corrections, and deltas are not automatically flows.
 - grain: month, quarter, or year. Dates are bucketed to it; period names finer than it are rolled up.
 - filters: include or exclude rows whose cell in a column exactly matches one of the values (case-insensitive). At most 8.
 - lastPeriods: keep only the most recent N periods. Omit for the whole file.
