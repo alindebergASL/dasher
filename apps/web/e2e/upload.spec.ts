@@ -8,10 +8,10 @@ test.describe("uploading a spreadsheet", () => {
   test("a transactions export becomes a dashboard", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByLabel("Your spreadsheet (CSV)")
+      .getByLabel("Choose a CSV data source")
       .setInputFiles(path.join(fixtures, "transactions.csv"));
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Spending by category and what changed");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
@@ -21,16 +21,19 @@ test.describe("uploading a spreadsheet", () => {
     await expect(
       page.getByRole("region", { name: "Dataset interpretation" }),
     ).toContainText(/Amount/);
+    await expect(
+      page.getByRole("status", { name: "Data source" }),
+    ).toContainText("Using transactions.csv.");
     await expect(page.getByText(/Salaries and benefits/).first()).toBeVisible();
   });
 
   test("a wide budget export is unpivoted and built", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByLabel("Your spreadsheet (CSV)")
+      .getByLabel("Choose a CSV data source")
       .setInputFiles(path.join(fixtures, "operating-spend-wide.csv"));
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Which lines are over budget?");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
@@ -44,13 +47,13 @@ test.describe("uploading a spreadsheet", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Your spreadsheet (CSV)").setInputFiles({
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
       name: "notes.csv",
       mimeType: "text/csv",
       buffer: Buffer.from("just a sentence with no header or rows"),
     });
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Anything");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(page.locator(".request-error")).toContainText(
@@ -61,10 +64,10 @@ test.describe("uploading a spreadsheet", () => {
   test("a refinement re-reads the uploaded file", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByLabel("Your spreadsheet (CSV)")
+      .getByLabel("Choose a CSV data source")
       .setInputFiles(path.join(fixtures, "transactions.csv"));
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Spending by category");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
