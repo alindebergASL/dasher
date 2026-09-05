@@ -34,14 +34,21 @@ function formatFileSize(bytes: number): string {
 
 type DisplayedSource =
   | { readonly kind: "sample" }
-  | { readonly kind: "upload"; readonly name?: string };
+  | {
+      readonly kind: "upload";
+      readonly name?: string;
+      /** Local identity for one selected File object; never persisted. */
+      readonly selectionId?: number;
+    };
 
 function sameSource(left: DisplayedSource, right: DisplayedSource): boolean {
-  return (
-    left.kind === right.kind &&
-    (left.kind === "sample" ||
-      (right.kind === "upload" && left.name === right.name))
-  );
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "sample") return true;
+  if (right.kind !== "upload") return false;
+  if (left.selectionId !== undefined || right.selectionId !== undefined) {
+    return left.selectionId === right.selectionId;
+  }
+  return left.name === right.name;
 }
 
 function sourceDescription(source: DisplayedSource): string {
@@ -65,6 +72,7 @@ export function RequestWorkspace({
   const [change, setChange] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [selectedFile, setSelectedFile] = useState<File | undefined>(undefined);
+  const [selectedSourceId, setSelectedSourceId] = useState(0);
   const [displayedSource, setDisplayedSource] = useState<DisplayedSource>(
     initial.source?.kind === "upload" ? { kind: "upload" } : { kind: "sample" },
   );
@@ -79,8 +87,18 @@ export function RequestWorkspace({
   const selectedSource: DisplayedSource =
     selectedFile === undefined
       ? { kind: "sample" }
-      : { kind: "upload", name: selectedFile.name };
+      : {
+          kind: "upload",
+          name: selectedFile.name,
+          selectionId: selectedSourceId,
+        };
   const sourceWillChange = !sameSource(selectedSource, displayedSource);
+  const replacingSameNamedUpload =
+    sourceWillChange &&
+    selectedSource.kind === "upload" &&
+    displayedSource.kind === "upload" &&
+    selectedSource.name !== undefined &&
+    selectedSource.name === displayedSource.name;
 
   function currentFile(): File | undefined {
     const file = selectedFile;
@@ -90,11 +108,13 @@ export function RequestWorkspace({
   function selectFile(file: File | undefined) {
     if (file === undefined || file.size === 0) return;
     setSelectedFile(file);
+    setSelectedSourceId((current) => current + 1);
     setError(undefined);
   }
 
   function useSampleData() {
     setSelectedFile(undefined);
+    setError(undefined);
     if (fileInput.current !== null) fileInput.current.value = "";
   }
 
@@ -139,7 +159,11 @@ export function RequestWorkspace({
     const sourceUsed: DisplayedSource =
       file === undefined
         ? { kind: "sample" }
-        : { kind: "upload", name: file.name };
+        : {
+            kind: "upload",
+            name: file.name,
+            selectionId: selectedSourceId,
+          };
     form.set("request", text);
     setRequest(text);
     startTransition(async () => {
@@ -155,7 +179,11 @@ export function RequestWorkspace({
     const sourceUsed: DisplayedSource =
       file === undefined
         ? { kind: "sample" }
-        : { kind: "upload", name: file.name };
+        : {
+            kind: "upload",
+            name: file.name,
+            selectionId: selectedSourceId,
+          };
     form.set("request", activeRequest);
     form.set("plan", JSON.stringify(plan));
     form.set("instruction", instruction);
@@ -308,9 +336,11 @@ export function RequestWorkspace({
                 {sourceWillChange ? (
                   <span aria-hidden="true" className="source-status-dot" />
                 ) : null}
-                {sourceWillChange
-                  ? `Next build: ${sourceDescription(selectedSource)}. Currently showing: ${sourceDescription(displayedSource)}.`
-                  : `Using ${sourceDescription(selectedSource)}.`}
+                {replacingSameNamedUpload
+                  ? `Next build: a newly selected file named ${selectedSource.name}. Currently showing: the previous file with that name.`
+                  : sourceWillChange
+                    ? `Next build: ${sourceDescription(selectedSource)}. Currently showing: ${sourceDescription(displayedSource)}.`
+                    : `Using ${sourceDescription(selectedSource)}.`}
               </p>
               {selectedFile === undefined ? null : (
                 <button

@@ -183,6 +183,23 @@ describe("RequestWorkspace", () => {
       "sr-only",
     );
 
+    const replacement = new File(
+      ["Date,Amount\n2026-01-01,999"],
+      "operations.csv",
+      { type: "text/csv" },
+    );
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [replacement] },
+    });
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(
+      /newly selected file named operations\.csv.*previous file with that name/iu,
+    );
+    expect(screen.getByRole("status", { name: "Data source" })).not.toHaveClass(
+      "sr-only",
+    );
+
     fireEvent.click(screen.getByRole("button", { name: "Use sample data" }));
     expect(
       screen.getByRole("status", { name: "Data source" }),
