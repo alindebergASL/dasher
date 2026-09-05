@@ -89,6 +89,79 @@ test.describe("uploading a spreadsheet", () => {
     expect(second!.y).toBeGreaterThan(first!.y + first!.height - 1);
   });
 
+  test("a mixed-sign cash-flow upload renders safe directional shares", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "cash-flow.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Month,Category,Amount,Description",
+          "2026-08,Collections,600 USD,Invoice A",
+          "2026-08,Sales,400 USD,Order B",
+          "2026-08,Payroll,-300 USD,Payroll run",
+          "2026-08,Vendors,-200 USD,Supplier bill",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Analyze cash flow by category");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
+    await expect(page.locator(".request-error")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Cash flow by Category" }),
+    ).toBeVisible();
+    const metrics = page.locator(".metric-card");
+    const grossInflow = metrics.filter({ hasText: "Gross inflow" });
+    const grossOutflow = metrics.filter({ hasText: "Gross outflow" });
+    const netMovement = metrics.filter({ hasText: "Net movement" });
+    await expect(grossInflow).toBeVisible();
+    await expect(grossOutflow).toBeVisible();
+    await expect(netMovement).toBeVisible();
+    await expect(grossInflow.locator("strong")).toHaveText("$1,000");
+    await expect(grossOutflow.locator("strong")).toHaveText("$500");
+    await expect(netMovement.locator("strong")).toHaveText("+$500");
+
+    const shareLabels = page.locator(".ranking-list small");
+    const inflowShares = shareLabels.filter({ hasText: "share of inflow" });
+    const outflowShares = shareLabels.filter({ hasText: "share of outflow" });
+    await expect(inflowShares).toHaveCount(2);
+    await expect(outflowShares).toHaveCount(2);
+    await expect(inflowShares.first()).toBeVisible();
+    await expect(outflowShares.first()).toBeVisible();
+    const renderedShares = await shareLabels.allTextContents();
+    expect(renderedShares).toHaveLength(4);
+    expect(
+      renderedShares.every((label) => {
+        const match = /^(\d+(?:\.\d+)?)% share of (?:inflow|outflow)$/u.exec(
+          label,
+        );
+        if (match === null) return false;
+        const share = Number(match[1]);
+        return share >= 0 && share <= 100;
+      }),
+    ).toBe(true);
+
+    const nextAction = page.getByRole("article", { name: "Next safe action" });
+    await expect(nextAction).toBeVisible();
+    await expect(nextAction).toContainText(
+      "Review Payroll, the largest outflow driver",
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {
