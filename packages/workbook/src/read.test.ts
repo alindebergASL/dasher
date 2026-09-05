@@ -216,6 +216,30 @@ describe("a wide file with one column per period", () => {
     expect(latest).toEqual(["1.25", "2.5"]);
   });
 
+  it("refuses conflicting decimal conventions across wide periods", () => {
+    expect(() =>
+      readTable(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;1.25;1,25;3,25",
+          "B;2.50;2,50;4,50",
+        ].join("\n"),
+      ),
+    ).toThrow(/mixed_numeric_convention.*conflicting decimal/iu);
+  });
+
+  it("refuses conflicting currencies across wide periods", () => {
+    expect(() =>
+      readTable(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;$100.00;€120.00;€130.00",
+          "B;$200.00;€220.00;€230.00",
+        ].join("\n"),
+      ),
+    ).toThrow(/mixed_numeric_convention.*conflicting currencies/iu);
+  });
+
   it("preserves currency across an established wide table", () => {
     const original = profileTable({
       headers: ["Category", "2026-01", "2026-02", "2026-03"],

@@ -11,9 +11,10 @@ import {
 } from "./csv";
 import { profileTable, type ProfileOptions } from "./infer";
 import type { Table } from "./table";
-import { unpivotIfWide } from "./unpivot";
+import { unpivotIfWide, WideTableRefused } from "./unpivot";
 
-export type TableRefusal = CsvRefusal | "no_rows" | "no_numeric_column";
+export type TableRefusal =
+  CsvRefusal | "no_rows" | "no_numeric_column" | "mixed_numeric_convention";
 
 export class TableRefused extends Error {
   constructor(
@@ -92,7 +93,15 @@ export function readTable(csvText: string, options: ReadOptions = {}): Table {
   if (table.rowCount === 0) {
     throw new TableRefused("no_rows", "the file has a header and no rows");
   }
-  const shaped = unpivotIfWide(table, profiling);
+  let shaped: Table;
+  try {
+    shaped = unpivotIfWide(table, profiling);
+  } catch (error) {
+    if (error instanceof WideTableRefused) {
+      throw new TableRefused(error.reason, error.detail);
+    }
+    throw error;
+  }
   if (!shaped.columns.some((column) => column.type === "number")) {
     throw new TableRefused(
       "no_numeric_column",

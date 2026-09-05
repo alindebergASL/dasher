@@ -216,6 +216,31 @@ test.describe("uploading a spreadsheet", () => {
     await expect(page.getByText("120 total for Feb 2026")).toHaveCount(0);
   });
 
+  test("conflicting wide numeric conventions are refused instead of reinterpreted", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "mixed-conventions.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;1.25;1,25;3,25",
+          "B;2.50;2,50;4,50",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Show amount over time");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(page.locator(".request-error")).toContainText(
+      /mixed_numeric_convention.*conflicting decimal conventions/iu,
+    );
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {

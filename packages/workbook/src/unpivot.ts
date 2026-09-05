@@ -17,6 +17,15 @@ interface PeriodColumn {
   readonly grain: Grain;
 }
 
+export class WideTableRefused extends Error {
+  readonly reason = "mixed_numeric_convention" as const;
+
+  constructor(readonly detail: string) {
+    super(detail);
+    this.name = "WideTableRefused";
+  }
+}
+
 /**
  * Unpivots when at least two numeric columns have period headers; otherwise the
  * table comes back as it was. Non-period columns are kept and repeated for each
@@ -66,7 +75,9 @@ export function unpivotIfWide(
       options,
     );
     if (name === "period") return periodColumnProfile(profile);
-    if (name === "amount") return amountColumnProfile(profile, periods);
+    if (name === "amount") {
+      return amountColumnProfile(profile, periods, table.rows);
+    }
     return profile;
   });
 
@@ -107,10 +118,14 @@ function periodColumnProfile(profile: ColumnProfile): ColumnProfile {
 function amountColumnProfile(
   profile: ColumnProfile,
   periods: readonly PeriodColumn[],
+  rows: Table["rows"],
 ): ColumnProfile {
   const decimals = new Set(
     periods.flatMap(({ column }) =>
-      column.decimal === undefined ? [] : [column.decimal],
+      column.decimal === undefined ||
+      !rows.some((row) => /[.,]/u.test(row[column.index] ?? ""))
+        ? []
+        : [column.decimal],
     ),
   );
   const currencies = new Set(
@@ -118,12 +133,18 @@ function amountColumnProfile(
       column.currency === undefined ? [] : [column.currency],
     ),
   );
-  const unanimousDecimal = [...decimals][0];
-  const unanimousCurrency = [...currencies][0];
-  const decimal =
-    profile.decimal ?? (decimals.size === 1 ? unanimousDecimal : undefined);
-  const currency =
-    profile.currency ?? (currencies.size === 1 ? unanimousCurrency : undefined);
+  if (decimals.size > 1) {
+    throw new WideTableRefused(
+      "period columns use conflicting decimal conventions and cannot be combined safely",
+    );
+  }
+  if (currencies.size > 1) {
+    throw new WideTableRefused(
+      "period columns use conflicting currencies and cannot be combined safely",
+    );
+  }
+  const decimal = [...decimals][0] ?? profile.decimal;
+  const currency = [...currencies][0] ?? profile.currency;
   return {
     name: profile.name,
     index: profile.index,
