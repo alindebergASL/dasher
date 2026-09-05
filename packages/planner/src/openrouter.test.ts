@@ -138,6 +138,63 @@ describe("OpenRouterPlanningProvider", () => {
     });
   });
 
+  it("constrains model role choices to columns of the required type", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        response(JSON.stringify({ planVersion: "table-plan-v1" })),
+      );
+    const provider = new OpenRouterPlanningProvider({
+      apiKey: testApiKey,
+      fetcher,
+    });
+
+    await provider.plan(request());
+    const init = fetcher.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(init.body)) as {
+      response_format: {
+        json_schema: {
+          schema: {
+            properties: {
+              roles: {
+                properties: Record<string, { enum?: string[] }>;
+              };
+              filters: {
+                items: { properties: Record<string, { enum?: string[] }> };
+              };
+            };
+          };
+        };
+      };
+    };
+    const properties = body.response_format.json_schema.schema.properties;
+    expect(properties.roles.properties.amount!.enum).toEqual(["Amount"]);
+    expect(properties.roles.properties.budget!.enum).toEqual(["Amount"]);
+    expect(properties.roles.properties.label!.enum).toEqual([
+      "Description",
+      "Category",
+      "Account",
+    ]);
+    expect(properties.roles.properties.category!.enum).toEqual([
+      "Description",
+      "Category",
+      "Account",
+    ]);
+    expect(properties.roles.properties.account!.enum).toEqual([
+      "Description",
+      "Category",
+      "Account",
+    ]);
+    expect(properties.roles.properties.period!.enum).toEqual(["Date"]);
+    expect(properties.filters.items.properties.column!.enum).toEqual([
+      "Date",
+      "Description",
+      "Category",
+      "Amount",
+      "Account",
+    ]);
+  });
+
   it("returns malformed plan text for the governed loop to reject", async () => {
     const provider = new OpenRouterPlanningProvider({
       apiKey: "x",
