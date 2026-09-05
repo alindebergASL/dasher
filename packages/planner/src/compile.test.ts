@@ -1,366 +1,609 @@
 import { describe, expect, it } from "vitest";
 
-import type { Station } from "@dasher/station-domain";
+import { add, ZERO, type Exact } from "./workbook";
+import { compileTablePlan, type CompileOptions } from "./compile";
+import { computeFacts } from "./facts";
+import { PlanRejected } from "./plan";
+import type { TablePlan } from "./table-plan";
+import {
+  AS_OF,
+  blankCategoryTable,
+  centsTable,
+  flatTable,
+  manyCategoriesTable,
+  negativeTable,
+  partialBudgetTable,
+  quarterlyTable,
+  sourceFor,
+  transactionsTable,
+  travelTable,
+  wideTable,
+  zeroTotalTable,
+} from "./test-tables";
 
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
-
-import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import { compilePlan } from "./compile";
-import type { DashboardPlan } from "./plan";
-
-/**
- * What a compiled dashboard must be true about, stated against the product's
- * promises rather than against this compiler's structure.
- *
- * `compilePlan` is the trusted half of the planning loop: a model chooses the
- * title, the gauges, and the page layout, and this computes every number,
- * every alert, and every freshness judgement from the observations. It is the
- * largest file in the reachable product and had no test of its own — the
- * closest equivalents tested a second, fixed-page composition that nothing
- * rendered, since deleted. Three mutations to the rules below survived both
- * this package's suite and the full end-to-end suite before these existed:
- * inverting the stale-gauge filter, moving the threshold comparison off its
- * boundary, and pinning the summary tone to `normal`.
- *
- * Two product promises are load-bearing here — `PRODUCT_REQUIREMENTS.md`
- * requires "missing or stale sensor warnings" and "user-defined threshold
- * alerts" — and both are judgements a reader acts on. A gauge wrongly called
- * fresh, or a flood threshold that fires a foot late, is the failure that
- * matters most in a product whose claim is evidence.
- *
- * One mutation deliberately has no test: weakening `dataIssues.length > 0` to
- * `> 1` in the stale-gauge filter changes nothing observable. `buildGaugeMetrics`
- * appends a data issue under exactly the conditions that make its freshness
- * non-fresh, using the same staleness predicate, so the two halves of that `||`
- * are equivalent for every input the compiler can receive — verified across all
- * forty-nine combinations of stage and streamflow age, including the boundary.
- * It is an equivalent mutant rather than a coverage gap, and the clause is worth
- * keeping: a data issue that is not a freshness issue, such as a plausibility
- * check, would make the two diverge.
- */
-
-const AS_OF = "2026-07-29T12:02:00.000Z";
-const gauges = parseUsgsInstantaneousValues(fixture);
-const site = "11447650";
-
-function planFor(
-  siteIds: readonly string[],
-  sections: DashboardPlan["pages"][number]["sections"],
-): DashboardPlan {
-  return {
-    planVersion: "plan-v1",
-    title: "Compile Test",
-    audience: "Testers",
-    framing: "A framing sentence.",
-    siteIds: [...siteIds],
-    pages: [
-      {
-        id: "overview",
-        title: "Overview",
-        description: "Everything at once.",
-        sections: [...sections],
-      },
+const ALL_SECTIONS: TablePlan["pages"] = [
+  {
+    id: "overview",
+    title: "Overview",
+    description: "All of it.",
+    sections: [
+      "summary",
+      "headline-totals",
+      "by-category",
+      "trend",
+      "budget-variance",
     ],
+  },
+  {
+    id: "detail",
+    title: "Detail",
+    description: "Rows.",
+    sections: ["movers", "largest-rows", "table"],
+  },
+];
+
+const transactionsPlan: TablePlan = {
+  planVersion: "table-plan-v1",
+  title: "Spend",
+  audience: "Finance",
+  framing: "Totals, then categories.",
+  roles: {
+    amount: "Amount",
+    period: "Date",
+    category: "Category",
+    label: "Description",
+    account: "Account",
+  },
+  grain: "month",
+  filters: [],
+  pages: [
+    {
+      id: "overview",
+      title: "Overview",
+      description: "All of it.",
+      sections: ["summary", "headline-totals", "by-category", "trend"],
+    },
+    {
+      id: "detail",
+      title: "Detail",
+      description: "Rows.",
+      sections: ["movers", "largest-rows", "table"],
+    },
+  ],
+};
+
+const widePlan: TablePlan = {
+  ...transactionsPlan,
+  roles: {
+    amount: "amount",
+    period: "period",
+    category: "label",
+    budget: "budget",
+  },
+  pages: ALL_SECTIONS,
+};
+
+function options(
+  table: ReturnType<typeof transactionsTable>,
+  usesModel = false,
+): CompileOptions {
+  return {
+    asOf: AS_OF,
+    planner: {
+      id: usesModel ? "anthropic:test" : "fake-table-planner",
+      usesModel,
+    },
+    source: sourceFor(table, "sample.csv"),
   };
 }
 
-/** The stage reading a gauge most recently reported, as the fixture has it. */
-function latestStage(gauge: Station): number {
-  const observations = gauge.primary?.observations ?? [];
-  const last = observations[observations.length - 1];
-  if (last?.value === undefined || last.value === null) {
-    throw new Error("fixture gauge has no stage reading to anchor a threshold");
-  }
-  return last.value;
+/** A one-page plan over a small table. */
+function planWith(
+  roles: TablePlan["roles"],
+  sections: TablePlan["pages"][number]["sections"],
+  extra: Partial<TablePlan> = {},
+): TablePlan {
+  return {
+    ...transactionsPlan,
+    roles,
+    pages: [{ id: "one", title: "One", description: "Everything.", sections }],
+    ...extra,
+  };
 }
 
-function summaryOf(spec: ReturnType<typeof compilePlan>) {
-  const component = spec.pages
-    .flatMap((page) => page.components)
-    .find((candidate) => candidate.kind === "summary");
-  if (component?.kind !== "summary") {
-    throw new Error("compiled dashboard has no summary component");
-  }
-  return component;
+function componentKinds(spec: ReturnType<typeof compileTablePlan>): string[] {
+  return spec.pages.flatMap((page) =>
+    page.components.map((component) => component.id),
+  );
 }
 
-function alertsOf(spec: ReturnType<typeof compilePlan>) {
-  const component = spec.pages
-    .flatMap((page) => page.components)
-    .find((candidate) => candidate.kind === "alert-list");
-  if (component?.kind !== "alert-list") {
-    throw new Error("compiled dashboard has no alert list");
-  }
-  return component.alerts;
-}
-
-describe("user-defined threshold alerts", () => {
-  const gauge = gauges.find((candidate) => candidate.siteId === site)!;
-  const reading = latestStage(gauge);
-
-  function compileWithThreshold(above: number) {
-    return compilePlan(planFor([site], ["attention"]), [gauge], {
-      asOf: AS_OF,
-      planner: { id: "test-planner", usesModel: true },
-      thresholds: [
-        {
-          id: "flood-watch",
-          siteId: site,
-          label: "Flood watch",
-          above,
-        },
-      ],
+describe("compileTablePlan", () => {
+  it("compiles every section kind into a valid spec", () => {
+    const table = wideTable();
+    const spec = compileTablePlan(widePlan, table, options(table));
+    expect(componentKinds(spec)).toEqual([
+      "overview-summary",
+      "overview-headline-totals",
+      "overview-by-category",
+      "overview-trend",
+      "overview-budget-variance",
+      "detail-movers",
+      "detail-largest-rows",
+      "detail-table",
+    ]);
+    expect(
+      spec.pages.flatMap((page) =>
+        page.components.map((component) => component.kind),
+      ),
+    ).toEqual([
+      "summary",
+      "metric-grid",
+      "ranking",
+      "trend-list",
+      "alert-list",
+      "ranking",
+      "ranking",
+      "table",
+    ]);
+    expect(spec.dataMode).toBe("live");
+    expect(spec.freshness).toMatchObject({
+      status: "fresh",
+      latestObservationAt: sourceFor(table, "x").retrievedAt,
     });
-  }
-
-  it("raises the alert when the reading is above the threshold", () => {
-    const alerts = alertsOf(compileWithThreshold(reading - 1));
-    expect(alerts.map((alert) => alert.id)).toContain("flood-watch");
+    expect(spec.evidence.map((item) => item.id)).toEqual([
+      "source-file",
+      "calculations",
+    ]);
+    expect(spec.architecture.nodes.map((node) => node.kind)).toEqual([
+      "input",
+      "process",
+      "process",
+      "process",
+      "page",
+      "page",
+      "output",
+    ]);
   });
 
-  it("does not raise the alert when the reading sits exactly on the threshold", () => {
-    // `above` names the level a reading must exceed, so equality is not a
-    // breach. This is the boundary a reader is entitled to: a gauge holding
-    // steady at the level they set is not the same as one that has passed it,
-    // and telling them otherwise makes every threshold cry wolf at its own
-    // value.
-    const alerts = alertsOf(compileWithThreshold(reading));
-    expect(alerts.map((alert) => alert.id)).not.toContain("flood-watch");
-  });
-
-  it("does not raise the alert when the reading is below the threshold", () => {
-    const alerts = alertsOf(compileWithThreshold(reading + 1));
-    expect(alerts.map((alert) => alert.id)).not.toContain("flood-watch");
-  });
-});
-
-describe("missing or stale sensor warnings", () => {
-  const freshGauge = gauges.find((candidate) => candidate.siteId === site)!;
-
-  /** The same gauge, read far enough later that its observations are old. */
-  const staleAsOf = "2026-07-30T12:02:00.000Z";
-
-  function compile(asOf: string) {
-    return compilePlan(
-      planFor([site], ["conditions-summary", "attention"]),
-      [freshGauge],
-      { asOf, planner: { id: "test-planner", usesModel: true } },
+  it("records a planning model as interpreted evidence and an ai node", () => {
+    const table = transactionsTable();
+    const spec = compileTablePlan(
+      transactionsPlan,
+      table,
+      options(table, true),
     );
-  }
-
-  it("reports a fresh, complete gauge as needing no freshness check", () => {
-    const claims = summaryOf(compile(AS_OF)).claims.map((claim) => claim.text);
-    expect(claims.join(" ")).not.toMatch(/freshness or completeness check/u);
-  });
-
-  it("reports a stale gauge as needing a freshness check", () => {
-    // The inverse of the test above, and the pair is the point: asserting only
-    // that a stale gauge is flagged passes just as well when *every* gauge is
-    // flagged, which is what inverting this filter does.
-    const claims = summaryOf(compile(staleAsOf)).claims.map(
-      (claim) => claim.text,
-    );
-    expect(claims.join(" ")).toMatch(/freshness or completeness check/u);
-  });
-
-  it("marks the summary for attention when a gauge is stale", () => {
-    expect(summaryOf(compile(staleAsOf)).tone).toBe("attention");
-  });
-
-  it("leaves the summary tone normal when every gauge is fresh and complete", () => {
-    expect(summaryOf(compile(AS_OF)).tone).toBe("normal");
-  });
-
-  it("does not raise a threshold alert from a stale reading", () => {
-    // A threshold is a claim about conditions now. A reading old enough to be
-    // stale cannot support one, and a flood alert derived from yesterday's
-    // stage is worse than no alert: it is a confident statement about a river
-    // nobody has looked at.
-    const spec = compilePlan(planFor([site], ["attention"]), [freshGauge], {
-      asOf: staleAsOf,
-      planner: { id: "test-planner", usesModel: true },
-      thresholds: [
-        {
-          id: "stale-threshold",
-          siteId: site,
-          label: "Stale threshold",
-          above: latestStage(freshGauge) - 1,
-        },
-      ],
-    });
-    expect(alertsOf(spec).map((alert) => alert.id)).not.toContain(
-      "stale-threshold",
-    );
-  });
-});
-
-describe("what the dashboard says about who composed it", () => {
-  function architectureFor(usesModel: boolean) {
-    return compilePlan(planFor([site], ["conditions-summary"]), gauges, {
-      asOf: AS_OF,
-      planner: { id: "fake-keyword-planner-v1", usesModel },
-    }).architecture.summary;
-  }
-
-  it("does not claim a model chose the layout when no model was called", () => {
-    // FakePlanningProvider is keyword matching -- `text.includes("flood")` --
-    // and README records that model calls are disabled. Telling a reader that
-    // "a planning model chose the layout" is then a claim about AI that is not
-    // true of the running system, in the one panel whose job is to explain how
-    // the dashboard was made.
-    expect(architectureFor(false)).not.toMatch(/planning model/iu);
-    expect(architectureFor(false)).toMatch(/no model was called/iu);
-  });
-
-  it("says a model chose the layout when one did", () => {
-    // The other direction matters as much. A dashboard that never credits the
-    // model understates where the judgement came from, and a reader deciding
-    // how much to trust the framing is entitled to know.
-    expect(architectureFor(true)).toMatch(/planning model/iu);
-    expect(architectureFor(true)).not.toMatch(/no model was called/iu);
-  });
-
-  it("draws no AI node in the diagram when no model ran", () => {
-    // The summary and the diagram are one panel to a reader. Saying "no model
-    // was called" beside a node labelled "AI dashboard planner" is a
-    // contradiction the reader has to resolve, and they will believe the
-    // picture.
-    const spec = compilePlan(planFor([site], ["conditions-summary"]), gauges, {
-      asOf: AS_OF,
-      planner: { id: "fake-keyword-planner-v1", usesModel: false },
-    });
-    expect(spec.architecture.nodes.some((node) => node.kind === "ai")).toBe(
-      false,
-    );
-    expect(spec.architecture.nodes.map((node) => node.label)).not.toContain(
-      "AI dashboard planner",
-    );
-  });
-
-  it("draws the AI node when a model did choose the layout", () => {
-    const spec = compilePlan(planFor([site], ["conditions-summary"]), gauges, {
-      asOf: AS_OF,
-      planner: { id: "real-model", usesModel: true },
-    });
+    expect(spec.evidence.map((item) => [item.id, item.kind])).toEqual([
+      ["source-file", "observed"],
+      ["calculations", "calculated"],
+      ["composition", "interpreted"],
+    ]);
     expect(spec.architecture.nodes.some((node) => node.kind === "ai")).toBe(
       true,
     );
+    expect(spec.nextAction.evidenceIds).toContain("composition");
   });
 
-  it("attributes the layout either way, never leaving it unexplained", () => {
-    for (const usesModel of [true, false]) {
-      expect(architectureFor(usesModel)).toMatch(/chose this dashboard/iu);
-      expect(architectureFor(usesModel)).toMatch(
-        /Dasher computed every number/iu,
-      );
+  it("computes exact totals, shares that sum to one hundred, and the change between periods", () => {
+    const table = transactionsTable();
+    const facts = computeFacts(transactionsPlan, table);
+    expect(facts.skipped).toBe(0);
+    expect(facts.periods).toHaveLength(8);
+    expect(facts.latestPeriod).toBe("2026-08");
+    expect(facts.previousPeriod).toBe("2026-07");
+
+    const amountAt = table.columns.find(
+      (column) => column.name === "Amount",
+    )!.index;
+    const dateAt = table.columns.find(
+      (column) => column.name === "Date",
+    )!.index;
+    let expected: Exact = ZERO;
+    for (const row of table.rows) {
+      if (row[dateAt]!.startsWith("2026-08")) {
+        expected = add(expected, row[amountAt]!.replace(/[$,]/gu, ""));
+      }
     }
-  });
-});
+    expect(facts.latestTotal).toBe(expected);
+    expect(facts.totalsByPeriod.get("2026-08")).toBe(expected);
+    expect(add(facts.previousTotal!, facts.change!)).toBe(facts.latestTotal);
 
-/**
- * The unit a reading is labelled with comes from the reading, not from a
- * literal.
- *
- * Six sites in the compiler wrote `"ft"` directly while two read it from the
- * series, so one dashboard could label the same gauge's change two different
- * ways. Nothing caught it, and nothing could: `parseUsgsInstantaneousValues`
- * rejects a stage series that is not in feet, so every gauge the fixture path
- * produces makes the literal accidentally correct.
- *
- * `compilePlan` does not take USGS output though — it takes `Station[]`,
- * and a gauge in metres satisfies that type. "The parser would have caught it"
- * is a statement about a function that is not in this call path. These tests
- * enter through the signature the compiler actually publishes.
- */
-describe("the unit of a change", () => {
-  const source = gauges.find((candidate) => candidate.siteId === site)!;
-
-  /** The same gauge, reporting in metres. Legal for `Station`. */
-  const metric: Station = {
-    ...source,
-    primary: { ...source.primary!, unit: "m" },
-  };
-
-  function rankingValues(
-    gauge: Station,
-    section: "fastest-rising" | "change-windows",
-  ) {
-    const spec = compilePlan(planFor([site], [section]), [gauge], {
-      asOf: AS_OF,
-      planner: { id: "test-planner", usesModel: false },
-    });
-    const component = spec.pages
-      .flatMap((page) => page.components)
-      .find((candidate) => candidate.kind === "ranking");
-    if (component?.kind !== "ranking") {
-      throw new Error("compiled dashboard has no ranking component");
-    }
-    return component.items.map((item) => `${item.value} ${item.note ?? ""}`);
-  }
-
-  it("labels a fastest-rising change in the gauge's own unit", () => {
-    const rendered = rankingValues(metric, "fastest-rising").join(" ");
-
-    expect(rendered).toContain(" m");
-    expect(rendered).not.toContain("ft");
-  });
-
-  it("labels every change window in the gauge's own unit", () => {
-    const rendered = rankingValues(metric, "change-windows").join(" ");
-
-    expect(rendered).toContain(" m");
-    expect(rendered).not.toContain("ft");
-  });
-
-  it("still says ft for a gauge that reports in feet", () => {
-    // The other direction, so a change that simply dropped the unit everywhere
-    // could not pass. Both sections, because they were separate literals.
-    for (const section of ["fastest-rising", "change-windows"] as const) {
-      expect(rankingValues(source, section).join(" ")).toContain("ft");
-    }
-  });
-
-  it("carries the unit into the trend series and the summary alike", () => {
-    const spec = compilePlan(
-      planFor([site], ["conditions-summary", "stage-trends"]),
-      [metric],
-      { asOf: AS_OF, planner: { id: "test-planner", usesModel: false } },
+    const shareSum = facts.shares.reduce(
+      (sum, share) => add(sum, share.share),
+      ZERO,
     );
-    const trend = spec.pages
-      .flatMap((page) => page.components)
-      .find((candidate) => candidate.kind === "trend-list");
-    if (trend?.kind !== "trend-list") {
-      throw new Error("compiled dashboard has no trend list");
-    }
-
-    expect(trend.series.map((item) => item.unit)).toEqual(["m"]);
-    // The summary's fastest-rising claim was its own literal, in a different
-    // branch from the ranking section's.
+    expect(shareSum).toBe("100");
     expect(
-      summaryOf(spec)
-        .claims.map((claim) => claim.text)
-        .join(" "),
-    ).not.toContain("ft");
+      facts.shares.every((share) => /^\d+(?:\.\d)?$/u.test(share.share)),
+    ).toBe(true);
+    expect(facts.movers[0]!.change).not.toBe(ZERO);
+    expect(Math.abs(Number(facts.movers[0]!.change))).toBeGreaterThanOrEqual(
+      Math.abs(Number(facts.movers.at(-1)!.change)),
+    );
   });
-});
 
-describe("dataMode reports where the readings came from", () => {
-  // The literal this replaced meant a live-sourced dashboard still badged
-  // itself "Demo". These two tests pin both directions: the default cannot
-  // drift (every existing caller relies on it), and the option must actually
-  // reach the spec rather than being accepted and ignored.
-  const specWith = (dataMode?: "demo" | "live") =>
-    compilePlan(planFor([site], ["conditions-summary"]), gauges, {
-      asOf: AS_OF,
-      planner: { id: "fake-keyword-planner-v1", usesModel: false },
-      ...(dataMode === undefined ? {} : { dataMode }),
+  it("formats money with the detected currency and drops decimals when every amount is whole", () => {
+    const transactions = transactionsTable();
+    const spec = compileTablePlan(
+      transactionsPlan,
+      transactions,
+      options(transactions),
+    );
+    const grid = spec.pages[0]!.components[1]!;
+    expect(grid.kind === "metric-grid" && grid.metrics[0]!.value).toMatch(
+      /^\$\d{1,3}(?:,\d{3})*\.\d{2}$/u,
+    );
+
+    const wide = wideTable();
+    const wideSpec = compileTablePlan(widePlan, wide, options(wide));
+    const wideGrid = wideSpec.pages[0]!.components[1]!;
+    expect(
+      wideGrid.kind === "metric-grid" && wideGrid.metrics[0]!.value,
+    ).toMatch(/^\d{1,3}(?:,\d{3})*$/u);
+  });
+
+  it("applies include and exclude filters on raw cell text and a period window", () => {
+    const table = transactionsTable();
+    const excluded = computeFacts(
+      {
+        ...transactionsPlan,
+        filters: [{ column: "Category", op: "exclude", values: ["marketing"] }],
+      },
+      table,
+    );
+    expect(excluded.categories).not.toContain("Marketing");
+    expect(excluded.filteredOut).toBeGreaterThan(0);
+    const only = computeFacts(
+      {
+        ...transactionsPlan,
+        filters: [{ column: "Category", op: "include", values: ["Marketing"] }],
+      },
+      table,
+    );
+    expect(only.categories).toEqual(["Marketing"]);
+    const windowed = computeFacts(
+      { ...transactionsPlan, lastPeriods: 3 },
+      table,
+    );
+    expect(windowed.periods).toEqual(["2026-06", "2026-07", "2026-08"]);
+    expect(
+      windowed.rows.every(
+        (row) =>
+          row.period !== undefined && windowed.periods.includes(row.period),
+      ),
+    ).toBe(true);
+  });
+
+  it("buckets by quarter and rolls unpivoted months up", () => {
+    const facts = computeFacts({ ...widePlan, grain: "quarter" }, wideTable());
+    expect(facts.periods).toEqual(["2026-Q1", "2026-Q2", "2026-Q3"]);
+    expect(facts.totalsByPeriod.get("2026-Q3")).toBe(
+      add(
+        facts.categoryTotalsByPeriod
+          .get("2026-Q3")!
+          .get("Cloud infrastructure")!,
+        facts.shares
+          .filter((share) => share.category !== "Cloud infrastructure")
+          .reduce((sum, share) => add(sum, share.total), ZERO),
+      ),
+    );
+  });
+
+  it("reports budget variance per line with severity by how far over", () => {
+    const table = wideTable();
+    const facts = computeFacts(widePlan, table);
+    const cloud = facts.budget.find(
+      (line) => line.name === "Cloud infrastructure",
+    )!;
+    expect(cloud).toMatchObject({
+      amount: "49875",
+      budget: "42000",
+      variance: "7875",
+      over: true,
     });
-
-  it("defaults to demo, so callers that say nothing are unchanged", () => {
-    expect(specWith().dataMode).toBe("demo");
+    expect(cloud.variancePercent).toBe("18.8");
+    const spec = compileTablePlan(widePlan, table, options(table));
+    const alerts = spec.pages[0]!.components.find(
+      (component) => component.kind === "alert-list",
+    )!;
+    expect(
+      alerts.kind === "alert-list" &&
+        alerts.alerts.map((alert) => alert.severity),
+    ).toEqual(["warning", "attention"]);
+    const summary = spec.pages[0]!.components[0]!;
+    expect(summary.kind === "summary" && summary.tone).toBe("attention");
+    expect(spec.executiveBrief.important.headline).toContain(
+      "Cloud infrastructure",
+    );
   });
 
-  it("says live when the caller says the readings are live", () => {
-    expect(specWith("live").dataMode).toBe("live");
+  it("skips sections that would be empty and skips rows whose amount cannot be read", () => {
+    const table = flatTable();
+    const plan: TablePlan = {
+      ...transactionsPlan,
+      roles: { amount: "Cost", category: "Team", label: "Item" },
+      pages: [
+        {
+          id: "one",
+          title: "One",
+          description: "d",
+          sections: ["summary", "by-category", "largest-rows", "table"],
+        },
+      ],
+    };
+    const facts = computeFacts(plan, table);
+    expect(facts.skipped).toBe(1);
+    expect(facts.rows).toHaveLength(5);
+    expect(facts.latestTotal).toBe("3500");
+    expect(facts.shares.map((share) => [share.category, share.share])).toEqual([
+      ["Eng", "85.7"],
+      ["Ops", "12"],
+      ["Sales", "2.3"],
+    ]);
+    const spec = compileTablePlan(plan, table, options(table));
+    expect(
+      spec.pages[0]!.components.map((component) => component.kind),
+    ).toEqual(["summary", "ranking", "ranking", "table"]);
+    expect(spec.notice).toContain("1 row was skipped");
+    expect(spec.executiveBrief.changed.headline).toMatch(/no prior period/iu);
+  });
+
+  it("rejects a plan that leaves no rows or no sections", () => {
+    const table = transactionsTable();
+    expect(() =>
+      compileTablePlan(
+        {
+          ...transactionsPlan,
+          filters: [{ column: "Category", op: "include", values: ["Nothing"] }],
+        },
+        table,
+        options(table),
+      ),
+    ).toThrow(PlanRejected);
+    const flat = flatTable();
+    let caught: unknown;
+    try {
+      compileTablePlan(
+        {
+          ...transactionsPlan,
+          roles: { amount: "Cost", category: "Team" },
+          pages: [
+            { id: "p", title: "P", description: "d", sections: ["movers"] },
+          ],
+        },
+        flat,
+        options(flat),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PlanRejected);
+    expect((caught as PlanRejected).findings[0]!.code).toBe("empty_sections");
+  });
+
+  it("limits the table component to fifty rows and role columns first", () => {
+    const table = transactionsTable();
+    const spec = compileTablePlan(transactionsPlan, table, options(table));
+    const rows = spec.pages[1]!.components.find(
+      (component) => component.kind === "table",
+    )!;
+    expect(rows.kind === "table" && rows.rows).toHaveLength(50);
+    expect(rows.kind === "table" && rows.columns.slice(0, 2)).toEqual([
+      "Date",
+      "Description",
+    ]);
+  });
+
+  it("charges every row in the period against the budget its line states", () => {
+    const table = partialBudgetTable();
+    const plan = planWith(
+      {
+        amount: "Amount",
+        period: "Date",
+        category: "Category",
+        budget: "Budget",
+      },
+      ["summary", "budget-variance"],
+    );
+    const facts = computeFacts(plan, table);
+    expect(facts.budget.find((line) => line.name === "Eng")).toMatchObject({
+      amount: "2700",
+      budget: "1200",
+      variance: "1500",
+      over: true,
+    });
+    expect(facts.budget.find((line) => line.name === "Ops")).toMatchObject({
+      amount: "100",
+      budget: "500",
+      variance: "-400",
+      over: false,
+    });
+    const spec = compileTablePlan(plan, table, options(table));
+    const summary = spec.pages[0]!.components[0]!;
+    expect(
+      summary.kind === "summary" &&
+        summary.claims.some((claim) =>
+          claim.text.includes("1 of 2 budgeted lines is over budget"),
+        ),
+    ).toBe(true);
+    const alerts = spec.pages[0]!.components[1]!;
+    expect(alerts.kind === "alert-list" && alerts.alerts[0]!.title).toContain(
+      "Eng over budget by 1,500",
+    );
+  });
+
+  it("ranks categories by size when every amount is negative", () => {
+    const table = negativeTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Date", category: "Category" },
+      ["summary", "headline-totals", "by-category"],
+    );
+    const facts = computeFacts(plan, table);
+    expect(facts.shares.map((share) => share.category)).toEqual([
+      "Payroll",
+      "Rent",
+      "Coffee",
+    ]);
+    expect(facts.shares[0]!.share).toBe("95.2");
+    const spec = compileTablePlan(plan, table, options(table));
+    const summary = spec.pages[0]!.components[0]!;
+    expect(
+      summary.kind === "summary" &&
+        summary.claims.some((claim) =>
+          claim.text.startsWith("Payroll is the largest category"),
+        ),
+    ).toBe(true);
+    const ranking = spec.pages[0]!.components[2]!;
+    expect(
+      ranking.kind === "ranking" && ranking.items.map((item) => item.label),
+    ).toEqual(["Payroll", "Rent", "Coffee"]);
+    expect(spec.executiveBrief.important.headline).toContain("Payroll");
+  });
+
+  it("adopts the period column's grain when it is coarser than the plan's", () => {
+    const table = quarterlyTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Quarter", category: "Category" },
+      ["summary", "trend"],
+    );
+    expect(plan.grain).toBe("month");
+    const facts = computeFacts(plan, table);
+    expect(facts.grain).toBe("quarter");
+    expect(facts.periods).toEqual(["2026-Q1", "2026-Q2"]);
+    const spec = compileTablePlan(plan, table, options(table));
+    expect(spec.notice).toContain("by quarter");
+    expect(spec.notice).not.toContain("by month");
+    expect(spec.evidence[1]!.detail).toContain("grouped by quarter");
+    const trend = spec.pages[0]!.components[1]!;
+    expect(trend.title).toBe("Trend by quarter");
+  });
+
+  it("says how the shares were computed and what the ranking left out", () => {
+    const transactions = transactionsTable();
+    expect(
+      compileTablePlan(transactionsPlan, transactions, options(transactions))
+        .evidence[1]!.detail,
+    ).toContain("sum to exactly one hundred");
+
+    const negatives = negativeTable();
+    const negativeDetail = compileTablePlan(
+      planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+        "summary",
+        "by-category",
+      ]),
+      negatives,
+      options(negatives),
+    ).evidence[1]!.detail;
+    expect(negativeDetail).not.toContain("sum to exactly one hundred");
+    expect(negativeDetail).toContain("need not sum to one hundred");
+
+    const zero = zeroTotalTable();
+    expect(
+      compileTablePlan(
+        planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+          "summary",
+          "by-category",
+        ]),
+        zero,
+        options(zero),
+      ).evidence[1]!.detail,
+    ).toContain("the total for Jan 2026 is zero");
+
+    const many = manyCategoriesTable(137);
+    const spec = compileTablePlan(
+      planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+        "by-category",
+      ]),
+      many,
+      options(many),
+    );
+    expect(spec.evidence[1]!.detail).toContain("37 more");
+    const ranking = spec.pages[0]!.components[0]!;
+    expect(ranking.kind === "ranking" && ranking.items).toHaveLength(100);
+    expect(ranking.title).toContain("137");
+  });
+
+  it("rounds trend points to the money scale the rest of the page uses", () => {
+    const table = centsTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Date", category: "Category" },
+      ["headline-totals", "trend"],
+    );
+    const spec = compileTablePlan(plan, table, options(table));
+    const grid = spec.pages[0]!.components[0]!;
+    expect(grid.kind === "metric-grid" && grid.metrics[0]!.value).toBe(
+      "$10.01",
+    );
+    const trend = spec.pages[0]!.components[1]!;
+    expect(
+      trend.kind === "trend-list" && trend.series[0]!.points.at(-1)!.value,
+    ).toBe(10.01);
+    expect(trend.kind === "trend-list" && trend.series[0]!.unit).toBe("USD");
+  });
+
+  it("counts rows outside the period window apart from filtered rows", () => {
+    const table = transactionsTable();
+    const plan: TablePlan = { ...transactionsPlan, lastPeriods: 3 };
+    const facts = computeFacts(plan, table);
+    expect(facts.filteredOut).toBe(0);
+    expect(facts.outsideWindow).toBeGreaterThan(0);
+    const detail = compileTablePlan(plan, table, options(table)).evidence[1]!
+      .detail;
+    expect(detail).toContain("0 rows were left out by the plan's filters");
+    expect(detail).toContain(
+      `${String(facts.outsideWindow)} rows fell outside the last 3 periods`,
+    );
+  });
+
+  it("filters a blank category by the name the dashboard shows for it", () => {
+    const table = blankCategoryTable();
+    const plan = planWith(
+      { amount: "Amount", period: "Date", category: "Category" },
+      ["summary", "by-category"],
+      { filters: [{ column: "Category", op: "exclude", values: ["(blank)"] }] },
+    );
+    const facts = computeFacts(plan, table);
+    expect(facts.categories).toEqual(["Ops"]);
+    expect(facts.filteredOut).toBe(2);
+    expect(facts.latestTotal).toBe("160");
+  });
+
+  it("names what emptied the table when a filter leaves no rows", () => {
+    const table = travelTable();
+    let caught: unknown;
+    try {
+      compileTablePlan(
+        planWith({ amount: "Amount", period: "Date", category: "Category" }, [
+          "summary",
+        ]),
+        table,
+        options(table),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeUndefined();
+    try {
+      compileTablePlan(
+        planWith(
+          { amount: "Amount", period: "Date", category: "Category" },
+          ["summary"],
+          {
+            filters: [
+              { column: "Category", op: "exclude", values: ["Travel"] },
+              { column: "Category", op: "include", values: ["Travel"] },
+            ],
+          },
+        ),
+        table,
+        options(table),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PlanRejected);
+    const findings = (caught as PlanRejected).findings;
+    expect(findings[0]!.code).toBe("empty_after_filters");
+    expect(findings[0]!.message).toContain("Travel");
+    expect(findings[0]!.message).toContain("Category");
   });
 });

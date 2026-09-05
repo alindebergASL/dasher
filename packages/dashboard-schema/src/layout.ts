@@ -1,27 +1,20 @@
 import type { DashboardComponent } from "./schema";
 
 /**
- * Packing v1.
+ * Component widths, decided together.
  *
- * The grid was three columns and every component hardcoded its own width in
- * renderer JSX. Five of the seven kinds asked for the full width, so a page
- * read as a stack of bands with whatever was left over stranded in the last
- * row: a ranking alone in one of three columns, a short card floating above a
- * hole beside a taller map. Neither was a decision anybody made — they were
- * the residue of seven independent choices that never saw each other.
- *
- * So the widths move here, where they can be reasoned about together, and a
- * packer turns a sequence of kinds into a set of full rows. It is a function
- * of the kind sequence and nothing else: no measurement, no content, no
- * randomness. The same dashboard packs the same way every time.
+ * Every kind declares how narrow it can go, and the packer turns a sequence
+ * of kinds into a set of exactly full rows. It is a function of the kind
+ * sequence and nothing else: no measurement, no content, no randomness. The
+ * same dashboard packs the same way every time, and a page never ends in a
+ * ragged row with one component stranded beside a hole.
  */
 
 export type DashboardComponentKind = DashboardComponent["kind"];
 
 /**
- * Six, not three. Three cannot express halves, so a map beside a ranking had
- * to be 2 + 1 — lopsided for two peers. Six divides into thirds and halves
- * alike, which is the whole vocabulary this slice needs.
+ * Six divides into halves and thirds alike, which is the whole vocabulary the
+ * constraints below need; three cannot express two equal peers on one row.
  */
 export const LAYOUT_COLUMNS = 6;
 
@@ -34,17 +27,17 @@ export interface LayoutConstraint {
 
 /**
  * `minSpan` is the load-bearing number: it decides how many of a kind can
- * share a row (`LAYOUT_COLUMNS / minSpan`). A map at one sixth is a smudge and
- * at one third it was 347px — too small to place a marker in — so it claims a
- * half. A ranking is a short list of names and reads fine in a third.
+ * share a row (`LAYOUT_COLUMNS / minSpan`). A table has as many columns as the
+ * spreadsheet gave it, so it always takes the full row; a trend card needs
+ * room for its sparkline and claims a half; a ranking or alert list is a short
+ * list of names and reads fine in a third.
  */
 export const COMPONENT_LAYOUT: Readonly<
   Record<DashboardComponentKind, LayoutConstraint>
 > = {
   summary: { minSpan: 6, maxSpan: 6 },
   "metric-grid": { minSpan: 6, maxSpan: 6 },
-  "station-map": { minSpan: 3, maxSpan: 6 },
-  "station-table": { minSpan: 6, maxSpan: 6 },
+  table: { minSpan: 6, maxSpan: 6 },
   ranking: { minSpan: 2, maxSpan: 6 },
   "trend-list": { minSpan: 3, maxSpan: 6 },
   "alert-list": { minSpan: 2, maxSpan: 6 },

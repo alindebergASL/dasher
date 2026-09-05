@@ -447,6 +447,57 @@ it("is enabled for an address the provisioning tool created", async () => {
   expect(redeemed?.userId).toBe(provisioned.userId);
 });
 
+it("adds an address to an existing organization when given its id", async () => {
+  const founder = await provisionPrincipal(ownerPool, {
+    organizationName: "Joinable org",
+    email: "founder@example.com",
+    role: "admin",
+  });
+
+  const joined = await provisionPrincipal(ownerPool, {
+    organizationId: founder.organizationId,
+    email: "joiner@example.com",
+    role: "viewer",
+  });
+
+  expect(joined.organizationId).toBe(founder.organizationId);
+  expect(joined.createdOrganization).toBe(false);
+  expect(joined.reusedExistingUser).toBe(false);
+  expect(founder.createdOrganization).toBe(true);
+
+  // No second organization came into being for the join.
+  const organizations = await ownerPool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM dasher.organizations WHERE display_name = 'Joinable org'",
+  );
+  expect(organizations.rows[0]?.count).toBe("1");
+
+  const issued = await beginSignIn(appPool, {
+    email: "joiner@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+  expect(redeemed?.organizationId).toBe(founder.organizationId);
+  expect(redeemed?.userId).toBe(joined.userId);
+});
+
+it("refuses to join an organization that does not exist, and writes nothing", async () => {
+  const missing = randomUUID();
+
+  await expect(
+    provisionPrincipal(ownerPool, {
+      organizationId: missing,
+      email: "nobody-yet@example.com",
+      role: "viewer",
+    }),
+  ).rejects.toThrow(`organization ${missing} does not exist`);
+
+  // The identity insert ran before the lookup, and rolled back with it.
+  const identities = await ownerPool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM dasher.external_identities WHERE subject = 'nobody-yet@example.com'",
+  );
+  expect(identities.rows[0]?.count).toBe("0");
+});
+
 it("adds an existing address to a second organization without a second user", async () => {
   // `external_identities` is UNIQUE on user_id and keyed on (issuer, subject),
   // so re-provisioning the same address must reuse the person rather than fail
@@ -586,6 +637,45 @@ it("no longer lets the application role ask whether an address has an account", 
       "known@example.com",
     ]),
   ).rejects.toMatchObject({ code: "42501" });
+});
+
+it("refreshes idle expiry on each request to the same window it was issued with", async () => {
+  // `redeem_sign_in` is told the idle window by the application and
+  // `begin_request` refreshes it from `dasher_private.session_idle_minutes()`.
+  // A session must see one window, not one at issue and another afterwards.
+  await provision("idle-window@example.com");
+  const issued = await beginSignIn(appPool, {
+    email: "idle-window@example.com",
+    ...context(),
+  });
+  const redeemed = await redeemSignIn(appPool, issued!.token, context());
+
+  const atIssue = await ownerPool.query<{ idle_minutes: number }>(
+    `SELECT extract(epoch FROM idle_expires_at - issued_at)::int / 60
+              AS idle_minutes
+       FROM dasher.sessions WHERE session_id = $1`,
+    [redeemed?.sessionId],
+  );
+  expect(atIssue.rows[0]?.idle_minutes).toBe(60);
+
+  await withDashboardRepository(
+    appPool,
+    { tokenKeyVersion: 1, token: redeemed!.sessionToken },
+    async (_repository, principal) => principal,
+  );
+
+  const afterRequest = await ownerPool.query<{
+    idle_minutes: number;
+    refreshed: boolean;
+  }>(
+    `SELECT extract(epoch FROM idle_expires_at - last_seen_at)::int / 60
+              AS idle_minutes,
+            last_seen_at > issued_at AS refreshed
+       FROM dasher.sessions WHERE session_id = $1`,
+    [redeemed?.sessionId],
+  );
+  expect(afterRequest.rows[0]?.refreshed).toBe(true);
+  expect(afterRequest.rows[0]?.idle_minutes).toBe(60);
 });
 
 it("still revokes a session that has already expired", async () => {

@@ -13,8 +13,8 @@ import type { DashboardSpec } from "./schema";
  * WHY KEY ORDER IS FORCED. `JSON.stringify` emits keys in insertion order, so
  * two specs equal in every value would hash differently if one was assembled
  * field by field and the other spread from a parsed object. That is not a
- * hypothetical: `compilePlan` builds some objects literally and others by
- * spreading, and a refinement round-trips a plan through the browser. Sorting
+ * hypothetical: a compiler builds some objects literally and spreads others,
+ * and a spec round-trips through JSON on its way to the browser. Sorting
  * removes the question.
  *
  * Arrays are left alone. Their order is meaning — pages, sections, and trend

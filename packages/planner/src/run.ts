@@ -1,129 +1,116 @@
+/**
+ * The governed loop: ask the provider for a plan, check it, compile it, and
+ * on failure send the findings back for a bounded number of revisions.
+ */
 import type { DashboardSpec } from "@dasher/dashboard-schema";
-import type {
-  Station,
-  StationComputation,
-  StationWords,
-  ThresholdRule,
-} from "@dasher/station-domain";
-
-import { compilePlan, type CompileOptions } from "./compile";
-import {
-  DashboardPlanSchema,
-  findPlanProblems,
-  PlanRejected,
-  type DashboardPlan,
-  type PlanFinding,
-} from "./plan";
-import type {
-  AvailableSite,
-  PlanningProvider,
-  PlanningRefinement,
-} from "./provider";
+import type { Table } from "./workbook";
+import { compileTablePlan, type CompileSource } from "./compile";
+import { planGrain } from "./facts";
+import { findPlanProblems, PlanRejected, type PlanFinding } from "./plan";
+import type { PlanningProvider, PlanningRefinement } from "./provider";
+import { TablePlanSchema, type TablePlan } from "./table-plan";
 
 export const PLANNER_MAX_ATTEMPTS = 3;
 
-export interface PlannerRunOptions {
-  requestText: string;
-  gauges: readonly Station[];
-  provider: PlanningProvider;
-  asOf: string;
-  /** User-configured threshold alerts. Never exposed to the provider. */
-  thresholds?: readonly ThresholdRule[];
-  /**
-   * The stations' domain policy and vocabulary, passed straight through to
-   * the compiler. Defaults to the river's there, like everywhere else; a
-   * caller planning another domain's stations supplies both.
-   */
-  computation?: StationComputation;
-  words?: StationWords;
-  /** Passed straight to the compiler; see `CompileOptions.dataMode`. */
-  dataMode?: "demo" | "live";
-  /** Total plan attempts, including the first. Defaults to 3. */
-  maxAttempts?: number;
-  /**
-   * A change the reader asked for to a dashboard they can already see.
-   *
-   * Standing intent, not a one-shot: it is handed to the provider on every
-   * attempt, including attempts that follow a rejection. Dropping it after the
-   * first try would mean a refinement whose first plan was refused quietly
-   * reverted to the dashboard the reader asked to change.
-   */
-  refine?: PlanningRefinement;
+/** Columns with more distinct values than this are shown as samples only. */
+const VALUE_LIST_LIMIT = 200;
+
+/**
+ * The distinct values of every text column small enough to list.
+ *
+ * RULE: a planner may only name a filter value it has been shown, so the values
+ * it can name are read from the table here rather than guessed from samples.
+ */
+function listedValues(table: Table): Record<string, readonly string[]> {
+  const listed: Record<string, readonly string[]> = {};
+  for (const column of table.columns) {
+    if (column.type !== "text" || column.distinct > VALUE_LIST_LIMIT) continue;
+    const values = new Set<string>();
+    for (const cells of table.rows) {
+      const cell = (cells[column.index] ?? "").trim();
+      if (cell !== "") values.add(cell);
+    }
+    listed[column.name] = [...values];
+  }
+  return listed;
+}
+
+export interface RunTablePlannerOptions {
+  readonly requestText: string;
+  readonly table: Table;
+  readonly provider: PlanningProvider;
+  readonly source: CompileSource;
+  readonly asOf: string;
+  /** A change to a dashboard the reader can see; handed to the provider on every attempt. */
+  readonly refine?: PlanningRefinement;
+  /** Total attempts including the first. Defaults to 3. */
+  readonly maxAttempts?: number;
 }
 
 export interface PlannerAttempt {
-  attempt: number;
-  /** Findings that rejected this attempt. Empty on the accepted attempt. */
-  findings: readonly PlanFinding[];
-  accepted: boolean;
+  readonly attempt: number;
+  readonly findings: readonly PlanFinding[];
+  readonly accepted: boolean;
 }
 
 export interface PlannerRun {
-  dashboard: DashboardSpec;
-  plan: DashboardPlan;
-  attempts: readonly PlannerAttempt[];
+  readonly dashboard: DashboardSpec;
+  readonly plan: TablePlan;
+  readonly attempts: readonly PlannerAttempt[];
 }
 
-/**
- * Run one governed planning pass: ask the provider for a plan, validate it
- * against the observations and the dashboard contract, and on rejection hand
- * the structured findings back for a bounded number of revisions.
- *
- * Provider output is untrusted at every step. It is parsed, structurally
- * checked against the data that actually exists, compiled by trusted code, and
- * finally validated against the dashboard contract. A plan that fails any of
- * those produces findings, never a rendered dashboard.
- */
-export async function runPlanner(
-  options: PlannerRunOptions,
+export async function runTablePlanner(
+  options: RunTablePlannerOptions,
 ): Promise<PlannerRun> {
   const maxAttempts = options.maxAttempts ?? PLANNER_MAX_ATTEMPTS;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     throw new Error("maxAttempts must be a positive integer");
   }
-
-  const availableSites: AvailableSite[] = options.gauges.map((gauge) => ({
-    siteId: gauge.siteId,
-    name: gauge.name,
-    // The plan contract's word (ADR-007 keeps the plan vocabulary); the
-    // station's grouping is what fills it.
-    river: gauge.group,
-  }));
-  const knownSiteIds = availableSites.map((site) => site.siteId);
-  const compileOptions: CompileOptions = {
-    asOf: options.asOf,
-    planner: {
-      id: options.provider.id,
-      usesModel: options.provider.usesModel,
-    },
-    thresholds: options.thresholds,
-    ...(options.computation === undefined
-      ? {}
-      : { computation: options.computation }),
-    ...(options.words === undefined ? {} : { words: options.words }),
-    ...(options.dataMode === undefined ? {} : { dataMode: options.dataMode }),
-  };
-
+  const values = listedValues(options.table);
   const attempts: PlannerAttempt[] = [];
-  let previousPlan: DashboardPlan | undefined;
+  let previousPlan: TablePlan | undefined;
   let previousFindings: readonly PlanFinding[] = [];
+  let providerError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const raw = await options.provider.plan({
-      requestText: options.requestText,
-      availableSites,
-      refinement: options.refine,
-      revision:
-        previousPlan === undefined
-          ? undefined
+    let raw: unknown;
+    try {
+      raw = await options.provider.plan({
+        requestText: options.requestText,
+        table: {
+          columns: options.table.columns,
+          rowCount: options.table.rowCount,
+          ...(options.table.unpivoted === undefined ? {} : { unpivoted: true }),
+          values,
+        },
+        sourceName: options.source.name,
+        ...(options.refine === undefined ? {} : { refinement: options.refine }),
+        ...(previousPlan === undefined
+          ? {}
           : {
-              attempt: attempt - 1,
-              previousPlan,
-              findings: previousFindings,
-            },
-    });
+              revision: {
+                attempt: attempt - 1,
+                previousPlan,
+                findings: previousFindings,
+              },
+            }),
+      });
+    } catch (error) {
+      // RULE: a provider that fails costs one attempt; it never aborts the run.
+      providerError = error;
+      previousFindings = [
+        {
+          code: "plan_malformed",
+          path: "",
+          message: `The planner did not answer: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ];
+      attempts.push({ attempt, findings: previousFindings, accepted: false });
+      previousPlan = undefined;
+      continue;
+    }
 
-    const parsed = DashboardPlanSchema.safeParse(raw);
+    const parsed = TablePlanSchema.safeParse(raw);
     if (!parsed.success) {
       previousFindings = parsed.error.issues.slice(0, 16).map((issue) => ({
         code: "plan_malformed" as const,
@@ -131,14 +118,12 @@ export async function runPlanner(
         message: issue.message,
       }));
       attempts.push({ attempt, findings: previousFindings, accepted: false });
-      // Without a well-formed plan there is nothing to revise from, so the
-      // next attempt starts clean rather than from unparseable output.
       previousPlan = undefined;
       continue;
     }
 
     const plan = parsed.data;
-    const problems = findPlanProblems(plan, knownSiteIds);
+    const problems = findPlanProblems(plan, options.table);
     if (problems.length > 0) {
       previousPlan = plan;
       previousFindings = problems;
@@ -147,24 +132,59 @@ export async function runPlanner(
     }
 
     try {
-      const dashboard = compilePlan(plan, options.gauges, compileOptions);
+      const dashboard = compileTablePlan(plan, options.table, {
+        asOf: options.asOf,
+        planner: {
+          id: options.provider.id,
+          usesModel: options.provider.usesModel,
+        },
+        source: options.source,
+      });
       attempts.push({ attempt, findings: [], accepted: true });
       return { dashboard, plan, attempts };
     } catch (error) {
+      const findings: readonly PlanFinding[] =
+        error instanceof PlanRejected
+          ? error.findings
+          : [
+              {
+                code: "spec_rejected",
+                path: "pages",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "The compiled dashboard failed contract validation.",
+              },
+            ];
+      attempts.push({ attempt, findings, accepted: false });
+      // RULE: filters that leave no rows are the answer, not a finding to
+      // repair. Revising them away would show the reader exactly what they
+      // asked to remove, and report it as a success.
+      if (findings.some((finding) => finding.code === "empty_after_filters")) {
+        throw new PlanRejected(findings);
+      }
       previousPlan = plan;
-      previousFindings = [
-        {
-          code: "spec_rejected",
-          path: "pages",
-          message:
-            error instanceof Error
-              ? error.message
-              : "The compiled dashboard failed contract validation.",
-        },
-      ];
-      attempts.push({ attempt, findings: previousFindings, accepted: false });
+      previousFindings = findings;
     }
   }
 
-  throw new PlanRejected(previousFindings);
+  throw new PlanRejected(previousFindings, { cause: providerError });
+}
+
+/** One reader-facing sentence on how the plan reads the table. */
+export function describePlan(plan: TablePlan, table: Table): string {
+  const parts = [`${plan.roles.amount} as the figure`];
+  if (plan.roles.category !== undefined)
+    parts.push(`${plan.roles.category} as the grouping`);
+  if (plan.roles.budget !== undefined)
+    parts.push(`${plan.roles.budget} as the budget`);
+  if (plan.roles.period !== undefined) {
+    const reshaped =
+      table.unpivoted !== undefined &&
+      plan.roles.period === table.unpivoted.periodColumn;
+    parts.push(
+      `${reshaped ? "the period columns" : plan.roles.period} by ${planGrain(plan, table)}`,
+    );
+  }
+  return `Read ${parts.join(", ")}.`;
 }

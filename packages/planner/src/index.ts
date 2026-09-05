@@ -1,95 +1,54 @@
 /**
- * `@dasher/planner` — a governed planning loop that turns a plain-language
- * request into a validated `DashboardSpec`.
+ * `@dasher/planner`: a planner (a model, or a deterministic fake) chooses how
+ * to read an uploaded table and how to compose the dashboard; trusted code
+ * computes every figure with exact decimals and cites its evidence.
  *
- * The boundary this package establishes: a planning model may choose a
- * dashboard's title, audience, framing, gauge selection, and page layout. It
- * may not produce a number, an evidence item, a claim, or a component kind
- * Dasher does not already implement. Trusted code computes every displayed
- * value from the observations and validates the result before it can render.
- *
- * Nothing here opens a network connection, reads a credential, executes
- * generated code, or persists anything.
+ * The model-backed provider is also reachable alone at
+ * `@dasher/planner/anthropic`.
  */
-
 export {
-  DashboardPlanSchema,
+  TABLE_PLAN_MAX_FILTERS,
+  TABLE_PLAN_MAX_PAGES,
+  TABLE_PLAN_MAX_SECTIONS_PER_PAGE,
+  TABLE_SECTION_KINDS,
+  TablePlanSchema,
+  type TablePlan,
+  type TableSectionKind,
+} from "./table-plan";
+export {
+  findMeasurement,
   findPlanProblems,
-  PLAN_MAX_PAGES,
-  PLAN_MAX_SECTIONS_PER_PAGE,
-  PLAN_MAX_SITES,
-  PLAN_SECTION_KINDS,
-  PLAN_STRING_LIMITS,
+  isPeriodColumn,
+  planFreeText,
   PlanRejected,
-  type DashboardPlan,
   type PlanFinding,
   type PlanFindingCode,
-  type PlanPage,
-  type PlanSectionKind,
 } from "./plan";
-
-export {
-  findSmuggledText,
-  freeTextWithDigits,
-  planFreeText,
-  type SmuggledText,
-  type SmuggledTextKind,
-} from "./freetext";
-
 export {
   FakePlanningProvider,
-  RIVER_FAKE_PHRASING,
-  isUninterpretable,
-  matchedSections,
-  readRefinementIntent,
-  retainOffered,
-  type AvailableSite,
-  type FakeDraftText,
-  type FakePlannerPhrasing,
   type PlanningProvider,
   type PlanningRefinement,
   type PlanningRequest,
   type PlanningRevision,
-  type RefinementIntent,
+  type PlanningTable,
 } from "./provider";
-
-export { compilePlan, type CompileOptions } from "./compile";
-
 export {
-  offeredEntries,
-  PATTERN_ENTRIES,
-  PATTERN_REGISTRY,
-  PATTERN_REGISTRY_VERSION,
-  patternFor,
-  type PatternEntry,
-  type PatternStatus,
-} from "./registry";
-
+  compileTablePlan,
+  type CompileOptions,
+  type CompileSource,
+} from "./compile";
+export { computeFacts, type TableFacts } from "./facts";
 export {
+  describePlan,
   PLANNER_MAX_ATTEMPTS,
-  runPlanner,
+  runTablePlanner,
   type PlannerAttempt,
   type PlannerRun,
-  type PlannerRunOptions,
+  type RunTablePlannerOptions,
 } from "./run";
-
 export {
-  compileLedgerPlan,
-  LedgerPlanRejected,
-  type CompileLedgerOptions,
-} from "./compile-ledger";
-export {
-  findLedgerPlanProblems,
-  LEDGER_PLAN_MAX_PAGES,
-  LEDGER_PLAN_MAX_SECTIONS_PER_PAGE,
-  LEDGER_SECTION_KINDS,
-  LedgerPlanSchema,
-  type LedgerPlan,
-  type LedgerPlanFinding,
-  type LedgerSectionKind,
-} from "./ledger-plan";
-export {
-  DETERMINISTIC_LEDGER_PLANNER,
-  planLedgerDashboard,
-  type LedgerPlannerIdentity,
-} from "./ledger-provider";
+  AnthropicPlanningProvider,
+  DEFAULT_PLANNING_MODEL,
+  type AnthropicPlanningProviderOptions,
+  type PlanningClient,
+} from "./anthropic";

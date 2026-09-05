@@ -1,248 +1,287 @@
 import { describe, expect, it } from "vitest";
 
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
-
-import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
+import { readFilters } from "./fake-heuristics";
+import { findPlanProblems } from "./plan";
+import { FakePlanningProvider, type PlanningRequest } from "./provider";
+import { TablePlanSchema, type TablePlan } from "./table-plan";
 import {
-  FakePlanningProvider,
-  PLAN_MAX_SECTIONS_PER_PAGE,
-  runPlanner,
-  type DashboardPlan,
-} from "./index";
+  columnNamed,
+  flatTable,
+  transactionsTable,
+  travelTable,
+  wideTable,
+} from "./test-tables";
+import type { Table } from "./workbook";
 
-/**
- * The fake provider's composition choices.
- *
- * Its own docstring says "it does make different composition choices for
- * different requests, which is what makes the loop worth testing: the plan is
- * not a fixed template". Two of its five branches — the homeowner one and the
- * rate-of-change one — had never been exercised by any test, so that sentence
- * was half-checked. Mutation testing is what surfaced it: adding this file to
- * the run produced 53 mutants with no coverage at all.
- *
- * These are not tests of prose. Each asserts the shape of the choice — who the
- * dashboard is for, how many pages, what leads — because that is the decision
- * the branch exists to make.
- */
+const provider = new FakePlanningProvider();
 
-const AS_OF = "2026-07-29T12:02:00.000Z";
-const gauges = parseUsgsInstantaneousValues(fixture);
-
-async function planFor(requestText: string) {
-  const run = await runPlanner({
+function request(
+  table: Table,
+  requestText: string,
+  extra: Partial<PlanningRequest> = {},
+): PlanningRequest {
+  return {
     requestText,
-    gauges,
-    provider: new FakePlanningProvider(),
-    asOf: AS_OF,
-  });
-  return run;
+    table: {
+      columns: table.columns,
+      rowCount: table.rowCount,
+      ...(table.unpivoted === undefined ? {} : { unpivoted: true }),
+    },
+    sourceName: "sample.csv",
+    ...extra,
+  };
 }
 
-function sectionsOf(plan: DashboardPlan): string[] {
+async function planFor(
+  table: Table,
+  text: string,
+  extra: Partial<PlanningRequest> = {},
+): Promise<TablePlan> {
+  const plan = TablePlanSchema.parse(
+    await provider.plan(request(table, text, extra)),
+  );
+  expect(findPlanProblems(plan, table)).toEqual([]);
+  return plan;
+}
+
+function sections(plan: TablePlan): string[] {
   return plan.pages.flatMap((page) => page.sections);
 }
 
-describe("composition choices differ by request", () => {
-  it("gives a homeowner one page and leads with plain conditions", async () => {
-    const run = await planFor(
-      "I own a house near the river and want to know about my property.",
+describe("FakePlanningProvider roles", () => {
+  it("identifies itself as deterministic", () => {
+    expect(provider.id).toBe("fake-table-planner");
+    expect(provider.usesModel).toBe(false);
+  });
+
+  it("picks amount, date, category and label from a transactions table", async () => {
+    const plan = await planFor(
+      transactionsTable(),
+      "Show me spend by category",
     );
-
-    expect(run.plan.audience).toBe("Homeowners and residents");
-    // The whole point of this branch: one page, not the two-page overview.
-    expect(run.plan.pages).toHaveLength(1);
-    expect(sectionsOf(run.plan)[0]).toBe("conditions-summary");
-    expect(sectionsOf(run.plan)).not.toContain("change-windows");
-    expect(run.dashboard.pages).toHaveLength(1);
-  });
-
-  it("leads with the ranking when the request is about rate of change", async () => {
-    const run = await planFor("Which gauges are rising fastest right now?");
-
-    expect(run.plan.audience).toBe("Operations managers");
-    expect(sectionsOf(run.plan)[0]).toBe("fastest-rising");
-    expect(run.dashboard.pages[0]?.components[0]?.kind).toBe("ranking");
-  });
-
-  it("leads with the map when the request asks where", async () => {
-    const run = await planFor("Where are the gauges?");
-
-    expect(sectionsOf(run.plan)[0]).toBe("gauge-map");
-    expect(run.dashboard.pages[0]?.components[0]?.kind).toBe("station-map");
-  });
-
-  it("gives emergency response the attention list first", async () => {
-    const run = await planFor("Flood watch for emergency response.");
-
-    expect(run.plan.audience).toBe("Emergency management leads");
-    expect(sectionsOf(run.plan)[0]).toBe("attention");
-  });
-
-  it("falls back to the two-page overview for anything else", async () => {
-    const run = await planFor("Tell me about the water.");
-
-    expect(run.plan.audience).toBe("Managers and community leaders");
-    expect(run.plan.pages).toHaveLength(2);
-  });
-
-  it("produces five distinct compositions, not one template", async () => {
-    // The claim in the provider's docstring, asserted directly. If two branches
-    // ever collapse into the same plan, the loop is being tested against a
-    // constant while looking like it is being tested against a planner.
-    const requests = [
-      "Conditions near my property.",
-      "Which gauges are rising fastest?",
-      "Where are the gauges?",
-      "Flood watch for emergency response.",
-      "Tell me about the water.",
-    ];
-    const plans = await Promise.all(
-      requests.map(async (request) =>
-        JSON.stringify((await planFor(request)).plan),
-      ),
-    );
-
-    expect(new Set(plans).size).toBe(requests.length);
-  });
-
-  it("misses natural phrasing, because it matches keywords rather than reading", async () => {
-    // Found by the distinctness test above, which returned four instead of
-    // five. "I own a house near the river" is close to the most natural way a
-    // homeowner would ask, and it lands on the generic two-page overview
-    // because the branch wants the literal words "my house" or "property".
-    //
-    // Pinned rather than fixed. Widening the keyword list would move the
-    // boundary a few phrases outward and leave the next one failing just as
-    // silently; the fake is a deterministic stand-in, and this is the shape of
-    // its ceiling. It is also the clearest single argument for the real
-    // provider: a model reads the sentence.
-    const natural = await planFor("I own a house near the river.");
-    const keyworded = await planFor("Conditions near my property.");
-
-    expect(natural.plan.audience).toBe("Managers and community leaders");
-    expect(keyworded.plan.audience).toBe("Homeowners and residents");
-  });
-});
-
-describe("gauge selection", () => {
-  it("selects every gauge when the request names none", async () => {
-    const run = await planFor("Tell me about the water.");
-
-    expect(run.plan.siteIds).toHaveLength(gauges.length);
-  });
-
-  it("selects by site id as well as by river name", async () => {
-    const run = await planFor(`Show me gauge ${gauges[0]!.siteId}.`);
-
-    expect(run.plan.siteIds).toStrictEqual([gauges[0]!.siteId]);
-  });
-
-  it("selects by station name", async () => {
-    const run = await planFor(gauges[1]!.name.toLowerCase());
-
-    expect(run.plan.siteIds).toStrictEqual([gauges[1]!.siteId]);
-  });
-});
-
-describe("refinement edge cases", () => {
-  const base: DashboardPlan = {
-    planVersion: "plan-v1",
-    title: "River Conditions",
-    audience: "Managers",
-    framing: "What is happening now.",
-    siteIds: gauges.map((gauge) => gauge.siteId),
-    pages: [
-      {
-        id: "overview",
-        title: "Overview",
-        description: "Everything.",
-        sections: [
-          "conditions-summary",
-          "headline-metrics",
-          "gauge-map",
-          "gauge-table",
-          "attention",
-          "fastest-rising",
-        ],
-      },
-    ],
-  };
-
-  async function refine(previousPlan: DashboardPlan, instruction: string) {
-    return runPlanner({
-      requestText: "anything",
-      gauges,
-      provider: new FakePlanningProvider(),
-      asOf: AS_OF,
-      refine: { previousPlan, instruction },
+    expect(plan.roles).toEqual({
+      amount: "Amount",
+      period: "Date",
+      category: "Category",
+      label: "Description",
     });
-  }
+    expect(plan.grain).toBe("month");
+    expect(plan.filters).toEqual([]);
+    expect(plan.lastPeriods).toBeUndefined();
+  });
 
-  it("puts an added section on a page with room, not on a full one", async () => {
-    // The first page is at the per-page limit. Appending there would push the
-    // plan past the contract and read as the request being ignored.
-    expect(base.pages[0]!.sections).toHaveLength(PLAN_MAX_SECTIONS_PER_PAGE);
-    const twoPages: DashboardPlan = {
-      ...base,
+  it("picks the unpivoted period and budget columns and a readable category from a wide table", async () => {
+    const plan = await planFor(wideTable(), "How are we doing against budget?");
+    expect(plan.roles.amount).toBe("amount");
+    expect(plan.roles.period).toBe("period");
+    expect(plan.roles.budget).toBe("budget");
+    expect(plan.roles.category).toBe("label");
+    expect(sections(plan)[0]).toBe("budget-variance");
+  });
+
+  it("falls back to the number column with most values and a modest-cardinality text column", async () => {
+    const plan = await planFor(flatTable(), "What did each team spend?");
+    expect(plan.roles.amount).toBe("Cost");
+    expect(plan.roles.category).toBe("Team");
+    expect(plan.roles.label).toBe("Item");
+    expect(plan.roles.period).toBeUndefined();
+    expect(sections(plan)).not.toContain("trend");
+    expect(sections(plan)).not.toContain("movers");
+  });
+});
+
+describe("FakePlanningProvider request phrases", () => {
+  it("reads filters from exclude and only phrases matching category samples", async () => {
+    const excluded = await planFor(
+      transactionsTable(),
+      "Spend by category, excluding Marketing",
+    );
+    expect(excluded.filters).toEqual([
+      { column: "Category", op: "exclude", values: ["Marketing"] },
+    ]);
+    const only = await planFor(
+      transactionsTable(),
+      "Only cloud infrastructure, over time",
+    );
+    expect(only.filters).toEqual([
+      { column: "Category", op: "include", values: ["Cloud infrastructure"] },
+    ]);
+    expect(sections(only)[0]).toBe("trend");
+  });
+
+  it("reads grain and a period window", async () => {
+    const quarterly = await planFor(transactionsTable(), "Quarterly totals");
+    expect(quarterly.grain).toBe("quarter");
+    const last = await planFor(
+      transactionsTable(),
+      "Spend over the last 3 months",
+    );
+    expect(last.lastPeriods).toBe(3);
+    expect(last.grain).toBe("month");
+    const years = await planFor(transactionsTable(), "the last two years");
+    expect(years).toMatchObject({ lastPeriods: 2, grain: "year" });
+  });
+
+  it("leads with the largest rows when asked for the biggest items", async () => {
+    const plan = await planFor(
+      transactionsTable(),
+      "What are the biggest transactions?",
+    );
+    expect(sections(plan)[0]).toBe("largest-rows");
+    expect(
+      sections(plan).filter((section) => section === "largest-rows"),
+    ).toHaveLength(1);
+  });
+});
+
+describe("FakePlanningProvider refinement", () => {
+  it("drops a named section and leaves the rest", async () => {
+    const previous = await planFor(transactionsTable(), "Spend by category");
+    const refined = await planFor(transactionsTable(), "Spend by category", {
+      refinement: { previousPlan: previous, instruction: "drop the trend" },
+    });
+    expect(sections(refined)).toEqual(
+      sections(previous).filter((section) => section !== "trend"),
+    );
+    expect(refined.roles).toEqual(previous.roles);
+    expect(refined.pages.map((page) => page.id)).toEqual(
+      previous.pages.map((page) => page.id),
+    );
+  });
+
+  it("adds a section, changes grain, filters, and window", async () => {
+    const previous = await planFor(flatTable(), "Team spend");
+    const added = await planFor(flatTable(), "Team spend", {
+      refinement: {
+        previousPlan: previous,
+        instruction: "add the largest rows",
+      },
+    });
+    expect(sections(added)).toContain("largest-rows");
+
+    const base = await planFor(transactionsTable(), "Spend");
+    const quarterly = await planFor(transactionsTable(), "Spend", {
+      refinement: { previousPlan: base, instruction: "make it quarterly" },
+    });
+    expect(quarterly.grain).toBe("quarter");
+    const filtered = await planFor(transactionsTable(), "Spend", {
+      refinement: { previousPlan: base, instruction: "without Marketing" },
+    });
+    expect(filtered.filters).toEqual([
+      { column: "Category", op: "exclude", values: ["Marketing"] },
+    ]);
+    const windowed = await planFor(transactionsTable(), "Spend", {
+      refinement: { previousPlan: base, instruction: "just the last 6 months" },
+    });
+    expect(windowed.lastPeriods).toBe(6);
+  });
+
+  it("filters a category the reader names instead of dropping the section", async () => {
+    const table = travelTable();
+    const previous = await planFor(table, "Spend by category");
+    const refined = await planFor(table, "Spend by category", {
+      refinement: {
+        previousPlan: previous,
+        instruction: "drop the travel category",
+      },
+    });
+    expect(sections(refined)).toContain("by-category");
+    expect(refined.filters).toEqual([
+      { column: "Category", op: "exclude", values: ["Travel"] },
+    ]);
+  });
+
+  it("shortens to one page and returns an unknown instruction unchanged", async () => {
+    const previous = await planFor(transactionsTable(), "Spend");
+    expect(previous.pages).toHaveLength(2);
+    const short = await planFor(transactionsTable(), "Spend", {
+      refinement: {
+        previousPlan: previous,
+        instruction: "just the overview please",
+      },
+    });
+    expect(short.pages).toHaveLength(1);
+    const same = await provider.plan(
+      request(transactionsTable(), "Spend", {
+        refinement: { previousPlan: previous, instruction: "make it purple" },
+      }),
+    );
+    expect(same).toBe(previous);
+  });
+});
+
+describe("FakePlanningProvider revision", () => {
+  it("repairs an unknown column by re-picking the role", async () => {
+    const table = transactionsTable();
+    const broken: TablePlan = {
+      ...(await planFor(table, "Spend")),
+      roles: { amount: "Amt", category: "Dept", period: "Date" },
+      filters: [{ column: "Nope", op: "exclude", values: ["x"] }],
+    };
+    const findings = findPlanProblems(broken, table);
+    expect(findings.map((finding) => finding.code)).toEqual([
+      "unknown_column",
+      "unknown_column",
+      "unknown_column",
+    ]);
+    const repaired = await planFor(table, "Spend", {
+      revision: { attempt: 1, previousPlan: broken, findings },
+    });
+    expect(repaired.roles.amount).toBe("Amount");
+    expect(repaired.roles.category).toBe("Category");
+    expect(repaired.filters).toEqual([]);
+  });
+
+  it("drops a section its roles cannot support and neutralises smuggled text", async () => {
+    const table = flatTable();
+    const broken: TablePlan = {
+      ...(await planFor(table, "Spend")),
+      title: "Ops spent $420.75",
       pages: [
-        base.pages[0]!,
         {
-          id: "detail",
-          title: "Detail",
-          description: "More.",
-          sections: ["change-windows"],
+          id: "p",
+          title: "P",
+          description: "d",
+          sections: ["summary", "trend"],
         },
       ],
     };
+    const findings = findPlanProblems(broken, table);
+    const repaired = await planFor(table, "Spend", {
+      revision: { attempt: 1, previousPlan: broken, findings },
+    });
+    expect(repaired.pages[0]!.sections).toEqual(["summary"]);
+    expect(repaired.title).not.toContain("$");
+  });
+});
 
-    const run = await refine(twoPages, "Add the history chart.");
+describe("readFilters", () => {
+  const category = () => columnNamed(travelTable(), "Category");
 
-    expect(run.plan.pages[0]?.sections).toHaveLength(
-      PLAN_MAX_SECTIONS_PER_PAGE,
-    );
-    expect(run.plan.pages[1]?.sections).toContain("stage-trends");
+  it("matches a value as a whole word, never as a substring of one", () => {
+    expect(readFilters("spend excluding travel", category())).toEqual([
+      { column: "Category", op: "exclude", values: ["Travel"] },
+    ]);
+    expect(readFilters("only marketing", category())).toEqual([
+      { column: "Category", op: "include", values: ["Marketing"] },
+    ]);
   });
 
-  it("leaves the plan alone when every page is full", async () => {
-    const run = await refine(base, "Add the history chart.");
-
-    expect(sectionsOf(run.plan)).not.toContain("stage-trends");
-    expect(run.plan.pages[0]?.sections).toStrictEqual(base.pages[0]!.sections);
+  it("emits no filter for a value the profile does not list", () => {
+    expect(readFilters("only E", category())).toEqual([]);
+    expect(readFilters("excluding stationery", category())).toEqual([]);
   });
 
-  it("ignores a section name it was not asked to add or remove", async () => {
-    // Naming a section is not an instruction on its own. Acting on a bare
-    // mention would make "the map is useful" delete the map.
-    const run = await refine(base, "The map is the useful part.");
-
-    expect(run.plan).toStrictEqual(base);
+  it("filters a value beyond the samples once the values are listed", () => {
+    const table = travelTable();
+    const values = table.rows.map((row) => row[1] as string);
+    expect(
+      readFilters("only E", columnNamed(table, "Category"), values),
+    ).toEqual([{ column: "Category", op: "include", values: ["E"] }]);
   });
 
-  it("keeps the gauge selection when the named river is not available", async () => {
-    const run = await refine(base, "Just the Feather river.");
-
-    expect(run.plan.siteIds).toStrictEqual(base.siteIds);
-  });
-
-  it("caps a shortened plan at the per-page section limit", async () => {
-    const many: DashboardPlan = {
-      ...base,
-      pages: [
-        base.pages[0]!,
-        {
-          id: "detail",
-          title: "Detail",
-          description: "More.",
-          sections: ["change-windows", "stage-trends"],
-        },
-      ],
-    };
-
-    const run = await refine(many, "Make it shorter.");
-
-    expect(run.plan.pages).toHaveLength(1);
-    expect(run.plan.pages[0]?.sections.length).toBeLessThanOrEqual(
-      PLAN_MAX_SECTIONS_PER_PAGE,
-    );
+  it("never turns a time window into a category filter", () => {
+    expect(readFilters("just the last 2 quarters", category())).toEqual([]);
+    expect(readFilters("only the last 3 months", category())).toEqual([]);
   });
 });

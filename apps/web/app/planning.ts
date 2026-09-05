@@ -1,76 +1,37 @@
 import type { DashboardSpec } from "@dasher/dashboard-schema";
-import type { DashboardPlan } from "@dasher/planner";
+import type { TablePlan } from "@dasher/planner";
 
 /**
- * Shared planning contract. This module is deliberately separate from
- * `actions.ts`: a `"use server"` module may only export async functions, so
- * constants and types live here.
+ * Shared between the server actions and the client workspace. A `"use server"`
+ * module may only export async functions, so the constants and types live here.
  */
 
 export const REQUEST_MAX_LENGTH = 500;
-
-/**
- * Shorter than a request on purpose. A refinement is one change to a dashboard
- * already on screen ("drop the map", "just the American river"), not a fresh
- * brief, and a box sized for an essay invites one.
- */
 export const REFINEMENT_MAX_LENGTH = 200;
+export const UPLOAD_MAX_BYTES = 4 * 1024 * 1024;
 
 export const DEFAULT_REQUEST =
-  "Create a live dashboard monitoring river gauges near Sacramento";
+  "Where is the money going, and what changed last month?";
+
+/** Which bytes a dashboard was built from, so a refinement can rebuild it. */
+export type SourceRef = { kind: "sample" } | { kind: "upload" };
 
 export interface PlanResult {
   ok: boolean;
   dashboard?: DashboardSpec;
-  /**
-   * The accepted plan, returned so the client can hand it back with a
-   * refinement. It is composition only — no readings, no evidence — and it is
-   * re-parsed against `DashboardPlanSchema` when it comes back, so the round
-   * trip through the browser adds no trust.
-   */
-  plan?: DashboardPlan;
-  /** Present when `ok` is false. Written for the person who typed the request. */
+  /** The accepted plan, handed back with a refinement. Re-parsed on return. */
+  plan?: TablePlan;
+  /** One sentence on how the file was read: which column played which part. */
+  mapping?: string;
+  source?: SourceRef;
+  /** Present when `ok` is false. Written for the person who asked. */
   error?: string;
-  /** How many plan attempts were needed, including revisions. */
+  /** Plan attempts used, including revisions after a rejected plan. */
   attempts?: number;
-  /**
-   * Present only when a refinement produced the same plan it started from, and
-   * says why, because the two reasons need opposite messages:
-   *
-   * - `not-understood` — nothing in the instruction was recognised.
-   * - `already-satisfied` — it was understood and the dashboard already
-   *   matched it, so telling the reader it failed would be false.
-   */
-  refinement?: "not-understood" | "already-satisfied";
-  /**
-   * Why this dashboard has no refinement path, when it has none.
-   *
-   * Absence of a plan is what the workspace can observe, but it is not why:
-   *
-   * - `official-snapshot` — a builder produced the dashboard directly, so
-   *   there is no plan to edit.
-   * - `combined-sources` — there are TWO plans behind the dashboard and no
-   *   rule yet for which one an instruction addresses.
-   * - `uploaded-file` — the figures came from a file the reader supplied, and
-   *   a refinement would have to read it again.
-   *
-   * They read as the same missing field and need different sentences. The
-   * workspace showed the official-snapshot wording for both until a combined
-   * dashboard existed to prove it wrong: a river-and-air dashboard is not an
-   * official snapshot, and telling a reader it is describes a different
-   * product than the one they are looking at.
-   *
-   * `uploaded-file` was added for the same reason, and by making the same
-   * mistake first — the upload path shipped its dashboards as
-   * `official-snapshot` in review, which told readers that the CSV on their own
-   * laptop was an official source. A third value costs one sentence; the
-   * alternative is a product that describes itself wrongly to whoever built it.
-   */
-  noRefinement?: "official-snapshot" | "combined-sources" | "uploaded-file";
-  /**
-   * Present when the dashboard was persisted and can be reopened at
-   * `/d/{id}`. Absent when the app runs without a database or the browser has
-   * no session — both ordinary states, not failures.
-   */
+  /** Present when the dashboard was saved. */
   dashboardId?: string;
+  /** Present when a refinement changed nothing. */
+  refinement?: "not-understood" | "already-satisfied";
+  /** Whether a model chose the composition. */
+  usesModel?: boolean;
 }

@@ -86,235 +86,12 @@ function EvidenceDrawer({
   );
 }
 
-const usefulnessOptions = ["1", "2", "3", "4", "5"] as const;
-const needOptions = [
-  "More historical comparison",
-  "Clearer alert thresholds",
-  "Named owner or handoff",
-  "More local impact context",
-  "Export or sharing workflow",
-  "Other sanitized aggregate need",
-] as const;
-
-type Usefulness = (typeof usefulnessOptions)[number] | "";
-type NeedCategory = (typeof needOptions)[number] | "";
-type FeedbackIssue = "wrong" | "unclear" | "missing-context";
-type EvidenceTaskTarget = "changed" | "next-action";
-type EvidenceTaskStatus = "idle" | "armed" | "active" | "complete";
-
-interface SessionTelemetry {
-  evidenceOpens: number;
-  nextActionReviewed: boolean;
-  evidenceTaskTarget: EvidenceTaskTarget | "";
-  evidenceTaskStatus: EvidenceTaskStatus;
-  evidenceTaskInteractions: number;
-  usefulness: Usefulness;
-  issues: FeedbackIssue[];
-  needCategory: NeedCategory;
-}
-
-function SessionFeedbackDialog({
-  telemetry,
-  onClose,
-  onUsefulness,
-  onIssue,
-  onNeedCategory,
-  onEvidenceTaskTarget,
-  onStartEvidenceTask,
-}: {
-  telemetry: SessionTelemetry;
-  onClose: () => void;
-  onUsefulness: (value: Usefulness) => void;
-  onIssue: (value: FeedbackIssue, checked: boolean) => void;
-  onNeedCategory: (value: NeedCategory) => void;
-  onEvidenceTaskTarget: (value: EvidenceTaskTarget | "") => void;
-  onStartEvidenceTask: () => void;
-}) {
-  const { closeButtonRef, containerRef } = useModalFocus<HTMLElement>(onClose);
-
-  return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
-    >
-      <section
-        aria-label="Session feedback"
-        aria-modal="true"
-        className="modal feedback-modal"
-        ref={containerRef}
-        role="dialog"
-      >
-        <div className="modal-heading">
-          <div>
-            <span className="eyebrow">Not saved</span>
-            <h2>Session feedback</h2>
-          </div>
-          <button
-            aria-label="Close session feedback"
-            className="icon-button"
-            onClick={onClose}
-            ref={closeButtonRef}
-            type="button"
-          >
-            ×
-          </button>
-        </div>
-        <p className="feedback-boundary">
-          These bounded answers stay only in this browser tab memory and are
-          erased when the page reloads. Do not enter names or sensitive data.
-        </p>
-        <dl className="session-counters">
-          <div>
-            <dt>Evidence opens</dt>
-            <dd>
-              <output aria-label="Evidence opens this session">
-                {telemetry.evidenceOpens}
-              </output>
-            </dd>
-          </div>
-          <div>
-            <dt>Next action reviewed</dt>
-            <dd>
-              <output aria-label="Next action reviewed this session">
-                {telemetry.nextActionReviewed ? "Yes" : "No"}
-              </output>
-            </dd>
-          </div>
-          <div>
-            <dt>Evidence task interactions</dt>
-            <dd>
-              <output aria-label="Evidence task interactions">
-                {telemetry.evidenceTaskInteractions}
-              </output>
-            </dd>
-          </div>
-          <div>
-            <dt>Evidence task status</dt>
-            <dd>
-              <output aria-label="Evidence task status">
-                {telemetry.evidenceTaskStatus === "idle"
-                  ? "Not started"
-                  : telemetry.evidenceTaskStatus === "armed"
-                    ? "Starts when this dialog closes"
-                    : telemetry.evidenceTaskStatus === "active"
-                      ? "Counting"
-                      : "Complete"}
-              </output>
-            </dd>
-          </div>
-        </dl>
-        <div className="evidence-task-controls">
-          <label>
-            Requested evidence
-            <select
-              aria-label="Requested evidence"
-              disabled={
-                telemetry.evidenceTaskStatus === "armed" ||
-                telemetry.evidenceTaskStatus === "active"
-              }
-              onChange={(event) =>
-                onEvidenceTaskTarget(
-                  event.target.value as EvidenceTaskTarget | "",
-                )
-              }
-              value={telemetry.evidenceTaskTarget}
-            >
-              <option value="">Select one</option>
-              <option value="changed">Changed</option>
-              <option value="next-action">Next safe action</option>
-            </select>
-          </label>
-          <button
-            disabled={
-              telemetry.evidenceTaskTarget === "" ||
-              telemetry.evidenceTaskStatus === "active"
-            }
-            onClick={onStartEvidenceTask}
-            type="button"
-          >
-            {telemetry.evidenceTaskStatus === "complete"
-              ? "Restart evidence task"
-              : telemetry.evidenceTaskStatus === "armed"
-                ? "Task armed"
-                : telemetry.evidenceTaskStatus === "active"
-                  ? "Counting in progress"
-                  : "Start evidence task"}
-          </button>
-          <small>
-            Counting begins after this dialog closes and stops only when the
-            requested evidence opens. Wrong activations remain in the count.
-          </small>
-        </div>
-        <fieldset>
-          <legend>Usefulness rating</legend>
-          <div className="bounded-options usefulness-options">
-            {usefulnessOptions.map((value) => (
-              <label key={value}>
-                <input
-                  checked={telemetry.usefulness === value}
-                  name="usefulness"
-                  onChange={() => onUsefulness(value)}
-                  type="radio"
-                />
-                {value}
-              </label>
-            ))}
-          </div>
-          <small>1 = not useful · 5 = very useful</small>
-        </fieldset>
-        <fieldset>
-          <legend>What was wrong or unclear?</legend>
-          <div className="bounded-options issue-options">
-            {[
-              ["wrong", "Wrong"],
-              ["unclear", "Unclear"],
-              ["missing-context", "Missing context"],
-            ].map(([value, label]) => (
-              <label key={value}>
-                <input
-                  checked={telemetry.issues.includes(value as FeedbackIssue)}
-                  onChange={(event) =>
-                    onIssue(value as FeedbackIssue, event.target.checked)
-                  }
-                  type="checkbox"
-                />
-                {label}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <label className="need-category">
-          One missing information or workflow need
-          <select
-            aria-label="Missing information or workflow need"
-            onChange={(event) =>
-              onNeedCategory(event.target.value as NeedCategory)
-            }
-            value={telemetry.needCategory}
-          >
-            <option value="">Select one</option>
-            {needOptions.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
-    </div>
-  );
-}
-
 function ExecutiveBrief({
   dashboard,
   onEvidence,
 }: {
   dashboard: Extract<DashboardSpec, { schemaVersion: "1.2" }>;
-  onEvidence: (
-    ids: string[],
-    recordsNextAction?: boolean,
-    evidenceTaskTarget?: EvidenceTaskTarget,
-  ) => void;
+  onEvidence: (ids: string[]) => void;
 }) {
   const items = [
     {
@@ -364,17 +141,7 @@ function ExecutiveBrief({
             <button
               aria-label={`Evidence for ${item.label}`}
               className="executive-brief-evidence"
-              onClick={() =>
-                onEvidence(
-                  item.evidenceIds,
-                  item.label === "Next safe action",
-                  item.label === "Changed"
-                    ? "changed"
-                    : item.label === "Next safe action"
-                      ? "next-action"
-                      : undefined,
-                )
-              }
+              onClick={() => onEvidence(item.evidenceIds)}
               type="button"
             >
               View evidence
@@ -407,18 +174,7 @@ export function DashboardShell({
 }) {
   const [pageId, setPageId] = useState(dashboard.pages[0]!.id);
   const [architectureOpen, setArchitectureOpen] = useState(false);
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [evidenceIds, setEvidenceIds] = useState<string[] | null>(null);
-  const [telemetry, setTelemetry] = useState<SessionTelemetry>({
-    evidenceOpens: 0,
-    nextActionReviewed: false,
-    evidenceTaskTarget: "",
-    evidenceTaskStatus: "idle",
-    evidenceTaskInteractions: 0,
-    usefulness: "",
-    issues: [],
-    needCategory: "",
-  });
   const page =
     dashboard.pages.find((candidate) => candidate.id === pageId) ??
     dashboard.pages[0]!;
@@ -426,54 +182,10 @@ export function DashboardShell({
     () => dashboard.evidence.filter((item) => evidenceIds?.includes(item.id)),
     [dashboard.evidence, evidenceIds],
   );
-  const recordEvidenceTaskActivation = () => {
-    setTelemetry((current) =>
-      current.evidenceTaskStatus === "active"
-        ? {
-            ...current,
-            evidenceTaskInteractions: current.evidenceTaskInteractions + 1,
-          }
-        : current,
-    );
-  };
-  const openEvidence = (
-    ids: string[],
-    recordsNextAction = false,
-    evidenceTaskTarget?: EvidenceTaskTarget,
-  ) => {
-    setEvidenceIds(ids);
-    setTelemetry((current) => ({
-      ...current,
-      evidenceOpens: current.evidenceOpens + 1,
-      nextActionReviewed: current.nextActionReviewed || recordsNextAction,
-      evidenceTaskStatus:
-        current.evidenceTaskStatus === "active" &&
-        evidenceTaskTarget === current.evidenceTaskTarget
-          ? "complete"
-          : current.evidenceTaskStatus,
-    }));
-  };
-  const closeFeedback = () => {
-    setFeedbackOpen(false);
-    setTelemetry((current) =>
-      current.evidenceTaskStatus === "armed"
-        ? { ...current, evidenceTaskStatus: "active" }
-        : current,
-    );
-  };
-  const modalOpen = architectureOpen || feedbackOpen || evidenceIds !== null;
+  const modalOpen = architectureOpen || evidenceIds !== null;
 
   return (
-    <div
-      className="app-shell"
-      onClickCapture={(event) =>
-        event.detail === 0 && recordEvidenceTaskActivation()
-      }
-      onKeyDownCapture={(event) =>
-        event.key === "Escape" && recordEvidenceTaskActivation()
-      }
-      onPointerDownCapture={recordEvidenceTaskActivation}
-    >
+    <div className="app-shell">
       <div
         aria-hidden={modalOpen || undefined}
         className="app-content"
@@ -508,9 +220,9 @@ export function DashboardShell({
                 reader apart: data arriving live, data captured for a
                 demonstration, and a page that is neither because it is a
                 record of a build that already happened. `sealed` wins — a
-                stored dashboard is a snapshot however its readings were
-                originally fetched, and "Live dashboard" on bytes frozen last
-                Tuesday is the least true thing this badge could say.
+                stored dashboard is a snapshot however its data was originally
+                fetched, and "Live dashboard" on bytes frozen last Tuesday is
+                the least true thing this badge could say.
               */}
               <span className="eyebrow">
                 {sealed
@@ -542,13 +254,7 @@ export function DashboardShell({
               <p>{dashboard.nextAction.detail}</p>
               <button
                 className="next-evidence"
-                onClick={() =>
-                  openEvidence(
-                    dashboard.nextAction.evidenceIds,
-                    true,
-                    "next-action",
-                  )
-                }
+                onClick={() => setEvidenceIds(dashboard.nextAction.evidenceIds)}
                 type="button"
               >
                 Why this action
@@ -564,16 +270,9 @@ export function DashboardShell({
               </div>
               {/*
                 Omitted entirely when there is no instant, rather than filled
-                in with a word.
-
-                `UTC` sat OUTSIDE the ternary, so a dashboard without an
-                observation time rendered "Unknown UTC" — a unit attached to a
-                non-value, in the largest type on the page. Every ledger
-                dashboard showed it: `compileLedgerPlan` leaves
-                `latestObservationAt` unset on purpose, because a monthly ledger
-                has no instant of observation, and says so in the freshness
-                label instead. The mobile line below already got this right,
-                which is how the two came to disagree.
+                in with a word. A source with no moment of observation — a
+                monthly ledger, say — names its period in the freshness label
+                instead, and "Unknown UTC" would be a unit on a non-value.
               */}
               {dashboard.freshness.latestObservationAt === undefined ? null : (
                 <div className="updated">
@@ -605,18 +304,16 @@ export function DashboardShell({
               )}
             </div>
             {/*
-              One brief per dashboard, on the page the reader lands on. This
-              was `page.id === "overview"`, a literal that happened to match
-              the river and air compilers' first page. A combined dashboard's
-              pages are namespaced (`river:overview`), so the literal matched
-              nothing and the brief — the one surface where both sources are
-              attributed side by side — silently disappeared from exactly the
-              dashboard that needs it most. Asking which page is first says
-              what was meant, and does not depend on what a builder names it.
+              One brief per dashboard, on the page the reader lands on. The
+              gate is "first page", not a page id: a builder may name its
+              landing page anything, and the brief must not depend on it.
             */}
             {page.id === dashboard.pages[0]!.id &&
             dashboard.schemaVersion === "1.2" ? (
-              <ExecutiveBrief dashboard={dashboard} onEvidence={openEvidence} />
+              <ExecutiveBrief
+                dashboard={dashboard}
+                onEvidence={setEvidenceIds}
+              />
             ) : null}
             <div className="dashboard-grid">
               {/*
@@ -627,18 +324,11 @@ export function DashboardShell({
                 <ComponentRenderer
                   component={component}
                   key={component.id}
-                  onEvidence={openEvidence}
+                  onEvidence={setEvidenceIds}
                   span={span}
                 />
               ))}
             </div>
-            <button
-              className="session-feedback-button"
-              onClick={() => setFeedbackOpen(true)}
-              type="button"
-            >
-              Session feedback · not saved
-            </button>
             <footer>
               <span aria-hidden="true">ⓘ</span>
               {dashboard.notice}
@@ -651,41 +341,6 @@ export function DashboardShell({
         <ArchitectureDialog
           architecture={dashboard.architecture}
           onClose={() => setArchitectureOpen(false)}
-        />
-      ) : null}
-      {feedbackOpen ? (
-        <SessionFeedbackDialog
-          onClose={closeFeedback}
-          onEvidenceTaskTarget={(value) =>
-            setTelemetry((current) => ({
-              ...current,
-              evidenceTaskTarget: value,
-              evidenceTaskStatus: "idle",
-              evidenceTaskInteractions: 0,
-            }))
-          }
-          onIssue={(value, checked) =>
-            setTelemetry((current) => ({
-              ...current,
-              issues: checked
-                ? [...new Set([...current.issues, value])]
-                : current.issues.filter((issue) => issue !== value),
-            }))
-          }
-          onNeedCategory={(value) =>
-            setTelemetry((current) => ({ ...current, needCategory: value }))
-          }
-          onStartEvidenceTask={() =>
-            setTelemetry((current) => ({
-              ...current,
-              evidenceTaskStatus: "armed",
-              evidenceTaskInteractions: 0,
-            }))
-          }
-          onUsefulness={(value) =>
-            setTelemetry((current) => ({ ...current, usefulness: value }))
-          }
-          telemetry={telemetry}
         />
       ) : null}
       {evidenceIds ? (

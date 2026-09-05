@@ -38,7 +38,7 @@ vi.mock("@dasher/control-plane", async (importOriginal) => ({
 it("shows a dead session the signed-out note, not a server error", async () => {
   vi.stubEnv("DASHER_DATABASE_URL", "postgresql://u:p@localhost:5432/d");
   try {
-    const page = await YourDashboards();
+    const page = await YourDashboards({ searchParams: Promise.resolve({}) });
     const html = renderToStaticMarkup(page);
 
     expect(html).toContain("Sign in");

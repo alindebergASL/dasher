@@ -12,6 +12,9 @@ import { normalizeEmailAddress } from "./email";
  *     pnpm --filter @dasher/control-plane provision \
  *       --organization "Pilot org" --email person@example.com [--role admin]
  *
+ * `--organization` takes either a display name, which creates a new
+ * organization, or the uuid of an existing one, which adds the address to it.
+ *
  * WHY THIS EXISTS AT ALL. Sign-in is invitation-only: `begin_sign_in` creates a
  * challenge only for an address that already has an active membership, and
  * there is no path in the product that creates the first one. That is the point
@@ -31,9 +34,13 @@ import { normalizeEmailAddress } from "./email";
 
 const EMAIL_LINK_ISSUER = "urn:dasher:email-link";
 const ROLES = new Set(["admin", "editor", "viewer"]);
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
+/** Exactly one of `organizationName` (create) or `organizationId` (join). */
 export interface ProvisionOptions {
-  readonly organizationName: string;
+  readonly organizationName?: string;
+  readonly organizationId?: string;
   readonly email: string;
   readonly role: string;
 }
@@ -42,8 +49,10 @@ export interface ProvisionedPrincipal {
   readonly organizationId: string;
   readonly userId: string;
   readonly normalizedEmail: string;
-  /** True when the address already had an identity and was added to a new org. */
+  /** True when the address already had an identity and only a membership was added. */
   readonly reusedExistingUser: boolean;
+  /** False when the membership joined an organization that already existed. */
+  readonly createdOrganization: boolean;
 }
 
 export function parseProvisionArgs(argv: readonly string[]): ProvisionOptions {
@@ -57,11 +66,11 @@ export function parseProvisionArgs(argv: readonly string[]): ProvisionOptions {
     values.set(flag.slice(2), value);
   }
 
-  const organizationName = values.get("organization");
+  const organization = values.get("organization")?.trim();
   const email = values.get("email");
   const role = values.get("role") ?? "admin";
 
-  if (organizationName === undefined || organizationName.trim() === "") {
+  if (organization === undefined || organization === "") {
     throw new Error("--organization is required");
   }
   if (email === undefined) throw new Error("--email is required");
@@ -69,7 +78,9 @@ export function parseProvisionArgs(argv: readonly string[]): ProvisionOptions {
     throw new Error(`--role must be one of ${[...ROLES].sort().join(", ")}`);
   }
 
-  return { organizationName: organizationName.trim(), email, role };
+  return UUID_PATTERN.test(organization)
+    ? { organizationId: organization.toLowerCase(), email, role }
+    : { organizationName: organization, email, role };
 }
 
 export async function provisionPrincipal(
@@ -80,6 +91,14 @@ export async function provisionPrincipal(
   // writes is the subject that lookup will search for. Two normalisations would
   // be two accounts for one address.
   const normalizedEmail = normalizeEmailAddress(options.email.trim());
+  if (
+    (options.organizationId === undefined) ===
+    (options.organizationName === undefined)
+  ) {
+    throw new Error(
+      "provide exactly one of organizationName or organizationId",
+    );
+  }
   const client = await pool.connect();
 
   // pg-pool THROWS on a second release — `throwOnDoubleRelease` — so the
@@ -123,11 +142,27 @@ export async function provisionPrincipal(
       );
     }
 
-    const organizationId = randomUUID();
-    await client.query(
-      "INSERT INTO dasher.organizations (organization_id, display_name) VALUES ($1, $2)",
-      [organizationId, options.organizationName],
-    );
+    let organizationId: string;
+    const createdOrganization = options.organizationId === undefined;
+    if (options.organizationId === undefined) {
+      organizationId = randomUUID();
+      await client.query(
+        "INSERT INTO dasher.organizations (organization_id, display_name) VALUES ($1, $2)",
+        [organizationId, options.organizationName],
+      );
+    } else {
+      const found = await client.query<{ organization_id: string }>(
+        "SELECT organization_id FROM dasher.organizations WHERE organization_id = $1",
+        [options.organizationId],
+      );
+      const existingId = found.rows[0]?.organization_id;
+      if (existingId === undefined) {
+        throw new Error(
+          `organization ${options.organizationId} does not exist`,
+        );
+      }
+      organizationId = existingId;
+    }
     await client.query(
       `INSERT INTO dasher.memberships
          (membership_id, organization_id, user_id, role, state, authority_revision)
@@ -136,7 +171,13 @@ export async function provisionPrincipal(
     );
 
     await client.query("COMMIT");
-    return { organizationId, userId, normalizedEmail, reusedExistingUser };
+    return {
+      organizationId,
+      userId,
+      normalizedEmail,
+      reusedExistingUser,
+      createdOrganization,
+    };
   } catch (error) {
     try {
       await client.query("ROLLBACK");

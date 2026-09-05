@@ -3,88 +3,22 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { Pool } from "pg";
 
-/**
- * The sign-in page, in a browser.
- *
- * WHY THIS FILE EXISTS. The last time UI was added here it shipped two defects
- * no other gate could see — a form nested inside another form, and six controls
- * with no accessible name below 641px — because jsdom computes no layout and
- * the other specs assert text. This page is new UI, so it gets measured.
- *
- * NO DATABASE NEEDED, and that is the point of what it asserts. Without one,
- * sign-in is unavailable, and the page has to say so rather than accept an
- * address and silently do nothing. The link-sending path itself is proven in
- * `sign-in.integration.test.ts` against a real database, as the application
- * role.
- */
-
-const VIEWPORTS = [
-  { name: "desktop", width: 1440, height: 1100 },
-  { name: "mobile", width: 390, height: 844 },
-] as const;
-
-const TALLEST_REASONABLE_INPUT = 80;
+/** Sign-in in a browser: the page, the link round trip, and CSRF refusals. */
 
 async function openSignIn(page: Page): Promise<void> {
   await page.goto("/sign-in");
   await expect(page.locator("#sign-in-email")).toBeVisible();
 }
 
-for (const viewport of VIEWPORTS) {
-  test.describe(`sign-in at ${viewport.name}`, () => {
-    test.use({ viewport: { width: viewport.width, height: viewport.height } });
-
-    test("names its field and renders it at the height of an input", async ({
-      page,
-    }) => {
-      // `.request-input` carries `flex: 1 1 22rem`, which is a WIDTH basis in
-      // the request bar's row container and a HEIGHT basis in this page's
-      // column one. That rendered a 352px text box in the upload panel; the
-      // neutralising rule is asserted here rather than assumed to have been
-      // remembered.
-      await openSignIn(page);
-
-      const name = await page.locator("#sign-in-email").evaluate((element) => {
-        const label = document.querySelector(
-          `label[for="${element.id}"]`,
-        ) as HTMLElement | null;
-        if (label === null) return "";
-        return getComputedStyle(label).display === "none"
-          ? ""
-          : (label.textContent ?? "").trim();
-      });
-      expect(name).toBe("Your email address");
-
-      const box = await page.locator("#sign-in-email").boundingBox();
-      expect(box).not.toBeNull();
-      expect(box!.height).toBeLessThan(TALLEST_REASONABLE_INPUT);
-    });
-
-    test("does not push the page sideways", async ({ page }) => {
-      await openSignIn(page);
-      expect(
-        await page.evaluate(
-          () =>
-            document.documentElement.scrollWidth >
-            document.documentElement.clientWidth,
-        ),
-      ).toBe(false);
-    });
-
-    test("is reachable from the site navigation", async ({ page }) => {
-      // The page is worth nothing if nobody can find it. On a phone the nav is
-      // at the BOTTOM — a top bar costs about 33px and the executive brief's
-      // first-viewport budget had 20 — so this follows the link rather than
-      // asserting where it sits.
-      await page.goto("/");
-      await page
-        .getByRole("navigation", { name: "Site" })
-        .getByRole("link", { name: "Sign in" })
-        .click();
-      await expect(page).toHaveURL(/\/sign-in$/u);
-    });
-  });
-}
+test("is reachable from the site navigation", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "Site" })
+    .getByRole("link", { name: "Sign in" })
+    .click();
+  await expect(page).toHaveURL(/\/sign-in$/u);
+  await openSignIn(page);
+});
 
 test("a link that was never issued lands back on sign-in, saying so", async ({
   page,

@@ -415,6 +415,7 @@ dasher_private.guard_dashboard_update() -> trigger volatility=v security_definer
 dasher_private.guard_membership_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.guard_sign_in_challenge_update() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
 dasher_private.reject_immutable_mutation() -> trigger volatility=v security_definer=false search_path=search_path=pg_catalog
+dasher_private.session_idle_minutes() -> integer volatility=i security_definer=false search_path=search_path=pg_catalog
 dasher_private.sign_in_hourly_limit() -> integer volatility=i security_definer=false search_path=search_path=pg_catalog
 dasher_private.sign_in_lock_namespace() -> integer volatility=i security_definer=false search_path=search_path=pg_catalog
 dasher_private.verified_context() -> record volatility=s security_definer=true search_path=search_path=pg_catalog
@@ -446,6 +447,7 @@ dasher_private.guard_dashboard_update() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_membership_update() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.guard_sign_in_challenge_update() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.reject_immutable_mutation() dasher_ci_owner=X/dasher_ci_owner
+dasher_private.session_idle_minutes() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.sign_in_hourly_limit() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.sign_in_lock_namespace() dasher_ci_owner=X/dasher_ci_owner
 dasher_private.verified_context() dasher_ci_owner=X/dasher_ci_owner dasher_app=X/dasher_ci_owner

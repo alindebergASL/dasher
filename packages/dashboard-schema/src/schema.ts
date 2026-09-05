@@ -117,60 +117,22 @@ const MetricGridComponentSchema = ComponentBaseSchema.extend({
 });
 
 /**
- * A reading with the unit it was reported in. The unit rides with the value
- * because the contract has no domain: nothing else in the spec knows whether
- * this station measures feet, micrograms, or degrees, so the number alone
- * would be unrenderable.
+ * Cells are display strings rather than typed values: the contract has no
+ * domain, so the compiler formats numbers, units, and dates before they land
+ * here. Every row cites the evidence its cells rest on.
  */
-const ReadingSchema = z
-  .strictObject({
-    value: z.number().nullable(),
-    // Empty means the station has no such sensor at all — there is no unit to
-    // name for a reading that cannot exist. A present sensor whose latest
-    // observation is merely missing still knows its unit.
-    unit: z.string().max(DASHBOARD_STRING_LIMITS.shortText),
-  })
-  .refine((reading) => !(reading.unit === "" && reading.value !== null), {
-    message: "A reading with a value must name its unit",
-  });
-
-/**
- * One monitored point in some sensor network — a river gauge, an air-quality
- * monitor, whatever the domain supplies. ADR-007: the contract caps the shape
- * (location, two readings, direction, freshness) and deliberately owns none
- * of the words. `group` is the domain's grouping label — a river, an air
- * basin — chosen by the layer that computed the station view.
- */
-const StationSchema = z.strictObject({
-  id: IdentifierSchema,
-  name: ShortTextSchema,
-  group: ShortTextSchema,
-  latitude: z.number().min(-90).max(90),
-  longitude: z.number().min(-180).max(180),
-  primary: ReadingSchema,
-  secondary: ReadingSchema,
-  direction: z.enum(["rising", "falling", "steady", "unknown"]),
-  freshness: z.enum(["fresh", "stale", "missing"]),
-  evidenceIds: RequiredEvidenceIdsSchema,
-});
-
-const StationMapComponentSchema = ComponentBaseSchema.extend({
-  kind: z.literal("station-map"),
-  stations: z.array(StationSchema).min(1).max(200),
-});
-
-const StationTableComponentSchema = ComponentBaseSchema.extend({
-  kind: z.literal("station-table"),
-  stations: z.array(StationSchema).min(1).max(200),
-  // The renderer owns no domain words (ADR-007), so the table's column
-  // headings ride in the data, written by the layer that knows what the
-  // readings are. Free text — but from the trusted compiler, and behind the
-  // same free-text gate as every other computed string.
-  columns: z.strictObject({
-    station: ShortTextSchema,
-    primary: ShortTextSchema,
-    secondary: ShortTextSchema,
-  }),
+const TableComponentSchema = ComponentBaseSchema.extend({
+  kind: z.literal("table"),
+  columns: z.array(ShortTextSchema).min(1).max(12),
+  rows: z
+    .array(
+      z.strictObject({
+        id: IdentifierSchema,
+        cells: z.array(z.string().max(DASHBOARD_STRING_LIMITS.shortText)),
+        evidenceIds: RequiredEvidenceIdsSchema,
+      }),
+    )
+    .max(100),
 });
 
 const RankingComponentSchema = ComponentBaseSchema.extend({
@@ -224,8 +186,7 @@ const AlertComponentSchema = ComponentBaseSchema.extend({
 const DashboardComponentSchema = z.discriminatedUnion("kind", [
   SummaryComponentSchema,
   MetricGridComponentSchema,
-  StationMapComponentSchema,
-  StationTableComponentSchema,
+  TableComponentSchema,
   RankingComponentSchema,
   TrendComponentSchema,
   AlertComponentSchema,
@@ -358,6 +319,26 @@ export type ArchitectureNode = z.infer<typeof ArchitectureNodeSchema>;
 export type ArchitectureEdge = z.infer<typeof ArchitectureEdgeSchema>;
 export type DashboardSpec = z.infer<typeof DashboardSpecSchema>;
 
+/** The per-kind item array whose entries each cite their own evidence. */
+function evidenceLinkedItems(
+  component: DashboardComponent,
+): readonly { readonly evidenceIds: string[] }[] {
+  switch (component.kind) {
+    case "summary":
+      return component.claims;
+    case "metric-grid":
+      return component.metrics;
+    case "table":
+      return component.rows;
+    case "ranking":
+      return component.items;
+    case "trend-list":
+      return component.series;
+    case "alert-list":
+      return component.alerts;
+  }
+}
+
 function assertUnique(ids: string[], label: string): Set<string> {
   const unique = new Set(ids);
   if (unique.size !== ids.length) {
@@ -412,22 +393,9 @@ function assertDashboardComplexityBudgets(spec: DashboardSpec): void {
     for (const component of page.components) {
       totalEvidenceReferences += component.evidenceIds.length;
 
-      const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
-        component.kind === "summary"
-          ? component.claims
-          : component.kind === "metric-grid"
-            ? component.metrics
-            : component.kind === "station-map" ||
-                component.kind === "station-table"
-              ? component.stations
-              : component.kind === "ranking"
-                ? component.items
-                : component.kind === "trend-list"
-                  ? component.series
-                  : component.alerts;
-
-      totalItems += evidenceLinkedItems.length;
-      totalEvidenceReferences += evidenceLinkedItems.reduce(
+      const items = evidenceLinkedItems(component);
+      totalItems += items.length;
+      totalEvidenceReferences += items.reduce(
         (total, item) => total + item.evidenceIds.length,
         0,
       );
@@ -480,14 +448,18 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
   for (const page of spec.pages) {
     for (const component of page.components) {
       componentIds.push(component.id);
-      if (
-        component.kind === "station-map" ||
-        component.kind === "station-table"
-      ) {
+      if (component.kind === "table") {
         assertUnique(
-          component.stations.map((station) => station.id),
-          `Station IDs in component ${component.id}`,
+          component.rows.map((row) => row.id),
+          `Row IDs in component ${component.id}`,
         );
+        for (const row of component.rows) {
+          if (row.cells.length !== component.columns.length) {
+            throw new Error(
+              `Row ${row.id} in component ${component.id} has ${row.cells.length} cells for ${component.columns.length} columns`,
+            );
+          }
+        }
       } else if (component.kind === "ranking") {
         assertUnique(
           component.items.map((item) => item.id),
@@ -525,25 +497,14 @@ export function parseDashboardSpec(input: unknown): DashboardSpec {
           `Metric labels in component ${component.id}`,
         );
       }
-      const evidenceLinkedItems: Array<{ evidenceIds: string[] }> =
-        component.kind === "metric-grid"
-          ? component.metrics
-          : component.kind === "station-map" ||
-              component.kind === "station-table"
-            ? component.stations
-            : component.kind === "ranking"
-              ? component.items
-              : component.kind === "trend-list"
-                ? component.series
-                : component.kind === "alert-list"
-                  ? component.alerts
-                  : [];
-      for (const [index, item] of evidenceLinkedItems.entries()) {
-        for (const evidenceId of item.evidenceIds) {
-          if (!evidenceIds.has(evidenceId)) {
-            throw new Error(
-              `Item ${index + 1} in component ${component.id} references missing evidence ${evidenceId}`,
-            );
+      if (component.kind !== "summary") {
+        for (const [index, item] of evidenceLinkedItems(component).entries()) {
+          for (const evidenceId of item.evidenceIds) {
+            if (!evidenceIds.has(evidenceId)) {
+              throw new Error(
+                `Item ${index + 1} in component ${component.id} references missing evidence ${evidenceId}`,
+              );
+            }
           }
         }
       }

@@ -28,17 +28,9 @@ WORKDIR /app
 # Manifests first, so a source-only change does not reinstall dependencies.
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY apps/web/package.json apps/web/
-COPY packages/air-domain/package.json packages/air-domain/
-COPY packages/calculation-engine/package.json packages/calculation-engine/
 COPY packages/control-plane/package.json packages/control-plane/
 COPY packages/dashboard-schema/package.json packages/dashboard-schema/
-COPY packages/enrollment-domain/package.json packages/enrollment-domain/
-COPY packages/extraction-spike/package.json packages/extraction-spike/
-COPY packages/ledger-domain/package.json packages/ledger-domain/
 COPY packages/planner/package.json packages/planner/
-COPY packages/repo-graph/package.json packages/repo-graph/
-COPY packages/river-domain/package.json packages/river-domain/
-COPY packages/station-domain/package.json packages/station-domain/
 COPY packages/workbook/package.json packages/workbook/
 
 RUN pnpm install --frozen-lockfile

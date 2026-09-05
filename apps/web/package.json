@@ -11,14 +11,10 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@dasher/air-domain": "workspace:*",
     "@dasher/control-plane": "workspace:*",
     "@dasher/dashboard-schema": "workspace:*",
-    "@dasher/enrollment-domain": "workspace:*",
-    "@dasher/ledger-domain": "workspace:*",
     "@dasher/planner": "workspace:*",
-    "@dasher/river-domain": "workspace:*",
-    "@dasher/station-domain": "workspace:*",
+    "@dasher/workbook": "workspace:*",
     "next": "16.2.12",
     "pg": "^8.22.0",
     "react": "19.2.8",
@@ -28,7 +24,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@dasher/workbook": "workspace:*",
     "@playwright/test": "1.62.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",

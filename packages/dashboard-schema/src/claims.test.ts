@@ -5,26 +5,11 @@ import { claimPointer, extractSpecClaims } from "./claims";
 import { parseDashboardSpec, type DashboardSpec } from "./schema";
 
 /**
- * A spec with four evidence kinds and three assertion-carrying component kinds,
+ * A spec with four evidence kinds and every assertion-carrying component kind,
  * because the interesting behaviour of this walk is which pointer it produces
  * and which of several evidence kinds a claim inherits — neither of which a
  * single-evidence fixture can show.
  */
-function station(id: string) {
-  return {
-    id,
-    name: `Gauge ${id}`,
-    group: "Sacramento",
-    latitude: 38.5,
-    longitude: -121.5,
-    primary: { value: 4.2, unit: "ft" },
-    secondary: { value: 900, unit: "cfs" },
-    direction: "rising" as const,
-    freshness: "fresh" as const,
-    evidenceIds: ["observed-1"],
-  };
-}
-
 const SPEC_INPUT = {
   schemaVersion: "1.2",
   id: "mixed",
@@ -38,11 +23,11 @@ const SPEC_INPUT = {
     latestObservationAt: "2026-07-29T12:00:00.000Z",
   },
   nextAction: {
-    title: "Review the readings",
+    title: "Review the figures",
     detail: "Confirm the source before publishing.",
     evidenceIds: ["observed-1"],
   },
-  notice: "Not an official warning system.",
+  notice: "Figures come from the uploaded workbook.",
   pages: [
     {
       id: "overview",
@@ -56,7 +41,7 @@ const SPEC_INPUT = {
           tone: "normal",
           evidenceIds: ["observed-1"],
           claims: [
-            { text: "Conditions are stable.", evidenceIds: ["observed-1"] },
+            { text: "Headcount is unchanged.", evidenceIds: ["observed-1"] },
             {
               text: "Spend is tracking to budget.",
               evidenceIds: ["observed-1", "calculated-1"],
@@ -89,19 +74,23 @@ const SPEC_INPUT = {
       description: "Every remaining component kind, so none goes unwalked",
       components: [
         {
-          id: "map",
-          kind: "station-map",
-          title: "Where",
-          evidenceIds: ["observed-1"],
-          stations: [station("gauge-a"), station("gauge-b")],
-        },
-        {
           id: "table",
-          kind: "station-table",
-          title: "Readings",
+          kind: "table",
+          title: "Spend by department",
           evidenceIds: ["observed-1"],
-          columns: { station: "Gauge", primary: "Stage", secondary: "Flow" },
-          stations: [station("gauge-c")],
+          columns: ["Department", "Spend"],
+          rows: [
+            {
+              id: "operations",
+              cells: ["Operations", "$152,850"],
+              evidenceIds: ["observed-1"],
+            },
+            {
+              id: "marketing",
+              cells: ["Marketing", "$48,200"],
+              evidenceIds: ["observed-1", "calculated-1"],
+            },
+          ],
         },
         {
           id: "ranking",
@@ -124,9 +113,9 @@ const SPEC_INPUT = {
           evidenceIds: ["observed-1"],
           series: [
             {
-              id: "stage",
-              label: "Stage",
-              unit: "ft",
+              id: "monthly-spend",
+              label: "Monthly spend",
+              unit: "USD",
               evidenceIds: ["observed-1"],
               points: [
                 { at: "2026-07-29T10:00:00.000Z", value: 1 },
@@ -142,10 +131,11 @@ const SPEC_INPUT = {
           evidenceIds: ["interpreted-1"],
           alerts: [
             {
-              id: "rising",
+              id: "over-budget",
               severity: "attention",
-              title: "Stage rising",
-              detail: "The gauge has risen for three consecutive readings.",
+              title: "Marketing over budget",
+              detail:
+                "Spend has exceeded the plan for three consecutive months.",
               evidenceIds: ["interpreted-1"],
             },
           ],
@@ -228,8 +218,8 @@ describe("extractSpecClaims", () => {
   it("addresses every assertion, and only assertions", () => {
     // The exact set, not a count: a walk that silently stops visiting a
     // component kind still passes a length check written against the old total.
-    // All seven kinds appear, because a mutation run reported four of them as
-    // never walked — a bug in the `ranking` branch would have shipped.
+    // All six kinds appear, so a branch that stops walking one of them fails
+    // here rather than shipping.
     expect(extractSpecClaims(spec).map((claim) => claim.pointer)).toEqual([
       "/nextAction",
       "/executiveBrief/known",
@@ -239,24 +229,23 @@ describe("extractSpecClaims", () => {
       "/pages/0/components/0/claims/1",
       "/pages/0/components/1/metrics/0",
       "/pages/0/components/1/metrics/1",
-      "/pages/1/components/0/stations/0",
-      "/pages/1/components/0/stations/1",
-      "/pages/1/components/1/stations/0",
-      "/pages/1/components/2/items/0",
-      "/pages/1/components/3/series/0",
-      "/pages/1/components/4/alerts/0",
+      "/pages/1/components/0/rows/0",
+      "/pages/1/components/0/rows/1",
+      "/pages/1/components/1/items/0",
+      "/pages/1/components/2/series/0",
+      "/pages/1/components/3/alerts/0",
     ]);
   });
 
   it("names each component kind's own item array in the pointer", () => {
-    // `stations`, `items`, `series`, `alerts` — the key has to match the array
-    // the item actually lives in, or the pointer addresses nothing in the
-    // stored bytes and the claim is unresolvable for as long as the row exists.
+    // `rows`, `items`, `series`, `alerts` — the key has to match the array the
+    // item actually lives in, or the pointer addresses nothing in the stored
+    // bytes and the claim is unresolvable for as long as the row exists.
     const pointers = extractSpecClaims(spec).map((claim) => claim.pointer);
     for (const key of [
       "claims",
       "metrics",
-      "stations",
+      "rows",
       "items",
       "series",
       "alerts",
@@ -292,6 +281,9 @@ describe("extractSpecClaims", () => {
     expect(claimAt("/pages/0/components/1/metrics/1").label).toBe(
       "recommendation",
     );
+    // A table row inherits from its own evidence, not the table's.
+    expect(claimAt("/pages/1/components/0/rows/0").label).toBe("observed");
+    expect(claimAt("/pages/1/components/0/rows/1").label).toBe("calculated");
   });
 
   it("marks the brief and the next action as the salient assertions", () => {

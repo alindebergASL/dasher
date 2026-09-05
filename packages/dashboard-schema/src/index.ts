@@ -36,14 +36,3 @@ export {
   type ClaimSalience,
   type SpecClaim,
 } from "./claims";
-export {
-  composeDashboards,
-  DashboardCompositionError,
-  MAX_COMPOSED_SOURCES,
-  isPresent,
-  type AbsentSource,
-  type ComposedSource,
-  type ComposedSources,
-  type ComposeOptions,
-  type CompositionMember,
-} from "./compose";

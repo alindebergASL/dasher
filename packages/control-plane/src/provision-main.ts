@@ -22,7 +22,8 @@ if (dsn === undefined || dsn.trim() === "") {
   try {
     const provisioned = await provisionPrincipal(pool, options);
     process.stdout.write(
-      `organization ${provisioned.organizationId}\n` +
+      `organization ${provisioned.organizationId}` +
+        `${provisioned.createdOrganization ? "" : " (existing)"}\n` +
         `user ${provisioned.userId}` +
         `${provisioned.reusedExistingUser ? " (existing identity reused)" : ""}\n` +
         `${provisioned.normalizedEmail} can now request a sign-in link\n`,

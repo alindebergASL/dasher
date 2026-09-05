@@ -50,7 +50,8 @@ export interface DevSeedOptions {
 }
 
 const TOKEN_BYTES = 32;
-const DEFAULT_IDLE_MINUTES = 30;
+/** Matches `dasher_private.session_idle_minutes()`. */
+const DEFAULT_IDLE_MINUTES = 60;
 const DEFAULT_ABSOLUTE_MINUTES = 12 * 60;
 
 /**

@@ -3,13 +3,10 @@ import { describe, expect, it } from "vitest";
 import { CSV_LIMITS, CsvRefused, columnIndexes, parseCsv } from "./csv";
 
 /**
- * A delimited file is the first genuinely untrusted input this product reads.
- *
- * Every source before it was a committed fixture or a response from a named API
- * with a hand-written parser. A file has an author, and the author's tools are
- * Excel, Numbers, a database export, and a text editor on three operating
- * systems. So these are written against what those actually emit and against
- * what a malformed one does, rather than against a well-formed example.
+ * A delimited file is untrusted input with an author, and the author's tools
+ * are Excel, Numbers, a database export, and a text editor on three operating
+ * systems. These are written against what those actually emit and against what
+ * a malformed one does, rather than against a well-formed example.
  */
 
 describe("the shapes real exporters produce", () => {
@@ -32,14 +29,10 @@ describe("the shapes real exporters produce", () => {
   });
 
   it("strips it before deciding whether the first header is quoted", () => {
-    // The case that makes the stripping do any work. Trimming the header
-    // already removes a leading mark, because U+FEFF is whitespace to `trim` —
-    // so the test above passes with the stripping removed entirely, and both
-    // mutants of that line survived it.
-    //
-    // A quoted first header is where it matters: with the mark still in front,
-    // the opening quote is no longer the first character of the cell, so it is
-    // read as a literal quote and the header keeps them.
+    // Trimming alone would remove a leading mark from an unquoted header, since
+    // U+FEFF is whitespace to `trim`. A quoted first header is where stripping
+    // matters: with the mark still in front, the opening quote is no longer the
+    // first character of the cell, so it is read as a literal quote.
     const table = parseCsv('﻿"line id","label"\n1,2\n');
 
     expect(table.headers).toStrictEqual(["line id", "label"]);
@@ -152,14 +145,8 @@ describe("what it refuses", () => {
   });
 
   /**
-   * Each limit at the value it states, which is the case a test written around
-   * a limit never reaches: "past the limit is refused" holds just as well when
-   * the limit is off by one, and every one of these four comparisons survived
-   * being weakened from `>` to `>=`.
-   *
-   * The row limit was the one that mattered. A file of exactly `maxRows` rows
-   * ending in the newline every editor writes was refused as having too many —
-   * at the shipping limit, every ten-thousand-row export.
+   * Each limit at the value it states: "past the limit is refused" holds just
+   * as well when the limit is off by one, so the boundary itself is checked.
    */
   describe("a file that sits exactly on a limit is inside it", () => {
     // Only the row limit is tight here; the others are out of the way so that
@@ -194,21 +181,10 @@ describe("what it refuses", () => {
   });
 
   /**
-   * THE DEFECT THIS SECTION EXISTS FOR, STATED AS IT WAS MEASURED.
-   *
-   * The row guard was rewritten to discount trailing blank records, so that a
-   * file of exactly `maxRows` rows ending in a newline stopped being refused.
-   * It made the guard blind to the one input that most needs bounding:
-   * `trailingBlanks` rises in lockstep with `records.length` across a RUN of
-   * blank records, so their difference never moves and the limit never trips.
-   *
-   * Measured against the shipping limits before the fix, a 4 MB file of
-   * newlines was ACCEPTED as zero rows after allocating 804 MB of heap and
-   * blocking the event loop for 1.9 seconds. It is reachable from an upload,
-   * which is a public endpoint.
-   *
-   * These cover it at a small limit, where the arithmetic is checkable, and the
-   * one below covers it at a size where the old code actually hurt.
+   * Trailing blank records are discounted from the row limit, which would leave
+   * a file that is nothing but newlines unbounded. It is reachable from an
+   * upload, so the memory bound is checked here at a small limit and below at
+   * a size where it matters.
    */
   describe("a file of blank lines is bounded like any other", () => {
     const at = { ...CSV_LIMITS, maxRows: 2 };

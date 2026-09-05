@@ -69,11 +69,11 @@ services:
     environment:
       DASHER_DATABASE_URL: ${DASHER_DATABASE_URL:?set in .env}
       DASHER_DEPLOYMENT_REVISION: ${DASHER_DEPLOYMENT_REVISION:?set in .env}
-      # `fixture` unless the live upstreams are deliberately turned on. A
-      # deployment that silently went live would be nondeterministic in a way
-      # that looks like flakiness, and would call an upstream on every request.
-      DASHER_SOURCE_MODE: ${DASHER_SOURCE_MODE:-fixture}
-      OPENAQ_API_KEY: ${OPENAQ_API_KEY:-}
+      # The planner is an explicit choice: `fake` or `anthropic`. No fallback.
+      DASHER_PLANNER: ${DASHER_PLANNER:-fake}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DASHER_PLANNER_MODEL: ${DASHER_PLANNER_MODEL:-claude-opus-5}
+      DASHER_PLANNER_DAILY_LIMIT: ${DASHER_PLANNER_DAILY_LIMIT:-500}
       # Sign-in. `--env-file` populates interpolation in THIS FILE; it does not
       # put anything into a container. Without these four named here the
       # application reads none of them, `mailer()` returns undefined, and every

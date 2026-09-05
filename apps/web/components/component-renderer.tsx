@@ -1,7 +1,6 @@
 "use client";
 
 import type { DashboardComponent } from "@dasher/dashboard-schema";
-import { useState } from "react";
 
 interface ComponentPartProps {
   component: DashboardComponent;
@@ -9,11 +8,7 @@ interface ComponentPartProps {
 }
 
 interface ComponentRendererProps extends ComponentPartProps {
-  /**
-   * Columns out of `LAYOUT_COLUMNS`, decided by the packer. The width used to
-   * be hardcoded here, one kind at a time, which is how five of seven ended up
-   * claiming the full row and the sixth was left stranded in a third of one.
-   */
+  /** Columns out of `LAYOUT_COLUMNS`, decided by the packer. */
   span: number;
 }
 
@@ -69,6 +64,25 @@ function ComponentHeader({ component, onEvidence }: ComponentPartProps) {
   );
 }
 
+/**
+ * The series' latest value, formatted the way every other figure on the page
+ * is. `toLocaleString()` printed "1,250 USD" beside a card reading "$1,250.00".
+ * A three-letter unit is a currency; anything else is a bare quantity.
+ */
+function latestPoint(
+  series: Extract<DashboardComponent, { kind: "trend-list" }>["series"][number],
+): string {
+  const value = series.points.at(-1)?.value;
+  if (value === undefined) return "";
+  const currency = /^[A-Z]{3}$/u.test(series.unit) ? series.unit : undefined;
+  const formatted = new Intl.NumberFormat("en-US", {
+    ...(currency === undefined ? {} : { style: "currency", currency }),
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+  return currency === undefined ? `${formatted} ${series.unit}` : formatted;
+}
+
 function MiniTrend({
   points,
 }: {
@@ -106,88 +120,6 @@ function MiniTrend({
         strokeLinejoin="round"
       />
     </svg>
-  );
-}
-
-function StationMap({
-  label,
-  stations,
-  onEvidence,
-}: {
-  label: string;
-  stations: Extract<DashboardComponent, { kind: "station-map" }>["stations"];
-  onEvidence: (ids: string[]) => void;
-}) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected =
-    stations.find((station) => station.id === selectedId) ?? null;
-  const latitudes = stations.map((station) => station.latitude);
-  const longitudes = stations.map((station) => station.longitude);
-  const minLat = Math.min(...latitudes);
-  const maxLat = Math.max(...latitudes);
-  const minLon = Math.min(...longitudes);
-  const maxLon = Math.max(...longitudes);
-  return (
-    <div className="map-stack">
-      <div className="map-panel" aria-label={label}>
-        <div className="map-river river-one" />
-        <div className="map-river river-two" />
-        <span className="map-city">Sacramento</span>
-        {stations.map((station) => {
-          const left =
-            12 + ((station.longitude - minLon) / (maxLon - minLon || 1)) * 76;
-          const top =
-            12 +
-            (1 - (station.latitude - minLat) / (maxLat - minLat || 1)) * 70;
-          const reading = `${station.primary.value ?? "missing"} ${station.primary.unit}`;
-          return (
-            <button
-              aria-label={`${station.name}, station ${station.id}: ${reading}, ${station.direction}`}
-              aria-pressed={selectedId === station.id}
-              className={`map-marker marker-${station.direction}${selectedId === station.id ? " selected" : ""}`}
-              key={station.id}
-              onClick={() => setSelectedId(station.id)}
-              style={{ left: `${left}%`, top: `${top}%` }}
-              title={`${station.name}: ${reading}, ${station.direction}`}
-              type="button"
-            >
-              <span className="sr-only">{station.name}</span>
-            </button>
-          );
-        })}
-        <div className="map-legend">
-          <span>
-            <i className="legend-dot rising" /> Rising
-          </span>
-          <span>
-            <i className="legend-dot falling" /> Falling
-          </span>
-          <span>
-            <i className="legend-dot steady" /> Steady
-          </span>
-        </div>
-      </div>
-      {selected ? (
-        <aside aria-live="polite" className="map-selection">
-          <strong>{selected.name}</strong>
-          <span>Station {selected.id}</span>
-          <span>
-            {selected.primary.value === null
-              ? "Reading missing"
-              : `${selected.primary.value.toLocaleString()} ${selected.primary.unit}`}{" "}
-            · {selected.direction}
-          </span>
-          <span>
-            {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}
-          </span>
-          <ItemEvidenceButton
-            ids={selected.evidenceIds}
-            label={`${selected.name} map reading`}
-            onEvidence={onEvidence}
-          />
-        </aside>
-      ) : null}
-    </div>
   );
 }
 
@@ -244,15 +176,42 @@ export function ComponentRenderer({
           </div>
         </section>
       );
-    case "station-map":
+    case "table":
       return (
         <section className="panel" data-span={span}>
           <ComponentHeader component={component} onEvidence={onEvidence} />
-          <StationMap
-            label={component.title}
-            onEvidence={onEvidence}
-            stations={component.stations}
-          />
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  {component.columns.map((column, index) => (
+                    <th key={`${component.id}:column:${index}`} scope="col">
+                      {column}
+                    </th>
+                  ))}
+                  <th className="table-evidence" scope="col">
+                    <span className="sr-only">Evidence</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {component.rows.map((row) => (
+                  <tr key={row.id}>
+                    {row.cells.map((cell, index) => (
+                      <td key={`${row.id}:${index}`}>{cell}</td>
+                    ))}
+                    <td className="table-evidence">
+                      <ItemEvidenceButton
+                        ids={row.evidenceIds}
+                        label={`${row.cells[0] || row.id} row`}
+                        onEvidence={onEvidence}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       );
     case "ranking":
@@ -305,62 +264,6 @@ export function ComponentRenderer({
           </div>
         </section>
       );
-    case "station-table":
-      return (
-        <section className="panel" data-span={span}>
-          <ComponentHeader component={component} onEvidence={onEvidence} />
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>{component.columns.station}</th>
-                  <th>{component.columns.primary}</th>
-                  <th>{component.columns.secondary}</th>
-                  <th>Direction</th>
-                  <th>Data</th>
-                </tr>
-              </thead>
-              <tbody>
-                {component.stations.map((station) => (
-                  <tr key={station.id}>
-                    <td>
-                      <strong>{station.group}</strong>
-                      <small>{station.id}</small>
-                      <ItemEvidenceButton
-                        ids={station.evidenceIds}
-                        label={`${station.name} row`}
-                        onEvidence={onEvidence}
-                      />
-                    </td>
-                    <td>
-                      {station.primary.value === null
-                        ? "Missing"
-                        : `${station.primary.value.toLocaleString()} ${station.primary.unit}`}
-                    </td>
-                    <td>
-                      {station.secondary.value === null
-                        ? "Missing"
-                        : `${station.secondary.value.toLocaleString()} ${station.secondary.unit}`}
-                    </td>
-                    <td>
-                      <span className={`status status-${station.direction}`}>
-                        {station.direction}
-                      </span>
-                    </td>
-                    <td>
-                      <span
-                        className={`freshness freshness-${station.freshness}`}
-                      >
-                        {station.freshness}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      );
     case "trend-list":
       return (
         <section className="panel" data-span={span}>
@@ -370,9 +273,7 @@ export function ComponentRenderer({
               <article className="trend-card" key={series.id}>
                 <div>
                   <strong>{series.label}</strong>
-                  <span>
-                    {series.points.at(-1)?.value.toLocaleString()} {series.unit}
-                  </span>
+                  <span>{latestPoint(series)}</span>
                   <ItemEvidenceButton
                     ids={series.evidenceIds}
                     label={`${series.label} trend`}

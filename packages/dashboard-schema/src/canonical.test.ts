@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { canonicalSpecBytes } from "./canonical";
+import type { DashboardSpec } from "./schema";
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
-import type { DashboardSpec } from "./schema";
 
 /**
  * The property that matters is not the exact bytes, which are an implementation
@@ -13,8 +13,8 @@ import type { DashboardSpec } from "./schema";
  */
 describe("canonicalSpecBytes", () => {
   const base = {
-    schemaVersion: "1.1",
-    title: "Sacramento",
+    schemaVersion: "1.2",
+    title: "Quarterly spend",
     pages: [{ id: "a", title: "A", components: [] }],
   } as unknown as DashboardSpec;
 
@@ -23,8 +23,8 @@ describe("canonicalSpecBytes", () => {
     // spread from a parsed object, equal in every value.
     const reordered = {
       pages: [{ components: [], title: "A", id: "a" }],
-      title: "Sacramento",
-      schemaVersion: "1.1",
+      title: "Quarterly spend",
+      schemaVersion: "1.2",
     } as unknown as DashboardSpec;
 
     expect(

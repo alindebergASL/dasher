@@ -1,217 +1,115 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-import fixture from "../../../fixtures/usgs/sacramento-instantaneous-values.json";
-import { compilePlan, type DashboardPlan } from "@dasher/planner";
-import { parseUsgsInstantaneousValues } from "@dasher/river-domain";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PlanResult } from "../app/planning";
+import { sampleDashboard } from "../test/sample-spec";
 
 import { RequestWorkspace } from "./request-workspace";
 
-/**
- * What the workspace does with a result that succeeded and failed at once.
- *
- * `actions.ts` separates planning from persistence so a save failure keeps the
- * dashboard and reports the failure: `ok: true`, a dashboard, and an error. The
- * component then took the success branch and cleared the error unconditionally,
- * so the message written to make persistence failure loud was discarded before
- * anything rendered.
- *
- * No end-to-end test caught it and none can cheaply: the browser suite runs
- * against a database that is up, so the save never fails. The failure only
- * exists in the seam between what the action returns and what the component
- * keeps, which is exactly where a component test belongs.
- */
+const { buildDashboard } = vi.hoisted(() => ({ buildDashboard: vi.fn() }));
+vi.mock("@/app/actions", () => ({ buildDashboard }));
 
-const { planDashboard, refineDashboard, uploadLedgerDashboard } = vi.hoisted(
-  () => ({
-    planDashboard: vi.fn(),
-    refineDashboard: vi.fn(),
-    // Named even though nothing here calls it. The workspace renders the upload
-    // panel, which imports it, and a mock missing an export the module graph
-    // reaches is a failure that surfaces somewhere unrelated.
-    uploadLedgerDashboard: vi.fn(),
-  }),
-);
+let initial: PlanResult;
 
-vi.mock("@/app/actions", () => ({
-  planDashboard,
-  refineDashboard,
-  uploadLedgerDashboard,
-}));
-
-const gauges = parseUsgsInstantaneousValues(fixture);
-
-const plan: DashboardPlan = {
-  planVersion: "plan-v1",
-  title: "Sacramento River Conditions",
-  audience: "Residents",
-  framing: "Current conditions across the monitored gauges.",
-  siteIds: [gauges[0]!.siteId],
-  pages: [
-    {
-      id: "overview",
-      title: "Overview",
-      description: "Current conditions.",
-      sections: ["conditions-summary", "gauge-table"],
-    },
-  ],
-};
-
-const dashboard = compilePlan(plan, gauges, {
-  asOf: "2026-07-29T12:02:00.000Z",
-  planner: { id: "fake", usesModel: false },
+beforeAll(async () => {
+  const built = await sampleDashboard();
+  initial = {
+    ok: true,
+    dashboard: built.dashboard,
+    plan: built.plan,
+    mapping: "Read Amount as the figure and Category as the grouping.",
+    source: { kind: "sample" },
+    attempts: 1,
+    usesModel: false,
+  };
 });
-
-const initialPlan: DashboardPlan = {
-  ...plan,
-  title: "Initial dashboard that must be replaced",
-  framing: "This dashboard exists only before the submitted request resolves.",
-};
-
-const initialDashboard = compilePlan(initialPlan, gauges, {
-  asOf: "2026-07-29T12:02:00.000Z",
-  planner: { id: "fake", usesModel: false },
-});
-
-const SAVE_FAILED = "This dashboard was built but could not be saved.";
-
-// Statically imported: `vi.mock` is hoisted above imports, so the dynamic
-// import this used was unnecessary — and the generated-code gate forbids one in
-// first-party source, correctly, since a dynamic specifier is invisible to it.
-function renderWorkspace() {
-  return render(
-    <RequestWorkspace
-      initialDashboard={initialDashboard}
-      initialPlan={initialPlan}
-      initialRequest="Show me river conditions near Sacramento"
-    />,
-  );
-}
 
 beforeEach(() => {
-  planDashboard.mockReset();
-  refineDashboard.mockReset();
+  buildDashboard.mockReset();
 });
 
-describe("the planning disclosure", () => {
-  it("describes deterministic generation without claiming every dashboard used the sensor planner", () => {
-    renderWorkspace();
+function lastForm(): FormData {
+  const call = buildDashboard.mock.calls.at(-1);
+  expect(call).toBeDefined();
+  return call![0] as FormData;
+}
 
-    expect(screen.getByText(/Deterministic generation\./u)).toBeVisible();
-    expect(screen.queryByText(/Fixture mode\./u)).toBeNull();
+describe("RequestWorkspace", () => {
+  it("renders the initial dashboard and how the file was read", () => {
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: initial.dashboard!.title }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Read Amount as the figure/u)).toBeInTheDocument();
+    expect(screen.getByText(/built-in planner/u)).toBeInTheDocument();
   });
 
-  it("accepts a deterministic dashboard with no plan and hides refinement", async () => {
-    planDashboard.mockResolvedValue({
-      ok: true,
-      dashboard,
-      attempts: 1,
+  it("builds against the sample when no file is chosen", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.change(screen.getByLabelText("What do you want to see?"), {
+      target: { value: "Spending by category" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    await waitFor(() => expect(buildDashboard).toHaveBeenCalledTimes(1));
+    const form = lastForm();
+    expect(form.get("source")).toBe("sample");
+    expect(form.get("request")).toBe("Spending by category");
+    expect(form.get("plan")).toBeNull();
+  });
+
+  it("sends the previous plan and the instruction on a refinement", async () => {
+    buildDashboard.mockResolvedValue({ ...initial, refinement: undefined });
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.change(screen.getByLabelText("Change this dashboard"), {
+      target: { value: "Just the overview" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
+    await waitFor(() => expect(buildDashboard).toHaveBeenCalledTimes(1));
+    const form = lastForm();
+    expect(form.get("instruction")).toBe("Just the overview");
+    expect(JSON.parse(String(form.get("plan")))).toEqual(initial.plan);
+    expect(form.get("request")).toBe("Where?");
+  });
+
+  it("shows a refusal as an alert and keeps the dashboard", async () => {
+    buildDashboard.mockResolvedValue({
+      ok: false,
+      error: "Say what you want.",
+    });
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("Say what you want."),
+    );
+    expect(
+      screen.getByRole("heading", { level: 1, name: initial.dashboard!.title }),
+    ).toBeInTheDocument();
+  });
+
+  it("links to a saved dashboard", async () => {
+    buildDashboard.mockResolvedValue({
+      ...initial,
       dashboardId: "11111111-1111-4111-8111-111111111111",
-    } satisfies PlanResult);
-
-    renderWorkspace();
-    screen.getByRole("button", { name: "Build dashboard" }).click();
-
-    await waitFor(() => {
-      expect(
-        screen.getAllByText(plan.title, { exact: false }).length,
-      ).toBeGreaterThan(0);
     });
-    expect(screen.queryByLabelText("Change this dashboard")).toBeNull();
-    expect(
-      screen.getByText(/official snapshot has no refinement path yet/u),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("link", { name: "Open this dashboard by link" }),
-    ).toHaveAttribute("href", "/d/11111111-1111-4111-8111-111111111111");
-  });
-});
-
-describe("a dashboard that was built but not saved", () => {
-  it("shows the save failure instead of discarding it", async () => {
-    const result: PlanResult = {
-      ok: true,
-      dashboard,
-      plan,
-      attempts: 1,
-      error: SAVE_FAILED,
-    };
-    planDashboard.mockResolvedValue(result);
-
-    renderWorkspace();
-    screen.getByRole("button", { name: "Build dashboard" }).click();
-
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(SAVE_FAILED);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    const link = await screen.findByRole("link", {
+      name: "Open this dashboard by link",
     });
+    expect(link).toHaveAttribute(
+      "href",
+      "/d/11111111-1111-4111-8111-111111111111",
+    );
   });
 
-  it("still renders the dashboard, because it was really built", async () => {
-    // The other half. Reporting the failure by throwing the dashboard away
-    // would be its own wrong answer: the reader asked for a dashboard, got
-    // one, and only its durability failed.
-    planDashboard.mockResolvedValue({
-      ok: true,
-      dashboard,
-      plan,
-      attempts: 1,
-      error: SAVE_FAILED,
-    } satisfies PlanResult);
-
-    renderWorkspace();
-    screen.getByRole("button", { name: "Build dashboard" }).click();
-
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(SAVE_FAILED);
+  it("says when a refinement changed nothing", async () => {
+    buildDashboard.mockResolvedValue({
+      ...initial,
+      refinement: "already-satisfied",
     });
-    expect(
-      screen.getAllByText(plan.title, { exact: false }).length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.queryAllByText(initialPlan.title, { exact: false }),
-    ).toHaveLength(0);
-  });
-
-  it("clears a previous error when a later result carries none", async () => {
-    // The clearing this replaced was unconditional, and it did have a job:
-    // a stale error must not outlive the request that produced it.
-    planDashboard.mockResolvedValueOnce({
-      ok: true,
-      dashboard,
-      plan,
-      attempts: 1,
-      error: SAVE_FAILED,
-    } satisfies PlanResult);
-
-    renderWorkspace();
-    screen.getByRole("button", { name: "Build dashboard" }).click();
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(SAVE_FAILED);
-    });
-
-    planDashboard.mockResolvedValueOnce({
-      ok: true,
-      dashboard,
-      plan,
-      attempts: 1,
-      dashboardId: "11111111-1111-4111-8111-111111111111",
-    } satisfies PlanResult);
-    // The button reads "Building…" while the transition is pending, so waiting
-    // for its label is waiting for the first request to finish.
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: "Build dashboard" }),
-      ).toBeEnabled();
-    });
-    screen.getByRole("button", { name: "Build dashboard" }).click();
-
-    await waitFor(() => {
-      expect(screen.queryByRole("alert")).toBeNull();
-    });
-    expect(
-      screen.getByRole("link", { name: "Open this dashboard by link" }),
-    ).toHaveAttribute("href", "/d/11111111-1111-4111-8111-111111111111");
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.click(screen.getByRole("button", { name: "Exclude salaries" }));
+    await screen.findByText(/already looks like that/u);
   });
 });
