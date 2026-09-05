@@ -216,6 +216,23 @@ describe("a wide file with one column per period", () => {
     expect(latest).toEqual(["1.25", "2.5"]);
   });
 
+  it("uses comma evidence to interpret otherwise ambiguous grouped values", () => {
+    const table = readTable(
+      [
+        "Category;2026-01;2026-02;2026-03",
+        "A;1.250;3,50;5,75",
+        "B;2.500;4,50;6,25",
+      ].join("\n"),
+    );
+    const amount = table.columns.find((column) => column.name === "amount");
+    const first = table.rows
+      .filter((row) => row[1] === "2026-01")
+      .map((row) => parseAmount(row[2] ?? "", { decimal: amount?.decimal }));
+
+    expect(amount).toMatchObject({ type: "number", decimal: "comma" });
+    expect(first).toEqual(["1250", "2500"]);
+  });
+
   it("refuses conflicting decimal conventions across wide periods", () => {
     expect(() =>
       readTable(
@@ -235,6 +252,18 @@ describe("a wide file with one column per period", () => {
           "Category;2026-01;2026-02;2026-03",
           "A;$100.00;€120.00;€130.00",
           "B;$200.00;€220.00;€230.00",
+        ].join("\n"),
+      ),
+    ).toThrow(/mixed_numeric_convention.*conflicting currencies/iu);
+  });
+
+  it("refuses mixed currencies even when each period starts with the same one", () => {
+    expect(() =>
+      readTable(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;$100.00;$120.00;$130.00",
+          "B;€200.00;€220.00;€230.00",
         ].join("\n"),
       ),
     ).toThrow(/mixed_numeric_convention.*conflicting currencies/iu);

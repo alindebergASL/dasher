@@ -3,7 +3,11 @@
  */
 
 import { profileColumn, type ProfileOptions } from "./infer";
-import { parsePeriodHeader } from "./parse-values";
+import {
+  decimalConventionEvidence,
+  detectCurrency,
+  parsePeriodHeader,
+} from "./parse-values";
 import type { ColumnProfile, Grain, Table } from "./table";
 
 const BUDGET_NAME = /budget/iu;
@@ -120,19 +124,17 @@ function amountColumnProfile(
   periods: readonly PeriodColumn[],
   rows: Table["rows"],
 ): ColumnProfile {
-  const decimals = new Set(
-    periods.flatMap(({ column }) =>
-      column.decimal === undefined ||
-      !rows.some((row) => /[.,]/u.test(row[column.index] ?? ""))
-        ? []
-        : [column.decimal],
-    ),
-  );
-  const currencies = new Set(
-    periods.flatMap(({ column }) =>
-      column.currency === undefined ? [] : [column.currency],
-    ),
-  );
+  const decimals = new Set<NonNullable<ColumnProfile["decimal"]>>();
+  const currencies = new Set<string>();
+  for (const { column } of periods) {
+    for (const row of rows) {
+      const value = row[column.index] ?? "";
+      const decimal = decimalConventionEvidence(value);
+      const currency = detectCurrency(value);
+      if (decimal !== undefined) decimals.add(decimal);
+      if (currency !== undefined) currencies.add(currency);
+    }
+  }
   if (decimals.size > 1) {
     throw new WideTableRefused(
       "period columns use conflicting decimal conventions and cannot be combined safely",
