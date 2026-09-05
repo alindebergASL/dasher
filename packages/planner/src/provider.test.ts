@@ -137,6 +137,7 @@ describe("FakePlanningProvider request phrases", () => {
       "Show profit variance without cash-flow analysis",
       "Do not show inflows and outflows; show the signed total",
       "Do not interpret this profit variance report as a cash flow analysis; show signed totals by category",
+      "Do not use profit instead of cash flow",
     ]) {
       expect((await planFor(transactionsTable(), phrase)).flow).toBeUndefined();
     }
@@ -146,6 +147,14 @@ describe("FakePlanningProvider request phrases", () => {
         await planFor(
           transactionsTable(),
           "Do not show profit variance, but show cash flow by category",
+        )
+      ).flow,
+    ).toEqual({ operation: "gross-net" });
+    expect(
+      (
+        await planFor(
+          transactionsTable(),
+          "Do not show profit; instead show cash flow by category",
         )
       ).flow,
     ).toEqual({ operation: "gross-net" });

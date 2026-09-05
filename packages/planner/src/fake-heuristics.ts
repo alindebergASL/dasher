@@ -412,11 +412,11 @@ function asksForDirectionalFlow(text: string): boolean {
       before.lastIndexOf("?"),
     );
     const clausePrefix = before.slice(clauseStart + 1);
-    const contrast = /\b(?:but|instead)\b(?!.*\b(?:but|instead)\b)/iu.exec(
-      clausePrefix,
-    );
+    const contrast = [
+      ...clausePrefix.matchAll(/\b(?:but|instead(?!\s+of\b))\b/giu),
+    ].at(-1);
     const relevantPrefix =
-      contrast === null
+      contrast === undefined
         ? clausePrefix
         : clausePrefix.slice(contrast.index + contrast[0].length);
     if (
