@@ -124,7 +124,9 @@ describe("stage 1 request workspace interpretation strip", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /build dashboard/iu }));
+    const build = screen.getByRole("button", { name: /build dashboard/iu });
+    fireEvent.submit(build.closest("form")!);
+    await waitFor(() => expect(buildDashboard).toHaveBeenCalledTimes(1));
 
     await waitFor(() =>
       expect(

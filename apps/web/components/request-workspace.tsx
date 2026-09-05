@@ -181,7 +181,7 @@ export function RequestWorkspace({
               ? ""
               : `Dashboard updated for ${activeRequest}. Review the dataset interpretation before acting.`}
         </span>
-        <p className="request-note" role="status">
+        <p aria-label="Planning status" className="request-note" role="status">
           {result.usesModel
             ? "A planning model chose the layout from safe column metadata, never source values or totals."
             : "The built-in planner chose the layout."}{" "}

@@ -19,9 +19,9 @@ test.describe("the sample dashboard", () => {
     await expect(
       page.getByRole("button", { name: /architecture/i }).first(),
     ).toBeVisible();
-    await expect(page.getByRole("status").first()).toContainText(
-      /computed from the dataset/i,
-    );
+    await expect(
+      page.getByRole("status", { name: "Planning status" }),
+    ).toContainText(/computed from the dataset/i);
   });
 
   test("builds a different dashboard for a different request", async ({
