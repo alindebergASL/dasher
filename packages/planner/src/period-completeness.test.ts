@@ -1,4 +1,4 @@
-import { profileTable, type Table } from "@dasher/workbook";
+import { profileTable, readTable, type Table } from "@dasher/workbook";
 import { describe, expect, it } from "vitest";
 
 import { compileTablePlan, type CompileOptions } from "./compile";
@@ -495,6 +495,41 @@ describe("period completeness safety", () => {
       comparisonDisposition: "unavailable-no-prior",
       reason: "There is no period column in this dataset.",
     });
+  });
+
+  it("refuses a latest period with unreadable amount support instead of fabricating zero", () => {
+    const source = table([
+      ["2026-01-01", "A", "100"],
+      ["2026-02-01", "A", "120"],
+      ["2026-03-01", "A", "not-an-amount"],
+    ]);
+    const facts = computeFacts(plan("month"), source);
+
+    expect(facts.latestPeriod).toBe("2026-03");
+    expect(facts.latestAmountComplete).toBe(false);
+    expect(() =>
+      compileTablePlan(plan("month"), source, options(source)),
+    ).toThrow(
+      /Mar 2026 contains one or more unreadable Amount values.*no total/iu,
+    );
+  });
+
+  it("refuses a blank newest period from a canonicalized wide table", () => {
+    const source = readTable(
+      ["Category,2026-01,2026-02,2026-03", "A,100,120,"].join("\n"),
+    );
+    const widePlan: TablePlan = {
+      ...plan("month"),
+      roles: { amount: "amount", period: "period", category: "Category" },
+    };
+    const facts = computeFacts(widePlan, source);
+
+    expect(source.unpivoted).toBeDefined();
+    expect(facts.latestPeriod).toBe("2026-03");
+    expect(facts.latestAmountComplete).toBe(false);
+    expect(() => compileTablePlan(widePlan, source, options(source))).toThrow(
+      /Mar 2026 contains one or more unreadable amount values.*no total/iu,
+    );
   });
 
   it("derives identical coverage evidence with or without a planning model", async () => {

@@ -98,6 +98,8 @@ export interface TableFacts {
   readonly periods: readonly string[];
   readonly latestPeriod?: string;
   readonly previousPeriod?: string;
+  /** False when the latest named period has any unreadable amount cells. */
+  readonly latestAmountComplete: boolean;
   readonly periodCoverage: PeriodCoverage;
   readonly totalsByPeriod: ReadonlyMap<string, Exact>;
   readonly comparisonTotalsByPeriod: ReadonlyMap<string, Exact>;
@@ -443,6 +445,8 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
 
   const latestPeriod = periods.at(-1);
   const previousPeriod = periods.length >= 2 ? periods.at(-2) : undefined;
+  const latestAmountComplete =
+    latestPeriod === undefined || !unreadableAmountPeriods.has(latestPeriod);
   const periodCoverage = analyzePeriodCoverage(
     grain,
     periods,
@@ -690,6 +694,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     periods,
     ...(latestPeriod === undefined ? {} : { latestPeriod }),
     ...(previousPeriod === undefined ? {} : { previousPeriod }),
+    latestAmountComplete,
     periodCoverage,
     totalsByPeriod,
     comparisonTotalsByPeriod,

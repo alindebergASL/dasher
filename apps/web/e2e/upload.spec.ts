@@ -162,6 +162,36 @@ test.describe("uploading a spreadsheet", () => {
     ).toBe(true);
   });
 
+  test("an unreadable latest-period amount is refused instead of shown as zero", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "unreadable-latest.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Category,Amount",
+          "2026-01-01,A,100",
+          "2026-02-01,A,120",
+          "2026-03-01,A,130",
+          "2026-04-01,A,140",
+          "2026-05-01,A,150",
+          "2026-06-01,A,not-an-amount",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Show amount over time");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(page.locator(".request-error")).toContainText(
+      /Jun 2026 contains one or more unreadable Amount values.*no total/iu,
+    );
+    await expect(page.getByText("0 total for Jun 2026")).toHaveCount(0);
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {

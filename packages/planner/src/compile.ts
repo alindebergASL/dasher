@@ -862,6 +862,19 @@ export function compileTablePlan(
       },
     ]);
   }
+  if (!facts.latestAmountComplete) {
+    const latest =
+      facts.latestPeriod === undefined
+        ? "The latest period"
+        : periodLabel(facts.latestPeriod);
+    throw new PlanRejected([
+      {
+        code: "empty_after_filters",
+        path: "roles.amount",
+        message: `${latest} contains one or more unreadable ${plan.roles.amount} values, so no total or dependent finding was produced. Fix or remove those values and rebuild.`,
+      },
+    ]);
+  }
   const money = moneyFormat(plan, table, facts);
   const items = evidence(plan, table, facts, options);
   const evidenceIds = items.map((item) => item.id);
