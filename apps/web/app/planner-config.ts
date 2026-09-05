@@ -2,16 +2,19 @@ import "server-only";
 
 import {
   AnthropicPlanningProvider,
+  DEFAULT_OPENROUTER_MODEL,
   FakePlanningProvider,
+  OpenRouterPlanningProvider,
   PlanRejected,
+  type OpenRouterReasoningEffort,
   type PlanningProvider,
   type PlanningRequest,
 } from "@dasher/planner";
 
 /**
  * The planner is an explicit choice, never a fallback. `DASHER_PLANNER=fake`
- * (the default) is deterministic and what CI runs. `anthropic` requires a key
- * and fails at first use without one.
+ * (the default) is deterministic and what CI runs. `anthropic` and `openrouter`
+ * each require their own named credential and fail closed when it is absent.
  */
 
 export const DEFAULT_MODEL = "claude-opus-5";
@@ -57,17 +60,7 @@ export function plannerFromEnv(
 ): PlanningProvider {
   const choice = (env["DASHER_PLANNER"] ?? "fake").trim().toLowerCase();
   if (choice === "fake" || choice === "") return new FakePlanningProvider();
-  if (choice !== "anthropic") {
-    throw new Error(
-      `DASHER_PLANNER must be "fake" or "anthropic", not "${choice}".`,
-    );
-  }
-  const apiKey = env["ANTHROPIC_API_KEY"]?.trim() ?? "";
-  if (apiKey === "") {
-    throw new Error(
-      "DASHER_PLANNER=anthropic requires ANTHROPIC_API_KEY. There is no fallback planner.",
-    );
-  }
+
   const limitText = env["DASHER_PLANNER_DAILY_LIMIT"]?.trim();
   const limit =
     limitText === undefined || limitText === ""
@@ -76,13 +69,51 @@ export function plannerFromEnv(
   if (!Number.isInteger(limit) || limit < 1) {
     throw new Error("DASHER_PLANNER_DAILY_LIMIT must be a positive integer.");
   }
-  return new DailyLimitedProvider(
-    new AnthropicPlanningProvider({
+
+  let provider: PlanningProvider;
+  if (choice === "anthropic") {
+    const apiKey = env["ANTHROPIC_API_KEY"]?.trim() ?? "";
+    if (apiKey === "") {
+      throw new Error(
+        "DASHER_PLANNER=anthropic requires ANTHROPIC_API_KEY. There is no fallback planner.",
+      );
+    }
+    provider = new AnthropicPlanningProvider({
       apiKey,
       model: env["DASHER_PLANNER_MODEL"]?.trim() || DEFAULT_MODEL,
-    }),
-    limit,
-  );
+    });
+  } else if (choice === "openrouter") {
+    const apiKey = env["OPENROUTER_API_KEY"]?.trim() ?? "";
+    if (apiKey === "") {
+      throw new Error(
+        "DASHER_PLANNER=openrouter requires OPENROUTER_API_KEY. There is no fallback planner.",
+      );
+    }
+    const effortText =
+      env["DASHER_PLANNER_REASONING_EFFORT"]?.trim().toLowerCase() ?? "low";
+    if (!isReasoningEffort(effortText)) {
+      throw new Error(
+        'DASHER_PLANNER_REASONING_EFFORT must be "low", "medium", or "high".',
+      );
+    }
+    provider = new OpenRouterPlanningProvider({
+      apiKey,
+      model: env["DASHER_PLANNER_MODEL"]?.trim() || DEFAULT_OPENROUTER_MODEL,
+      reasoningEffort: effortText,
+      siteUrl: env["DASHER_PUBLIC_ORIGIN"],
+      appName: "Dasher",
+    });
+  } else {
+    throw new Error(
+      `DASHER_PLANNER must be "fake", "anthropic", or "openrouter", not "${choice}".`,
+    );
+  }
+
+  return new DailyLimitedProvider(provider, limit);
+}
+
+function isReasoningEffort(value: string): value is OpenRouterReasoningEffort {
+  return value === "low" || value === "medium" || value === "high";
 }
 
 const PLANNER_KEY = Symbol.for("dasher.web.planner");

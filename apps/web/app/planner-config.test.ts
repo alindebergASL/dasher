@@ -29,7 +29,7 @@ describe("plannerFromEnv", () => {
 
   it("refuses an unknown planner name", () => {
     expect(() => plannerFromEnv({ DASHER_PLANNER: "openai" })).toThrow(
-      /fake.*anthropic/u,
+      /fake.*anthropic.*openrouter/u,
     );
   });
 
@@ -41,6 +41,32 @@ describe("plannerFromEnv", () => {
     });
     expect(provider.usesModel).toBe(true);
     expect(provider.id).toContain("claude-opus-5");
+  });
+
+  it("refuses OpenRouter without its own key rather than falling back", () => {
+    expect(() => plannerFromEnv({ DASHER_PLANNER: "openrouter" })).toThrow(
+      /OPENROUTER_API_KEY/u,
+    );
+  });
+
+  it("builds an honestly named OpenRouter planner with secure defaults", () => {
+    const provider = plannerFromEnv({
+      DASHER_PLANNER: "openrouter",
+      OPENROUTER_API_KEY: "sk-or-test",
+      DASHER_PUBLIC_ORIGIN: "https://luckbutton.com",
+    });
+    expect(provider.usesModel).toBe(true);
+    expect(provider.id).toBe("openrouter:z-ai/glm-5.3");
+  });
+
+  it("rejects an unsupported OpenRouter reasoning effort", () => {
+    expect(() =>
+      plannerFromEnv({
+        DASHER_PLANNER: "openrouter",
+        OPENROUTER_API_KEY: "sk-or-test",
+        DASHER_PLANNER_REASONING_EFFORT: "maximum",
+      }),
+    ).toThrow(/low.*medium.*high/u);
   });
 });
 

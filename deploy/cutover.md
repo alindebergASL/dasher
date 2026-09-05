@@ -61,6 +61,13 @@ test on: the value is what signed-in readers are redirected to, and a host-local
 origin baked in here is how a deployment ends up sending people to an address
 that does not resolve.
 
+For the model path, set `DASHER_PLANNER=openrouter`, provide
+`OPENROUTER_API_KEY`, and name the exact model. For mail through the instance
+role, set `DASHER_MAIL_TRANSPORT=ses`, `DASHER_MAIL_FROM`, and `AWS_REGION`.
+Verify OpenRouter authentication, the SES identity/account state, and the S3
+bucket/instance-profile attachment before starting containers; a syntactically
+complete `.env` is not proof that any of those external dependencies accepts it.
+
 ```sh
 set -a && . deploy/.env && set +a
 ```

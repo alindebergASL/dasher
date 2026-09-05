@@ -209,6 +209,12 @@ follow the link. If no mail transport is configured the page says sign-in is
 unavailable rather than accepting the address and doing nothing — the one
 sentence this product must not say falsely is "a link is on its way".
 
+`DASHER_MAIL_TRANSPORT=ses` uses the AWS SDK credential chain and therefore the
+EC2 instance role. It requires `DASHER_MAIL_FROM` and `AWS_REGION`, but no mail
+key in `.env`. SES must have a verified sender identity; while the account is in
+the SES sandbox, the recipient must be verified too. `resend` remains available
+with `DASHER_RESEND_API_KEY` for deployments that choose it explicitly.
+
 Two things to know when it does not arrive. The page says the same sentence for
 an address it will not mail as for one it will, on purpose, so that submitting
 an address is not a way to ask whether it has an account here — which means "no
@@ -229,6 +235,10 @@ evidence that live dashboards are still citing.
 Give the instance an IAM role rather than putting keys in `deploy/.env`. The
 backup container reads every row, so a key there is a key to the whole
 database.
+
+When SES is the chosen mail transport, the same role also needs `ses:SendEmail`
+on the verified sender identity in the deployment region. `SendRawEmail` is not
+used by Dasher and should not be granted.
 
 The role needs three actions, not one. `s3:PutObject` on the prefix is what
 writing a dump takes, and it used to be all this section named — but the

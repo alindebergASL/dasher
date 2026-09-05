@@ -17,6 +17,11 @@
  * that answer comes from.
  */
 
+import {
+  SendEmailCommand,
+  SESv2Client,
+  type SendEmailCommandInput,
+} from "@aws-sdk/client-sesv2";
 import { SIGN_IN_LINK_MINUTES } from "@dasher/control-plane";
 
 export type MailerErrorCode =
@@ -34,8 +39,12 @@ export class MailerError extends Error {
 
 export interface SignInMailer {
   /** The transport's name, for a startup log line that carries no secret. */
-  readonly transport: "resend" | "log";
+  readonly transport: "resend" | "ses" | "log";
   sendSignInLink(recipient: string, link: string): Promise<void>;
+}
+
+export interface SesMailClient {
+  send(command: SendEmailCommand): Promise<unknown>;
 }
 
 /**
@@ -138,6 +147,35 @@ function resendMailer(apiKey: string, from: string): SignInMailer {
   };
 }
 
+/**
+ * SES through the AWS credential chain. On EC2 this means the instance role;
+ * no long-lived mail credential belongs in `deploy/.env`.
+ */
+export function sesMailer(client: SesMailClient, from: string): SignInMailer {
+  return {
+    transport: "ses",
+    async sendSignInLink(recipient, link) {
+      const message = signInEmail(link);
+      const input: SendEmailCommandInput = {
+        FromEmailAddress: from,
+        Destination: { ToAddresses: [recipient] },
+        Content: {
+          Simple: {
+            Subject: { Data: message.subject, Charset: "UTF-8" },
+            Body: { Text: { Data: message.text, Charset: "UTF-8" } },
+          },
+        },
+      };
+      try {
+        await client.send(new SendEmailCommand(input));
+      } catch {
+        // No provider body, address, or link in the error crossing this seam.
+        throw new MailerError("delivery_failed", "SES delivery failed");
+      }
+    },
+  };
+}
+
 function logMailer(): SignInMailer {
   return {
     transport: "log",
@@ -156,10 +194,30 @@ function logMailer(): SignInMailer {
  * rather than silently insecure. The caller renders that as its own state.
  */
 export function mailer(): SignInMailer | undefined {
-  if (process.env["DASHER_MAIL_TRANSPORT"] === "log") return logMailer();
+  const choice = process.env["DASHER_MAIL_TRANSPORT"]?.trim();
+  if (choice === "log") return logMailer();
+
+  const from = process.env["DASHER_MAIL_FROM"];
+  if (choice === "ses") {
+    const region = process.env["AWS_REGION"]?.trim();
+    if (
+      from === undefined ||
+      from.trim() === "" ||
+      region === undefined ||
+      region === ""
+    ) {
+      return undefined;
+    }
+    return sesMailer(new SESv2Client({ region }), from);
+  }
+
+  // Preserve the established Resend configuration when the transport is unset;
+  // any other named transport fails closed rather than guessing.
+  if (choice !== undefined && choice !== "" && choice !== "resend") {
+    return undefined;
+  }
 
   const apiKey = process.env["DASHER_RESEND_API_KEY"];
-  const from = process.env["DASHER_MAIL_FROM"];
   if (
     apiKey === undefined ||
     apiKey.trim() === "" ||

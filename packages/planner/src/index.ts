@@ -52,3 +52,11 @@ export {
   type AnthropicPlanningProviderOptions,
   type PlanningClient,
 } from "./anthropic";
+export {
+  DEFAULT_OPENROUTER_BASE_URL,
+  DEFAULT_OPENROUTER_MODEL,
+  OpenRouterPlanningError,
+  OpenRouterPlanningProvider,
+  type OpenRouterPlanningProviderOptions,
+  type OpenRouterReasoningEffort,
+} from "./openrouter";
