@@ -78,7 +78,7 @@ services:
       DASHER_PLANNER_REASONING_EFFORT: ${DASHER_PLANNER_REASONING_EFFORT:-low}
       DASHER_PLANNER_DAILY_LIMIT: ${DASHER_PLANNER_DAILY_LIMIT:-500}
       # Sign-in. `--env-file` populates interpolation in THIS FILE; it does not
-      # put anything into a container. Without these four named here the
+      # put anything into a container. Without these values named here the
       # application reads none of them, `mailer()` returns undefined, and every
       # visitor is told sign-in is unavailable — which is what this deployment
       # did until a review traced the runbook.

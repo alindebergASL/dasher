@@ -49,6 +49,33 @@ describe("OpenRouterPlanningProvider", () => {
     );
   });
 
+  it("aborts a stalled OpenRouter request at the configured deadline", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const fetcher = vi.fn(
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          observedSignal = init?.signal ?? undefined;
+          if (observedSignal === undefined) {
+            reject(new Error("missing abort signal"));
+            return;
+          }
+          observedSignal.addEventListener(
+            "abort",
+            () => reject(observedSignal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const provider = new OpenRouterPlanningProvider({
+      apiKey: testApiKey,
+      timeoutMs: 5,
+      fetcher,
+    });
+    const error = await provider.plan(request()).catch((one: unknown) => one);
+    expect(error).toMatchObject({ name: "TimeoutError" });
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
   it("uses native chat completions with strict ZDR structured output", async () => {
     const fetcher = vi
       .fn()

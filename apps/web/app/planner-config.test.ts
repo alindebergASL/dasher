@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PlanRejected } from "@dasher/planner";
 
@@ -57,6 +57,38 @@ describe("plannerFromEnv", () => {
     });
     expect(provider.usesModel).toBe(true);
     expect(provider.id).toBe("openrouter:z-ai/glm-5.3");
+  });
+
+  it("sends low reasoning effort when OpenRouter effort is unset", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "z-ai/glm-5.3",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ planVersion: "table-plan-v1" }),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const provider = plannerFromEnv({
+        DASHER_PLANNER: "openrouter",
+        OPENROUTER_API_KEY: "sk-or-test",
+      });
+      await provider.plan(request);
+      const init = fetcher.mock.calls[0]?.[1] as RequestInit;
+      const body = JSON.parse(String(init.body)) as {
+        reasoning_effort: string;
+      };
+      expect(body.reasoning_effort).toBe("low");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("rejects an unsupported OpenRouter reasoning effort", () => {
