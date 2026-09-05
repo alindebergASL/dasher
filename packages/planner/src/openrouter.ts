@@ -12,6 +12,7 @@ import { z } from "zod";
 import { SYSTEM_PROMPT, requestMessage } from "./prompt";
 import type { PlanningProvider, PlanningRequest } from "./provider";
 import { TablePlanSchema } from "./table-plan";
+import { parsePeriodHeader } from "./workbook";
 
 export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3";
 export const DEFAULT_OPENROUTER_BASE_URL =
@@ -52,6 +53,72 @@ export class OpenRouterPlanningError extends Error {
 }
 
 const tablePlanJsonSchema = z.toJSONSchema(TablePlanSchema);
+
+interface JsonSchemaNode {
+  properties?: Record<string, JsonSchemaNode>;
+  items?: JsonSchemaNode;
+  enum?: string[];
+}
+
+/**
+ * Tighten the static plan shape with facts from this table.
+ *
+ * Zod still validates the answer and `findPlanProblems` remains authoritative.
+ * These enums stop a structured-output provider from generating a role that is
+ * guaranteed to be rejected — for example assigning a date column to `label` —
+ * and spending every bounded repair attempt on the same type error.
+ */
+function schemaFor(request: PlanningRequest): JsonSchemaNode {
+  const schema = structuredClone(tablePlanJsonSchema) as JsonSchemaNode;
+  const roles = schema.properties?.["roles"]?.properties;
+  const filterColumn =
+    schema.properties?.["filters"]?.items?.properties?.["column"];
+  if (roles === undefined || filterColumn === undefined) {
+    throw new OpenRouterPlanningError(
+      "Dasher could not constrain the OpenRouter plan schema",
+    );
+  }
+
+  const names = request.table.columns.map((column) => column.name);
+  const numbers = request.table.columns
+    .filter((column) => column.type === "number")
+    .map((column) => column.name);
+  const text = request.table.columns
+    .filter((column) => column.type === "text")
+    .map((column) => column.name);
+  const periods = request.table.columns
+    .filter((column) => {
+      if (column.type === "date") return true;
+      if (request.table.unpivoted === true && column.name === "period") {
+        return true;
+      }
+      const samples = column.samples.filter((sample) => sample !== "");
+      return (
+        samples.length > 0 &&
+        samples.every((sample) => parsePeriodHeader(sample) !== null)
+      );
+    })
+    .map((column) => column.name);
+
+  for (const role of ["amount", "budget"] as const) {
+    const node = roles[role];
+    if (node === undefined)
+      throw new OpenRouterPlanningError("Dasher plan schema is incomplete");
+    node.enum = numbers;
+  }
+  for (const role of ["category", "label", "account"] as const) {
+    const node = roles[role];
+    if (node === undefined)
+      throw new OpenRouterPlanningError("Dasher plan schema is incomplete");
+    node.enum = text;
+  }
+  const period = roles["period"];
+  if (period === undefined)
+    throw new OpenRouterPlanningError("Dasher plan schema is incomplete");
+  period.enum = periods;
+  filterColumn.enum = names;
+  return schema;
+}
 
 export class OpenRouterPlanningProvider implements PlanningProvider {
   readonly id: string;
@@ -120,7 +187,7 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
           json_schema: {
             name: "table_plan",
             strict: true,
-            schema: tablePlanJsonSchema,
+            schema: schemaFor(request),
           },
         },
         provider: {
