@@ -1,3 +1,4 @@
+import { profileTable } from "@dasher/workbook";
 import { describe, expect, it } from "vitest";
 
 import { add, ZERO, type Exact } from "./workbook";
@@ -147,9 +148,10 @@ describe("compileTablePlan", () => {
     ]);
     expect(spec.dataMode).toBe("live");
     expect(spec.freshness).toMatchObject({
-      status: "fresh",
-      latestObservationAt: sourceFor(table, "x").retrievedAt,
+      status: "partial",
+      label: expect.stringMatching(/^Data through /u),
     });
+    expect(spec.freshness.latestObservationAt).toBeUndefined();
     expect(spec.evidence.map((item) => item.id)).toEqual([
       "source-file",
       "calculations",
@@ -219,6 +221,30 @@ describe("compileTablePlan", () => {
     expect(Math.abs(Number(facts.movers[0]!.change))).toBeGreaterThanOrEqual(
       Math.abs(Number(facts.movers.at(-1)!.change)),
     );
+  });
+
+  it("does not invent a zero when a category is absent from one comparison period", () => {
+    const table = profileTable({
+      headers: ["Month", "Region", "Revenue"],
+      rows: [
+        ["2026-01", "North", "100"],
+        ["2026-01", "South", "175"],
+        ["2026-02", "North", "165"],
+      ],
+    });
+    const facts = computeFacts(
+      planWith({ amount: "Revenue", period: "Month", category: "Region" }, [
+        "movers",
+      ]),
+      table,
+    );
+
+    expect(facts.movers.map((mover) => mover.category)).toEqual(["North"]);
+    expect(facts.movers[0]).toMatchObject({
+      previous: "100",
+      latest: "165",
+      change: "65",
+    });
   });
 
   it("formats money with the detected currency and drops decimals when every amount is whole", () => {

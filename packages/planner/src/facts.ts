@@ -343,9 +343,12 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       categoryTotalsByPeriod.get(latestPeriod) ?? new Map<string, Exact>();
     const previous =
       categoryTotalsByPeriod.get(previousPeriod) ?? new Map<string, Exact>();
-    for (const category of new Set([...latest.keys(), ...previous.keys()])) {
-      const now = latest.get(category) ?? ZERO;
-      const then = previous.get(category) ?? ZERO;
+    // Absence is not zero. A category can only be compared when both periods
+    // contain an observation for it; otherwise a mover would invent data.
+    for (const category of latest.keys()) {
+      if (!previous.has(category)) continue;
+      const now = latest.get(category) as Exact;
+      const then = previous.get(category) as Exact;
       const delta = subtract(now, then);
       const pct = percentOf(delta, then);
       movers.push({

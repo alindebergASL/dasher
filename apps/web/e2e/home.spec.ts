@@ -1,6 +1,15 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("the sample dashboard", () => {
+  test("keeps top navigation first in visual and keyboard order", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("link", { name: "Dasher" })).toBeFocused();
+  });
+
   test("renders a brief, pages, and evidence on load", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
@@ -11,7 +20,7 @@ test.describe("the sample dashboard", () => {
       page.getByRole("button", { name: /architecture/i }).first(),
     ).toBeVisible();
     await expect(page.getByRole("status").first()).toContainText(
-      /computed from the file/i,
+      /computed from the dataset/i,
     );
   });
 

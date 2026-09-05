@@ -976,7 +976,7 @@ footer {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 800px) {
   .topbar {
     padding: 0 14px;
     height: 62px;
@@ -1128,18 +1128,6 @@ footer {
   flex-direction: column;
 }
 
-/*
- * One command band, not two headers.
- *
- * The build form and the change form were each a full-width bar with its own
- * background, its own hairline, its own uppercase label and its own solid
- * green button. Two identical bars stacked above the product read as two
- * equal front doors. They are not equal: you describe a dashboard once, then
- * you adjust the one you are looking at.
- *
- * So the two forms now share a single surface closed by a single hairline,
- * and the second one is deliberately quieter than the first.
- */
 .request-bar,
 .refine-bar {
   display: flex;
@@ -1149,11 +1137,79 @@ footer {
   background: var(--card);
 }
 
+.request-bar {
+  padding-bottom: var(--s6);
+  border-bottom: 1px solid var(--line);
+}
+
 .refine-bar {
   gap: var(--s2);
   padding-top: var(--s5);
   padding-bottom: var(--s6);
   border-bottom: 1px solid var(--line);
+}
+
+.interpretation-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s3) clamp(var(--s4), 4vw, var(--s7));
+  background: color-mix(in srgb, var(--green-soft) 58%, var(--card));
+  border-top: 1px solid color-mix(in srgb, var(--green) 20%, var(--line));
+}
+
+.interpretation-copy {
+  display: flex;
+  flex: 1 1 36rem;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--s3);
+}
+
+.interpretation-copy p {
+  margin: 0;
+  font-size: var(--small);
+  line-height: 1.45;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.interpretation-copy strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.interpretation-kicker {
+  flex: 0 0 auto;
+  font-size: var(--label-size);
+  font-weight: var(--label-weight);
+  letter-spacing: var(--label-track);
+  text-transform: uppercase;
+  color: var(--green);
+}
+
+.interpretation-correct {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 44px;
+  align-items: center;
+  padding: 0;
+  font: inherit;
+  font-size: var(--small);
+  color: var(--green);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.interpretation-correct:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 
 /*
@@ -1414,61 +1470,45 @@ footer {
 }
 
 @media (max-width: 640px) {
-  /*
-   * The executive brief must stay fully inside the first mobile viewport, so
-   * the request control cannot occupy layout height above it. On small screens
-   * it becomes a fixed strip at the bottom of the viewport: still reachable,
-   * but out of the flow, leaving the dashboard's own layout untouched.
-   */
   .request-bar {
-    position: fixed;
-    inset: auto 0 0 0;
-    z-index: 40;
     gap: 0.5rem;
     padding: 0.6rem 1rem;
-    border-top: 1px solid var(--line);
-    box-shadow: 0 -8px 24px rgba(20, 32, 28, 0.1);
   }
 
-  /*
-   * Only the request bar is pinned; two fixed strips would eat the viewport on
-   * the smallest screens. But the rule the pinning exists to satisfy — no
-   * control may take layout height above the dashboard — applies to this one
-   * too, so it moves below the pages it changes instead. `.request-workspace`
-   * is a flex column, so ordering it last is enough.
-   */
+  .interpretation-strip {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--s2);
+    padding: var(--s3) 1rem;
+  }
+
+  .interpretation-copy {
+    flex: 1 1 auto;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--s1);
+  }
+
   .request-workspace > .request-note {
     /*
      * `display` must be declared here. The general hide below matches this
      * element too, and a rule that never names the property cannot override
      * it however specific the selector is.
-     */
+    */
     display: block;
-    order: 1;
-    padding: 0.9rem 1rem 4.5rem;
-    border-top: 1px solid var(--line);
-    border-bottom: none;
+    padding: 0.9rem 1rem;
     background: var(--card);
   }
 
-  /*
-   * Below the dashboard, for the same reason as the note above it. Added as a
-   * sibling in the flow, it pushed the executive brief 20px past the first
-   * viewport — the exact rule the pinning exists to satisfy, broken by a
-   * collapsed disclosure that looks like it occupies nothing.
-   */
   .request-workspace > .upload-bar {
-    order: 1;
     padding: 0.9rem 1rem;
     border-top: 1px solid var(--line);
     background: var(--card);
   }
 
   .refine-bar {
-    order: 1;
-    padding: 0.9rem 1rem 4.5rem;
+    padding: 0.9rem 1rem;
     border-top: 1px solid var(--line);
-    border-bottom: none;
     background: var(--card);
   }
 
@@ -1482,8 +1522,8 @@ footer {
     display: block;
   }
 
-  /* The hint above the build form is hidden here to keep the pinned control
-     out of the layout, but the refine bar's note is feedback about what the
+  /* The build form's explanatory note is hidden here to keep the first phone
+     viewport concise, but the refine bar's note is feedback about what the
      reader just did. Hiding it left a phone with no answer at all, visually or
      to a screen reader, since it carries role="status". */
   .refine-bar .request-note {
@@ -1512,19 +1552,6 @@ footer {
     display: block;
   }
 
-  /*
-   * The footer nav has to clear the pinned request bar.
-   *
-   * `.request-bar` is `position: fixed` at the bottom on a phone, so on any
-   * page that has one it covers the navigation sitting at the end of the flow —
-   * the link was in the DOM, was visible to a locator, and could not be
-   * clicked. The clearance is applied only where a request bar actually exists,
-   * so pages without one do not gain a strip of dead space.
-   */
-  body:has(.request-bar) .site-header {
-    margin-bottom: 5rem;
-  }
-
   .request-input,
   .refine-bar .request-input {
     flex: 1 1 8rem;
@@ -1533,13 +1560,9 @@ footer {
 
   .request-submit,
   .refine-bar .request-submit {
+    min-height: 44px;
     padding: 0.6rem 0.9rem;
     font-size: var(--small);
-  }
-
-  /* Room for the fixed strip, added below everything so nothing shifts up. */
-  .request-workspace {
-    padding-bottom: 4.5rem;
   }
 }
 
@@ -1677,9 +1700,8 @@ footer {
  * The site header.
  *
  * One row, small text, no vertical padding beyond what a touch target needs.
- * Its height comes out of the first-viewport budget the executive brief has to
- * fit inside on a phone, so it is measured by `upload-panel.spec.ts` rather
- * than trusted.
+ * It stays first in both the visual and DOM order so keyboard navigation never
+ * jumps from the dashboard back to navigation shown at the top of the page.
  */
 body {
   display: flex;
@@ -1693,22 +1715,9 @@ body {
   justify-content: space-between;
   gap: var(--s3);
   padding: var(--s2) var(--s4);
-  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   background: var(--paper);
   font-size: var(--small);
-  /* Pushed to the bottom of the column on a phone, where it costs the first
-     viewport nothing. `margin-top: auto` rather than a fixed position, so it
-     never overlays the content it was moved out of the way of. */
-  margin-top: auto;
-}
-
-@media (min-width: 641px) {
-  .site-header {
-    order: -1;
-    margin-top: 0;
-    border-top: 0;
-    border-bottom: 1px solid var(--line);
-  }
 }
 
 .site-header-home {

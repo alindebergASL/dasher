@@ -90,6 +90,7 @@ function periodColumnProfile(profile: ColumnProfile): ColumnProfile {
     name: profile.name,
     index: profile.index,
     type: "text",
+    semanticKind: "period",
     nonEmpty: profile.nonEmpty,
     distinct: profile.distinct,
     samples: profile.samples,

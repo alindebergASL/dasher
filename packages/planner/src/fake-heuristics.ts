@@ -19,7 +19,13 @@ export interface TableSummary {
 export type Roles = TablePlan["roles"];
 export type Filter = TablePlan["filters"][number];
 
-const AMOUNT_NAME = /amount|total|spend|cost|value|net|debit|credit/iu;
+export class NoSafeMeasureError extends Error {
+  constructor() {
+    super("The dataset has no column that can safely be used as a measure.");
+    this.name = "NoSafeMeasureError";
+  }
+}
+
 const BUDGET_NAME = /budget/iu;
 const CATEGORY_NAME =
   /category|type|department|dept|line|account|vendor|class|group|label/iu;
@@ -30,25 +36,21 @@ export function isPeriodLike(
   column: ColumnProfile,
   unpivoted: boolean,
 ): boolean {
-  if (column.type === "date") return true;
+  if (column.semanticKind === "period") return true;
   if (unpivoted && column.name === "period") return true;
-  const filled = column.samples.filter((sample) => sample !== "");
-  return (
-    filled.length > 0 &&
-    filled.every((sample) => parsePeriodHeader(sample) !== null)
-  );
+  return false;
 }
 
 function pickAmount(
   columns: readonly ColumnProfile[],
 ): ColumnProfile | undefined {
-  const numbers = columns.filter((column) => column.type === "number");
-  const named = numbers.find(
-    (column) => AMOUNT_NAME.test(column.name) && !BUDGET_NAME.test(column.name),
+  const measures = columns.filter(
+    (column) => column.semanticKind === "measure",
   );
-  if (named !== undefined) return named;
-  const candidates = numbers.filter((column) => !BUDGET_NAME.test(column.name));
-  return [...(candidates.length > 0 ? candidates : numbers)].sort(
+  const candidates = measures.filter(
+    (column) => !BUDGET_NAME.test(column.name),
+  );
+  return [...(candidates.length > 0 ? candidates : measures)].sort(
     (a, b) => b.nonEmpty - a.nonEmpty || a.index - b.index,
   )[0];
 }
@@ -58,7 +60,10 @@ function pickCategory(
   taken: ReadonlySet<string>,
 ): ColumnProfile | undefined {
   const texts = columns.filter(
-    (column) => column.type === "text" && !taken.has(column.name),
+    (column) =>
+      column.type === "text" &&
+      column.semanticKind === "dimension" &&
+      !taken.has(column.name),
   );
   // An id column is a key, not a name a reader wants to see, so it loses to any other candidate.
   const readable = texts.filter((column) => !ID_NAME.test(column.name));
@@ -74,14 +79,17 @@ function pickCategory(
 export function chooseRoles(table: TableSummary): Roles {
   const { columns, unpivoted } = table;
   const amount = pickAmount(columns);
+  if (amount === undefined) {
+    throw new NoSafeMeasureError();
+  }
   const roles: { -readonly [K in keyof Roles]: Roles[K] } = {
-    amount: amount?.name ?? columns[0]?.name ?? "amount",
+    amount: amount.name,
   };
   const taken = new Set<string>([roles.amount]);
 
   const budget = columns.find(
     (column) =>
-      column.type === "number" &&
+      column.semanticKind === "measure" &&
       BUDGET_NAME.test(column.name) &&
       !taken.has(column.name),
   );
@@ -107,6 +115,7 @@ export function chooseRoles(table: TableSummary): Roles {
   const label = columns.find(
     (column) =>
       column.type === "text" &&
+      column.semanticKind === "dimension" &&
       !taken.has(column.name) &&
       LABEL_NAME.test(column.name),
   );
@@ -297,7 +306,7 @@ export function supported(
   });
 }
 
-/** A title that reflects what was asked, falling back to the file's name. */
+/** A title that reflects what was asked without changing the measure's meaning. */
 function titleFrom(
   requestText: string,
   sourceName: string,
@@ -311,17 +320,19 @@ function titleFrom(
     return "Largest items and biggest movers";
   }
   if (/trend|over time|month by month|quarter|year/u.test(asked)) {
-    return "Spend over time";
+    return `${roles.amount} over time`;
   }
   if (/categor|where.*going|breakdown|mix/u.test(asked)) {
-    return "Where the money goes";
+    return roles.category === undefined
+      ? `${roles.amount} breakdown`
+      : `${roles.amount} by ${roles.category}`;
   }
   const stem = sourceName
     .replace(/\.[a-z0-9]+$/iu, "")
     .replace(/[-_]+/gu, " ")
     .trim();
   if (stem === "" || findMeasurement(stem) !== undefined)
-    return "Spend overview";
+    return `${roles.amount} overview`;
   return `${stem.charAt(0).toUpperCase()}${stem.slice(1)} overview`;
 }
 
@@ -351,8 +362,7 @@ export function defaultPlan(
     {
       id: "overview",
       title: "Overview",
-      description:
-        "Totals for the latest period, how they compare with the one before, and where the money went.",
+      description: `Latest ${roles.amount}, its change from the prior period, and ${roles.category === undefined ? "the contributing rows" : `the breakdown by ${roles.category}`}.`,
       sections: overview.slice(0, 6),
     },
   ];
@@ -369,9 +379,8 @@ export function defaultPlan(
   return {
     planVersion: "table-plan-v1",
     title: titleFrom(requestText, sourceName, roles),
-    audience: "Whoever asked for this view of the file",
-    framing:
-      "Totals first, then the breakdown by category and the rows behind it.",
+    audience: "Whoever asked for this view of the dataset",
+    framing: `${roles.amount} first, then ${roles.category === undefined ? "the rows behind it" : `the breakdown by ${roles.category} and the rows behind it`}.`,
     roles,
     grain,
     filters: readFilters(requestText, category, filterValues(table, category)),

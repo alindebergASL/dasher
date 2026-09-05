@@ -6,6 +6,20 @@
 
 export type ColumnType = "number" | "date" | "text";
 
+/**
+ * What a column means for planning, independently of where the table came
+ * from. This is deliberately coarser than a business ontology: it is the
+ * safety boundary that keeps keys and periods out of arithmetic roles.
+ */
+export type ColumnSemanticKind =
+  | "measure"
+  | "identifier"
+  | "code"
+  | "ordinal"
+  | "period"
+  | "dimension"
+  | "unknown";
+
 /** Which separator a file uses as its decimal mark: `1,234.56` or `1.234,56`. */
 export type DecimalConvention = "dot" | "comma";
 
@@ -18,6 +32,8 @@ export interface ColumnProfile {
   readonly index: number;
   /** Majority type of the non-empty cells; "text" when nothing else fits. */
   readonly type: ColumnType;
+  /** Source-neutral planning meaning inferred from the header and typed cells. */
+  readonly semanticKind: ColumnSemanticKind;
   readonly nonEmpty: number;
   readonly distinct: number;
   /** Up to five distinct raw values, in first-seen order. */

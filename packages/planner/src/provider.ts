@@ -58,7 +58,7 @@ export class FakePlanningProvider implements PlanningProvider {
   readonly id = "fake-table-planner";
   readonly usesModel = false;
 
-  plan(request: PlanningRequest): Promise<unknown> {
+  async plan(request: PlanningRequest): Promise<unknown> {
     const summary: TableSummary = {
       columns: request.table.columns,
       unpivoted: request.table.unpivoted === true,
@@ -67,26 +67,20 @@ export class FakePlanningProvider implements PlanningProvider {
         : { values: request.table.values }),
     };
     if (request.revision !== undefined) {
-      return Promise.resolve(
-        applyRevision(
-          request.revision.previousPlan,
-          request.revision.findings,
-          summary,
-        ),
+      return applyRevision(
+        request.revision.previousPlan,
+        request.revision.findings,
+        summary,
       );
     }
     if (request.refinement !== undefined) {
-      return Promise.resolve(
-        applyRefinement(
-          request.refinement.previousPlan,
-          request.refinement.instruction,
-          summary,
-        ),
+      return applyRefinement(
+        request.refinement.previousPlan,
+        request.refinement.instruction,
+        summary,
       );
     }
     const roles = chooseRoles(summary);
-    return Promise.resolve(
-      defaultPlan(request.requestText, request.sourceName, roles, summary),
-    );
+    return defaultPlan(request.requestText, request.sourceName, roles, summary);
   }
 }

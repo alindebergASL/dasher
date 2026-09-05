@@ -49,6 +49,18 @@ function clone(plan: TablePlan): Mutable<TablePlan> {
   return JSON.parse(JSON.stringify(plan)) as Mutable<TablePlan>;
 }
 
+function replaceMeasureName(
+  text: string,
+  previous: string,
+  next: string,
+): string {
+  const at = text
+    .toLocaleLowerCase("en-US")
+    .indexOf(previous.toLocaleLowerCase("en-US"));
+  if (at < 0) return text;
+  return `${text.slice(0, at)}${next}${text.slice(at + previous.length)}`;
+}
+
 function dropSections(
   pages: Page[],
   kinds: readonly TableSectionKind[],
@@ -94,6 +106,35 @@ export function applyRefinement(
   const plan = clone(previous);
   const text = instruction.trim();
   let changed = false;
+
+  const requestedPrimaryMeasure =
+    /\b(?:use|read|treat)\s+(.+?)\s+as\s+(?:the\s+)?(?:primary\s+)?(?:amount|measure|metric)\b/iu.exec(
+      text,
+    )?.[1];
+  if (requestedPrimaryMeasure !== undefined) {
+    const requested = requestedPrimaryMeasure.trim().toLocaleLowerCase("en-US");
+    const measure = table.columns.find(
+      (column) =>
+        column.semanticKind === "measure" &&
+        column.name.toLocaleLowerCase("en-US") === requested,
+    );
+    if (measure !== undefined && measure.name !== plan.roles.amount) {
+      const previous = plan.roles.amount;
+      plan.roles = { ...plan.roles, amount: measure.name };
+      plan.title = replaceMeasureName(plan.title, previous, measure.name);
+      plan.framing = replaceMeasureName(plan.framing, previous, measure.name);
+      plan.pages = plan.pages.map((page) => ({
+        ...page,
+        title: replaceMeasureName(page.title, previous, measure.name),
+        description: replaceMeasureName(
+          page.description,
+          previous,
+          measure.name,
+        ),
+      }));
+      changed = true;
+    }
+  }
 
   if (/\b(?:just|only) the overview\b|\bshorter\b|\bone page\b/iu.test(text)) {
     if (plan.pages.length > 1) {

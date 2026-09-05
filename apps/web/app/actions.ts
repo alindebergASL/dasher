@@ -26,6 +26,7 @@ import { buildFailureMessage, planner } from "./planner-config";
 import {
   REFINEMENT_MAX_LENGTH,
   REQUEST_MAX_LENGTH,
+  type DatasetInterpretation,
   type PlanResult,
   type SourceRef,
 } from "./planning";
@@ -67,6 +68,28 @@ function safeSourceRef(name: string): string {
     .slice(0, 512)
     .trim();
   return cleaned === "" ? "upload.csv" : cleaned;
+}
+
+function datasetInterpretation(
+  plan: TablePlan,
+  upload: ReadUpload,
+): DatasetInterpretation {
+  return {
+    primaryMeasure: plan.roles.amount,
+    period: plan.roles.period ?? "No period detected",
+    otherMeasures: upload.table.columns
+      .filter(
+        (column) =>
+          column.semanticKind === "measure" &&
+          column.name !== plan.roles.amount,
+      )
+      .map((column) => column.name),
+    identifiers: upload.table.columns
+      .filter((column) =>
+        ["identifier", "code", "ordinal"].includes(column.semanticKind),
+      )
+      .map((column) => column.name),
+  };
 }
 
 /**
@@ -146,6 +169,7 @@ export async function buildDashboard(formData: FormData): Promise<PlanResult> {
     dashboard,
     plan,
     mapping: describePlan(plan, upload.table),
+    interpretation: datasetInterpretation(plan, upload),
     source,
     attempts,
     usesModel: provider.usesModel,

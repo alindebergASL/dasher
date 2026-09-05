@@ -149,6 +149,7 @@ describe("a wide file with one column per period", () => {
       name: "period",
       index: 3,
       type: "text",
+      semanticKind: "period",
       nonEmpty: 36,
       distinct: 6,
       samples: ["2026-03", "2026-04", "2026-05", "2026-06", "2026-07"],
