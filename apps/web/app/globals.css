@@ -441,6 +441,9 @@ main {
   padding: 0;
   list-style: none;
 }
+.executive-support-item:only-child {
+  grid-column: 1 / -1;
+}
 .executive-support-item {
   padding: var(--s4) var(--s5) var(--s5) var(--s7);
 }
@@ -1031,7 +1034,7 @@ footer {
 }
 .evidence-list small {
   display: block;
-  color: #7c8d87;
+  color: var(--muted);
   margin-bottom: 8px;
 }
 .evidence-list a,

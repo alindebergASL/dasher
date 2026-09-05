@@ -240,6 +240,17 @@ function adjective(grain: ObservationGrain): string {
   }
 }
 
+function comparisonLabel(grain: Grain): string {
+  switch (grain) {
+    case "month":
+      return "month-over-month";
+    case "quarter":
+      return "quarter-over-quarter";
+    case "year":
+      return "year-over-year";
+  }
+}
+
 function unknown(
   latestPeriod: string | undefined,
   observations: readonly PeriodObservation[],
@@ -368,7 +379,7 @@ export function analyzePeriodCoverage(
       status: "complete",
       ...shared,
       comparisonDisposition: "available",
-      reason: `${periodLabel(latestPeriod)} and ${periodLabel(previousPeriod)} each contain every expected ${adjective(observationGrain)} observation, so current-vs-prior comparison is available.`,
+      reason: `${periodLabel(latestPeriod)} and ${periodLabel(previousPeriod)} each contain every expected ${adjective(observationGrain)} observation, so ${comparisonLabel(analysisGrain)} comparison is available.`,
     };
   }
 
@@ -384,7 +395,7 @@ export function analyzePeriodCoverage(
       status: "incomplete",
       ...shared,
       comparisonDisposition: "unavailable-partial",
-      reason: `${periodLabel(latestPeriod)} has ${String(latestObserved.length)} of ${String(latestExpected.length)} expected ${adjective(observationGrain)} observations; observed dates run from ${latestObserved[0] as string} through ${latestObserved.at(-1) as string}, inside expected bounds ${fields.expectedStart as string} through ${fields.expectedEnd as string}. ${periodLabel(previousPeriod)} has all ${String(previousExpected.length)} expected observations. Current-vs-prior change is unavailable because the latest period is partial.`,
+      reason: `${periodLabel(latestPeriod)} has ${String(latestObserved.length)} of ${String(latestExpected.length)} expected ${adjective(observationGrain)} observations; observed dates run from ${latestObserved[0] as string} through ${latestObserved.at(-1) as string}, inside expected bounds ${fields.expectedStart as string} through ${fields.expectedEnd as string}. ${periodLabel(previousPeriod)} has all ${String(previousExpected.length)} expected observations. The ${comparisonLabel(analysisGrain)} change is unavailable because the latest period is partial.`,
     };
   }
 

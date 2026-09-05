@@ -53,7 +53,12 @@ function EvidenceDrawer({
                 <span className={`evidence-kind kind-${item.kind}`}>
                   {item.kind}
                 </span>
-                <span className="confidence">{item.confidence} confidence</span>
+                <span className="confidence">
+                  {item.confidence} confidence
+                  {item.id === "period-coverage"
+                    ? " in coverage assessment"
+                    : ""}
+                </span>
               </div>
               <h3>{item.label}</h3>
               <p>{item.detail}</p>

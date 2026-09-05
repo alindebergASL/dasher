@@ -26,7 +26,7 @@ function SourcesButton({
       type="button"
       onClick={() => onEvidence(ids)}
     >
-      View {ids.length} source{ids.length === 1 ? "" : "s"}
+      View {ids.length} evidence {ids.length === 1 ? "item" : "items"}
     </button>
   );
 }

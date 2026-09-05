@@ -25,7 +25,7 @@ test.describe("the sample dashboard", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("status", { name: "Planning status" }),
-    ).toContainText(/trusted code computes every number/i);
+    ).toContainText(/deterministic calculations.*source evidence/i);
   });
 
   test("the composer is source-aware, keyboard reachable, and width-safe", async ({
@@ -238,6 +238,37 @@ test.describe("the sample dashboard", () => {
       }),
     );
     expect(violations).toEqual([]);
+  });
+
+  test("keeps an uploaded filename consistent through period evidence", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "quarterly-progress.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Category,Amount",
+          "2026-04-01,A,100",
+          "2026-05-01,A,110",
+          "2026-06-01,A,120",
+          "2026-07-01,A,130",
+          "2026-08-01,A,140",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Compare quarterly amount by category");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "Evidence for Important" }).click();
+    const dialog = page.getByRole("dialog", { name: "Sources and evidence" });
+    await expect(dialog).toContainText("quarterly-progress.csv");
+    await expect(dialog).not.toContainText("partial-quarter.csv");
   });
 
   test("builds a different dashboard for a different request", async ({

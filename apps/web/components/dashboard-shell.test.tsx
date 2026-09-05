@@ -350,6 +350,12 @@ describe("DashboardShell", () => {
     expect(
       within(support).getByText("3 departments reported"),
     ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Evidence for Important" }),
+    );
+    expect(
+      screen.getByText("high confidence in coverage assessment"),
+    ).toBeInTheDocument();
   });
 
   it("opens each brief item's evidence on its first activation and restores focus", () => {
@@ -515,7 +521,7 @@ describe("DashboardShell", () => {
   it("opens evidence with a direct source citation", () => {
     render(<DashboardShell dashboard={dashboard} />);
     fireEvent.click(
-      screen.getAllByRole("button", { name: /view .* sources?/i })[0]!,
+      screen.getAllByRole("button", { name: /view .* evidence items?/i })[0]!,
     );
     expect(
       screen.getByRole("dialog", { name: "Sources and evidence" }),

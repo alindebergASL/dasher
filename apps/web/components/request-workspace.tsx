@@ -20,7 +20,7 @@ const REQUESTS = [
 ] as const;
 
 const REFINEMENTS = [
-  "Exclude salaries",
+  "Show the detail table",
   "Quarterly",
   "Just the overview",
   "Show the last 3 months",
@@ -249,8 +249,8 @@ export function RequestWorkspace({
                 role="status"
               >
                 {result.usesModel
-                  ? "AI arranges safe metadata. Trusted code computes every number."
-                  : "Trusted code computes every number."}
+                  ? "AI arranges safe metadata. Deterministic calculations stay linked to source evidence."
+                  : "Deterministic calculations stay linked to source evidence."}
                 {(result.attempts ?? 1) > 1
                   ? " An unsafe first plan was rejected before rendering."
                   : ""}
@@ -429,7 +429,7 @@ export function RequestWorkspace({
               maxLength={REFINEMENT_MAX_LENGTH}
               name="change"
               onChange={(event) => setChange(event.target.value)}
-              placeholder="Use Revenue as the primary measure"
+              placeholder="Describe one change"
               ref={changeInput}
               type="text"
               value={change}

@@ -142,7 +142,7 @@ describe("period completeness safety", () => {
       priorObservedCount: 3,
       comparisonDisposition: "unavailable-partial",
       reason:
-        "Q3 2026 has 2 of 3 expected monthly observations; observed dates run from 2026-07-01 through 2026-08-01, inside expected bounds 2026-07-01 through 2026-09-30. Q2 2026 has all 3 expected observations. Current-vs-prior change is unavailable because the latest period is partial.",
+        "Q3 2026 has 2 of 3 expected monthly observations; observed dates run from 2026-07-01 through 2026-08-01, inside expected bounds 2026-07-01 through 2026-09-30. Q2 2026 has all 3 expected observations. The quarter-over-quarter change is unavailable because the latest period is partial.",
     });
     expect(facts.change).toBeUndefined();
     expect(facts.changePercent).toBeUndefined();
@@ -161,23 +161,24 @@ describe("period completeness safety", () => {
     const rendered = componentText(spec);
     expect(rendered).toContain("Q3 2026 (partial)");
     expect(rendered).toContain(
-      "Current-vs-prior change is unavailable because the latest period is partial.",
+      "The quarter-over-quarter change is unavailable because the latest period is partial.",
     );
     expect
       .soft(spec.pages[0]?.description)
       .toBe(
-        "Q3 2026 coverage is partial (2 of 3 expected monthly observations). Comparative findings are withheld.",
+        "Q3 2026 coverage is partial (2 of 3 months represented). Comparative findings are withheld.",
       );
     expect.soft(spec.executiveBrief.important).toMatchObject({
-      headline: "Q3 2026 is partial; current-vs-prior change is unavailable",
+      headline:
+        "Q3 2026 is partial; quarter-over-quarter change is unavailable",
       detail:
-        "Q3 2026 has 2 of 3 expected monthly observations; Q2 2026 is complete with 3 monthly observations. The periods are not like-for-like, so current-vs-prior change is unavailable.",
+        "Q3 2026 has 2 of 3 months represented; Q2 2026 is complete with all 3 months represented. The periods are not like-for-like, so comparison with Q2 2026 remains withheld.",
       evidenceIds: ["period-coverage"],
     });
     expect.soft(spec.nextAction).toMatchObject({
-      title: "Complete or confirm Q3 2026 coverage before comparison",
+      title: "Add missing Q3 2026 coverage before comparison",
       detail:
-        "Confirm or complete the 1 missing monthly observation for Q3 2026 shown in the linked period evidence, then rebuild before comparing with Q2 2026.",
+        "Add the 1 missing monthly observation for Q3 2026, then rebuild before comparing with Q2 2026. If Q3 2026 is intentionally partial, keep the comparison withheld.",
       evidenceIds: expect.arrayContaining(["period-coverage"]),
     });
     expect.soft(spec.executiveBrief.important.headline).not.toContain("Alpha");
@@ -203,7 +204,7 @@ describe("period completeness safety", () => {
         kind: "calculated",
         label: "Period coverage for Q3 2026",
         detail:
-          "Period coverage was assessed from canonical dataset values. Latest analysis period: Q3 2026. Observed date range: 2026-07-01 through 2026-08-01. Expected quarter bounds: 2026-07-01 through 2026-09-30. Observed coverage: 2 of 3 monthly observations. Comparison disposition: unavailable — partial latest period. Reason: Q3 2026 has 2 of 3 expected monthly observations; observed dates run from 2026-07-01 through 2026-08-01, inside expected bounds 2026-07-01 through 2026-09-30. Q2 2026 has all 3 expected observations. Current-vs-prior change is unavailable because the latest period is partial.",
+          "Period coverage was assessed from canonical dataset values. Latest analysis period: Q3 2026. Observed date range: 2026-07-01 through 2026-08-01. Expected quarter bounds: 2026-07-01 through 2026-09-30. Observed coverage: 2 of 3 months represented. Comparison disposition: unavailable — partial latest period. Reason: Q3 2026 has 2 of 3 expected monthly observations; observed dates run from 2026-07-01 through 2026-08-01, inside expected bounds 2026-07-01 through 2026-09-30. Q2 2026 has all 3 expected observations. The quarter-over-quarter change is unavailable because the latest period is partial.",
       }),
     );
   });
@@ -338,9 +339,9 @@ describe("period completeness safety", () => {
       );
     expect.soft(spec.executiveBrief.important).toMatchObject({
       headline:
-        "Coverage for Feb 2026 is unknown; current-vs-prior change is unavailable",
+        "Coverage for Feb 2026 is unknown; month-over-month change is unavailable",
       detail:
-        "Comparable coverage for Feb 2026 and Jan 2026 cannot be established, so current-vs-prior change is unavailable. See the linked period evidence for the observed dates and reason.",
+        "Comparable coverage for Feb 2026 and Jan 2026 cannot be established, so comparison with Jan 2026 remains withheld. See the linked period evidence for the observed dates and reason.",
       evidenceIds: ["period-coverage"],
     });
     expect.soft(spec.nextAction).toMatchObject({

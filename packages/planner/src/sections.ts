@@ -252,7 +252,7 @@ function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
   const largest = facts.shares[0];
   if (largest !== undefined) {
     metrics.push({
-      label: "Largest category",
+      label: facts.shares.length === 1 ? "Only category" : "Largest category",
       value: largest.category,
       change: formatPercent(largest.share),
       evidenceIds: ids,

@@ -133,7 +133,7 @@ function sharesSentence(facts: TableFacts): string | undefined {
   const movers =
     facts.periodCoverage.comparisonDisposition === "available"
       ? " Movers are each category's latest total minus its previous total, ordered by size of change."
-      : " Category movers are not computed while current-vs-prior period coverage is unavailable.";
+      : ` Category movers are not computed while ${periodComparisonLabel(facts)} coverage is unavailable.`;
   if (facts.mixedSignFlow !== undefined) {
     return `The latest window has both positive and negative amounts. Gross inflow sums the positive amounts; gross outflow sums the absolute magnitudes of the negative amounts; net movement is their signed sum. Category amounts are grouped by category and direction before inflow shares and outflow shares are independently allocated in tenths of a percent to exactly one hundred; zero is neither direction.${movers}${cut}`;
   }
@@ -161,6 +161,17 @@ function observationAdjective(
   }
 }
 
+function periodComparisonLabel(facts: TableFacts): string {
+  switch (facts.grain) {
+    case "month":
+      return "month-over-month";
+    case "quarter":
+      return "quarter-over-quarter";
+    case "year":
+      return "year-over-year";
+  }
+}
+
 function periodCoverageDetail(facts: TableFacts): string {
   const coverage = facts.periodCoverage;
   if (coverage.latestLabel === undefined) {
@@ -178,7 +189,9 @@ function periodCoverageDetail(facts: TableFacts): string {
     coverage.expectedCount === undefined ||
     coverage.observationGrain === undefined
       ? `${String(coverage.observedCount)} distinct date observations`
-      : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} ${observationAdjective(coverage.observationGrain)} observations`;
+      : coverage.observationGrain === "month"
+        ? `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} months represented`
+        : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} ${observationAdjective(coverage.observationGrain)} observations`;
   const disposition =
     coverage.comparisonDisposition === "available"
       ? "available"
@@ -203,7 +216,9 @@ function trustedPageDescription(
     const observedCoverage =
       coverage.expectedCount === undefined
         ? `${String(coverage.observedCount)} observed ${observation} observations`
-        : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
+        : coverage.observationGrain === "month"
+          ? `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} months represented`
+          : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
     return `${coverage.latestLabel ?? "The latest period"} coverage is partial (${observedCoverage}). Comparative findings are withheld.`;
   }
   if (coverage.comparisonDisposition === "unavailable-unknown") {
@@ -224,16 +239,22 @@ function periodCoverageImportant(
     const latestCount =
       coverage.expectedCount === undefined
         ? `${String(coverage.observedCount)} observed ${observation} observations`
-        : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
+        : coverage.observationGrain === "month"
+          ? `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} months represented`
+          : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
     const priorCount = coverage.priorObservedCount ?? 0;
+    const priorCoverage =
+      coverage.observationGrain === "month"
+        ? `all ${String(priorCount)} months represented`
+        : `${String(priorCount)} ${observation} observations`;
     const prior =
       coverage.priorPeriod === undefined
         ? "The prior period"
         : periodLabel(coverage.priorPeriod);
     return {
       statementTypes: ["calculated"],
-      headline: `${coverage.latestLabel ?? "The latest period"} is partial; current-vs-prior change is unavailable`,
-      detail: `${coverage.latestLabel ?? "The latest period"} has ${latestCount}; ${prior} is complete with ${String(priorCount)} ${observation} observations. The periods are not like-for-like, so current-vs-prior change is unavailable.`,
+      headline: `${coverage.latestLabel ?? "The latest period"} is partial; ${periodComparisonLabel(facts)} change is unavailable`,
+      detail: `${coverage.latestLabel ?? "The latest period"} has ${latestCount}; ${prior} is complete with ${priorCoverage}. The periods are not like-for-like, so comparison with ${prior} remains withheld.`,
       evidenceIds: [EVIDENCE.periodCoverage],
     };
   }
@@ -244,8 +265,8 @@ function periodCoverageImportant(
         : periodLabel(coverage.priorPeriod);
     return {
       statementTypes: ["calculated"],
-      headline: `Coverage for ${coverage.latestLabel ?? "the latest period"} is unknown; current-vs-prior change is unavailable`,
-      detail: `Comparable coverage for ${coverage.latestLabel ?? "the latest period"} and ${prior} cannot be established, so current-vs-prior change is unavailable. See the linked period evidence for the observed dates and reason.`,
+      headline: `Coverage for ${coverage.latestLabel ?? "the latest period"} is unknown; ${periodComparisonLabel(facts)} change is unavailable`,
+      detail: `Comparable coverage for ${coverage.latestLabel ?? "the latest period"} and ${prior} cannot be established, so comparison with ${prior} remains withheld. See the linked period evidence for the observed dates and reason.`,
       evidenceIds: [EVIDENCE.periodCoverage],
     };
   }
@@ -276,8 +297,8 @@ function periodCoverageNextAction(
         ? "the missing expected period observations"
         : `the ${String(missing)} missing expected ${observation} ${missing === 1 ? "observation" : "observations"}`;
     return {
-      title: `Complete or confirm ${latest} coverage before comparison`,
-      detail: `Confirm or complete ${missingObservations.replace("expected ", "")} for ${latest} shown in the linked period evidence, then rebuild before comparing with ${prior}.`,
+      title: `Add missing ${latest} coverage before comparison`,
+      detail: `Add ${missingObservations.replace("expected ", "")} for ${latest}, then rebuild before comparing with ${prior}. If ${latest} is intentionally partial, keep the comparison withheld.`,
       evidenceIds: [...new Set([...evidenceIds, EVIDENCE.periodCoverage])],
     };
   }
@@ -319,7 +340,7 @@ function evidence(
       : `${plural(facts.outsideWindow, "row fell", "rows fell")} outside the last ${String(plan.lastPeriods)} periods and ${facts.outsideWindow === 1 ? "was" : "were"} not counted.`,
     facts.periodCoverage.comparisonDisposition === "available"
       ? "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total."
-      : "Totals are sums of the amounts in each group. Current-vs-prior change and category movers are not computed while period coverage is unavailable.",
+      : `Totals are sums of the amounts in each group. ${periodComparisonLabel(facts)} change and category movers are not computed while period coverage is unavailable.`,
     !activeRelationship || plan.roles.comparison === undefined
       ? undefined
       : `The comparison measure was read from "${plan.roles.comparison}" as exact decimals; ${plural(facts.comparisonSkipped, "selected row had", "selected rows had")} no readable comparison value. A relationship period is unavailable unless every selected amount row has a readable comparison value. Both growth rates require complete latest and prior support.${plan.relationship?.operation === "ratio" ? ` ${plan.roles.amount} per ${plan.roles.comparison} is shown only with complete support and non-zero denominators; ratios are rounded half away from zero to two decimals, with whole ratios shown without decimals, and ratio change is computed from unrounded exact cross-products.` : " No denominator or ratio is inferred for this side-by-side comparison."}`,
@@ -779,19 +800,23 @@ function notice(
   options: CompileOptions,
 ): string {
   const activeRelationship = hasActiveRelationship(plan);
-  const read = [
-    `"${plan.roles.amount}" as the amount`,
+  const mapped = [
+    `"${plan.roles.amount}" to amount`,
     !activeRelationship || plan.roles.comparison === undefined
       ? undefined
-      : `"${plan.roles.comparison}" as the comparison measure`,
+      : `"${plan.roles.comparison}" to comparison measure`,
     plan.roles.category === undefined
       ? undefined
-      : `"${plan.roles.category}" as the category`,
+      : `"${plan.roles.category}" to category`,
     plan.roles.period === undefined
       ? undefined
-      : `"${plan.roles.period}" as the period by ${facts.grain}`,
+      : `"${plan.roles.period}" to period by ${facts.grain}`,
   ].filter((part) => part !== undefined);
-  return `Built from ${options.source.name} (${plural(options.source.rowCount, "row", "rows")}), reading ${read.join(", ")}. ${plural(facts.skipped, "row was", "rows were")} skipped because ${facts.skipped === 1 ? "its" : "their"} amount or period could not be read.`;
+  const readResult =
+    facts.skipped === 0
+      ? "All selected rows were read."
+      : `${plural(facts.skipped, "row was", "rows were")} skipped because ${facts.skipped === 1 ? "its" : "their"} amount or period could not be interpreted.`;
+  return `Source: ${options.source.name} (${plural(options.source.rowCount, "row", "rows")}). Mapped ${mapped.join(", ")}. ${readResult}`;
 }
 
 /** What actually emptied the table, named so the reader can undo it. */
