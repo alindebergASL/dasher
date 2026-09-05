@@ -93,7 +93,7 @@ function ExecutiveBrief({
   dashboard: Extract<DashboardSpec, { schemaVersion: "1.2" }>;
   onEvidence: (ids: string[]) => void;
 }) {
-  const items = [
+  const supportingItems = [
     {
       label: "Known",
       ...dashboard.executiveBrief.known,
@@ -102,18 +102,11 @@ function ExecutiveBrief({
       label: "Changed",
       ...dashboard.executiveBrief.changed,
     },
-    {
-      label: "Important",
-      ...dashboard.executiveBrief.important,
-    },
-    {
-      label: "Next safe action",
-      statementTypes: ["recommended"],
-      headline: dashboard.nextAction.title,
-      detail: dashboard.nextAction.detail,
-      evidenceIds: dashboard.nextAction.evidenceIds,
-    },
   ];
+  const important = dashboard.executiveBrief.important;
+
+  const statementTypes = (values: string[]) =>
+    values.map((value) => value[0]!.toUpperCase() + value.slice(1)).join(" · ");
 
   return (
     <section
@@ -124,31 +117,72 @@ function ExecutiveBrief({
         <span className="eyebrow">Decision view</span>
         <h2 id="executive-brief-heading">Executive brief</h2>
       </div>
-      <ol className="executive-brief-list">
-        {items.map((item) => (
-          <li
-            className={`executive-brief-item brief-${item.label.toLowerCase().replaceAll(" ", "-")}`}
-            key={item.label}
-          >
-            <span className="executive-brief-label">{item.label}</span>
+      <div className="executive-brief-composition">
+        <article aria-label="Primary finding" className="executive-primary">
+          <div className="executive-brief-meta">
+            <span className="executive-brief-label">Important</span>
             <span className="executive-statement-types">
-              {item.statementTypes
-                .map((value) => value[0]!.toUpperCase() + value.slice(1))
-                .join(" · ")}
+              {statementTypes(important.statementTypes)}
             </span>
-            <h3>{item.headline}</h3>
-            <p>{item.detail}</p>
-            <button
-              aria-label={`Evidence for ${item.label}`}
-              className="executive-brief-evidence"
-              onClick={() => onEvidence(item.evidenceIds)}
-              type="button"
-            >
-              View evidence
-            </button>
-          </li>
-        ))}
-      </ol>
+          </div>
+          <h3>{important.headline}</h3>
+          <p>{important.detail}</p>
+          <button
+            aria-label="Evidence for Important"
+            className="executive-brief-evidence"
+            onClick={() => onEvidence(important.evidenceIds)}
+            type="button"
+          >
+            View evidence
+          </button>
+        </article>
+
+        <div
+          aria-label="Supporting context"
+          className="executive-support"
+          role="group"
+        >
+          <ol className="executive-support-list">
+            {supportingItems.map((item) => (
+              <li className="executive-support-item" key={item.label}>
+                <div className="executive-brief-meta">
+                  <span className="executive-brief-label">{item.label}</span>
+                  <span className="executive-statement-types">
+                    {statementTypes(item.statementTypes)}
+                  </span>
+                </div>
+                <h3>{item.headline}</h3>
+                <p>{item.detail}</p>
+                <button
+                  aria-label={`Evidence for ${item.label}`}
+                  className="executive-brief-evidence"
+                  onClick={() => onEvidence(item.evidenceIds)}
+                  type="button"
+                >
+                  View evidence
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+
+        <article aria-label="Next safe action" className="executive-action">
+          <div className="executive-brief-meta">
+            <span className="executive-brief-label">Next safe action</span>
+            <span className="executive-statement-types">Recommended</span>
+          </div>
+          <h3>{dashboard.nextAction.title}</h3>
+          <p>{dashboard.nextAction.detail}</p>
+          <button
+            aria-label="Evidence for Next safe action"
+            className="executive-brief-evidence executive-action-evidence"
+            onClick={() => onEvidence(dashboard.nextAction.evidenceIds)}
+            type="button"
+          >
+            Why this action <span aria-hidden="true">→</span>
+          </button>
+        </article>
+      </div>
     </section>
   );
 }
@@ -178,6 +212,8 @@ export function DashboardShell({
   const page =
     dashboard.pages.find((candidate) => candidate.id === pageId) ??
     dashboard.pages[0]!;
+  const decisionRegionPresent =
+    page.id === dashboard.pages[0]!.id && dashboard.schemaVersion === "1.2";
   const selectedEvidence = useMemo(
     () => dashboard.evidence.filter((item) => evidenceIds?.includes(item.id)),
     [dashboard.evidence, evidenceIds],
@@ -248,18 +284,22 @@ export function DashboardShell({
                 </button>
               ))}
             </nav>
-            <div className="sidebar-next">
-              <span>Next safe action</span>
-              <strong>{dashboard.nextAction.title}</strong>
-              <p>{dashboard.nextAction.detail}</p>
-              <button
-                className="next-evidence"
-                onClick={() => setEvidenceIds(dashboard.nextAction.evidenceIds)}
-                type="button"
-              >
-                Why this action
-              </button>
-            </div>
+            {decisionRegionPresent ? null : (
+              <div className="sidebar-next">
+                <span>Next safe action</span>
+                <strong>{dashboard.nextAction.title}</strong>
+                <p>{dashboard.nextAction.detail}</p>
+                <button
+                  className="next-evidence"
+                  onClick={() =>
+                    setEvidenceIds(dashboard.nextAction.evidenceIds)
+                  }
+                  type="button"
+                >
+                  Why this action
+                </button>
+              </div>
+            )}
           </aside>
 
           <main>
@@ -308,8 +348,7 @@ export function DashboardShell({
               gate is "first page", not a page id: a builder may name its
               landing page anything, and the brief must not depend on it.
             */}
-            {page.id === dashboard.pages[0]!.id &&
-            dashboard.schemaVersion === "1.2" ? (
+            {decisionRegionPresent ? (
               <ExecutiveBrief
                 dashboard={dashboard}
                 onEvidence={setEvidenceIds}

@@ -252,36 +252,43 @@ const dashboard = parseDashboardSpec({
 });
 
 describe("DashboardShell", () => {
-  it("renders the ordered executive brief before dashboard detail", () => {
+  it("leads the executive brief with one primary finding before supporting context and action", () => {
     const { container } = render(<DashboardShell dashboard={dashboard} />);
     const brief = screen.getByRole("region", { name: "Executive brief" });
-    const list = within(brief).getByRole("list");
-    const items = within(list).getAllByRole("listitem");
-    const labels = items.map(
+    const primary = within(brief).getByRole("article", {
+      name: "Primary finding",
+    });
+    const support = within(brief).getByRole("group", {
+      name: "Supporting context",
+    });
+    const action = within(brief).getByRole("article", {
+      name: "Next safe action",
+    });
+    const supportItems = within(support).getAllByRole("listitem");
+    const supportLabels = supportItems.map(
       (item) => item.querySelector(".executive-brief-label")?.textContent,
     );
 
-    expect(items).toHaveLength(4);
-    expect(labels).toEqual([
-      "Known",
-      "Changed",
-      "Important",
-      "Next safe action",
-    ]);
+    expect(within(primary).getByText("Important")).toBeInTheDocument();
     expect(
-      items.map(
+      within(primary).getByText("1 department needs attention"),
+    ).toBeInTheDocument();
+    expect(supportItems).toHaveLength(2);
+    expect(supportLabels).toEqual(["Known", "Changed"]);
+    expect(
+      supportItems.map(
         (item) => item.querySelector(".executive-statement-types")?.textContent,
       ),
-    ).toEqual([
-      "Observed · Calculated",
-      "Calculated",
-      "Interpreted",
-      "Recommended",
-    ]);
+    ).toEqual(["Observed · Calculated", "Calculated"]);
+    expect(
+      primary.querySelector(".executive-statement-types")?.textContent,
+    ).toBe("Interpreted");
+    expect(
+      action.querySelector(".executive-statement-types")?.textContent,
+    ).toBe("Recommended");
     for (const headline of [
       "3 departments reported",
       "Marketing rose fastest",
-      "1 department needs attention",
       "Review marketing spend",
     ]) {
       expect(within(brief).getByText(headline)).toBeInTheDocument();
@@ -295,6 +302,14 @@ describe("DashboardShell", () => {
       expect(within(brief).getByText(detail)).toBeInTheDocument();
     }
 
+    expect(
+      primary.compareDocumentPosition(support) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      support.compareDocumentPosition(action) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     const dashboardGrid = container.querySelector(".dashboard-grid");
     expect(
       brief.compareDocumentPosition(dashboardGrid!) &
@@ -327,20 +342,22 @@ describe("DashboardShell", () => {
     }
   });
 
-  it("shows the brief only on the first page without a separate mobile next card", () => {
+  it("shows one action on the first page and restores the sidebar action elsewhere", () => {
     const { container } = render(<DashboardShell dashboard={dashboard} />);
 
     expect(
       screen.getByRole("region", { name: "Executive brief" }),
     ).toBeInTheDocument();
     expect(container.querySelector(".mobile-next")).not.toBeInTheDocument();
-    expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+    expect(container.querySelector(".sidebar-next")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Review marketing spend")).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: /02Details/i }));
     expect(
       screen.queryByRole("region", { name: "Executive brief" }),
     ).not.toBeInTheDocument();
     expect(container.querySelector(".sidebar-next")).toBeInTheDocument();
+    expect(screen.getAllByText("Review marketing spend")).toHaveLength(1);
   });
 
   it("renders the overview, freshness state, and safe next action", () => {
