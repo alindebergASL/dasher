@@ -9,7 +9,7 @@
  */
 import { z } from "zod";
 
-import { SYSTEM_PROMPT, requestMessage } from "./anthropic";
+import { SYSTEM_PROMPT, requestMessage } from "./prompt";
 import type { PlanningProvider, PlanningRequest } from "./provider";
 import { TablePlanSchema } from "./table-plan";
 
@@ -36,6 +36,7 @@ export interface OpenRouterPlanningProviderOptions {
 }
 
 interface OpenRouterResponse {
+  readonly model?: string;
   readonly choices?: readonly {
     readonly message?: {
       readonly content?: string;
@@ -53,7 +54,6 @@ export class OpenRouterPlanningError extends Error {
 const tablePlanJsonSchema = z.toJSONSchema(TablePlanSchema);
 
 export class OpenRouterPlanningProvider implements PlanningProvider {
-  readonly id: string;
   readonly usesModel = true;
 
   private readonly apiKey: string;
@@ -65,6 +65,7 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
   private readonly siteUrl: string | undefined;
   private readonly appName: string | undefined;
   private readonly fetcher: typeof fetch;
+  private resolvedModel: string | undefined;
 
   constructor(options: OpenRouterPlanningProviderOptions) {
     const apiKey = options.apiKey.trim();
@@ -80,7 +81,6 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
     this.siteUrl = options.siteUrl?.trim() || undefined;
     this.appName = options.appName?.trim() || undefined;
     this.fetcher = options.fetcher ?? fetch;
-    this.id = `openrouter:${this.model}`;
 
     if (!Number.isInteger(this.maxTokens) || this.maxTokens < 1) {
       throw new Error("OpenRouter maxTokens must be a positive integer");
@@ -88,6 +88,11 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1) {
       throw new Error("OpenRouter timeoutMs must be a positive integer");
     }
+  }
+
+  /** The exact model OpenRouter says produced the latest plan, when available. */
+  get id(): string {
+    return `openrouter:${this.resolvedModel ?? this.model}`;
   }
 
   async plan(request: PlanningRequest): Promise<unknown> {
@@ -150,6 +155,14 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
     } catch {
       throw new OpenRouterPlanningError("OpenRouter response was not JSON");
     }
+
+    const responseModel = body.model?.trim();
+    if (responseModel === undefined || responseModel === "") {
+      throw new OpenRouterPlanningError(
+        "OpenRouter response did not identify the model",
+      );
+    }
+    this.resolvedModel = responseModel;
 
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string" || content.trim() === "") {

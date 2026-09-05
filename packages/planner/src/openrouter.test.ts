@@ -11,6 +11,8 @@ import { FakePlanningProvider } from "./provider";
 import { runTablePlanner } from "./run";
 import { AS_OF, sourceFor, transactionsTable } from "./test-tables";
 
+const testApiKey = "test-provider-key";
+
 function request(): PlanningRequest {
   const table = transactionsTable();
   return {
@@ -20,10 +22,15 @@ function request(): PlanningRequest {
   };
 }
 
-function response(content: unknown, status = 200): Response {
-  return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
-    status,
-  });
+function response(
+  content: unknown,
+  status = 200,
+  model = DEFAULT_OPENROUTER_MODEL,
+): Response {
+  return new Response(
+    JSON.stringify({ model, choices: [{ message: { content } }] }),
+    { status },
+  );
 }
 
 describe("OpenRouterPlanningProvider", () => {
@@ -112,6 +119,25 @@ describe("OpenRouterPlanningProvider", () => {
     expect(await provider.plan(request())).toBe("not-json");
   });
 
+  it("records the model OpenRouter says actually served an alias", async () => {
+    const provider = new OpenRouterPlanningProvider({
+      apiKey: testApiKey,
+      model: "openrouter/auto",
+      fetcher: vi
+        .fn()
+        .mockResolvedValue(
+          response(
+            JSON.stringify({ planVersion: "table-plan-v1" }),
+            200,
+            "z-ai/glm-5.3",
+          ),
+        ),
+    });
+    expect(provider.id).toBe("openrouter:openrouter/auto");
+    await provider.plan(request());
+    expect(provider.id).toBe("openrouter:z-ai/glm-5.3");
+  });
+
   it("reports only provider status and never its potentially sensitive body", async () => {
     const provider = new OpenRouterPlanningProvider({
       apiKey: "x",
@@ -129,6 +155,9 @@ describe("OpenRouterPlanningProvider", () => {
     for (const returned of [
       new Response("not-json"),
       new Response(JSON.stringify({ choices: [] })),
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: "{}" } }] }),
+      ),
       new Response("x".repeat(128 * 1024 + 1)),
     ]) {
       const provider = new OpenRouterPlanningProvider({

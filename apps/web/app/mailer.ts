@@ -44,8 +44,13 @@ export interface SignInMailer {
 }
 
 export interface SesMailClient {
-  send(command: SendEmailCommand): Promise<unknown>;
+  send(
+    command: SendEmailCommand,
+    options?: { readonly abortSignal?: AbortSignal },
+  ): Promise<unknown>;
 }
+
+export const DEFAULT_SES_TIMEOUT_MS = 20_000;
 
 /**
  * The origin sign-in links are built from.
@@ -151,7 +156,14 @@ function resendMailer(apiKey: string, from: string): SignInMailer {
  * SES through the AWS credential chain. On EC2 this means the instance role;
  * no long-lived mail credential belongs in `deploy/.env`.
  */
-export function sesMailer(client: SesMailClient, from: string): SignInMailer {
+export function sesMailer(
+  client: SesMailClient,
+  from: string,
+  timeoutMs: number = DEFAULT_SES_TIMEOUT_MS,
+): SignInMailer {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("SES timeoutMs must be a positive integer");
+  }
   return {
     transport: "ses",
     async sendSignInLink(recipient, link) {
@@ -167,7 +179,9 @@ export function sesMailer(client: SesMailClient, from: string): SignInMailer {
         },
       };
       try {
-        await client.send(new SendEmailCommand(input));
+        await client.send(new SendEmailCommand(input), {
+          abortSignal: AbortSignal.timeout(timeoutMs),
+        });
       } catch {
         // No provider body, address, or link in the error crossing this seam.
         throw new MailerError("delivery_failed", "SES delivery failed");

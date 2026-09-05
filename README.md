@@ -33,7 +33,10 @@ and archiving work.
 The fake planner is the permanent test substrate and what CI runs. A missing
 provider-specific key is an error, never a fallback. OpenRouter requests require
 structured-output support, deny data-collecting routes, require ZDR, and disable
-silent provider fallback.
+silent provider fallback. Those request controls govern the inference endpoint;
+they cannot turn off OpenRouter account-level opt-ins. Keep **Input & Output
+Logging** disabled in Observability and **OpenRouter Use of Inputs/Outputs**
+disabled in Privacy, or spreadsheet samples may be retained despite ZDR routing.
 
 ## Check it
 

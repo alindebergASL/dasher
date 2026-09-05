@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DEFAULT_SES_TIMEOUT_MS,
   mailer,
   publicOrigin,
   sesMailer,
@@ -278,6 +279,12 @@ describe("the provider transport", () => {
 });
 
 describe("the SES transport", () => {
+  it("rejects a non-positive request deadline", () => {
+    expect(() =>
+      sesMailer({ send: vi.fn() }, "noreply@luckbutton.com", 0),
+    ).toThrow(/timeoutMs/u);
+  });
+
   it("sends the same single-use message through the injected AWS client", async () => {
     const send = vi.fn().mockResolvedValue({ MessageId: "message-1" });
     const transport = sesMailer({ send }, "noreply@luckbutton.com");
@@ -311,6 +318,11 @@ describe("the SES transport", () => {
     expect(command.input.Content.Simple.Body.Text.Data).toContain(
       "https://luckbutton.com/sign-in/verify?token=abc",
     );
+    const options = send.mock.calls[0]?.[1] as {
+      abortSignal?: AbortSignal;
+    };
+    expect(options.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(DEFAULT_SES_TIMEOUT_MS).toBe(20_000);
   });
 
   it("turns AWS failures into a safe delivery error", async () => {
@@ -324,6 +336,27 @@ describe("the SES transport", () => {
     expect(error).toMatchObject({ code: "delivery_failed" });
     expect(String(error)).not.toContain("SECRET");
     expect(String(error)).not.toContain("person@example.com");
+  });
+
+  it("aborts a stalled SES request at the configured deadline", async () => {
+    const send = vi.fn(
+      (_command: unknown, options?: { readonly abortSignal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.abortSignal;
+          if (signal === undefined) {
+            reject(new Error("missing abort signal"));
+            return;
+          }
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        }),
+    );
+    const transport = sesMailer({ send }, "noreply@luckbutton.com", 5);
+    await expect(
+      transport.sendSignInLink("person@example.com", "https://x/link"),
+    ).rejects.toMatchObject({ code: "delivery_failed" });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

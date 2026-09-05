@@ -67,6 +67,9 @@ role, set `DASHER_MAIL_TRANSPORT=ses`, `DASHER_MAIL_FROM`, and `AWS_REGION`.
 Verify OpenRouter authentication, the SES identity/account state, and the S3
 bucket/instance-profile attachment before starting containers; a syntactically
 complete `.env` is not proof that any of those external dependencies accepts it.
+Also verify the OpenRouter account has Input & Output Logging and OpenRouter Use
+of Inputs/Outputs disabled. Per-request ZDR constrains provider routing; it does
+not override either account-level opt-in.
 
 ```sh
 set -a && . deploy/.env && set +a
