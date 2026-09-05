@@ -13,10 +13,10 @@ import {
 import { DashboardShell } from "./dashboard-shell";
 
 const REQUESTS = [
-  "Where is the money going, and what changed last month?",
+  "What changed last month?",
   "Spending by category, quarterly",
   "Which lines are over budget?",
-  "Largest transactions and the biggest movers",
+  "Show the biggest movers",
 ] as const;
 
 const REFINEMENTS = [
@@ -25,6 +25,16 @@ const REFINEMENTS = [
   "Just the overview",
   "Show the last 3 months",
 ] as const;
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1000) return `${String(bytes)} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+type DisplayedSource =
+  | { readonly kind: "sample" }
+  | { readonly kind: "upload"; readonly name?: string };
 
 export function RequestWorkspace({
   initial,
@@ -38,7 +48,11 @@ export function RequestWorkspace({
   const [activeRequest, setActiveRequest] = useState(initialRequest);
   const [change, setChange] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
-  const [fileName, setFileName] = useState<string | undefined>(undefined);
+  const [selectedFile, setSelectedFile] = useState<File | undefined>(undefined);
+  const [displayedSource, setDisplayedSource] = useState<DisplayedSource>(
+    initial.source?.kind === "upload" ? { kind: "upload" } : { kind: "sample" },
+  );
+  const [draggingFile, setDraggingFile] = useState(false);
   const [version, setVersion] = useState(0);
   const [pending, startTransition] = useTransition();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -48,16 +62,32 @@ export function RequestWorkspace({
   const plan = result.plan;
 
   function currentFile(): File | undefined {
-    const file = fileInput.current?.files?.[0];
+    const file = selectedFile;
     return file !== undefined && file.size > 0 ? file : undefined;
   }
 
-  function apply(next: PlanResult, nextRequest: string) {
+  function selectFile(file: File | undefined) {
+    if (file === undefined || file.size === 0) return;
+    setSelectedFile(file);
+    setError(undefined);
+  }
+
+  function useSampleData() {
+    setSelectedFile(undefined);
+    if (fileInput.current !== null) fileInput.current.value = "";
+  }
+
+  function apply(
+    next: PlanResult,
+    nextRequest: string,
+    sourceUsed: DisplayedSource,
+  ) {
     if (!next.ok || next.dashboard === undefined) {
       setError(next.error ?? "That request could not be built.");
       return;
     }
     setResult(next);
+    setDisplayedSource(sourceUsed);
     setActiveRequest(nextRequest);
     setError(next.error);
     setChange("");
@@ -84,10 +114,15 @@ export function RequestWorkspace({
   function build(text: string) {
     const form = sourceForm();
     if (form === undefined) return;
+    const file = currentFile();
+    const sourceUsed: DisplayedSource =
+      file === undefined
+        ? { kind: "sample" }
+        : { kind: "upload", name: file.name };
     form.set("request", text);
     setRequest(text);
     startTransition(async () => {
-      apply(await buildDashboard(form), text);
+      apply(await buildDashboard(form), text, sourceUsed);
     });
   }
 
@@ -95,12 +130,17 @@ export function RequestWorkspace({
     if (plan === undefined) return;
     const form = sourceForm();
     if (form === undefined) return;
+    const file = currentFile();
+    const sourceUsed: DisplayedSource =
+      file === undefined
+        ? { kind: "sample" }
+        : { kind: "upload", name: file.name };
     form.set("request", activeRequest);
     form.set("plan", JSON.stringify(plan));
     form.set("instruction", instruction);
     setChange(instruction);
     startTransition(async () => {
-      apply(await buildDashboard(form), activeRequest);
+      apply(await buildDashboard(form), activeRequest, sourceUsed);
     });
   }
 
@@ -113,61 +153,165 @@ export function RequestWorkspace({
           build(request);
         }}
       >
-        <div className="request-source">
-          <label className="request-label" htmlFor="dashboard-file">
-            Your spreadsheet (CSV)
-          </label>
-          <input
-            accept=".csv,text/csv,text/tab-separated-values"
-            aria-label="Your spreadsheet (CSV)"
-            className="upload-file"
-            id="dashboard-file"
-            name="file"
-            onChange={(event) => {
-              setFileName(event.target.files?.[0]?.name);
-            }}
-            ref={fileInput}
-            type="file"
-          />
-          <p className="request-note">
-            {fileName === undefined
-              ? "No file chosen, so requests run against the sample: eight months of operating transactions."
-              : `Building from ${fileName}. The file is read on the server and, when you are signed in, kept as the evidence behind the dashboard.`}
-          </p>
-        </div>
-        <label className="request-label" htmlFor="dashboard-request">
-          What do you want to see?
-        </label>
-        <div className="request-row">
-          <input
-            aria-label="What do you want to see?"
-            autoComplete="off"
-            className="request-input"
-            id="dashboard-request"
-            maxLength={REQUEST_MAX_LENGTH}
-            name="request"
-            onChange={(event) => setRequest(event.target.value)}
-            placeholder="Where is the money going?"
-            type="text"
-            value={request}
-          />
-          <button className="request-submit" disabled={pending} type="submit">
-            {pending ? "Building…" : "Build dashboard"}
-          </button>
-        </div>
-        <div className="request-examples">
-          <span className="request-examples-label">Try:</span>
-          {REQUESTS.map((example) => (
-            <button
-              className="request-example"
-              disabled={pending}
-              key={example}
-              onClick={() => build(example)}
-              type="button"
+        <header className="composer-heading">
+          <div>
+            <span className="composer-kicker">Dashboard workspace</span>
+            <h2>Ask Dasher</h2>
+            <p>Ask with the sample data, or bring a CSV of your own.</p>
+          </div>
+        </header>
+
+        <div className="request-composer">
+          <div className="request-compose-body">
+            <label className="request-label" htmlFor="dashboard-request">
+              What should this dashboard answer?
+            </label>
+            <textarea
+              aria-describedby="dashboard-source-status"
+              aria-label="What should this dashboard answer?"
+              autoComplete="off"
+              className="request-input request-prompt"
+              id="dashboard-request"
+              maxLength={REQUEST_MAX_LENGTH}
+              name="request"
+              onChange={(event) => setRequest(event.target.value)}
+              placeholder="Where is the money going, and what changed?"
+              rows={3}
+              value={request}
+            />
+            <div className="request-examples">
+              <span className="request-examples-label">Start with</span>
+              {REQUESTS.map((example) => (
+                <button
+                  className="request-example"
+                  disabled={pending}
+                  key={example}
+                  onClick={() => build(example)}
+                  type="button"
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+            <div className="composer-footer">
+              <p
+                aria-label="Planning status"
+                className="composer-trust"
+                role="status"
+              >
+                {result.usesModel
+                  ? "AI arranges safe metadata. Trusted code computes every number."
+                  : "Trusted code computes every number."}
+                {(result.attempts ?? 1) > 1
+                  ? " An unsafe first plan was rejected before rendering."
+                  : ""}
+              </p>
+              <button
+                className="request-submit"
+                disabled={pending}
+                type="submit"
+              >
+                {pending ? "Building…" : "Build dashboard"}
+                <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </div>
+
+          <aside aria-label="Choose data source" className="request-source">
+            <span className="request-label">Data source</span>
+            <div
+              className={`source-dropzone${draggingFile ? " source-dropzone-active" : ""}`}
+              data-testid="source-dropzone"
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDraggingFile(true);
+              }}
+              onDragLeave={(event) => {
+                if (
+                  !event.currentTarget.contains(
+                    event.relatedTarget as Node | null,
+                  )
+                ) {
+                  setDraggingFile(false);
+                }
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDraggingFile(false);
+                selectFile(event.dataTransfer.files[0]);
+              }}
             >
-              {example}
-            </button>
-          ))}
+              <label className="source-picker" htmlFor="dashboard-file">
+                <input
+                  accept=".csv,text/csv,text/tab-separated-values"
+                  aria-label="Choose a CSV data source"
+                  className="upload-file"
+                  id="dashboard-file"
+                  name="file"
+                  onChange={(event) => selectFile(event.target.files?.[0])}
+                  ref={fileInput}
+                  type="file"
+                />
+                <span aria-hidden="true" className="source-icon">
+                  {selectedFile === undefined ? "+" : "✓"}
+                </span>
+                <span className="source-copy">
+                  <strong>
+                    {selectedFile === undefined
+                      ? "Sample operating data"
+                      : selectedFile.name}
+                  </strong>
+                  <span>
+                    {selectedFile === undefined
+                      ? "Eight months · ready to explore"
+                      : `${formatFileSize(selectedFile.size)} · selected`}
+                  </span>
+                </span>
+                <span className="source-action">
+                  {selectedFile === undefined ? "Choose CSV" : "Replace"}
+                </span>
+              </label>
+            </div>
+            <div className="source-status-row">
+              <p
+                aria-atomic="true"
+                aria-label="Data source"
+                className="source-status"
+                id="dashboard-source-status"
+                role="status"
+              >
+                <span aria-hidden="true" className="source-status-dot" />
+                {selectedFile === undefined
+                  ? "Next build: sample data."
+                  : `Next build: uploaded file ${selectedFile.name}.`}
+              </p>
+              {selectedFile === undefined ? null : (
+                <button
+                  className="source-reset"
+                  onClick={useSampleData}
+                  type="button"
+                >
+                  Use sample data
+                </button>
+              )}
+            </div>
+            <p className="source-current">
+              Displayed dashboard:{" "}
+              {displayedSource.kind === "sample"
+                ? "sample data."
+                : displayedSource.name === undefined
+                  ? "uploaded data."
+                  : `${displayedSource.name}.`}
+            </p>
+            <p className="source-hint">
+              Files are sent to the server for validation. When signed in,
+              uploads are stored as dashboard evidence.
+            </p>
+          </aside>
         </div>
         {error ? (
           <p className="request-error" role="alert">
@@ -181,18 +325,6 @@ export function RequestWorkspace({
               ? ""
               : `Dashboard updated for ${activeRequest}. Review the dataset interpretation before acting.`}
         </span>
-        <p aria-label="Planning status" className="request-note" role="status">
-          {result.usesModel
-            ? "A planning model chose the layout from safe column metadata, never source values or totals."
-            : "The built-in planner chose the layout."}{" "}
-          Every number below is computed from the dataset.
-          {(result.attempts ?? 1) > 1
-            ? " The first plan was rejected by Dasher and corrected before anything rendered."
-            : ""}{" "}
-          <a className="request-permalink" href="/dashboards">
-            Your dashboards
-          </a>
-        </p>
       </form>
 
       {result.interpretation === undefined ? null : (

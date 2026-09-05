@@ -49,15 +49,20 @@ describe("RequestWorkspace", () => {
     expect(
       screen.getByRole("region", { name: "Dataset interpretation" }),
     ).toHaveTextContent(/Amount as the primary measure/iu);
-    expect(screen.getByText(/built-in planner/u)).toBeInTheDocument();
+    expect(
+      screen.getByText(/trusted code computes every number/iu),
+    ).toBeInTheDocument();
   });
 
   it("builds against the sample when no file is chosen", async () => {
     buildDashboard.mockResolvedValue(initial);
     render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
-    fireEvent.change(screen.getByLabelText("What do you want to see?"), {
-      target: { value: "Spending by category" },
-    });
+    fireEvent.change(
+      screen.getByLabelText("What should this dashboard answer?"),
+      {
+        target: { value: "Spending by category" },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
     await waitFor(() => expect(buildDashboard).toHaveBeenCalledTimes(1));
     const form = lastForm();
@@ -119,5 +124,99 @@ describe("RequestWorkspace", () => {
     render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
     fireEvent.click(screen.getByRole("button", { name: "Exclude salaries" }));
     await screen.findByText(/already looks like that/u);
+  });
+
+  it("presents one source-aware Ask Dasher composer", () => {
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Ask Dasher" }),
+    ).toBeInTheDocument();
+    const request = screen.getByRole("textbox", {
+      name: "What should this dashboard answer?",
+    });
+    expect(request).toBeInstanceOf(HTMLTextAreaElement);
+    expect(screen.getByLabelText("Choose a CSV data source")).toHaveAttribute(
+      "type",
+      "file",
+    );
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(/Next build: sample data/iu);
+    expect(
+      screen.getByText(/Displayed dashboard: sample data/iu),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /When signed in, uploads are stored as dashboard evidence/iu,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Use sample data" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the next-build source distinct from the displayed dashboard", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const file = new File(["Date,Amount\n2026-01-01,25"], "operations.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [file] },
+    });
+
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(/Next build: uploaded file operations\.csv/iu);
+    expect(
+      screen.getByText(/Displayed dashboard: sample data/iu),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Displayed dashboard: operations\.csv/iu),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use sample data" }));
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(/Next build: sample data/iu);
+    expect(
+      screen.getByText(/Displayed dashboard: operations\.csv/iu),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves a long wrapping question without functional truncation", () => {
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const request = screen.getByRole("textbox", {
+      name: "What should this dashboard answer?",
+    });
+    const longQuestion =
+      "Compare customer growth with headcount by quarter, explain where the relationship changed, and identify the one segment an operator should investigate next.";
+
+    fireEvent.change(request, { target: { value: longQuestion } });
+
+    expect(request).toHaveValue(longQuestion);
+    expect(request).toHaveAttribute("rows", "3");
+  });
+
+  it("builds from a dropped CSV source", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const file = new File(["Date,Amount\n2026-01-01,25"], "dropped.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.drop(screen.getByTestId("source-dropzone"), {
+      dataTransfer: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+
+    await waitFor(() => expect(buildDashboard).toHaveBeenCalledTimes(1));
+    expect((lastForm().get("file") as File).name).toBe("dropped.csv");
   });
 });

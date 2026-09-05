@@ -21,7 +21,55 @@ test.describe("the sample dashboard", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("status", { name: "Planning status" }),
-    ).toContainText(/computed from the dataset/i);
+    ).toContainText(/trusted code computes every number/i);
+  });
+
+  test("the composer is source-aware, keyboard reachable, and width-safe", async ({
+    page,
+  }) => {
+    for (const viewport of [
+      { width: 1440, height: 1000 },
+      { width: 768, height: 1000 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto("/");
+      await expect(
+        page.getByRole("heading", { level: 2, name: "Ask Dasher" }),
+      ).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth === window.innerWidth,
+        ),
+      ).toBe(true);
+    }
+
+    const fileInput = page.getByLabel("Choose a CSV data source");
+    await fileInput.focus();
+    await expect(fileInput).toBeFocused();
+    await fileInput.setInputFiles({
+      name: "operations.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("Date,Amount\n2026-01-01,25"),
+    });
+    await expect(
+      page.getByRole("status", { name: "Data source" }),
+    ).toContainText("Next build: uploaded file operations.csv");
+    await expect(
+      page.getByText("Displayed dashboard: sample data."),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Use sample data" }).click();
+    await expect(
+      page.getByRole("status", { name: "Data source" }),
+    ).toContainText("Next build: sample data");
+
+    const question = page.getByRole("textbox", {
+      name: "What should this dashboard answer?",
+    });
+    const longQuestion =
+      "Compare customer growth with headcount by quarter, explain where the relationship changed, and identify the one segment an operator should investigate next without hiding any part of this question.";
+    await question.fill(longQuestion);
+    await expect(question).toHaveValue(longQuestion);
   });
 
   test("builds a different dashboard for a different request", async ({
@@ -33,7 +81,7 @@ test.describe("the sample dashboard", () => {
       .first()
       .textContent();
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Largest transactions and the biggest movers");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
@@ -69,7 +117,7 @@ test.describe("the sample dashboard", () => {
   test("refuses an empty request with a sentence", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(page.locator(".request-error")).toContainText(/say what/i);

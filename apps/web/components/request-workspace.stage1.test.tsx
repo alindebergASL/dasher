@@ -78,7 +78,7 @@ describe("stage 1 request workspace interpretation strip", () => {
     }
 
     const requestInput = screen.getByRole("textbox", {
-      name: "What do you want to see?",
+      name: "What should this dashboard answer?",
     });
     const heading = screen.getByRole("heading", {
       level: 1,
@@ -175,12 +175,14 @@ describe("stage 1 request workspace interpretation strip", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Your spreadsheet (CSV)")).toHaveAttribute(
+    expect(screen.getByLabelText("Choose a CSV data source")).toHaveAttribute(
       "aria-label",
-      "Your spreadsheet (CSV)",
+      "Choose a CSV data source",
     );
     expect(
-      screen.getByRole("textbox", { name: "What do you want to see?" }),
-    ).toHaveAttribute("aria-label", "What do you want to see?");
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toHaveAttribute("aria-label", "What should this dashboard answer?");
   });
 });
