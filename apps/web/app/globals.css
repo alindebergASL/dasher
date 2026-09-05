@@ -902,6 +902,7 @@ footer {
 }
 .evidence-modal {
   width: min(680px, 100%);
+  min-width: 0;
   padding: 26px;
 }
 .modal-heading {
@@ -992,13 +993,16 @@ footer {
 }
 .evidence-list {
   display: grid;
+  min-width: 0;
   gap: 12px;
   margin-top: 22px;
 }
 .evidence-list article {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 15px;
+  overflow-wrap: anywhere;
 }
 .evidence-kind,
 .confidence {

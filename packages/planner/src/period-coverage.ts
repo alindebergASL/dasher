@@ -267,6 +267,7 @@ export function analyzePeriodCoverage(
   periods: readonly string[],
   observations: readonly PeriodObservation[],
   invalidPeriodCount: number,
+  unreadableAmountPeriods: ReadonlySet<string> = new Set(),
 ): PeriodCoverage {
   const latestPeriod = periods.at(-1);
   const previousPeriod = periods.length >= 2 ? periods.at(-2) : undefined;
@@ -293,6 +294,17 @@ export function analyzePeriodCoverage(
       observations,
       previousPeriod,
       "At least one selected row has a missing or invalid period value.",
+    );
+  }
+  if (
+    unreadableAmountPeriods.has(latestPeriod) ||
+    unreadableAmountPeriods.has(previousPeriod)
+  ) {
+    return unknown(
+      latestPeriod,
+      observations,
+      previousPeriod,
+      "At least one selected row in the latest or prior analysis period has an unreadable amount value.",
     );
   }
 

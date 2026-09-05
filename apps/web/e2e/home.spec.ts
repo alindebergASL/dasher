@@ -131,10 +131,79 @@ test.describe("the sample dashboard", () => {
     ).toBe(true);
   });
 
+  test("contains and wraps long evidence tokens in a 390px modal", async ({
+    page,
+  }) => {
+    const stylesheet = await readFile(
+      path.resolve(process.cwd(), "app", "globals.css"),
+      "utf8",
+    );
+    const token = "a".repeat(DASHBOARD_STRING_LIMITS.longText);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.setContent(`
+      <div class="modal-backdrop">
+        <aside class="modal evidence-modal" role="dialog">
+          <div class="modal-heading"><h2>Why Dasher says this</h2></div>
+          <div class="evidence-list">
+            <article>
+              <h3>Uploaded file period-coverage.csv</h3>
+              <p>sha256 ${token}</p>
+              <span>${token}</span>
+            </article>
+          </div>
+        </aside>
+      </div>
+    `);
+    await page.addStyleTag({ content: stylesheet });
+
+    const containment = await page.evaluate(() => {
+      const modal = document.querySelector(".evidence-modal")!;
+      const card = document.querySelector(".evidence-list article")!;
+      const tokens = [...card.querySelectorAll("p, span")];
+      const viewport = document.documentElement.clientWidth;
+      const modalRect = modal.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      return {
+        documentContained: document.documentElement.scrollWidth <= viewport,
+        modalContained: modalRect.left >= 0 && modalRect.right <= viewport,
+        cardContained:
+          cardRect.left >= modalRect.left && cardRect.right <= modalRect.right,
+        tokensWrapped: tokens.every(
+          (token) => token.scrollWidth <= token.clientWidth,
+        ),
+      };
+    });
+    expect(containment).toEqual({
+      documentContained: true,
+      modalContained: true,
+      cardContained: true,
+      tokensWrapped: true,
+    });
+  });
+
   test("keeps trend labels, values, and evidence inside their cards", async ({
     page,
   }) => {
     await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "complete-months.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Category,Amount",
+          "2026-01-01,All,10",
+          "2026-02-01,All,20",
+          "2026-03-01,All,30",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Show amount over time");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
     const cards = page.locator(".trend-card");
     await expect(cards.first()).toBeVisible();
     const violations = await cards.evaluateAll((nodes) =>

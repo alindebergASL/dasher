@@ -93,17 +93,30 @@ function ExecutiveBrief({
   dashboard: Extract<DashboardSpec, { schemaVersion: "1.2" }>;
   onEvidence: (ids: string[]) => void;
 }) {
+  const important = dashboard.executiveBrief.important;
+  const trustedCoveragePrimary =
+    important.evidenceIds.length === 1 &&
+    important.evidenceIds[0] === "period-coverage" &&
+    dashboard.evidence.some(
+      (item) =>
+        item.id === "period-coverage" &&
+        item.kind === "calculated" &&
+        item.confidence === "high",
+    );
   const supportingItems = [
     {
       label: "Known",
       ...dashboard.executiveBrief.known,
     },
-    {
-      label: "Changed",
-      ...dashboard.executiveBrief.changed,
-    },
+    ...(trustedCoveragePrimary
+      ? []
+      : [
+          {
+            label: "Changed",
+            ...dashboard.executiveBrief.changed,
+          },
+        ]),
   ];
-  const important = dashboard.executiveBrief.important;
 
   const statementTypes = (values: string[]) =>
     values.map((value) => value[0]!.toUpperCase() + value.slice(1)).join(" · ");

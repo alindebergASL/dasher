@@ -512,7 +512,13 @@ function trend(
   ctx: SectionContext,
 ): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
-  if (facts.periods.length < 2) return undefined;
+  if (
+    facts.periods.length < 2 ||
+    facts.periodCoverage.comparisonDisposition === "unavailable-partial" ||
+    facts.periodCoverage.comparisonDisposition === "unavailable-unknown"
+  ) {
+    return undefined;
+  }
   const unit = money.currency ?? "amount";
   // RULE: a chart point carries the same figure the page prints, rounded to the
   // money scale before it becomes a JavaScript number.

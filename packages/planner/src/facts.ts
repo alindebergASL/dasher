@@ -349,6 +349,8 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   let filteredOut = 0;
   let outsideWindow = 0;
   let invalidPeriodCount = 0;
+  let periodObservations: PeriodObservation[] = [];
+  let unreadableAmountPeriods = new Set<string>();
   let rows: FactRow[] = [];
   for (const [index, cells] of table.rows.entries()) {
     if (!passesFilters(cells, plan, table, categoryAt)) {
@@ -364,11 +366,23 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
       invalidPeriodCount += 1;
       continue;
     }
+    if (parsedPeriod !== undefined) {
+      periodObservations.push({
+        period: parsedPeriod.period,
+        at: parsedPeriod.observedAt,
+        ...(parsedPeriod.observedGrain === undefined
+          ? {}
+          : { grain: parsedPeriod.observedGrain }),
+      });
+    }
     const amount = parseAmount(cells[amountAt] ?? "", {
       decimal: amountColumn?.decimal,
     });
     if (amount === null) {
       skipped += 1;
+      if (parsedPeriod !== undefined) {
+        unreadableAmountPeriods.add(parsedPeriod.period);
+      }
       continue;
     }
     const budgetText =
@@ -406,15 +420,19 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   }
 
   let periods = [
-    ...new Set(
-      rows.flatMap((row) => (row.period === undefined ? [] : [row.period])),
-    ),
+    ...new Set(periodObservations.map((observation) => observation.period)),
   ].sort(comparePeriods);
   if (plan.lastPeriods !== undefined && periods.length > plan.lastPeriods) {
     const kept = new Set(periods.slice(-plan.lastPeriods));
     const before = rows.length;
     rows = rows.filter(
       (row) => row.period !== undefined && kept.has(row.period),
+    );
+    periodObservations = periodObservations.filter((observation) =>
+      kept.has(observation.period),
+    );
+    unreadableAmountPeriods = new Set(
+      [...unreadableAmountPeriods].filter((period) => kept.has(period)),
     );
     outsideWindow += before - rows.length;
     periods = periods.filter((period) => kept.has(period));
@@ -428,20 +446,9 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
   const periodCoverage = analyzePeriodCoverage(
     grain,
     periods,
-    rows.flatMap((row): PeriodObservation[] =>
-      row.period === undefined || row.observedAt === undefined
-        ? []
-        : [
-            {
-              period: row.period,
-              at: row.observedAt,
-              ...(row.observedGrain === undefined
-                ? {}
-                : { grain: row.observedGrain }),
-            },
-          ],
-    ),
+    periodObservations,
     invalidPeriodCount,
+    unreadableAmountPeriods,
   );
   const periodsComparable =
     periodCoverage.comparisonDisposition === "available";

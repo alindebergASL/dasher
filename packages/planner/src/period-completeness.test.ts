@@ -60,6 +60,32 @@ function table(rows: readonly (readonly string[])[]): Table {
   });
 }
 
+function relationshipTable(rows: readonly (readonly string[])[]): Table {
+  return profileTable({
+    headers: ["Date", "Category", "Amount", "Comparison"],
+    rows,
+  });
+}
+
+function relationshipPlan(grain: TablePlan["grain"]): TablePlan {
+  return {
+    ...plan(grain, [
+      "summary",
+      "headline-totals",
+      "movers",
+      "trend",
+      "relationship",
+    ]),
+    roles: {
+      amount: "Amount",
+      comparison: "Comparison",
+      period: "Date",
+      category: "Category",
+    },
+    relationship: { operation: "ratio" },
+  };
+}
+
 function monthlyRows(
   includeSeptember: boolean,
 ): readonly (readonly string[])[] {
@@ -140,18 +166,18 @@ describe("period completeness safety", () => {
     expect
       .soft(spec.pages[0]?.description)
       .toBe(
-        "Q3 2026 is partial; current-vs-prior change and category movers are unavailable. Coverage includes 2 of 3 expected monthly observations.",
+        "Q3 2026 coverage is partial (2 of 3 expected monthly observations). Comparative findings are withheld.",
       );
     expect.soft(spec.executiveBrief.important).toMatchObject({
       headline: "Q3 2026 is partial; current-vs-prior change is unavailable",
       detail:
-        "Q3 2026 has 2 of 3 expected monthly observations; observed dates run from 2026-07-01 through 2026-08-01, inside expected bounds 2026-07-01 through 2026-09-30. Q2 2026 has all 3 expected observations. Current-vs-prior change is unavailable because the latest period is partial.",
-      evidenceIds: expect.arrayContaining(["period-coverage"]),
+        "Q3 2026 has 2 of 3 expected monthly observations; Q2 2026 is complete with 3 monthly observations. The periods are not like-for-like, so current-vs-prior change is unavailable.",
+      evidenceIds: ["period-coverage"],
     });
     expect.soft(spec.nextAction).toMatchObject({
       title: "Complete or confirm Q3 2026 coverage before comparison",
       detail:
-        "Q3 2026 has 2 of 3 expected monthly observations; observed dates run from 2026-07-01 through 2026-08-01, inside expected bounds 2026-07-01 through 2026-09-30. Q2 2026 has all 3 expected observations. Current-vs-prior change is unavailable because the latest period is partial. Complete or confirm the 1 missing expected monthly observation for Q3 2026, then rebuild before comparing it with Q2 2026.",
+        "Confirm or complete the 1 missing monthly observation for Q3 2026 shown in the linked period evidence, then rebuild before comparing with Q2 2026.",
       evidenceIds: expect.arrayContaining(["period-coverage"]),
     });
     expect.soft(spec.executiveBrief.important.headline).not.toContain("Alpha");
@@ -161,6 +187,16 @@ describe("period completeness safety", () => {
       spec.pages
         .flatMap((page) => page.components)
         .some((one) => one.id.endsWith("-movers")),
+    ).toBe(false);
+    expect(
+      spec.pages
+        .flatMap((page) => page.components)
+        .some((one) => one.kind === "trend-list"),
+    ).toBe(false);
+    expect(
+      spec.pages
+        .flatMap((page) => page.components)
+        .some((one) => one.id.endsWith("-summary")),
     ).toBe(false);
     expect(spec.evidence.find((item) => item.id === "period-coverage")).toEqual(
       expect.objectContaining({
@@ -196,6 +232,11 @@ describe("period completeness safety", () => {
       spec.pages
         .flatMap((page) => page.components)
         .some((one) => one.id.endsWith("-movers")),
+    ).toBe(true);
+    expect(
+      spec.pages
+        .flatMap((page) => page.components)
+        .some((one) => one.kind === "trend-list"),
     ).toBe(true);
   });
 
@@ -293,19 +334,19 @@ describe("period completeness safety", () => {
     expect
       .soft(spec.pages[0]?.description)
       .toBe(
-        "Coverage for Feb 2026 is unknown; current-vs-prior change and category movers are unavailable. The observed dates do not establish a regular daily, monthly, quarterly, or yearly frequency.",
+        "Coverage for Feb 2026 could not be established. Comparative findings are withheld.",
       );
     expect.soft(spec.executiveBrief.important).toMatchObject({
       headline:
         "Coverage for Feb 2026 is unknown; current-vs-prior change is unavailable",
       detail:
-        "The observed dates do not establish a regular daily, monthly, quarterly, or yearly frequency.",
-      evidenceIds: expect.arrayContaining(["period-coverage"]),
+        "Comparable coverage for Feb 2026 and Jan 2026 cannot be established, so current-vs-prior change is unavailable. See the linked period evidence for the observed dates and reason.",
+      evidenceIds: ["period-coverage"],
     });
     expect.soft(spec.nextAction).toMatchObject({
       title: "Verify Feb 2026 dates and coverage before comparison",
       detail:
-        "The observed dates do not establish a regular daily, monthly, quarterly, or yearly frequency. Verify or correct the source dates and coverage, then rebuild before comparing Feb 2026 with Jan 2026.",
+        "Verify or correct the source dates and coverage shown in the linked period evidence, then rebuild before comparing Feb 2026 with Jan 2026.",
       evidenceIds: expect.arrayContaining(["period-coverage"]),
     });
     expect.soft(spec.executiveBrief.important.headline).not.toContain("Alpha");
@@ -315,6 +356,57 @@ describe("period completeness safety", () => {
         expect.objectContaining({ id: expect.stringMatching(/-movers$/u) }),
       ]),
     );
+    expect(
+      spec.pages
+        .flatMap((page) => page.components)
+        .some((one) => one.kind === "trend-list"),
+    ).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "a unique newer date with an unreadable amount",
+      rows: [
+        ["2026-01-01", "Alpha", "100", "10"],
+        ["2026-02-01", "Alpha", "120", "12"],
+        ["2026-03-01", "Alpha", "not-an-amount", "15"],
+      ],
+      latestPeriod: "2026-03",
+      previousPeriod: "2026-02",
+    },
+    {
+      name: "a duplicate latest date with an unreadable amount",
+      rows: [
+        ["2026-01-01", "Alpha", "100", "10"],
+        ["2026-02-01", "Alpha", "120", "12"],
+        ["2026-02-01", "Beta", "not-an-amount", "3"],
+      ],
+      latestPeriod: "2026-02",
+      previousPeriod: "2026-01",
+    },
+  ])("fails every current-vs-prior comparison closed for $name", (scenario) => {
+    const facts = computeFacts(
+      relationshipPlan("month"),
+      relationshipTable(scenario.rows),
+    );
+
+    expect(facts.latestPeriod).toBe(scenario.latestPeriod);
+    expect(facts.previousPeriod).toBe(scenario.previousPeriod);
+    expect(facts.periodCoverage).toMatchObject({
+      status: "unknown",
+      latestPeriod: scenario.latestPeriod,
+      priorPeriod: scenario.previousPeriod,
+      comparisonDisposition: "unavailable-unknown",
+      reason:
+        "At least one selected row in the latest or prior analysis period has an unreadable amount value.",
+    });
+    expect(facts.change).toBeUndefined();
+    expect(facts.changePercent).toBeUndefined();
+    expect(facts.movers).toEqual([]);
+    expect(facts.relationshipSupport).toBe("period-unknown");
+    expect(facts.relationshipRatio).toBeUndefined();
+    expect(facts.previousRelationshipRatio).toBeUndefined();
+    expect(facts.relationshipRatioChangePercent).toBeUndefined();
   });
 
   it.each([

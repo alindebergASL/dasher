@@ -204,33 +204,49 @@ function trustedPageDescription(
       coverage.expectedCount === undefined
         ? `${String(coverage.observedCount)} observed ${observation} observations`
         : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
-    return `${coverage.latestLabel ?? "The latest period"} is partial; current-vs-prior change and category movers are unavailable. Coverage includes ${observedCoverage}.`;
+    return `${coverage.latestLabel ?? "The latest period"} coverage is partial (${observedCoverage}). Comparative findings are withheld.`;
   }
   if (coverage.comparisonDisposition === "unavailable-unknown") {
-    return `Coverage for ${coverage.latestLabel ?? "the latest period"} is unknown; current-vs-prior change and category movers are unavailable. ${coverage.reason}`;
+    return `Coverage for ${coverage.latestLabel ?? "the latest period"} could not be established. Comparative findings are withheld.`;
   }
   return plannedDescription;
 }
 
 function periodCoverageImportant(
   facts: TableFacts,
-  evidenceIds: string[],
 ): DashboardSpec["executiveBrief"]["important"] | undefined {
   const coverage = facts.periodCoverage;
   if (coverage.comparisonDisposition === "unavailable-partial") {
+    const observation =
+      coverage.observationGrain === undefined
+        ? "period"
+        : observationAdjective(coverage.observationGrain);
+    const latestCount =
+      coverage.expectedCount === undefined
+        ? `${String(coverage.observedCount)} observed ${observation} observations`
+        : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
+    const priorCount = coverage.priorObservedCount ?? 0;
+    const prior =
+      coverage.priorPeriod === undefined
+        ? "The prior period"
+        : periodLabel(coverage.priorPeriod);
     return {
       statementTypes: ["calculated"],
       headline: `${coverage.latestLabel ?? "The latest period"} is partial; current-vs-prior change is unavailable`,
-      detail: coverage.reason,
-      evidenceIds: [...evidenceIds],
+      detail: `${coverage.latestLabel ?? "The latest period"} has ${latestCount}; ${prior} is complete with ${String(priorCount)} ${observation} observations. The periods are not like-for-like, so current-vs-prior change is unavailable.`,
+      evidenceIds: [EVIDENCE.periodCoverage],
     };
   }
   if (coverage.comparisonDisposition === "unavailable-unknown") {
+    const prior =
+      coverage.priorPeriod === undefined
+        ? "the prior period"
+        : periodLabel(coverage.priorPeriod);
     return {
       statementTypes: ["calculated"],
       headline: `Coverage for ${coverage.latestLabel ?? "the latest period"} is unknown; current-vs-prior change is unavailable`,
-      detail: coverage.reason,
-      evidenceIds: [...evidenceIds],
+      detail: `Comparable coverage for ${coverage.latestLabel ?? "the latest period"} and ${prior} cannot be established, so current-vs-prior change is unavailable. See the linked period evidence for the observed dates and reason.`,
+      evidenceIds: [EVIDENCE.periodCoverage],
     };
   }
   return undefined;
@@ -261,15 +277,15 @@ function periodCoverageNextAction(
         : `the ${String(missing)} missing expected ${observation} ${missing === 1 ? "observation" : "observations"}`;
     return {
       title: `Complete or confirm ${latest} coverage before comparison`,
-      detail: `${coverage.reason} Complete or confirm ${missingObservations} for ${latest}, then rebuild before comparing it with ${prior}.`,
-      evidenceIds: [...evidenceIds],
+      detail: `Confirm or complete ${missingObservations.replace("expected ", "")} for ${latest} shown in the linked period evidence, then rebuild before comparing with ${prior}.`,
+      evidenceIds: [...new Set([...evidenceIds, EVIDENCE.periodCoverage])],
     };
   }
   if (coverage.comparisonDisposition === "unavailable-unknown") {
     return {
       title: `Verify ${latest} dates and coverage before comparison`,
-      detail: `${coverage.reason} Verify or correct the source dates and coverage, then rebuild before comparing ${latest} with ${prior}.`,
-      evidenceIds: [...evidenceIds],
+      detail: `Verify or correct the source dates and coverage shown in the linked period evidence, then rebuild before comparing ${latest} with ${prior}.`,
+      evidenceIds: [...new Set([...evidenceIds, EVIDENCE.periodCoverage])],
     };
   }
   return undefined;
@@ -368,7 +384,7 @@ function brief(
 ): DashboardSpec["executiveBrief"] {
   const window = windowLabel(facts);
   const comparison = plan.roles.comparison;
-  const trustedImportant = periodCoverageImportant(facts, ids);
+  const trustedImportant = periodCoverageImportant(facts);
   if (comparison !== undefined && hasActiveRelationship(plan)) {
     const comparisonMoney = comparisonMoneyFormat(plan, table, facts);
     const comparisonValue =
@@ -829,6 +845,11 @@ export function compileTablePlan(
   const pages: Page[] = [];
   for (const page of plan.pages) {
     const components = page.sections
+      .filter(
+        (section) =>
+          section !== "summary" ||
+          facts.periodCoverage.comparisonDisposition !== "unavailable-partial",
+      )
       .map((section) => SECTION_BUILDERS[section](`${page.id}-${section}`, ctx))
       .filter(
         (component): component is DashboardComponent => component !== undefined,
