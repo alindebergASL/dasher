@@ -17,10 +17,10 @@ test.describe("a saved dashboard", () => {
 
     await page.goto("/");
     await page
-      .getByLabel("Your spreadsheet (CSV)")
+      .getByLabel("Choose a CSV data source")
       .setInputFiles(path.join(fixtures, "transactions.csv"));
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Spending by category for the finance review");
     await page.getByRole("button", { name: "Build dashboard" }).click();
 
@@ -54,7 +54,7 @@ test.describe("a saved dashboard", () => {
     await page.context().request.post("/dev/bootstrap");
     await page.goto("/");
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Largest transactions to archive");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
@@ -79,7 +79,7 @@ test.describe("a saved dashboard", () => {
     await page.context().request.post("/dev/bootstrap");
     await page.goto("/");
     await page
-      .getByRole("textbox", { name: "What do you want to see?" })
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("A private dashboard");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     const href = await page
