@@ -21,15 +21,25 @@ and archiving work.
 
 ### The planner
 
-| Variable                     | Values                                         |
-| ---------------------------- | ---------------------------------------------- |
-| `DASHER_PLANNER`             | `fake` (default, deterministic) or `anthropic` |
-| `ANTHROPIC_API_KEY`          | required when `DASHER_PLANNER=anthropic`       |
-| `DASHER_PLANNER_MODEL`       | model id, default `claude-opus-5`              |
-| `DASHER_PLANNER_DAILY_LIMIT` | max model calls per UTC day, default `500`     |
+| Variable                          | Values                                               |
+| --------------------------------- | ---------------------------------------------------- |
+| `DASHER_PLANNER`                  | `fake` (default), `anthropic`, or `openrouter`       |
+| `ANTHROPIC_API_KEY`               | required when `DASHER_PLANNER=anthropic`             |
+| `OPENROUTER_API_KEY`              | required when `DASHER_PLANNER=openrouter`            |
+| `DASHER_PLANNER_MODEL`            | provider model id; defaults are provider-specific    |
+| `DASHER_PLANNER_REASONING_EFFORT` | OpenRouter `low`, `medium`, or `high`; default `low` |
+| `DASHER_PLANNER_DAILY_LIMIT`      | max model calls per UTC day, default `500`           |
 
 The fake planner is the permanent test substrate and what CI runs. A missing
-key with `DASHER_PLANNER=anthropic` is an error at startup, never a fallback.
+provider-specific key is an error, never a fallback. OpenRouter requests require
+structured-output support, deny data-collecting routes, require ZDR, and disable
+silent provider fallback. Those request controls govern the inference endpoint;
+they cannot turn off OpenRouter account-level opt-ins. Keep **Input & Output
+Logging** disabled in Observability and **OpenRouter Use of Inputs/Outputs**
+disabled in Privacy, or spreadsheet samples may be retained despite ZDR routing.
+Use an exact model id such as `z-ai/glm-5.3`, not `openrouter/auto`: Dasher
+refuses a response naming a different model so concurrent requests cannot race
+the provenance recorded on an accepted dashboard.
 
 ## Check it
 
@@ -45,7 +55,7 @@ pnpm test:postgres        # control-plane integration tests, needs PostgreSQL
 | --------------------------- | ------------------------------------------------------------- |
 | `apps/web`                  | Next.js app: upload, request, dashboard, sign-in, list        |
 | `packages/workbook`         | CSV to `Table`: parsing, typing, unpivot, exact decimals      |
-| `packages/planner`          | `TablePlan`, fake and Anthropic planners, compile, retry loop |
+| `packages/planner`          | `TablePlan`, fake/Anthropic/OpenRouter planners, compile loop |
 | `packages/dashboard-schema` | The `DashboardSpec` contract, layout, claims                  |
 | `packages/control-plane`    | PostgreSQL schema, migrator, sign-in, repository              |
 | `deploy`                    | Single-instance Docker Compose, Caddy, backups                |

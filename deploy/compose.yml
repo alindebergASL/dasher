@@ -69,13 +69,16 @@ services:
     environment:
       DASHER_DATABASE_URL: ${DASHER_DATABASE_URL:?set in .env}
       DASHER_DEPLOYMENT_REVISION: ${DASHER_DEPLOYMENT_REVISION:?set in .env}
-      # The planner is an explicit choice: `fake` or `anthropic`. No fallback.
+      # The planner is an explicit choice: fake, anthropic, or openrouter.
+      # Credentials are provider-specific and there is no silent fallback.
       DASHER_PLANNER: ${DASHER_PLANNER:-fake}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      DASHER_PLANNER_MODEL: ${DASHER_PLANNER_MODEL:-claude-opus-5}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      DASHER_PLANNER_MODEL: ${DASHER_PLANNER_MODEL:-}
+      DASHER_PLANNER_REASONING_EFFORT: ${DASHER_PLANNER_REASONING_EFFORT:-low}
       DASHER_PLANNER_DAILY_LIMIT: ${DASHER_PLANNER_DAILY_LIMIT:-500}
       # Sign-in. `--env-file` populates interpolation in THIS FILE; it does not
-      # put anything into a container. Without these four named here the
+      # put anything into a container. Without these values named here the
       # application reads none of them, `mailer()` returns undefined, and every
       # visitor is told sign-in is unavailable — which is what this deployment
       # did until a review traced the runbook.
@@ -83,6 +86,8 @@ services:
       DASHER_MAIL_TRANSPORT: ${DASHER_MAIL_TRANSPORT:-}
       DASHER_RESEND_API_KEY: ${DASHER_RESEND_API_KEY:-}
       DASHER_MAIL_FROM: ${DASHER_MAIL_FROM:-}
+      # SES uses the instance role and this region; no mail key is injected.
+      AWS_REGION: ${AWS_REGION:-}
       # DASHER_DEV_BOOTSTRAP and DASHER_DEV_SEED_DSN are absent on purpose and
       # must stay absent. See deploy/README.md — the first mints an
       # authenticated session for anyone who can reach the URL, and the second

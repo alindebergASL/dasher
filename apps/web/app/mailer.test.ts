@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DEFAULT_SES_TIMEOUT_MS,
   mailer,
   publicOrigin,
+  sesMailer,
   signInEmail,
   signInLink,
   MailerError,
@@ -22,6 +24,7 @@ const KEYS = [
   "DASHER_RESEND_API_KEY",
   "DASHER_MAIL_FROM",
   "DASHER_PUBLIC_ORIGIN",
+  "AWS_REGION",
 ] as const;
 
 let saved: Record<string, string | undefined>;
@@ -74,6 +77,24 @@ describe("mailer", () => {
     process.env["DASHER_RESEND_API_KEY"] = "test-key";
     process.env["DASHER_MAIL_FROM"] = "dasher@example.com";
     expect(mailer()?.transport).toBe("resend");
+  });
+
+  it("uses SES only when it is named with a sender and region", () => {
+    process.env["DASHER_MAIL_TRANSPORT"] = "ses";
+    process.env["DASHER_MAIL_FROM"] = "noreply@luckbutton.com";
+    process.env["DASHER_RESEND_API_KEY"] = "must-not-fallback";
+    expect(mailer()).toBeUndefined();
+    process.env["AWS_REGION"] = "us-west-2";
+    expect(mailer()?.transport).toBe("ses");
+  });
+
+  it("accepts Resend by name and refuses an unknown named transport", () => {
+    process.env["DASHER_RESEND_API_KEY"] = "test-key";
+    process.env["DASHER_MAIL_FROM"] = "dasher@example.com";
+    process.env["DASHER_MAIL_TRANSPORT"] = "resend";
+    expect(mailer()?.transport).toBe("resend");
+    process.env["DASHER_MAIL_TRANSPORT"] = "smtp";
+    expect(mailer()).toBeUndefined();
   });
 
   it("prints to the log only when asked for by name", () => {
@@ -254,6 +275,88 @@ describe("the provider transport", () => {
     await expect(
       mailer()!.sendSignInLink("person@example.com", "https://x/SECRET"),
     ).rejects.not.toThrow(/SECRET/u);
+  });
+});
+
+describe("the SES transport", () => {
+  it("rejects a non-positive request deadline", () => {
+    expect(() =>
+      sesMailer({ send: vi.fn() }, "noreply@luckbutton.com", 0),
+    ).toThrow(/timeoutMs/u);
+  });
+
+  it("sends the same single-use message through the injected AWS client", async () => {
+    const send = vi.fn().mockResolvedValue({ MessageId: "message-1" });
+    const transport = sesMailer({ send }, "noreply@luckbutton.com");
+
+    await transport.sendSignInLink(
+      "person@example.com",
+      "https://luckbutton.com/sign-in/verify?token=abc",
+    );
+
+    expect(transport.transport).toBe("ses");
+    expect(send).toHaveBeenCalledTimes(1);
+    const command = send.mock.calls[0]?.[0] as {
+      input: {
+        FromEmailAddress: string;
+        Destination: { ToAddresses: string[] };
+        Content: {
+          Simple: {
+            Subject: { Data: string };
+            Body: { Text: { Data: string } };
+          };
+        };
+      };
+    };
+    expect(command.input.FromEmailAddress).toBe("noreply@luckbutton.com");
+    expect(command.input.Destination.ToAddresses).toEqual([
+      "person@example.com",
+    ]);
+    expect(command.input.Content.Simple.Subject.Data).toBe(
+      "Your Dasher sign-in link",
+    );
+    expect(command.input.Content.Simple.Body.Text.Data).toContain(
+      "https://luckbutton.com/sign-in/verify?token=abc",
+    );
+    const options = send.mock.calls[0]?.[1] as {
+      abortSignal?: AbortSignal;
+    };
+    expect(options.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(DEFAULT_SES_TIMEOUT_MS).toBe(20_000);
+  });
+
+  it("turns AWS failures into a safe delivery error", async () => {
+    const transport = sesMailer(
+      { send: vi.fn().mockRejectedValue(new Error("token=SECRET")) },
+      "noreply@luckbutton.com",
+    );
+    const error = await transport
+      .sendSignInLink("person@example.com", "https://x/SECRET")
+      .catch((one: unknown) => one);
+    expect(error).toMatchObject({ code: "delivery_failed" });
+    expect(String(error)).not.toContain("SECRET");
+    expect(String(error)).not.toContain("person@example.com");
+  });
+
+  it("aborts a stalled SES request at the configured deadline", async () => {
+    const send = vi.fn(
+      (_command: unknown, options?: { readonly abortSignal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.abortSignal;
+          if (signal === undefined) {
+            reject(new Error("missing abort signal"));
+            return;
+          }
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        }),
+    );
+    const transport = sesMailer({ send }, "noreply@luckbutton.com", 5);
+    await expect(
+      transport.sendSignInLink("person@example.com", "https://x/link"),
+    ).rejects.toMatchObject({ code: "delivery_failed" });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

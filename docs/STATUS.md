@@ -10,10 +10,10 @@ what works, what does not, and what is next. Keep it under a page.
   ISO and US dates; wide budget exports (one column per month) are unpivoted.
   Up to 4 MB.
 - **A planner chooses how to read the file and lay out the pages.** The
-  built-in deterministic planner is the default and what CI runs. Set
-  `DASHER_PLANNER=anthropic` with a key to have a model plan instead. Either
-  way the plan names column roles, filters, grain, and sections. It never
-  carries a figure.
+  built-in deterministic planner is the default and what CI runs. Select
+  `anthropic` or `openrouter` with its named key to have a model plan instead.
+  Either way the plan names column roles, filters, grain, and sections. It
+  never carries a figure.
 - **Every number is computed by trusted code** with exact decimals, and every
   component cites the source file and the calculation. The 30-second brief
   (known, changed, important, next action), totals, by category, movers,

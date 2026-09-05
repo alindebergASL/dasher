@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./anthropic": "./src/anthropic.ts"
+    "./anthropic": "./src/anthropic.ts",
+    "./openrouter": "./src/openrouter.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

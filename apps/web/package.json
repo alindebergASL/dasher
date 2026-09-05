@@ -11,6 +11,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1127.0",
     "@dasher/control-plane": "workspace:*",
     "@dasher/dashboard-schema": "workspace:*",
     "@dasher/planner": "workspace:*",
