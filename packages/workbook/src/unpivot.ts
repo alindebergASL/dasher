@@ -118,8 +118,12 @@ function amountColumnProfile(
       column.currency === undefined ? [] : [column.currency],
     ),
   );
-  const decimal = [...decimals][0];
-  const currency = [...currencies][0];
+  const unanimousDecimal = [...decimals][0];
+  const unanimousCurrency = [...currencies][0];
+  const decimal =
+    profile.decimal ?? (decimals.size === 1 ? unanimousDecimal : undefined);
+  const currency =
+    profile.currency ?? (currencies.size === 1 ? unanimousCurrency : undefined);
   return {
     name: profile.name,
     index: profile.index,
@@ -128,8 +132,8 @@ function amountColumnProfile(
     nonEmpty: profile.nonEmpty,
     distinct: profile.distinct,
     samples: profile.samples,
-    ...(decimals.size === 1 && decimal !== undefined ? { decimal } : {}),
-    ...(currencies.size === 1 && currency !== undefined ? { currency } : {}),
+    ...(decimal === undefined ? {} : { decimal }),
+    ...(currency === undefined ? {} : { currency }),
   };
 }
 

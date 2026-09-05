@@ -193,6 +193,43 @@ describe("a wide file with one column per period", () => {
     expect(table.unpivoted).toBeUndefined();
   });
 
+  it("preserves a comma-decimal convention across an established wide table", () => {
+    const original = profileTable({
+      headers: ["Category", "2026-01", "2026-02", "2026-03"],
+      rows: [
+        ["A", "100", "120", "1,25"],
+        ["B", "200", "220", "2,50"],
+      ],
+    });
+    expect(original.columns[3]).toMatchObject({
+      type: "number",
+      decimal: "comma",
+    });
+
+    const table = unpivotIfWide(original);
+    const amount = table.columns.find((column) => column.name === "amount");
+    const latest = table.rows
+      .filter((row) => row[1] === "2026-03")
+      .map((row) => parseAmount(row[2] ?? "", { decimal: amount?.decimal }));
+
+    expect(amount).toMatchObject({ type: "number", decimal: "comma" });
+    expect(latest).toEqual(["1.25", "2.5"]);
+  });
+
+  it("preserves currency across an established wide table", () => {
+    const original = profileTable({
+      headers: ["Category", "2026-01", "2026-02", "2026-03"],
+      rows: [
+        ["A", "$100.00", "$120.00", "$130.00"],
+        ["B", "$200.00", "$220.00", "$230.00"],
+      ],
+    });
+    const table = unpivotIfWide(original);
+    expect(
+      table.columns.find((column) => column.name === "amount"),
+    ).toMatchObject({ type: "number", currency: "USD", decimal: "dot" });
+  });
+
   it("leaves a long file alone", () => {
     const long = profileTable({
       headers: ["period", "amount"],
