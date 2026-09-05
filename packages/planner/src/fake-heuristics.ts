@@ -402,10 +402,26 @@ function asksForDirectionalFlow(text: string): boolean {
   const mention =
     /\b(?:cash flows?|cash movement|signed flows?|inflows?(?:\s+(?:and|versus|vs\.?)\s+outflows?)?|outflows?(?:\s+(?:and|versus|vs\.?)\s+inflows?)?)\b/giu;
   for (const match of normalized.matchAll(mention)) {
-    const prefix = normalized.slice(Math.max(0, match.index - 48), match.index);
+    const before = normalized.slice(0, match.index);
+    const clauseStart = Math.max(
+      before.lastIndexOf("."),
+      before.lastIndexOf(","),
+      before.lastIndexOf(";"),
+      before.lastIndexOf(":"),
+      before.lastIndexOf("!"),
+      before.lastIndexOf("?"),
+    );
+    const clausePrefix = before.slice(clauseStart + 1);
+    const contrast = /\b(?:but|instead)\b(?!.*\b(?:but|instead)\b)/iu.exec(
+      clausePrefix,
+    );
+    const relevantPrefix =
+      contrast === null
+        ? clausePrefix
+        : clausePrefix.slice(contrast.index + contrast[0].length);
     if (
-      /\b(?:not|no|without|avoid(?:ing)?|exclude|excluding|rather than|do not|don't)\b[^,.;:]{0,32}$/iu.test(
-        prefix,
+      /\b(?:not|no|without|avoid(?:ing)?|exclude|excluding|rather than|do not|don't)\b/iu.test(
+        relevantPrefix,
       )
     ) {
       continue;
