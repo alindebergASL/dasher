@@ -397,16 +397,31 @@ function relationshipOperation(
     : "compare";
 }
 
+function asksForDirectionalFlow(text: string): boolean {
+  const normalized = text.replace(/[-‐‑–—]/gu, " ");
+  const mention =
+    /\b(?:cash flows?|cash movement|signed flows?|inflows?(?:\s+(?:and|versus|vs\.?)\s+outflows?)?|outflows?(?:\s+(?:and|versus|vs\.?)\s+inflows?)?)\b/giu;
+  for (const match of normalized.matchAll(mention)) {
+    const prefix = normalized.slice(Math.max(0, match.index - 48), match.index);
+    if (
+      /\b(?:not|no|without|avoid(?:ing)?|exclude|excluding|rather than|do not|don't)\b[^,.;:]{0,32}$/iu.test(
+        prefix,
+      )
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function defaultPlan(
   requestText: string,
   sourceName: string,
   roles: Roles,
   table: TableSummary,
 ): TablePlan {
-  const explicitCashFlow =
-    /\b(?:cash flows?|cash movement|signed flows?|inflows?(?:\s+(?:and|versus|vs\.?)\s+outflows?)?|outflows?(?:\s+(?:and|versus|vs\.?)\s+inflows?)?)\b/iu.test(
-      requestText,
-    );
+  const explicitCashFlow = asksForDirectionalFlow(requestText);
   const measureLabel = explicitCashFlow ? "Cash flow" : roles.amount;
   const last = readLastPeriods(requestText);
   const grain = readGrain(requestText) ?? last?.grain ?? "month";

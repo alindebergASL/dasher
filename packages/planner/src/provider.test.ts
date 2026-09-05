@@ -108,6 +108,7 @@ describe("FakePlanningProvider request phrases", () => {
 
     for (const phrase of [
       "Analyze cash flows by category",
+      "Analyze cash-flow by category",
       "Show inflows and outflows",
       "Review outflows versus inflows",
       "Analyze cash movement",
@@ -130,6 +131,14 @@ describe("FakePlanningProvider request phrases", () => {
       "Amount first, then the breakdown by Category and the rows behind it.",
     );
     expect(generic.flow).toBeUndefined();
+
+    for (const phrase of [
+      "This is profit variance, not cash flow; show it by category",
+      "Show profit variance without cash-flow analysis",
+      "Do not show inflows and outflows; show the signed total",
+    ]) {
+      expect((await planFor(transactionsTable(), phrase)).flow).toBeUndefined();
+    }
   });
 
   it("reads filters from exclude and only phrases matching category samples", async () => {
