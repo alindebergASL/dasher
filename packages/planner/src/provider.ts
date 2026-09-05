@@ -7,7 +7,12 @@ import type { ColumnProfile } from "./workbook";
 import type { PlanFinding } from "./plan";
 import type { TablePlan } from "./table-plan";
 import { applyRefinement, applyRevision } from "./fake-refine";
-import { chooseRoles, defaultPlan, type TableSummary } from "./fake-heuristics";
+import {
+  chooseRelationshipRoles,
+  chooseRoles,
+  defaultPlan,
+  type TableSummary,
+} from "./fake-heuristics";
 
 export interface PlanningTable {
   readonly columns: readonly ColumnProfile[];
@@ -80,7 +85,11 @@ export class FakePlanningProvider implements PlanningProvider {
         summary,
       );
     }
-    const roles = chooseRoles(summary);
+    const roles = chooseRelationshipRoles(
+      request.requestText,
+      chooseRoles(summary),
+      summary,
+    );
     return defaultPlan(request.requestText, request.sourceName, roles, summary);
   }
 }

@@ -10,11 +10,12 @@ import {
   type Evidence,
   type Page,
 } from "@dasher/dashboard-schema";
-import { periodLabel, sign, type Table } from "./workbook";
+import { compare, periodLabel, sign, type Table } from "./workbook";
 import {
   formatMoney,
   formatSignedMoney,
   formatSignedPercent,
+  isWhole,
   plural,
   type MoneyFormat,
 } from "./arith";
@@ -57,6 +58,66 @@ function moneyFormat(
   };
 }
 
+function comparisonMoneyFormat(
+  plan: TablePlan,
+  table: Table,
+  facts: TableFacts,
+): MoneyFormat {
+  const currency = table.columns.find(
+    (column) => column.name === plan.roles.comparison,
+  )?.currency;
+  return {
+    ...(currency === undefined ? {} : { currency }),
+    decimals:
+      facts.latestComparison !== undefined && isWhole(facts.latestComparison)
+        ? 0
+        : 2,
+  };
+}
+
+function hasActiveRelationship(plan: TablePlan): boolean {
+  return plan.pages.some((page) => page.sections.includes("relationship"));
+}
+
+function formatRatio(value: string): string {
+  return formatMoney(value, { decimals: isWhole(value) ? 0 : 2 });
+}
+
+function relationshipUnavailableDetail(
+  plan: TablePlan,
+  facts: TableFacts,
+): string {
+  const comparison = plan.roles.comparison ?? "comparison measure";
+  switch (facts.relationshipSupport) {
+    case "no-prior-period":
+      return "There is no prior period in this dataset.";
+    case "latest-incomplete":
+      return `Not every selected ${plan.roles.amount} row in ${windowLabel(facts)} has a readable ${comparison} value.`;
+    case "previous-incomplete":
+      return `Not every selected ${plan.roles.amount} row in ${facts.previousPeriod === undefined ? "the prior period" : periodLabel(facts.previousPeriod)} has a readable ${comparison} value.`;
+    default:
+      if (
+        facts.latestComparison !== undefined &&
+        sign(facts.latestComparison) === 0
+      ) {
+        return `The ${comparison} total for ${windowLabel(facts)} is zero.`;
+      }
+      if (
+        facts.previousComparison !== undefined &&
+        sign(facts.previousComparison) === 0
+      ) {
+        return `The ${comparison} total for ${facts.previousPeriod === undefined ? "the prior period" : periodLabel(facts.previousPeriod)} is zero.`;
+      }
+      if (
+        facts.previousTotal !== undefined &&
+        sign(facts.previousTotal) === 0
+      ) {
+        return `The prior ${plan.roles.amount} total is zero, so ratio change is unavailable.`;
+      }
+      return "The two periods do not have complete comparable support.";
+  }
+}
+
 /**
  * How the shares on this page were actually produced. The allocation only sums
  * to one hundred when every category total is positive.
@@ -83,6 +144,7 @@ function evidence(
   options: CompileOptions,
 ): Evidence[] {
   const { source } = options;
+  const activeRelationship = hasActiveRelationship(plan);
   const detail = [
     `${plural(source.rowCount, "row", "rows")} and ${plural(table.columns.length, "column", "columns")}`,
     source.byteLength === undefined
@@ -102,6 +164,9 @@ function evidence(
       ? undefined
       : `${plural(facts.outsideWindow, "row fell", "rows fell")} outside the last ${String(plan.lastPeriods)} periods and ${facts.outsideWindow === 1 ? "was" : "were"} not counted.`,
     "Totals are sums of the amounts in each group. Change is the latest period's total minus the previous period's; percent change divides that by the previous total.",
+    !activeRelationship || plan.roles.comparison === undefined
+      ? undefined
+      : `The comparison measure was read from "${plan.roles.comparison}" as exact decimals; ${plural(facts.comparisonSkipped, "selected row had", "selected rows had")} no readable comparison value. A relationship period is unavailable unless every selected amount row has a readable comparison value. Both growth rates require complete latest and prior support.${plan.relationship?.operation === "ratio" ? ` ${plan.roles.amount} per ${plan.roles.comparison} is shown only with complete support and non-zero denominators; ratios are rounded half away from zero to two decimals, with whole ratios shown without decimals, and ratio change is computed from unrounded exact cross-products.` : " No denominator or ratio is inferred for this side-by-side comparison."}`,
     plan.roles.category === undefined ? undefined : sharesSentence(facts),
     plan.roles.budget === undefined
       ? undefined
@@ -143,11 +208,118 @@ function evidence(
 }
 
 function brief(
+  plan: TablePlan,
+  table: Table,
   facts: TableFacts,
   money: MoneyFormat,
   ids: string[],
 ): DashboardSpec["executiveBrief"] {
   const window = windowLabel(facts);
+  const comparison = plan.roles.comparison;
+  if (comparison !== undefined && hasActiveRelationship(plan)) {
+    const comparisonMoney = comparisonMoneyFormat(plan, table, facts);
+    const comparisonValue =
+      facts.latestComparison === undefined
+        ? "unavailable"
+        : formatMoney(facts.latestComparison, comparisonMoney);
+    const known = {
+      statementTypes: ["calculated" as const],
+      headline: `${formatMoney(facts.latestTotal, money)} ${plan.roles.amount} and ${comparisonValue} ${comparison} for ${window}`,
+      detail:
+        "Latest amount and complete-support comparison values computed from the dataset.",
+      evidenceIds: ids,
+    };
+    const comparable = facts.relationshipSupport === "complete";
+    const changed =
+      comparable &&
+      facts.previousPeriod !== undefined &&
+      facts.changePercent !== undefined &&
+      facts.comparisonChangePercent !== undefined
+        ? {
+            statementTypes: ["calculated" as const],
+            headline: `${plan.roles.amount} ${formatSignedPercent(facts.changePercent)}; ${comparison} ${formatSignedPercent(facts.comparisonChangePercent)} vs ${periodLabel(facts.previousPeriod)}`,
+            detail:
+              "Both growth rates use the same complete latest and prior period support.",
+            evidenceIds: ids,
+          }
+        : {
+            statementTypes: ["calculated" as const],
+            headline: "The relationship change is unavailable",
+            detail: relationshipUnavailableDetail(plan, facts),
+            evidenceIds: ids,
+          };
+    const ratio = facts.relationshipRatio;
+    const priorRatio = facts.previousRelationshipRatio;
+    const ratioChange = facts.relationshipRatioChangePercent;
+    let important: { headline: string; detail: string };
+    if (plan.relationship?.operation === "ratio") {
+      if (
+        ratio === undefined ||
+        priorRatio === undefined ||
+        ratioChange === undefined
+      ) {
+        important = {
+          headline: `${plan.roles.amount} per ${comparison} is unavailable`,
+          detail: relationshipUnavailableDetail(plan, facts),
+        };
+      } else {
+        const movement =
+          sign(ratioChange) < 0
+            ? `fell from ${formatRatio(priorRatio)} to ${formatRatio(ratio)}`
+            : sign(ratioChange) > 0
+              ? `rose from ${formatRatio(priorRatio)} to ${formatRatio(ratio)}`
+              : `was unchanged at ${formatRatio(ratio)}`;
+        const amountVerb =
+          facts.changePercent !== undefined && sign(facts.changePercent) > 0
+            ? "grew"
+            : "changed";
+        const comparisonVerb =
+          facts.comparisonChangePercent !== undefined &&
+          sign(facts.comparisonChangePercent) > 0
+            ? "grew"
+            : "changed";
+        important = {
+          headline: `${plan.roles.amount} per ${comparison} ${movement} (${formatSignedPercent(ratioChange)})`,
+          detail:
+            facts.changePercent === undefined ||
+            facts.comparisonChangePercent === undefined
+              ? "The ratio uses complete latest and prior period support."
+              : `${comparison} ${comparisonVerb} ${formatSignedPercent(facts.comparisonChangePercent)} while ${plan.roles.amount} ${amountVerb} ${formatSignedPercent(facts.changePercent)}.`,
+        };
+      }
+    } else if (
+      comparable &&
+      facts.changePercent !== undefined &&
+      facts.comparisonChangePercent !== undefined
+    ) {
+      const relative = compare(
+        facts.comparisonChangePercent,
+        facts.changePercent,
+      );
+      important = {
+        headline:
+          relative === 0
+            ? `${plan.roles.amount} and ${comparison} changed at the same rate`
+            : `${relative > 0 ? comparison : plan.roles.amount} changed more than ${relative > 0 ? plan.roles.amount : comparison}`,
+        detail: `${plan.roles.amount} changed ${formatSignedPercent(facts.changePercent)} and ${comparison} changed ${formatSignedPercent(facts.comparisonChangePercent)}.`,
+      };
+    } else {
+      important = {
+        headline: `${plan.roles.amount} vs ${comparison} is unavailable`,
+        detail: relationshipUnavailableDetail(plan, facts),
+      };
+    }
+    return {
+      known,
+      changed,
+      important: {
+        statementTypes: ["calculated"],
+        ...important,
+        evidenceIds: ids,
+      },
+    };
+  }
+
   const known = {
     statementTypes: ["calculated" as const],
     headline: `${formatMoney(facts.latestTotal, money)} total for ${window}`,
@@ -203,11 +375,93 @@ function brief(
   };
 }
 
+function relationshipNextAction(
+  plan: TablePlan,
+  facts: TableFacts,
+  evidenceIds: string[],
+): DashboardSpec["nextAction"] | undefined {
+  const comparison = plan.roles.comparison;
+  if (comparison === undefined || !hasActiveRelationship(plan))
+    return undefined;
+  const window = windowLabel(facts);
+  if (facts.relationshipSupport !== "complete") {
+    return {
+      title: `Check the ${plan.roles.amount}–${comparison} support`,
+      detail: `${relationshipUnavailableDetail(plan, facts)} Confirm the source observations before comparing the measures.`,
+      evidenceIds,
+    };
+  }
+  const ratio = facts.relationshipRatio;
+  const priorRatio = facts.previousRelationshipRatio;
+  const ratioChange = facts.relationshipRatioChangePercent;
+  if (
+    plan.relationship?.operation === "ratio" &&
+    ratio !== undefined &&
+    priorRatio !== undefined &&
+    ratioChange !== undefined &&
+    facts.previousPeriod !== undefined
+  ) {
+    const movement =
+      sign(ratioChange) < 0
+        ? { noun: "drop", verb: "fell" }
+        : sign(ratioChange) > 0
+          ? { noun: "increase", verb: "rose" }
+          : { noun: "stability", verb: "held" };
+    return {
+      title: `Review the ${movement.noun} in ${plan.roles.amount} per ${comparison}`,
+      detail: `${plan.roles.amount} per ${comparison} ${movement.verb} from ${formatRatio(priorRatio)} in ${periodLabel(facts.previousPeriod)} to ${formatRatio(ratio)} in ${window} (${formatSignedPercent(ratioChange)}), while ${comparison} changed ${formatSignedPercent(facts.comparisonChangePercent as string)} and ${plan.roles.amount} changed ${formatSignedPercent(facts.changePercent as string)}. Check the linked observations and operating context before acting; this comparison does not establish a cause.`,
+      evidenceIds,
+    };
+  }
+  if (plan.relationship?.operation === "ratio" && ratio === undefined) {
+    return {
+      title: `Check the ${plan.roles.amount}-per-${comparison} inputs`,
+      detail: `${relationshipUnavailableDetail(plan, facts)} Confirm the source observation before using the ratio.`,
+      evidenceIds,
+    };
+  }
+  if (
+    facts.previousPeriod !== undefined &&
+    facts.changePercent !== undefined &&
+    facts.comparisonChangePercent !== undefined
+  ) {
+    const relative = compare(
+      facts.comparisonChangePercent,
+      facts.changePercent,
+    );
+    if (relative === 0) {
+      return {
+        title: `Review why ${plan.roles.amount} and ${comparison} moved together`,
+        detail: `From ${periodLabel(facts.previousPeriod)} to ${window}, both measures changed ${formatSignedPercent(facts.changePercent)}. Check the linked observations and operating context before acting; this comparison does not establish a cause.`,
+        evidenceIds,
+      };
+    }
+    const higher = relative > 0 ? comparison : plan.roles.amount;
+    const lower = relative > 0 ? plan.roles.amount : comparison;
+    const higherGrowth =
+      relative > 0 ? facts.comparisonChangePercent : facts.changePercent;
+    const lowerGrowth =
+      relative > 0 ? facts.changePercent : facts.comparisonChangePercent;
+    const bothGrew = sign(higherGrowth) >= 0 && sign(lowerGrowth) >= 0;
+    return {
+      title: `Review why ${higher} ${bothGrew ? "grew faster" : "changed more"} than ${lower}`,
+      detail: `From ${periodLabel(facts.previousPeriod)} to ${window}, ${higher} changed ${formatSignedPercent(higherGrowth)} while ${lower} changed ${formatSignedPercent(lowerGrowth)}. Check the linked observations and operating context before acting; this comparison does not establish a cause.`,
+      evidenceIds,
+    };
+  }
+  return {
+    title: `Review the latest ${plan.roles.amount}–${comparison} comparison`,
+    detail: `Both prior-period growth rates are not available. Check the linked observations before acting; this comparison does not establish a cause.`,
+    evidenceIds,
+  };
+}
+
 function architecture(
   plan: TablePlan,
   options: CompileOptions,
   pages: readonly Page[],
 ): DashboardSpec["architecture"] {
+  const activeRelationship = hasActiveRelationship(plan);
   const planNode = options.planner.usesModel
     ? {
         id: "plan",
@@ -240,7 +494,10 @@ function architecture(
       id: "compute",
       kind: "process" as const,
       label: "Compute figures",
-      detail: `Exact decimal sums, changes, and shares over "${plan.roles.amount}".`,
+      detail:
+        !activeRelationship || plan.roles.comparison === undefined
+          ? `Exact decimal sums, changes, and shares over "${plan.roles.amount}".`
+          : `Exact decimal sums and changes over "${plan.roles.amount}" and "${plan.roles.comparison}"${plan.relationship?.operation === "ratio" ? ", plus their complete-support ratio and ratio change" : ", without inferring a denominator"}.`,
     },
     ...pages.map((page) => ({
       id: `page-${page.id}`,
@@ -284,8 +541,12 @@ function notice(
   facts: TableFacts,
   options: CompileOptions,
 ): string {
+  const activeRelationship = hasActiveRelationship(plan);
   const read = [
     `"${plan.roles.amount}" as the amount`,
+    !activeRelationship || plan.roles.comparison === undefined
+      ? undefined
+      : `"${plan.roles.comparison}" as the comparison measure`,
     plan.roles.category === undefined
       ? undefined
       : `"${plan.roles.category}" as the category`,
@@ -370,6 +631,13 @@ export function compileTablePlan(
     ]);
   }
 
+  const action = relationshipNextAction(plan, facts, evidenceIds) ?? {
+    title: "Open the evidence",
+    detail:
+      "Each figure links to the file it came from and the arithmetic that produced it; check those before acting on a number.",
+    evidenceIds,
+  };
+
   return parseDashboardSpec({
     schemaVersion: "1.2",
     id: `table-${options.source.sha256?.slice(0, 16) ?? "upload"}`,
@@ -386,16 +654,11 @@ export function compileTablePlan(
           ? `Built ${options.asOf.slice(0, 10)}`
           : `Data through ${periodLabel(facts.latestPeriod)}`,
     },
-    nextAction: {
-      title: "Open the evidence",
-      detail:
-        "Each figure links to the file it came from and the arithmetic that produced it; check those before acting on a number.",
-      evidenceIds,
-    },
+    nextAction: action,
     notice: notice(plan, facts, options),
     pages,
     evidence: items,
     architecture: architecture(plan, options, pages),
-    executiveBrief: brief(facts, money, evidenceIds),
+    executiveBrief: brief(plan, table, facts, money, evidenceIds),
   });
 }

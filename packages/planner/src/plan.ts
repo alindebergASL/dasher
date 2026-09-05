@@ -15,6 +15,7 @@ import type { TablePlan, TableSectionKind } from "./table-plan";
 export type PlanFindingCode =
   | "unknown_column"
   | "role_type"
+  | "relationship_inconsistent"
   | "section_needs_role"
   | "duplicate_section"
   | "duplicate_page_id"
@@ -55,6 +56,7 @@ export class PlanRejected extends Error {
 type RoleName = keyof TablePlan["roles"];
 
 const ROLE_NEEDS: Readonly<Partial<Record<TableSectionKind, RoleName[]>>> = {
+  relationship: ["comparison", "period"],
   "by-category": ["category"],
   movers: ["category", "period"],
   trend: ["period"],
@@ -64,6 +66,7 @@ const ROLE_NEEDS: Readonly<Partial<Record<TableSectionKind, RoleName[]>>> = {
 /** RULE: every role states the column type it can read; period has its own test. */
 const ROLE_TYPE: Readonly<Partial<Record<RoleName, ColumnType>>> = {
   amount: "number",
+  comparison: "number",
   budget: "number",
   category: "text",
   label: "text",
@@ -73,6 +76,7 @@ const ROLE_TYPE: Readonly<Partial<Record<RoleName, ColumnType>>> = {
 /** The semantic boundary is authoritative for every non-period plan role. */
 const ROLE_SEMANTIC: Readonly<Partial<Record<RoleName, ColumnSemanticKind>>> = {
   amount: "measure",
+  comparison: "measure",
   budget: "measure",
   category: "dimension",
   label: "dimension",
@@ -144,6 +148,16 @@ function checkRoles(
       });
     }
   }
+  if (
+    plan.roles.comparison !== undefined &&
+    plan.roles.comparison === plan.roles.amount
+  ) {
+    findings.push({
+      code: "role_type",
+      path: "roles.comparison",
+      message: "The comparison role must use a different measure from amount.",
+    });
+  }
 }
 
 function checkPages(plan: TablePlan, findings: PlanFinding[]): void {
@@ -177,8 +191,31 @@ function checkPages(plan: TablePlan, findings: PlanFinding[]): void {
           });
         }
       }
+      if (section === "relationship" && plan.relationship === undefined) {
+        findings.push({
+          code: "relationship_inconsistent",
+          path: "relationship",
+          message:
+            'Section "relationship" needs an explicit compare or ratio operation.',
+        });
+      }
     }
   }
+}
+
+function checkRelationship(plan: TablePlan, findings: PlanFinding[]): void {
+  if (
+    (plan.roles.comparison === undefined) ===
+    (plan.relationship === undefined)
+  ) {
+    return;
+  }
+  findings.push({
+    code: "relationship_inconsistent",
+    path: "relationship",
+    message:
+      "A relationship operation and a distinct comparison measure must be set together.",
+  });
 }
 
 /**
@@ -278,6 +315,7 @@ function checkFreeText(plan: TablePlan, findings: PlanFinding[]): void {
 export function findPlanProblems(plan: TablePlan, table: Table): PlanFinding[] {
   const findings: PlanFinding[] = [];
   checkRoles(plan, table, findings);
+  checkRelationship(plan, findings);
   checkPages(plan, findings);
   checkFreeText(plan, findings);
   return findings;

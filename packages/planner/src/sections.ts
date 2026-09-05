@@ -17,6 +17,7 @@ import {
   formatPercent,
   formatSignedMoney,
   formatSignedPercent,
+  isWhole,
   plural,
   type MoneyFormat,
 } from "./arith";
@@ -190,6 +191,178 @@ function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
     id,
     kind: "metric-grid",
     title: "Headline totals",
+    evidenceIds: ids,
+    metrics,
+  };
+}
+
+function relationship(id: string, ctx: SectionContext): DashboardComponent {
+  const { plan, facts, evidenceIds } = ctx;
+  const comparison = plan.roles.comparison as string;
+  const operation = plan.relationship?.operation ?? "compare";
+  const latestComparison = facts.latestComparison;
+  const period = windowLabel(facts);
+  const previous =
+    facts.previousPeriod === undefined
+      ? undefined
+      : periodLabel(facts.previousPeriod);
+  const ids = [...evidenceIds];
+  const comparisonColumn = ctx.table.columns.find(
+    (column) => column.name === comparison,
+  );
+  const comparisonMoney: MoneyFormat = {
+    ...(comparisonColumn?.currency === undefined
+      ? {}
+      : { currency: comparisonColumn.currency }),
+    decimals:
+      latestComparison !== undefined && isWhole(latestComparison) ? 0 : 2,
+  };
+  const supportUnavailable = (): string => {
+    switch (facts.relationshipSupport) {
+      case "no-prior-period":
+        return "there is no prior period in this dataset";
+      case "latest-incomplete":
+        return `not every selected ${plan.roles.amount} row in ${period} has a readable ${comparison} value`;
+      case "previous-incomplete":
+        return `not every selected ${plan.roles.amount} row in ${previous ?? "the prior period"} has a readable ${comparison} value`;
+      default:
+        return "the two periods do not have complete matched support";
+    }
+  };
+  const comparable = facts.relationshipSupport === "complete";
+  const ratioUnavailable = (): string => {
+    if (!comparable) return supportUnavailable();
+    if (latestComparison !== undefined && sign(latestComparison) === 0) {
+      return `the ${comparison} total for ${period} is zero`;
+    }
+    if (
+      facts.previousComparison !== undefined &&
+      sign(facts.previousComparison) === 0
+    ) {
+      return `the ${comparison} total for ${previous ?? "the prior period"} is zero`;
+    }
+    return "the prior ratio is zero";
+  };
+  const growth = (
+    name: string,
+    prior: Exact | undefined,
+    change: Exact | undefined,
+    percent: Exact | undefined,
+    money: MoneyFormat,
+  ): string => {
+    if (!comparable) {
+      return `Growth unavailable — ${supportUnavailable()}.`;
+    }
+    if (previous === undefined) {
+      return "Growth unavailable — no prior period in this dataset.";
+    }
+    if (prior === undefined || change === undefined) {
+      return `Growth unavailable — no readable ${name} value for ${previous}.`;
+    }
+    return `${formatMoney(prior, money)} in ${previous}${percent === undefined ? " · growth unavailable from zero" : ` · ${formatSignedPercent(percent)}`}`;
+  };
+  const metrics: Extract<
+    DashboardComponent,
+    { kind: "metric-grid" }
+  >["metrics"] = [
+    {
+      label: `${plan.roles.amount}, ${period}`,
+      value: formatMoney(facts.latestTotal, ctx.money),
+      change: growth(
+        plan.roles.amount,
+        facts.previousTotal,
+        facts.change,
+        facts.changePercent,
+        ctx.money,
+      ),
+      direction: direction(comparable ? facts.change : undefined),
+      evidenceIds: ids,
+    },
+  ];
+  if (latestComparison === undefined) {
+    metrics.push({
+      label: `${comparison}, ${period}`,
+      value: "Unavailable",
+      change: `Unavailable — ${supportUnavailable()}.`,
+      direction: "unknown",
+      evidenceIds: ids,
+    });
+  } else {
+    metrics.push({
+      label: `${comparison}, ${period}`,
+      value: formatMoney(latestComparison, comparisonMoney),
+      change: growth(
+        comparison,
+        facts.previousComparison,
+        facts.comparisonChange,
+        facts.comparisonChangePercent,
+        comparisonMoney,
+      ),
+      direction: direction(comparable ? facts.comparisonChange : undefined),
+      evidenceIds: ids,
+    });
+  }
+  if (operation === "ratio") {
+    const ratio = facts.relationshipRatio;
+    const priorRatio = facts.previousRelationshipRatio;
+    const ratioChange = facts.relationshipRatioChangePercent;
+    const ratioFormat: MoneyFormat = {
+      decimals: ratio !== undefined && isWhole(ratio) ? 0 : 2,
+    };
+    const priorRatioFormat: MoneyFormat = {
+      decimals: priorRatio !== undefined && isWhole(priorRatio) ? 0 : 2,
+    };
+    metrics.push({
+      label: `${plan.roles.amount} per ${comparison}, ${period}`,
+      value:
+        ratio === undefined ? "Unavailable" : formatMoney(ratio, ratioFormat),
+      change:
+        ratio === undefined ||
+        priorRatio === undefined ||
+        ratioChange === undefined
+          ? `Relationship unavailable — ${ratioUnavailable()}.`
+          : `${formatMoney(priorRatio, priorRatioFormat)} in ${previous as string} · ${formatSignedPercent(ratioChange)}`,
+      direction: direction(ratioChange),
+      evidenceIds: ids,
+    });
+  }
+  let subtitle: string;
+  if (!comparable) {
+    subtitle = `${plan.roles.amount} vs ${comparison} is unavailable because ${supportUnavailable()}.`;
+  } else if (
+    facts.changePercent === undefined ||
+    facts.comparisonChangePercent === undefined
+  ) {
+    subtitle =
+      "Comparable values are available, but at least one growth rate is unavailable from a zero prior value.";
+  } else {
+    const growthSignal = `${comparison} ${formatSignedPercent(facts.comparisonChangePercent)} vs ${plan.roles.amount} ${formatSignedPercent(facts.changePercent)}`;
+    const ratio = facts.relationshipRatio;
+    const priorRatio = facts.previousRelationshipRatio;
+    const ratioChange = facts.relationshipRatioChangePercent;
+    if (operation !== "ratio") {
+      subtitle = `${growthSignal}.`;
+    } else if (
+      ratio === undefined ||
+      priorRatio === undefined ||
+      ratioChange === undefined
+    ) {
+      subtitle = `${growthSignal}; ${plan.roles.amount} per ${comparison} is unavailable because ${ratioUnavailable()}.`;
+    } else {
+      const movement =
+        sign(ratioChange) < 0
+          ? `fell from ${formatMoney(priorRatio, { decimals: isWhole(priorRatio) ? 0 : 2 })} to ${formatMoney(ratio, { decimals: isWhole(ratio) ? 0 : 2 })}`
+          : sign(ratioChange) > 0
+            ? `rose from ${formatMoney(priorRatio, { decimals: isWhole(priorRatio) ? 0 : 2 })} to ${formatMoney(ratio, { decimals: isWhole(ratio) ? 0 : 2 })}`
+            : `was unchanged at ${formatMoney(ratio, { decimals: isWhole(ratio) ? 0 : 2 })}`;
+      subtitle = `${growthSignal}; ${plan.roles.amount} per ${comparison} ${movement} (${formatSignedPercent(ratioChange)}).`;
+    }
+  }
+  return {
+    id,
+    kind: "metric-grid",
+    title: `${plan.roles.amount} vs ${comparison}`,
+    subtitle,
     evidenceIds: ids,
     metrics,
   };
@@ -369,6 +542,7 @@ function tableComponent(
     plan.roles.category,
     plan.roles.account,
     plan.roles.amount,
+    plan.roles.comparison,
     plan.roles.budget,
   ].filter((name): name is string => name !== undefined);
   const others = table.columns
@@ -400,6 +574,7 @@ export const SECTION_BUILDERS: Readonly<
   >
 > = {
   summary,
+  relationship,
   "headline-totals": headlineTotals,
   "by-category": byCategory,
   movers,

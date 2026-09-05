@@ -1101,14 +1101,26 @@ footer {
     font-size: 21px;
   }
   .metric-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .metric-card {
+    padding: 14px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .metric-card:first-child {
+    padding-top: 0;
   }
   .metric-card:nth-child(2) {
     border-right: 0;
   }
   .metric-card:nth-child(3) {
     padding-left: 0;
+  }
+  .metric-card:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
   }
   .trend-grid {
     grid-template-columns: 1fr;
@@ -1131,6 +1143,22 @@ footer {
   }
   .connection-arrow b {
     transform: rotate(90deg);
+  }
+}
+
+@media (max-width: 560px) {
+  .executive-brief-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .executive-brief-item {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .executive-brief-item:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+  .executive-brief-item:last-child {
+    border-bottom: 0;
   }
 }
 

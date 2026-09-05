@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   allocatePercents,
+  divide,
   formatMoney,
   formatSignedPercent,
   percentOf,
+  ratioPercentChange,
 } from "./arith";
 
 describe("percentOf", () => {
@@ -21,6 +23,23 @@ describe("percentOf", () => {
 
   it("has no answer when the whole is zero", () => {
     expect(percentOf("5", "0")).toBeUndefined();
+  });
+});
+
+describe("divide", () => {
+  it("rounds exact decimal ratios and refuses a zero denominator", () => {
+    expect(divide("126", "18", 2)).toBe("7");
+    expect(divide("100", "12", 2)).toBe("8.33");
+    expect(divide("-1", "8", 2)).toBe("-0.13");
+    expect(divide("5", "0", 2)).toBeUndefined();
+  });
+});
+
+describe("ratioPercentChange", () => {
+  it("compares unrounded ratios with exact cross-products", () => {
+    expect(ratioPercentChange("126", "18", "120", "15")).toBe("-12.5");
+    expect(ratioPercentChange("1", "3", "2", "7")).toBe("16.7");
+    expect(ratioPercentChange("1", "0", "2", "7")).toBeUndefined();
   });
 });
 
