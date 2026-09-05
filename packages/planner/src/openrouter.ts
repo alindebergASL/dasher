@@ -54,6 +54,7 @@ export class OpenRouterPlanningError extends Error {
 const tablePlanJsonSchema = z.toJSONSchema(TablePlanSchema);
 
 export class OpenRouterPlanningProvider implements PlanningProvider {
+  readonly id: string;
   readonly usesModel = true;
 
   private readonly apiKey: string;
@@ -65,7 +66,6 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
   private readonly siteUrl: string | undefined;
   private readonly appName: string | undefined;
   private readonly fetcher: typeof fetch;
-  private resolvedModel: string | undefined;
 
   constructor(options: OpenRouterPlanningProviderOptions) {
     const apiKey = options.apiKey.trim();
@@ -81,6 +81,7 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
     this.siteUrl = options.siteUrl?.trim() || undefined;
     this.appName = options.appName?.trim() || undefined;
     this.fetcher = options.fetcher ?? fetch;
+    this.id = `openrouter:${this.model}`;
 
     if (!Number.isInteger(this.maxTokens) || this.maxTokens < 1) {
       throw new Error("OpenRouter maxTokens must be a positive integer");
@@ -88,11 +89,6 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1) {
       throw new Error("OpenRouter timeoutMs must be a positive integer");
     }
-  }
-
-  /** The exact model OpenRouter says produced the latest plan, when available. */
-  get id(): string {
-    return `openrouter:${this.resolvedModel ?? this.model}`;
   }
 
   async plan(request: PlanningRequest): Promise<unknown> {
@@ -162,7 +158,15 @@ export class OpenRouterPlanningProvider implements PlanningProvider {
         "OpenRouter response did not identify the model",
       );
     }
-    this.resolvedModel = responseModel;
+    if (responseModel !== this.model) {
+      // Provenance is read from `provider.id` after plan() returns. Mutating a
+      // shared singleton's id from each response races concurrent requests, so
+      // aliases and routers are refused instead: the requested and served model
+      // must be the same exact identifier before the plan can be accepted.
+      throw new OpenRouterPlanningError(
+        "OpenRouter answered with a different model than requested",
+      );
+    }
 
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string" || content.trim() === "") {

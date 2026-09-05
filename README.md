@@ -37,6 +37,9 @@ silent provider fallback. Those request controls govern the inference endpoint;
 they cannot turn off OpenRouter account-level opt-ins. Keep **Input & Output
 Logging** disabled in Observability and **OpenRouter Use of Inputs/Outputs**
 disabled in Privacy, or spreadsheet samples may be retained despite ZDR routing.
+Use an exact model id such as `z-ai/glm-5.3`, not `openrouter/auto`: Dasher
+refuses a response naming a different model so concurrent requests cannot race
+the provenance recorded on an accepted dashboard.
 
 ## Check it
 

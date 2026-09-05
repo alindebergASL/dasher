@@ -91,6 +91,35 @@ describe("plannerFromEnv", () => {
     }
   });
 
+  it("refuses an alias mismatch through the production budget wrapper", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "z-ai/glm-5.3",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ planVersion: "table-plan-v1" }),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const provider = plannerFromEnv({
+        DASHER_PLANNER: "openrouter",
+        OPENROUTER_API_KEY: "sk-or-test",
+        DASHER_PLANNER_MODEL: "openrouter/auto",
+      });
+      await expect(provider.plan(request)).rejects.toThrow(/different model/u);
+      expect(provider.id).toBe("openrouter:openrouter/auto");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("rejects an unsupported OpenRouter reasoning effort", () => {
     expect(() =>
       plannerFromEnv({

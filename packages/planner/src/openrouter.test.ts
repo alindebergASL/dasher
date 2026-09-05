@@ -146,7 +146,7 @@ describe("OpenRouterPlanningProvider", () => {
     expect(await provider.plan(request())).toBe("not-json");
   });
 
-  it("records the model OpenRouter says actually served an alias", async () => {
+  it("refuses an alias that resolves to a different model", async () => {
     const provider = new OpenRouterPlanningProvider({
       apiKey: testApiKey,
       model: "openrouter/auto",
@@ -160,9 +160,8 @@ describe("OpenRouterPlanningProvider", () => {
           ),
         ),
     });
+    await expect(provider.plan(request())).rejects.toThrow(/different model/u);
     expect(provider.id).toBe("openrouter:openrouter/auto");
-    await provider.plan(request());
-    expect(provider.id).toBe("openrouter:z-ai/glm-5.3");
   });
 
   it("reports only provider status and never its potentially sensitive body", async () => {
