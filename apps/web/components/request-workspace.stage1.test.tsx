@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { PlanResult } from "../app/planning";
@@ -67,9 +73,9 @@ describe("stage 1 request workspace interpretation strip", () => {
       }),
     ).toHaveLength(1);
     expect(within(strip).getAllByRole("button")).toHaveLength(1);
-    expect(screen.getByRole("status")).not.toHaveTextContent(
-      /Read Total Spend as the figure/iu,
-    );
+    for (const status of screen.getAllByRole("status")) {
+      expect(status).not.toHaveTextContent(/Read Total Spend as the figure/iu);
+    }
 
     const requestInput = screen.getByRole("textbox", {
       name: "What do you want to see?",
@@ -107,6 +113,24 @@ describe("stage 1 request workspace interpretation strip", () => {
     expect(
       screen.getByRole("textbox", { name: /change this dashboard/iu }),
     ).toHaveFocus();
+  });
+
+  it("announces an asynchronous build independently of mobile-hidden prose", async () => {
+    buildDashboard.mockResolvedValueOnce(successful);
+    render(
+      <RequestWorkspace
+        initial={successful}
+        initialRequest="Show the operating picture"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /build dashboard/iu }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("status", { name: "Dashboard update" }),
+      ).toHaveTextContent(/Dashboard updated for Show the operating picture/iu),
+    );
   });
 
   it("keeps mobile controls in the same semantic order as the layout", () => {

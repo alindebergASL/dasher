@@ -174,6 +174,13 @@ export function RequestWorkspace({
             {error}
           </p>
         ) : null}
+        <span aria-label="Dashboard update" className="sr-only" role="status">
+          {pending
+            ? "Building dashboard."
+            : version === 0
+              ? ""
+              : `Dashboard updated for ${activeRequest}. Review the dataset interpretation before acting.`}
+        </span>
         <p className="request-note" role="status">
           {result.usesModel
             ? "A planning model chose the layout from safe column metadata, never source values or totals."
