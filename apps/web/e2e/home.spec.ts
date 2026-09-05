@@ -1,4 +1,8 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
 import { expect, test } from "@playwright/test";
+import { DASHBOARD_STRING_LIMITS } from "@dasher/dashboard-schema";
 
 test.describe("the sample dashboard", () => {
   test("keeps top navigation first in visual and keyboard order", async ({
@@ -84,6 +88,47 @@ test.describe("the sample dashboard", () => {
       }),
     );
     expect(violations).toEqual([]);
+  });
+
+  test("contains long unbroken next actions on narrow non-first pages", async ({
+    page,
+  }) => {
+    const stylesheet = await readFile(
+      path.resolve(process.cwd(), "app", "globals.css"),
+      "utf8",
+    );
+    const title = "T".repeat(DASHBOARD_STRING_LIMITS.shortText);
+    const detail = "D".repeat(DASHBOARD_STRING_LIMITS.longText);
+    await page.setViewportSize({ width: 375, height: 844 });
+    await page.setContent(`
+      <div class="app-shell">
+        <div class="app-content">
+          <div class="workspace">
+            <aside class="sidebar">
+              <div><h1>Dashboard</h1><p>Audience</p></div>
+              <nav aria-label="Dashboard pages">
+                <button type="button"><span>01</span>Overview</button>
+                <button class="active" type="button"><span>02</span>Detail</button>
+              </nav>
+              <div class="sidebar-next">
+                <span>Next safe action</span>
+                <strong>${title}</strong>
+                <p>${detail}</p>
+                <button class="next-evidence" type="button">Why this action</button>
+              </div>
+            </aside>
+            <main><h2>Detail page</h2></main>
+          </div>
+        </div>
+      </div>
+    `);
+    await page.addStyleTag({ content: stylesheet });
+
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
   });
 
   test("keeps trend labels, values, and evidence inside their cards", async ({
