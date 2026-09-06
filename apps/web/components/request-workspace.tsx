@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { buildDashboard } from "@/app/actions";
 import {
@@ -78,12 +78,21 @@ export function RequestWorkspace({
   );
   const [draggingFile, setDraggingFile] = useState(false);
   const [version, setVersion] = useState(0);
-  const [pending, startTransition] = useTransition();
+  const [composerExpanded, setComposerExpanded] = useState(true);
+  const [pendingKind, setPendingKind] = useState<
+    "primary" | "refinement" | undefined
+  >(undefined);
+  const pendingRef = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const questionInput = useRef<HTMLTextAreaElement>(null);
+  const compactSummary = useRef<HTMLDivElement>(null);
+  const focusQuestionOnExpand = useRef(false);
+  const focusCompactOnCollapse = useRef(false);
   const changeInput = useRef<HTMLInputElement>(null);
 
   const dashboard = result.dashboard;
   const plan = result.plan;
+  const pending = pendingKind !== undefined;
   const selectedSource: DisplayedSource =
     selectedFile === undefined
       ? { kind: "sample" }
@@ -99,6 +108,29 @@ export function RequestWorkspace({
     displayedSource.kind === "upload" &&
     selectedSource.name !== undefined &&
     selectedSource.name === displayedSource.name;
+  const sourceStatusMessage = replacingSameNamedUpload
+    ? `Next build: a newly selected file named ${selectedSource.name}. Currently showing: the previous file with that name.`
+    : sourceWillChange
+      ? `Next build: ${sourceDescription(selectedSource)}. Currently showing: ${sourceDescription(displayedSource)}.`
+      : `Using ${sourceDescription(selectedSource)}.`;
+  const planningStatusMessage =
+    (result.usesModel
+      ? "AI arranges safe metadata. Deterministic calculations stay linked to source evidence."
+      : "Deterministic calculations stay linked to source evidence.") +
+    ((result.attempts ?? 1) > 1
+      ? " An unsafe first plan was rejected before rendering."
+      : "");
+
+  useEffect(() => {
+    if (composerExpanded && focusQuestionOnExpand.current) {
+      focusQuestionOnExpand.current = false;
+      questionInput.current?.focus();
+    }
+    if (!composerExpanded && focusCompactOnCollapse.current) {
+      focusCompactOnCollapse.current = false;
+      compactSummary.current?.focus();
+    }
+  }, [composerExpanded]);
 
   function currentFile(): File | undefined {
     const file = selectedFile;
@@ -106,15 +138,18 @@ export function RequestWorkspace({
   }
 
   function selectFile(file: File | undefined) {
-    if (file === undefined || file.size === 0) return;
+    if (pendingRef.current || file === undefined || file.size === 0) return;
     setSelectedFile(file);
     setSelectedSourceId((current) => current + 1);
     setError(undefined);
+    setComposerExpanded(true);
   }
 
   function useSampleData() {
+    if (pendingRef.current) return;
     setSelectedFile(undefined);
     setError(undefined);
+    setComposerExpanded(true);
     if (fileInput.current !== null) fileInput.current.value = "";
   }
 
@@ -122,6 +157,7 @@ export function RequestWorkspace({
     next: PlanResult,
     nextRequest: string,
     sourceUsed: DisplayedSource,
+    kind: "primary" | "refinement",
   ) {
     if (!next.ok || next.dashboard === undefined) {
       setError(next.error ?? "That request could not be built.");
@@ -129,10 +165,15 @@ export function RequestWorkspace({
     }
     setResult(next);
     setDisplayedSource(sourceUsed);
-    setActiveRequest(nextRequest);
     setError(next.error);
     setChange("");
     setVersion((current) => current + 1);
+    if (kind === "primary") {
+      setActiveRequest(nextRequest);
+      setRequest(nextRequest);
+      focusCompactOnCollapse.current = true;
+      setComposerExpanded(false);
+    }
   }
 
   function sourceForm(): FormData | undefined {
@@ -153,6 +194,7 @@ export function RequestWorkspace({
   }
 
   function build(text: string) {
+    if (pendingRef.current) return;
     const form = sourceForm();
     if (form === undefined) return;
     const file = currentFile();
@@ -166,13 +208,20 @@ export function RequestWorkspace({
           };
     form.set("request", text);
     setRequest(text);
-    startTransition(async () => {
-      apply(await buildDashboard(form), text, sourceUsed);
-    });
+    pendingRef.current = true;
+    setPendingKind("primary");
+    void (async () => {
+      try {
+        apply(await buildDashboard(form), text, sourceUsed, "primary");
+      } finally {
+        pendingRef.current = false;
+        setPendingKind(undefined);
+      }
+    })();
   }
 
   function refine(instruction: string) {
-    if (plan === undefined) return;
+    if (pendingRef.current || plan === undefined) return;
     const form = sourceForm();
     if (form === undefined) return;
     const file = currentFile();
@@ -188,91 +237,150 @@ export function RequestWorkspace({
     form.set("plan", JSON.stringify(plan));
     form.set("instruction", instruction);
     setChange(instruction);
-    startTransition(async () => {
-      apply(await buildDashboard(form), activeRequest, sourceUsed);
-    });
+    pendingRef.current = true;
+    setPendingKind("refinement");
+    void (async () => {
+      try {
+        apply(
+          await buildDashboard(form),
+          activeRequest,
+          sourceUsed,
+          "refinement",
+        );
+      } finally {
+        pendingRef.current = false;
+        setPendingKind(undefined);
+      }
+    })();
   }
 
   return (
     <div className="request-workspace">
       <form
-        className="request-bar"
+        className={`request-bar${composerExpanded ? "" : " request-bar-compact"}`}
         onSubmit={(event) => {
           event.preventDefault();
           build(request);
         }}
       >
-        <header className="composer-heading">
-          <div>
-            <span className="composer-kicker">Dashboard workspace</span>
-            <h2>Ask Dasher</h2>
-            <p>Ask with the sample data, or bring a CSV of your own.</p>
-          </div>
-        </header>
-
-        <div className="request-composer">
-          <div className="request-compose-body">
-            <label className="request-label" htmlFor="dashboard-request">
-              What should this dashboard answer?
-            </label>
-            <textarea
-              aria-describedby="dashboard-source-status"
-              aria-label="What should this dashboard answer?"
-              autoComplete="off"
-              className="request-input request-prompt"
-              id="dashboard-request"
-              maxLength={REQUEST_MAX_LENGTH}
-              name="request"
-              onChange={(event) => setRequest(event.target.value)}
-              placeholder="Where is the money going, and what changed?"
-              rows={3}
-              value={request}
-            />
-            <div className="request-examples">
-              <span className="request-examples-label">Start with</span>
-              {REQUESTS.map((example) => (
-                <button
-                  className="request-example"
-                  disabled={pending}
-                  key={example}
-                  onClick={() => build(example)}
-                  type="button"
-                >
-                  {example}
-                </button>
-              ))}
+        {composerExpanded ? (
+          <header className="composer-heading">
+            <div>
+              <span className="composer-kicker">Dashboard workspace</span>
+              <h2>Ask Dasher</h2>
+              <p>Ask with the sample data, or bring a CSV of your own.</p>
             </div>
-            <div className="composer-footer">
-              <p
-                aria-label="Planning status"
-                className="composer-trust"
-                role="status"
-              >
-                {result.usesModel
-                  ? "AI arranges safe metadata. Deterministic calculations stay linked to source evidence."
-                  : "Deterministic calculations stay linked to source evidence."}
-                {(result.attempts ?? 1) > 1
-                  ? " An unsafe first plan was rejected before rendering."
-                  : ""}
-              </p>
-              <button
-                className="request-submit"
+          </header>
+        ) : null}
+
+        <div
+          aria-label={
+            composerExpanded ? undefined : "Current Ask Dasher question"
+          }
+          className={`request-composer${composerExpanded ? "" : " request-compact"}`}
+          ref={composerExpanded ? undefined : compactSummary}
+          role={composerExpanded ? undefined : "region"}
+          tabIndex={composerExpanded ? undefined : -1}
+        >
+          {composerExpanded ? (
+            <div className="request-compose-body">
+              <label className="request-label" htmlFor="dashboard-request">
+                What should this dashboard answer?
+              </label>
+              <textarea
+                aria-describedby="dashboard-source-status"
+                aria-label="What should this dashboard answer?"
+                autoComplete="off"
+                className="request-input request-prompt"
+                id="dashboard-request"
+                maxLength={REQUEST_MAX_LENGTH}
+                name="request"
                 disabled={pending}
-                type="submit"
-              >
-                {pending ? "Building…" : "Build dashboard"}
-                <span aria-hidden="true">→</span>
-              </button>
+                onChange={(event) => {
+                  if (!pendingRef.current) setRequest(event.target.value);
+                }}
+                placeholder="Where is the money going, and what changed?"
+                ref={questionInput}
+                rows={3}
+                value={request}
+              />
+              <div className="request-examples">
+                <span className="request-examples-label">Start with</span>
+                {REQUESTS.map((example) => (
+                  <button
+                    className="request-example"
+                    disabled={pending}
+                    key={example}
+                    onClick={() => build(example)}
+                    type="button"
+                  >
+                    {example}
+                  </button>
+                ))}
+              </div>
+              <div className="composer-footer">
+                <p
+                  aria-label="Planning status"
+                  className="composer-trust"
+                  role="status"
+                >
+                  {planningStatusMessage}
+                </p>
+                <button
+                  className="request-submit"
+                  disabled={pending}
+                  type="submit"
+                >
+                  {pendingKind === "primary" ? "Building…" : "Build dashboard"}
+                  <span aria-hidden="true">→</span>
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="request-compact-copy">
+                <span className="composer-kicker">Current question</span>
+                <p className="request-compact-question">{activeRequest}</p>
+                <p className="source-current">
+                  Uses {sourceDescription(displayedSource)} · evidence-backed
+                </p>
+              </div>
+              <button
+                aria-label="Edit question"
+                className="request-edit"
+                disabled={pending}
+                onClick={() => {
+                  if (pendingRef.current) return;
+                  focusQuestionOnExpand.current = true;
+                  setComposerExpanded(true);
+                }}
+                type="button"
+              >
+                <span className="request-edit-wide">Edit question</span>
+                <span aria-hidden="true" className="request-edit-short">
+                  Edit
+                </span>
+              </button>
+              <p aria-label="Planning status" className="sr-only" role="status">
+                {planningStatusMessage}
+              </p>
+            </>
+          )}
 
-          <aside aria-label="Choose data source" className="request-source">
-            <span className="request-label">Data source</span>
+          <aside
+            aria-label="Choose data source"
+            className={`request-source${composerExpanded ? "" : " request-source-compact"}`}
+          >
+            <span className={composerExpanded ? "request-label" : "sr-only"}>
+              Data source
+            </span>
             <div
+              aria-disabled={pending}
               className={`source-dropzone${draggingFile ? " source-dropzone-active" : ""}`}
               data-testid="source-dropzone"
               onDragEnter={(event) => {
                 event.preventDefault();
+                if (pendingRef.current) return;
                 setDraggingFile(true);
               }}
               onDragLeave={(event) => {
@@ -286,11 +394,14 @@ export function RequestWorkspace({
               }}
               onDragOver={(event) => {
                 event.preventDefault();
-                event.dataTransfer.dropEffect = "copy";
+                event.dataTransfer.dropEffect = pendingRef.current
+                  ? "none"
+                  : "copy";
               }}
               onDrop={(event) => {
                 event.preventDefault();
                 setDraggingFile(false);
+                if (pendingRef.current) return;
                 selectFile(event.dataTransfer.files[0]);
               }}
             >
@@ -299,6 +410,7 @@ export function RequestWorkspace({
                   accept=".csv,text/csv,text/tab-separated-values"
                   aria-label="Choose a CSV data source"
                   className="upload-file"
+                  disabled={pending}
                   id="dashboard-file"
                   name="file"
                   onChange={(event) => selectFile(event.target.files?.[0])}
@@ -310,9 +422,11 @@ export function RequestWorkspace({
                 </span>
                 <span className="source-copy">
                   <strong>
-                    {selectedFile === undefined
-                      ? "Sample operating data"
-                      : selectedFile.name}
+                    {!composerExpanded
+                      ? "Change source"
+                      : selectedFile === undefined
+                        ? "Sample data"
+                        : selectedFile.name}
                   </strong>
                   <span>
                     {selectedFile === undefined
@@ -321,7 +435,12 @@ export function RequestWorkspace({
                   </span>
                 </span>
                 <span className="source-action">
-                  {selectedFile === undefined ? "Choose CSV" : "Replace"}
+                  <span className="source-action-wide">
+                    {selectedFile === undefined ? "Choose CSV" : "Replace"}
+                  </span>
+                  <span aria-hidden="true" className="source-action-short">
+                    CSV
+                  </span>
                 </span>
               </label>
             </div>
@@ -336,15 +455,12 @@ export function RequestWorkspace({
                 {sourceWillChange ? (
                   <span aria-hidden="true" className="source-status-dot" />
                 ) : null}
-                {replacingSameNamedUpload
-                  ? `Next build: a newly selected file named ${selectedSource.name}. Currently showing: the previous file with that name.`
-                  : sourceWillChange
-                    ? `Next build: ${sourceDescription(selectedSource)}. Currently showing: ${sourceDescription(displayedSource)}.`
-                    : `Using ${sourceDescription(selectedSource)}.`}
+                {sourceStatusMessage}
               </p>
               {selectedFile === undefined ? null : (
                 <button
                   className="source-reset"
+                  disabled={pending}
                   onClick={useSampleData}
                   type="button"
                 >
@@ -352,10 +468,12 @@ export function RequestWorkspace({
                 </button>
               )}
             </div>
-            <p className="source-hint">
-              Files are sent to the server for validation. When signed in,
-              uploads are stored as dashboard evidence.
-            </p>
+            {composerExpanded ? (
+              <p className="source-hint">
+                Files are sent to the server for validation. When signed in,
+                uploads are stored as dashboard evidence.
+              </p>
+            ) : null}
           </aside>
         </div>
         {error ? (
@@ -395,7 +513,10 @@ export function RequestWorkspace({
           </div>
           <button
             className="interpretation-correct"
-            onClick={() => changeInput.current?.focus()}
+            disabled={pending}
+            onClick={() => {
+              if (!pendingRef.current) changeInput.current?.focus();
+            }}
             type="button"
           >
             Correct interpretation
@@ -428,14 +549,17 @@ export function RequestWorkspace({
               id="dashboard-change"
               maxLength={REFINEMENT_MAX_LENGTH}
               name="change"
-              onChange={(event) => setChange(event.target.value)}
+              disabled={pending}
+              onChange={(event) => {
+                if (!pendingRef.current) setChange(event.target.value);
+              }}
               placeholder="Describe one change"
               ref={changeInput}
               type="text"
               value={change}
             />
             <button className="request-submit" disabled={pending} type="submit">
-              {pending ? "Changing…" : "Apply change"}
+              {pendingKind === "refinement" ? "Changing…" : "Apply change"}
             </button>
           </div>
           <div className="request-examples">

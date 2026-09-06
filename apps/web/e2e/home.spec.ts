@@ -75,6 +75,108 @@ test.describe("the sample dashboard", () => {
     await expect(question).toHaveValue(longQuestion);
   });
 
+  test("a successful build compacts the composer, keeps the full question, and supports keyboard editing", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const question = page.getByRole("textbox", {
+      name: "What should this dashboard answer?",
+    });
+    const longQuestion =
+      "Compare customer growth with headcount by quarter, explain where the relationship changed, and identify the one segment an operator should investigate next without hiding any part of this question.";
+    await question.fill(longQuestion);
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    const compact = page.getByRole("region", {
+      name: "Current Ask Dasher question",
+    });
+    await expect(compact).toBeVisible();
+    await expect(compact).toBeFocused();
+    await expect(compact).toContainText(longQuestion);
+    await expect(compact).toContainText("Uses sample data");
+    const edit = page.getByRole("button", { name: "Edit question" });
+    await edit.focus();
+    await page.keyboard.press("Enter");
+    await expect(question).toBeFocused();
+    await expect(question).toHaveValue(longQuestion);
+  });
+
+  test("compact questions preserve multiline and repeated whitespace exactly", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const exactQuestion =
+      "Compare regions:\n  North  vs  South\nKeep  spacing.";
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill(exactQuestion);
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    const compactQuestion = page.locator(".request-compact-question");
+    await expect(compactQuestion).toHaveText(exactQuestion);
+    expect(
+      await compactQuestion.evaluate((element) =>
+        getComputedStyle(element).getPropertyValue("white-space"),
+      ),
+    ).toBe("pre-wrap");
+  });
+
+  test("at 390px the post-build primary headline is meaningfully inside the first viewport", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("What changed last month?");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
+    await expect(page.getByText("CSV", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(/Uses sample data.*evidence-backed/iu),
+    ).toBeVisible();
+    const primary = page.getByRole("article", { name: "Primary finding" });
+    await expect(primary).toBeVisible();
+    const headline = primary.getByRole("heading", { level: 3 });
+    await expect(headline).toBeVisible();
+    const headlineBox = await headline.boundingBox();
+    expect(headlineBox).not.toBeNull();
+    expect(headlineBox!.y).toBeGreaterThanOrEqual(0);
+    expect(headlineBox!.y).toBeLessThanOrEqual(784);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth === window.innerWidth,
+      ),
+    ).toBe(true);
+  });
+
+  test("Back and Forward preserve compact in-page state without adding URL state", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Show the biggest movers");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    const compact = page.getByRole("region", {
+      name: "Current Ask Dasher question",
+    });
+    await expect(compact).toBeVisible();
+
+    await page.evaluate(() =>
+      history.pushState({ local: true }, "", "?view=one"),
+    );
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/u);
+    await expect(compact).toBeVisible();
+    await page.goForward();
+    await expect(page).toHaveURL(/\?view=one$/u);
+    await expect(compact).toBeVisible();
+  });
+
   test("keeps headline values inside their mobile cards", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
@@ -202,8 +304,8 @@ test.describe("the sample dashboard", () => {
       .fill("Show amount over time");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     const cards = page.locator(".trend-card");
     await expect(cards.first()).toBeVisible();
     const violations = await cards.evaluateAll((nodes) =>
@@ -263,8 +365,8 @@ test.describe("the sample dashboard", () => {
       .fill("Compare quarterly amount by category");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Evidence for Important" }).click();
     const dialog = page.getByRole("dialog", { name: "Sources and evidence" });
     await expect(dialog).toContainText("quarterly-progress.csv");
@@ -284,8 +386,8 @@ test.describe("the sample dashboard", () => {
       .fill("Largest transactions and the biggest movers");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await expect(
       page.getByRole("heading", { level: 1 }).first(),
     ).not.toHaveText(before ?? "");
