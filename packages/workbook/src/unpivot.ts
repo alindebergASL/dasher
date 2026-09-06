@@ -6,6 +6,7 @@ import { profileColumn, type ProfileOptions } from "./infer";
 import {
   decimalConventionEvidence,
   detectCurrency,
+  parseAmount,
   parsePeriodHeader,
 } from "./parse-values";
 import type { ColumnProfile, Grain, Table } from "./table";
@@ -130,7 +131,10 @@ function amountColumnProfile(
     for (const row of rows) {
       const value = row[column.index] ?? "";
       const decimal = decimalConventionEvidence(value);
-      const currency = detectCurrency(value);
+      const readable =
+        parseAmount(value, { decimal: "dot" }) !== null ||
+        parseAmount(value, { decimal: "comma" }) !== null;
+      const currency = readable ? detectCurrency(value) : undefined;
       if (decimal !== undefined) decimals.add(decimal);
       if (currency !== undefined) currencies.add(currency);
     }

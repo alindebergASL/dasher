@@ -253,6 +253,12 @@ export function decimalConventionEvidence(
 ): DecimalConvention | undefined {
   const unsigned = unsign(text);
   if (unsigned === null) return undefined;
+  if (
+    readDigits(unsigned.digits, "dot") === null &&
+    readDigits(unsigned.digits, "comma") === null
+  ) {
+    return undefined;
+  }
   return decimalEvidence(unsigned.digits) ?? undefined;
 }
 

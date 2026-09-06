@@ -233,6 +233,38 @@ describe("a wide file with one column per period", () => {
     expect(first).toEqual(["1250", "2500"]);
   });
 
+  it("ignores separators in unreadable cells when resolving a wide convention", () => {
+    const table = readTable(
+      [
+        "Category;2026-01;2026-02;2026-03",
+        "A;1,25;2,50;not.available",
+        "B;3,75;4,00;5,00",
+      ].join("\n"),
+    );
+    const amount = table.columns.find((column) => column.name === "amount");
+
+    expect(amount).toMatchObject({ type: "number", decimal: "comma" });
+    expect(table.rows).toContainEqual(["A", "2026-03", "not.available"]);
+  });
+
+  it("ignores currency-like prefixes in unreadable wide cells", () => {
+    const table = readTable(
+      [
+        "Category;2026-01;2026-02;2026-03",
+        "A;€1,25;€2,50;USD pending",
+        "B;€3,75;€4,00;€5,00",
+      ].join("\n"),
+    );
+    const amount = table.columns.find((column) => column.name === "amount");
+
+    expect(amount).toMatchObject({
+      type: "number",
+      decimal: "comma",
+      currency: "EUR",
+    });
+    expect(table.rows).toContainEqual(["A", "2026-03", "USD pending"]);
+  });
+
   it("refuses conflicting decimal conventions across wide periods", () => {
     expect(() =>
       readTable(

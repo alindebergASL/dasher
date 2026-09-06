@@ -202,6 +202,7 @@ describe("the decimal mark a column uses", () => {
     expect(decimalConventionEvidence("1,25")).toBe("comma");
     expect(decimalConventionEvidence("1,234.56")).toBe("dot");
     expect(decimalConventionEvidence("1.234,56")).toBe("comma");
+    expect(decimalConventionEvidence("not.available")).toBeUndefined();
   });
 
   it("infers the mark from the cells that can only be read one way", () => {
