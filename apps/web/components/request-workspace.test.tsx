@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PlanResult } from "../app/planning";
@@ -38,6 +44,14 @@ function lastForm(): FormData {
   const call = buildDashboard.mock.calls.at(-1);
   expect(call).toBeDefined();
   return call![0] as FormData;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 describe("RequestWorkspace", () => {
@@ -184,6 +198,9 @@ describe("RequestWorkspace", () => {
     expect(screen.getByRole("status", { name: "Data source" })).toHaveClass(
       "sr-only",
     );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
+    );
 
     const replacement = new File(
       ["Date,Amount\n2026-01-01,999"],
@@ -224,6 +241,268 @@ describe("RequestWorkspace", () => {
     expect(request).toHaveAttribute("rows", "3");
   });
 
+  it("stays expanded for the SSR dashboard, then collapses after an exact long question succeeds", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const longQuestion =
+      "Compare customer growth with headcount by quarter, explain where the relationship changed, identify the segment an operator should investigate next, and keep every qualifier in this exact question visible.";
+
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Current Ask Dasher question" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+      { target: { value: longQuestion } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+
+    const compact = await screen.findByRole("region", {
+      name: "Current Ask Dasher question",
+    });
+    expect(compact).toHaveTextContent(longQuestion);
+    expect(compact).toHaveTextContent("Displayed source: sample data");
+    expect(
+      screen.queryByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit question" })).toBeVisible();
+    expect(compact).toHaveAttribute("tabindex", "-1");
+    await waitFor(() => expect(compact).toHaveFocus());
+  });
+
+  it("reopens the composer for a same-name source replacement and preserves its identity warning", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const first = new File(["Date,Amount\n2026-01-01,25"], "operations.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [first] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    await screen.findByRole("region", { name: "Current Ask Dasher question" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
+    );
+
+    expect(screen.getByText("Displayed source: operations.csv")).toBeVisible();
+    const replacement = new File(
+      ["Date,Amount\n2026-01-01,999"],
+      "operations.csv",
+      { type: "text/csv" },
+    );
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [replacement] },
+    });
+
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Build dashboard" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(
+      /newly selected file named operations\.csv.*previous file with that name/iu,
+    );
+    expect(screen.getByRole("status", { name: "Data source" })).not.toHaveClass(
+      "sr-only",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use sample data" }));
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(
+      /Next build: sample data\. Currently showing: operations\.csv/iu,
+    );
+    expect(
+      screen.getByRole("button", { name: "Build dashboard" }),
+    ).toBeVisible();
+  });
+
+  it("reopens the composer when sample data is restored from compact mode", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const file = new File(["Date,Amount\n2026-01-01,25"], "operations.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    await screen.findByRole("region", { name: "Current Ask Dasher question" });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Use sample data" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Use sample data" }));
+
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Build dashboard" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(
+      /Next build: sample data\. Currently showing: operations\.csv/iu,
+    );
+  });
+
+  it("locks primary and source controls while a build is pending and ignores drops", async () => {
+    const pendingBuild = deferred<PlanResult>();
+    buildDashboard.mockReturnValue(pendingBuild.promise);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const first = new File(["Date,Amount\n2026-01-01,25"], "first.csv", {
+      type: "text/csv",
+    });
+    const ignored = new File(["Date,Amount\n2026-01-01,999"], "ignored.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [first] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+
+    const question = screen.getByRole("textbox", {
+      name: "What should this dashboard answer?",
+    });
+    expect(question).toBeDisabled();
+    expect(screen.getByLabelText("Choose a CSV data source")).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use sample data" }),
+    ).toBeDisabled();
+    fireEvent.drop(screen.getByTestId("source-dropzone"), {
+      dataTransfer: { files: [ignored] },
+    });
+
+    await act(async () => pendingBuild.resolve(initial));
+    expect(
+      screen.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toHaveTextContent("Displayed source: first.csv");
+    expect(screen.getByText("first.csv")).toBeVisible();
+    expect(screen.queryByText("ignored.csv")).not.toBeInTheDocument();
+  });
+
+  it("leaves an open question draft untouched when a refinement succeeds", async () => {
+    const pendingRefinement = deferred<PlanResult>();
+    buildDashboard.mockReturnValue(pendingRefinement.promise);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const draft = "A new primary question that is not this refinement";
+
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+      { target: { value: draft } },
+    );
+    fireEvent.change(screen.getByLabelText("Change this dashboard"), {
+      target: { value: "Just the overview" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
+
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("Change this dashboard")).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Correct interpretation" }),
+    ).toBeDisabled();
+
+    await act(async () => pendingRefinement.resolve(initial));
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toHaveValue(draft);
+  });
+
+  it("keeps a failed build expanded with its draft and source, then recollapses on success", async () => {
+    buildDashboard
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "Could not read that request.",
+      })
+      .mockResolvedValueOnce(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    const draft = "Keep this exact failed-build draft";
+    const file = new File(["Date,Amount\n2026-01-01,25"], "draft.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+      { target: { value: draft } },
+    );
+    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
+      target: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+
+    await screen.findByRole("alert");
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toHaveValue(draft);
+    expect(screen.getByText("draft.csv")).toBeVisible();
+    expect(
+      screen.queryByRole("region", { name: "Current Ask Dasher question" }),
+    ).not.toBeInTheDocument();
+
+    const rebuildButton = await waitFor(() => {
+      const button = screen.getByRole("button", { name: "Build dashboard" });
+      expect(button).toBeEnabled();
+      return button;
+    });
+    fireEvent.click(rebuildButton);
+    const compact = await screen.findByRole("region", {
+      name: "Current Ask Dasher question",
+    });
+    expect(compact).toHaveTextContent(draft);
+    expect(compact).toHaveTextContent("Displayed source: draft.csv");
+  });
+
+  it("reopens the full composer and focuses the question field", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    const edit = await screen.findByRole("button", { name: "Edit question" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("textbox", {
+          name: "What should this dashboard answer?",
+        }),
+      ).toHaveFocus(),
+    );
+  });
+
   it("builds from a dropped CSV source", async () => {
     buildDashboard.mockResolvedValue(initial);
     render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
@@ -238,5 +517,36 @@ describe("RequestWorkspace", () => {
 
     await waitFor(() => expect(buildDashboard).toHaveBeenCalledTimes(1));
     expect((lastForm().get("file") as File).name).toBe("dropped.csv");
+  });
+
+  it("reopens the composer when a CSV is dropped in compact mode", async () => {
+    buildDashboard.mockResolvedValue(initial);
+    render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
+    fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
+    await screen.findByRole("region", { name: "Current Ask Dasher question" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
+    );
+    const file = new File(["Date,Amount\n2026-01-01,25"], "dropped.csv", {
+      type: "text/csv",
+    });
+
+    fireEvent.drop(screen.getByTestId("source-dropzone"), {
+      dataTransfer: { files: [file] },
+    });
+
+    expect(
+      screen.getByRole("textbox", {
+        name: "What should this dashboard answer?",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Build dashboard" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("status", { name: "Data source" }),
+    ).toHaveTextContent(
+      /Next build: dropped\.csv\. Currently showing: sample data/iu,
+    );
   });
 });

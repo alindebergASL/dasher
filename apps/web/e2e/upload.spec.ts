@@ -15,8 +15,8 @@ test.describe("uploading a spreadsheet", () => {
       .fill("Spending by category and what changed");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(
       page.getByRole("region", { name: "Dataset interpretation" }),
@@ -37,8 +37,8 @@ test.describe("uploading a spreadsheet", () => {
       .fill("Which lines are over budget?");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(page.getByText(/Cloud infrastructure/).first()).toBeVisible();
   });
@@ -66,8 +66,8 @@ test.describe("uploading a spreadsheet", () => {
     await page.getByRole("button", { name: "Build dashboard" }).click();
 
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await expect(page.locator(".request-error")).toHaveCount(0);
     const relationship = page.locator("section.panel").filter({
       has: page.getByRole("heading", { name: "Customers vs Headcount" }),
@@ -113,8 +113,8 @@ test.describe("uploading a spreadsheet", () => {
     await page.getByRole("button", { name: "Build dashboard" }).click();
 
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await expect(page.locator(".request-error")).toHaveCount(0);
     await expect(
       page.getByRole("heading", { level: 1, name: "Cash flow by Category" }),
@@ -272,8 +272,8 @@ test.describe("uploading a spreadsheet", () => {
       .fill("Spending by category");
     await page.getByRole("button", { name: "Build dashboard" }).click();
     await expect(
-      page.getByRole("button", { name: "Build dashboard" }),
-    ).toBeEnabled();
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
     await page
       .getByRole("textbox", { name: "Change this dashboard" })
       .fill("Exclude Salaries and benefits");
