@@ -44,6 +44,7 @@ export const RANKING_LIMIT = 100;
 export const EVIDENCE = {
   source: "source-file",
   calculations: "calculations",
+  periodCoverage: "period-coverage",
   composition: "composition",
 } as const;
 
@@ -68,8 +69,14 @@ export function rankingTitle(
 
 export function windowLabel(facts: TableFacts): string {
   return facts.latestPeriod === undefined
-    ? "the whole file"
-    : periodLabel(facts.latestPeriod);
+    ? "the whole dataset"
+    : `${periodLabel(facts.latestPeriod)}${facts.periodCoverage.status === "incomplete" ? " (partial)" : ""}`;
+}
+
+function unavailableChangeText(facts: TableFacts): string {
+  return facts.periodCoverage.comparisonDisposition === "unavailable-no-prior"
+    ? "There is no earlier period in this dataset to compare with."
+    : `Change unavailable: ${facts.periodCoverage.reason}`;
 }
 
 function changeText(facts: TableFacts, money: MoneyFormat): string | undefined {
@@ -146,7 +153,7 @@ function summary(id: string, ctx: SectionContext): DashboardComponent {
   claims.push({
     text:
       change === undefined
-        ? "There is no earlier period in this file to compare with."
+        ? unavailableChangeText(facts)
         : `Change: ${change}.`,
     evidenceIds: [...evidenceIds],
   });
@@ -245,7 +252,7 @@ function headlineTotals(id: string, ctx: SectionContext): DashboardComponent {
   const largest = facts.shares[0];
   if (largest !== undefined) {
     metrics.push({
-      label: "Largest category",
+      label: facts.shares.length === 1 ? "Only category" : "Largest category",
       value: largest.category,
       change: formatPercent(largest.share),
       evidenceIds: ids,
@@ -285,6 +292,9 @@ function relationship(id: string, ctx: SectionContext): DashboardComponent {
     switch (facts.relationshipSupport) {
       case "no-prior-period":
         return "there is no prior period in this dataset";
+      case "period-incomplete":
+      case "period-unknown":
+        return facts.periodCoverage.reason;
       case "latest-incomplete":
         return `not every selected ${plan.roles.amount} row in ${period} has a readable ${comparison} value`;
       case "previous-incomplete":
@@ -502,7 +512,13 @@ function trend(
   ctx: SectionContext,
 ): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
-  if (facts.periods.length < 2) return undefined;
+  if (
+    facts.periods.length < 2 ||
+    facts.periodCoverage.comparisonDisposition === "unavailable-partial" ||
+    facts.periodCoverage.comparisonDisposition === "unavailable-unknown"
+  ) {
+    return undefined;
+  }
   const unit = money.currency ?? "amount";
   // RULE: a chart point carries the same figure the page prints, rounded to the
   // money scale before it becomes a JavaScript number.

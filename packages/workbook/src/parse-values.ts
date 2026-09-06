@@ -247,6 +247,21 @@ function decimalEvidence(value: string): DecimalConvention | null {
   return separator === "." ? "dot" : "comma";
 }
 
+/** The decimal mark one raw amount cell unambiguously establishes. */
+export function decimalConventionEvidence(
+  text: string,
+): DecimalConvention | undefined {
+  const unsigned = unsign(text);
+  if (unsigned === null) return undefined;
+  if (
+    readDigits(unsigned.digits, "dot") === null &&
+    readDigits(unsigned.digits, "comma") === null
+  ) {
+    return undefined;
+  }
+  return decimalEvidence(unsigned.digits) ?? undefined;
+}
+
 /**
  * The decimal mark a column's cells agree on.
  *

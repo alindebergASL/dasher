@@ -155,6 +155,7 @@ describe("compileTablePlan", () => {
     expect(spec.evidence.map((item) => item.id)).toEqual([
       "source-file",
       "calculations",
+      "period-coverage",
     ]);
     expect(spec.architecture.nodes.map((node) => node.kind)).toEqual([
       "input",
@@ -177,6 +178,7 @@ describe("compileTablePlan", () => {
     expect(spec.evidence.map((item) => [item.id, item.kind])).toEqual([
       ["source-file", "observed"],
       ["calculations", "calculated"],
+      ["period-coverage", "calculated"],
       ["composition", "interpreted"],
     ]);
     expect(spec.architecture.nodes.some((node) => node.kind === "ai")).toBe(
@@ -185,7 +187,7 @@ describe("compileTablePlan", () => {
     expect(spec.nextAction.evidenceIds).toContain("composition");
   });
 
-  it("computes exact totals, shares that sum to one hundred, and the change between periods", () => {
+  it("computes exact totals and shares, then fails closed for irregular transaction dates", () => {
     const table = transactionsTable();
     const facts = computeFacts(transactionsPlan, table);
     expect(facts.skipped).toBe(0);
@@ -207,7 +209,11 @@ describe("compileTablePlan", () => {
     }
     expect(facts.latestTotal).toBe(expected);
     expect(facts.totalsByPeriod.get("2026-08")).toBe(expected);
-    expect(add(facts.previousTotal!, facts.change!)).toBe(facts.latestTotal);
+    expect(facts.periodCoverage).toMatchObject({
+      status: "unknown",
+      comparisonDisposition: "unavailable-unknown",
+    });
+    expect(facts.change).toBeUndefined();
 
     const shareSum = facts.shares.reduce(
       (sum, share) => add(sum, share.share),
@@ -217,10 +223,38 @@ describe("compileTablePlan", () => {
     expect(
       facts.shares.every((share) => /^\d+(?:\.\d)?$/u.test(share.share)),
     ).toBe(true);
-    expect(facts.movers[0]!.change).not.toBe(ZERO);
-    expect(Math.abs(Number(facts.movers[0]!.change))).toBeGreaterThanOrEqual(
-      Math.abs(Number(facts.movers.at(-1)!.change)),
+    expect(facts.movers).toEqual([]);
+  });
+
+  it("computes an exact change and movers for complete explicit monthly periods", () => {
+    const table = profileTable({
+      headers: ["Month", "Category", "Amount"],
+      rows: [
+        ["2026-07", "Alpha", "100"],
+        ["2026-07", "Beta", "50"],
+        ["2026-08", "Alpha", "125"],
+        ["2026-08", "Beta", "75"],
+      ],
+    });
+    const facts = computeFacts(
+      planWith({ amount: "Amount", period: "Month", category: "Category" }, [
+        "summary",
+        "movers",
+      ]),
+      table,
     );
+
+    expect(facts.periodCoverage).toMatchObject({
+      status: "complete",
+      comparisonDisposition: "available",
+    });
+    expect(add(facts.previousTotal!, facts.change!)).toBe(facts.latestTotal);
+    expect(facts.movers[0]).toMatchObject({
+      category: "Alpha",
+      previous: "100",
+      latest: "125",
+      change: "25",
+    });
   });
 
   it("does not invent a zero when a category is absent from one comparison period", () => {

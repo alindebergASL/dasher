@@ -441,6 +441,9 @@ main {
   padding: 0;
   list-style: none;
 }
+.executive-support-item:only-child {
+  grid-column: 1 / -1;
+}
 .executive-support-item {
   padding: var(--s4) var(--s5) var(--s5) var(--s7);
 }
@@ -902,6 +905,7 @@ footer {
 }
 .evidence-modal {
   width: min(680px, 100%);
+  min-width: 0;
   padding: 26px;
 }
 .modal-heading {
@@ -992,13 +996,16 @@ footer {
 }
 .evidence-list {
   display: grid;
+  min-width: 0;
   gap: 12px;
   margin-top: 22px;
 }
 .evidence-list article {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 15px;
+  overflow-wrap: anywhere;
 }
 .evidence-kind,
 .confidence {
@@ -1027,7 +1034,7 @@ footer {
 }
 .evidence-list small {
   display: block;
-  color: #7c8d87;
+  color: var(--muted);
   margin-bottom: 8px;
 }
 .evidence-list a,

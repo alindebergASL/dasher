@@ -25,7 +25,7 @@ test.describe("the sample dashboard", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("status", { name: "Planning status" }),
-    ).toContainText(/trusted code computes every number/i);
+    ).toContainText(/deterministic calculations.*source evidence/i);
   });
 
   test("the composer is source-aware, keyboard reachable, and width-safe", async ({
@@ -131,10 +131,79 @@ test.describe("the sample dashboard", () => {
     ).toBe(true);
   });
 
+  test("contains and wraps long evidence tokens in a 390px modal", async ({
+    page,
+  }) => {
+    const stylesheet = await readFile(
+      path.resolve(process.cwd(), "app", "globals.css"),
+      "utf8",
+    );
+    const token = "a".repeat(DASHBOARD_STRING_LIMITS.longText);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.setContent(`
+      <div class="modal-backdrop">
+        <aside class="modal evidence-modal" role="dialog">
+          <div class="modal-heading"><h2>Why Dasher says this</h2></div>
+          <div class="evidence-list">
+            <article>
+              <h3>Uploaded file period-coverage.csv</h3>
+              <p>sha256 ${token}</p>
+              <span>${token}</span>
+            </article>
+          </div>
+        </aside>
+      </div>
+    `);
+    await page.addStyleTag({ content: stylesheet });
+
+    const containment = await page.evaluate(() => {
+      const modal = document.querySelector(".evidence-modal")!;
+      const card = document.querySelector(".evidence-list article")!;
+      const tokens = [...card.querySelectorAll("p, span")];
+      const viewport = document.documentElement.clientWidth;
+      const modalRect = modal.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      return {
+        documentContained: document.documentElement.scrollWidth <= viewport,
+        modalContained: modalRect.left >= 0 && modalRect.right <= viewport,
+        cardContained:
+          cardRect.left >= modalRect.left && cardRect.right <= modalRect.right,
+        tokensWrapped: tokens.every(
+          (token) => token.scrollWidth <= token.clientWidth,
+        ),
+      };
+    });
+    expect(containment).toEqual({
+      documentContained: true,
+      modalContained: true,
+      cardContained: true,
+      tokensWrapped: true,
+    });
+  });
+
   test("keeps trend labels, values, and evidence inside their cards", async ({
     page,
   }) => {
     await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "complete-months.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Category,Amount",
+          "2026-01-01,All,10",
+          "2026-02-01,All,20",
+          "2026-03-01,All,30",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Show amount over time");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
     const cards = page.locator(".trend-card");
     await expect(cards.first()).toBeVisible();
     const violations = await cards.evaluateAll((nodes) =>
@@ -169,6 +238,37 @@ test.describe("the sample dashboard", () => {
       }),
     );
     expect(violations).toEqual([]);
+  });
+
+  test("keeps an uploaded filename consistent through period evidence", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "quarterly-progress.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Category,Amount",
+          "2026-04-01,A,100",
+          "2026-05-01,A,110",
+          "2026-06-01,A,120",
+          "2026-07-01,A,130",
+          "2026-08-01,A,140",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Compare quarterly amount by category");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+    await expect(
+      page.getByRole("button", { name: "Build dashboard" }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "Evidence for Important" }).click();
+    const dialog = page.getByRole("dialog", { name: "Sources and evidence" });
+    await expect(dialog).toContainText("quarterly-progress.csv");
+    await expect(dialog).not.toContainText("partial-quarter.csv");
   });
 
   test("builds a different dashboard for a different request", async ({

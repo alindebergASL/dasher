@@ -172,6 +172,149 @@ describe("a wide file with one column per period", () => {
     expect(table.rows[1]).toStrictEqual(["Ops", "30", "2026-04", "20"]);
   });
 
+  it("retains a nonblank unreadable period once numeric periods establish the wide shape", () => {
+    const table = readTable(
+      "Category,2026-01,2026-02,2026-03\nA,100,120,not-an-amount\n",
+    );
+
+    expect(table.unpivoted?.periodColumns).toStrictEqual([
+      "2026-01",
+      "2026-02",
+      "2026-03",
+    ]);
+    expect(table.rows.at(-1)).toStrictEqual(["A", "2026-03", "not-an-amount"]);
+  });
+
+  it("does not infer a wide numeric table from period-headed text alone", () => {
+    const table = readTable(
+      "Category,2026-01,2026-02,2026-03,Total\nA,100,note,later,100\n",
+    );
+
+    expect(table.unpivoted).toBeUndefined();
+  });
+
+  it("preserves a comma-decimal convention across an established wide table", () => {
+    const original = profileTable({
+      headers: ["Category", "2026-01", "2026-02", "2026-03"],
+      rows: [
+        ["A", "100", "120", "1,25"],
+        ["B", "200", "220", "2,50"],
+      ],
+    });
+    expect(original.columns[3]).toMatchObject({
+      type: "number",
+      decimal: "comma",
+    });
+
+    const table = unpivotIfWide(original);
+    const amount = table.columns.find((column) => column.name === "amount");
+    const latest = table.rows
+      .filter((row) => row[1] === "2026-03")
+      .map((row) => parseAmount(row[2] ?? "", { decimal: amount?.decimal }));
+
+    expect(amount).toMatchObject({ type: "number", decimal: "comma" });
+    expect(latest).toEqual(["1.25", "2.5"]);
+  });
+
+  it("uses comma evidence to interpret otherwise ambiguous grouped values", () => {
+    const table = readTable(
+      [
+        "Category;2026-01;2026-02;2026-03",
+        "A;1.250;3,50;5,75",
+        "B;2.500;4,50;6,25",
+      ].join("\n"),
+    );
+    const amount = table.columns.find((column) => column.name === "amount");
+    const first = table.rows
+      .filter((row) => row[1] === "2026-01")
+      .map((row) => parseAmount(row[2] ?? "", { decimal: amount?.decimal }));
+
+    expect(amount).toMatchObject({ type: "number", decimal: "comma" });
+    expect(first).toEqual(["1250", "2500"]);
+  });
+
+  it("ignores separators in unreadable cells when resolving a wide convention", () => {
+    const table = readTable(
+      [
+        "Category;2026-01;2026-02;2026-03",
+        "A;1,25;2,50;not.available",
+        "B;3,75;4,00;5,00",
+      ].join("\n"),
+    );
+    const amount = table.columns.find((column) => column.name === "amount");
+
+    expect(amount).toMatchObject({ type: "number", decimal: "comma" });
+    expect(table.rows).toContainEqual(["A", "2026-03", "not.available"]);
+  });
+
+  it("ignores currency-like prefixes in unreadable wide cells", () => {
+    const table = readTable(
+      [
+        "Category;2026-01;2026-02;2026-03",
+        "A;€1,25;€2,50;USD pending",
+        "B;€3,75;€4,00;€5,00",
+      ].join("\n"),
+    );
+    const amount = table.columns.find((column) => column.name === "amount");
+
+    expect(amount).toMatchObject({
+      type: "number",
+      decimal: "comma",
+      currency: "EUR",
+    });
+    expect(table.rows).toContainEqual(["A", "2026-03", "USD pending"]);
+  });
+
+  it("refuses conflicting decimal conventions across wide periods", () => {
+    expect(() =>
+      readTable(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;1.25;1,25;3,25",
+          "B;2.50;2,50;4,50",
+        ].join("\n"),
+      ),
+    ).toThrow(/mixed_numeric_convention.*conflicting decimal/iu);
+  });
+
+  it("refuses conflicting currencies across wide periods", () => {
+    expect(() =>
+      readTable(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;$100.00;€120.00;€130.00",
+          "B;$200.00;€220.00;€230.00",
+        ].join("\n"),
+      ),
+    ).toThrow(/mixed_numeric_convention.*conflicting currencies/iu);
+  });
+
+  it("refuses mixed currencies even when each period starts with the same one", () => {
+    expect(() =>
+      readTable(
+        [
+          "Category;2026-01;2026-02;2026-03",
+          "A;$100.00;$120.00;$130.00",
+          "B;€200.00;€220.00;€230.00",
+        ].join("\n"),
+      ),
+    ).toThrow(/mixed_numeric_convention.*conflicting currencies/iu);
+  });
+
+  it("preserves currency across an established wide table", () => {
+    const original = profileTable({
+      headers: ["Category", "2026-01", "2026-02", "2026-03"],
+      rows: [
+        ["A", "$100.00", "$120.00", "$130.00"],
+        ["B", "$200.00", "$220.00", "$230.00"],
+      ],
+    });
+    const table = unpivotIfWide(original);
+    expect(
+      table.columns.find((column) => column.name === "amount"),
+    ).toMatchObject({ type: "number", currency: "USD", decimal: "dot" });
+  });
+
   it("leaves a long file alone", () => {
     const long = profileTable({
       headers: ["period", "amount"],

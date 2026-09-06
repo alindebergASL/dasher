@@ -50,7 +50,7 @@ describe("RequestWorkspace", () => {
       screen.getByRole("region", { name: "Dataset interpretation" }),
     ).toHaveTextContent(/Amount as the primary measure/iu);
     expect(
-      screen.getByText(/trusted code computes every number/iu),
+      screen.getByText(/deterministic calculations.*source evidence/iu),
     ).toBeInTheDocument();
   });
 
@@ -122,7 +122,9 @@ describe("RequestWorkspace", () => {
       refinement: "already-satisfied",
     });
     render(<RequestWorkspace initial={initial} initialRequest="Where?" />);
-    fireEvent.click(screen.getByRole("button", { name: "Exclude salaries" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show the detail table" }),
+    );
     await screen.findByText(/already looks like that/u);
   });
 

@@ -3,7 +3,12 @@
  */
 
 import { profileColumn, type ProfileOptions } from "./infer";
-import { parsePeriodHeader } from "./parse-values";
+import {
+  decimalConventionEvidence,
+  detectCurrency,
+  parseAmount,
+  parsePeriodHeader,
+} from "./parse-values";
 import type { ColumnProfile, Grain, Table } from "./table";
 
 const BUDGET_NAME = /budget/iu;
@@ -15,6 +20,15 @@ interface PeriodColumn {
   readonly column: ColumnProfile;
   readonly key: string;
   readonly grain: Grain;
+}
+
+export class WideTableRefused extends Error {
+  readonly reason = "mixed_numeric_convention" as const;
+
+  constructor(readonly detail: string) {
+    super(detail);
+    this.name = "WideTableRefused";
+  }
 }
 
 /**
@@ -65,7 +79,11 @@ export function unpivotIfWide(
       rows.map((row) => row[index] ?? ""),
       options,
     );
-    return name === "period" ? periodColumnProfile(profile) : profile;
+    if (name === "period") return periodColumnProfile(profile);
+    if (name === "amount") {
+      return amountColumnProfile(profile, periods, table.rows);
+    }
+    return profile;
   });
 
   return {
@@ -97,6 +115,55 @@ function periodColumnProfile(profile: ColumnProfile): ColumnProfile {
   };
 }
 
+/**
+ * Period headers already proved that this is a wide numeric table. Preserve
+ * that numeric contract even when one period contains unreadable cells, so
+ * canonical parsing can report those cells instead of losing the period.
+ */
+function amountColumnProfile(
+  profile: ColumnProfile,
+  periods: readonly PeriodColumn[],
+  rows: Table["rows"],
+): ColumnProfile {
+  const decimals = new Set<NonNullable<ColumnProfile["decimal"]>>();
+  const currencies = new Set<string>();
+  for (const { column } of periods) {
+    for (const row of rows) {
+      const value = row[column.index] ?? "";
+      const decimal = decimalConventionEvidence(value);
+      const readable =
+        parseAmount(value, { decimal: "dot" }) !== null ||
+        parseAmount(value, { decimal: "comma" }) !== null;
+      const currency = readable ? detectCurrency(value) : undefined;
+      if (decimal !== undefined) decimals.add(decimal);
+      if (currency !== undefined) currencies.add(currency);
+    }
+  }
+  if (decimals.size > 1) {
+    throw new WideTableRefused(
+      "period columns use conflicting decimal conventions and cannot be combined safely",
+    );
+  }
+  if (currencies.size > 1) {
+    throw new WideTableRefused(
+      "period columns use conflicting currencies and cannot be combined safely",
+    );
+  }
+  const decimal = [...decimals][0] ?? profile.decimal;
+  const currency = [...currencies][0] ?? profile.currency;
+  return {
+    name: profile.name,
+    index: profile.index,
+    type: "number",
+    semanticKind: "measure",
+    nonEmpty: profile.nonEmpty,
+    distinct: profile.distinct,
+    samples: profile.samples,
+    ...(decimal === undefined ? {} : { decimal }),
+    ...(currency === undefined ? {} : { currency }),
+  };
+}
+
 /** `period_1`, or the next suffix no other column in the table answers to. */
 function freeName(name: string, taken: ReadonlySet<string>): string {
   let suffix = 1;
@@ -104,23 +171,31 @@ function freeName(name: string, taken: ReadonlySet<string>): string {
   return `${name}_${String(suffix)}`;
 }
 
-/** The numeric period-headed columns at the most common grain, in file order. */
+/**
+ * Period-headed columns at an established wide-table grain, in file order.
+ * Two numeric or blank columns establish the shape. Once established, every
+ * header at that grain is retained so a nonblank unreadable latest value
+ * reaches canonical validation instead of disappearing with its column.
+ */
 function periodColumns(table: Table): readonly PeriodColumn[] {
   const candidates: PeriodColumn[] = [];
   for (const column of table.columns) {
-    if (column.type !== "number" && column.nonEmpty > 0) continue;
     const parsed = parsePeriodHeader(column.name);
     if (parsed !== null) candidates.push({ column, ...parsed });
   }
-  if (candidates.length === 0) return candidates;
+  const establishing = candidates.filter(
+    ({ column }) => column.type === "number" || column.nonEmpty === 0,
+  );
+  if (establishing.length < 2) return [];
 
   const counts = new Map<Grain, number>();
-  for (const candidate of candidates) {
+  for (const candidate of establishing) {
     counts.set(candidate.grain, (counts.get(candidate.grain) ?? 0) + 1);
   }
-  let chosen: Grain = candidates[0]?.grain ?? "month";
+  let chosen: Grain = establishing[0]?.grain ?? "month";
   for (const grain of FINER_FIRST) {
     if ((counts.get(grain) ?? 0) > (counts.get(chosen) ?? 0)) chosen = grain;
   }
+  if ((counts.get(chosen) ?? 0) < 2) return [];
   return candidates.filter((candidate) => candidate.grain === chosen);
 }
