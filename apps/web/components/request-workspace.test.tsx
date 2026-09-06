@@ -268,7 +268,7 @@ describe("RequestWorkspace", () => {
       name: "Current Ask Dasher question",
     });
     expect(compact).toHaveTextContent(longQuestion);
-    expect(compact).toHaveTextContent("Displayed source: sample data");
+    expect(compact).toHaveTextContent("Uses sample data");
     expect(
       screen.queryByRole("textbox", {
         name: "What should this dashboard answer?",
@@ -295,7 +295,9 @@ describe("RequestWorkspace", () => {
       expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
     );
 
-    expect(screen.getByText("Displayed source: operations.csv")).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toHaveTextContent(/Uses operations\.csv.*evidence-backed/iu);
     const replacement = new File(
       ["Date,Amount\n2026-01-01,999"],
       "operations.csv",
@@ -398,8 +400,7 @@ describe("RequestWorkspace", () => {
     await act(async () => pendingBuild.resolve(initial));
     expect(
       screen.getByRole("region", { name: "Current Ask Dasher question" }),
-    ).toHaveTextContent("Displayed source: first.csv");
-    expect(screen.getByText("first.csv")).toBeVisible();
+    ).toHaveTextContent("Uses first.csv");
     expect(screen.queryByText("ignored.csv")).not.toBeInTheDocument();
   });
 
@@ -483,7 +484,7 @@ describe("RequestWorkspace", () => {
       name: "Current Ask Dasher question",
     });
     expect(compact).toHaveTextContent(draft);
-    expect(compact).toHaveTextContent("Displayed source: draft.csv");
+    expect(compact).toHaveTextContent("Uses draft.csv");
   });
 
   it("reopens the full composer and focuses the question field", async () => {

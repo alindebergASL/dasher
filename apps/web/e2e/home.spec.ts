@@ -93,7 +93,7 @@ test.describe("the sample dashboard", () => {
     await expect(compact).toBeVisible();
     await expect(compact).toBeFocused();
     await expect(compact).toContainText(longQuestion);
-    await expect(compact).toContainText("Displayed source: sample data");
+    await expect(compact).toContainText("Uses sample data");
     const edit = page.getByRole("button", { name: "Edit question" });
     await edit.focus();
     await page.keyboard.press("Enter");
@@ -133,6 +133,10 @@ test.describe("the sample dashboard", () => {
 
     await expect(
       page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
+    await expect(page.getByText("CSV", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(/Uses sample data.*evidence-backed/iu),
     ).toBeVisible();
     const primary = page.getByRole("article", { name: "Primary finding" });
     await expect(primary).toBeVisible();

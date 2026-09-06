@@ -342,10 +342,11 @@ export function RequestWorkspace({
                 <span className="composer-kicker">Current question</span>
                 <p className="request-compact-question">{activeRequest}</p>
                 <p className="source-current">
-                  Displayed source: {sourceDescription(displayedSource)}
+                  Uses {sourceDescription(displayedSource)} · evidence-backed
                 </p>
               </div>
               <button
+                aria-label="Edit question"
                 className="request-edit"
                 disabled={pending}
                 onClick={() => {
@@ -355,7 +356,10 @@ export function RequestWorkspace({
                 }}
                 type="button"
               >
-                Edit question
+                <span className="request-edit-wide">Edit question</span>
+                <span aria-hidden="true" className="request-edit-short">
+                  Edit
+                </span>
               </button>
               <p aria-label="Planning status" className="sr-only" role="status">
                 {planningStatusMessage}
@@ -418,9 +422,11 @@ export function RequestWorkspace({
                 </span>
                 <span className="source-copy">
                   <strong>
-                    {selectedFile === undefined
-                      ? "Sample operating data"
-                      : selectedFile.name}
+                    {!composerExpanded
+                      ? "Change source"
+                      : selectedFile === undefined
+                        ? "Sample data"
+                        : selectedFile.name}
                   </strong>
                   <span>
                     {selectedFile === undefined
@@ -429,7 +435,12 @@ export function RequestWorkspace({
                   </span>
                 </span>
                 <span className="source-action">
-                  {selectedFile === undefined ? "Choose CSV" : "Replace"}
+                  <span className="source-action-wide">
+                    {selectedFile === undefined ? "Choose CSV" : "Replace"}
+                  </span>
+                  <span aria-hidden="true" className="source-action-short">
+                    CSV
+                  </span>
                 </span>
               </label>
             </div>
