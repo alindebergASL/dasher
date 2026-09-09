@@ -16,12 +16,12 @@
     "@dasher/dashboard-schema": "workspace:*",
     "@dasher/planner": "workspace:*",
     "@dasher/workbook": "workspace:*",
-    "next": "16.2.12",
+    "next": "16.3.4",
     "pg": "^8.22.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1",
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -33,6 +33,6 @@
     "@types/react-dom": "^19.2.0",
     "jsdom": "^27.4.0",
     "typescript": "^5.9.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
