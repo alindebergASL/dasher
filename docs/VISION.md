@@ -12,8 +12,10 @@ column to get a useful first view.
 ## The loop
 
 1. **Upload** a CSV export of anything tabular: transactions, a budget by
-   month, a pipeline, a headcount list. Dasher reads the columns and shows how
-   it read them.
+   month, a pipeline, a headcount list, support tickets, sensor readings, sign
+   ups, delivery times. The subject is the file's business, not Dasher's — any
+   column of numbers is something it can measure. Dasher reads the columns and
+   shows how it read them.
 2. **Ask** in plain language what the dashboard should show. A planning model
    chooses which column is the figure, which is the grouping, which is the
    date, and how the pages are laid out. It never sees a total.

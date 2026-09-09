@@ -241,6 +241,81 @@ test.describe("uploading a spreadsheet", () => {
     );
   });
 
+  test("a file that measures something other than money is built", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "support-hours.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Team,Resolution hours",
+          // Five months, so the bucket stays monthly; Jun and Jul carry the
+          // figures under test.
+          "2026-03-04,Platform,7",
+          "2026-04-02,Support,11",
+          "2026-05-06,Platform,9",
+          "2026-06-02,Platform,12",
+          "2026-06-17,Support,3",
+          "2026-06-30,Platform,10",
+          "2026-07-01,Platform,9",
+          "2026-07-08,Support,4",
+          "2026-07-20,Platform,14",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Resolution hours by team and what changed");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
+    await expect(page.locator(".request-error")).toHaveCount(0);
+    // June is 25 hours and July 27, both months finished well before upload,
+    // so the change is answered rather than withheld for want of a grid.
+    const totals = page.locator(".metric-card").filter({
+      hasText: "Change vs prior period",
+    });
+    await expect(totals).toContainText("+2 (+8.0%) vs Jun 2026");
+    await expect(page.getByText(/Platform/).first()).toBeVisible();
+  });
+
+  test("a fortnight of daily rows is bucketed by day, not folded into a month", async ({
+    page,
+  }) => {
+    const rows = ["Date,Service,Errors"];
+    for (let day = 17; day <= 30; day += 1) {
+      rows.push(`2026-08-${String(day)},API,${String(day)}`);
+      rows.push(`2026-08-${String(day)},Web,${String(40 - day)}`);
+    }
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "daily-errors.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(rows.join("\n")),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Errors by service over time");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
+    await expect(page.locator(".request-error")).toHaveCount(0);
+    // Every row is 40 errors a day, so each daily bucket totals 40 and the
+    // change against the day before is nil. One monthly bucket could say none
+    // of that.
+    await expect(page.getByText("Trend by day")).toBeVisible();
+    const totals = page.locator(".metric-card").filter({
+      hasText: "Change vs prior period",
+    });
+    await expect(totals).toContainText("vs 29 Aug 2026");
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {

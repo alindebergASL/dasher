@@ -382,12 +382,14 @@ describe("bounded metric relationships", () => {
     });
     const valid = await relationshipPlan(table);
 
+    // "Metric 1" is absent: an unrecognised numeric header is a measure, so
+    // comparing against it is a legitimate contract. What stays rejected is the
+    // amount itself, and the columns the exclusions claim.
     for (const comparison of [
       "Customers",
       "Customer ID",
       "Region Code",
       "Priority Rank",
-      "Metric 1",
       "Owner",
     ]) {
       const findings = findPlanProblems(
@@ -400,6 +402,13 @@ describe("bounded metric relationships", () => {
         ]),
       );
     }
+
+    expect(
+      findPlanProblems(
+        { ...valid, roles: { ...valid.roles, comparison: "Metric 1" } },
+        table,
+      ),
+    ).toEqual([]);
 
     expect(
       findPlanProblems({ ...valid, relationship: undefined }, table),

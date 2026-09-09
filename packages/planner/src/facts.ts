@@ -12,6 +12,7 @@ import {
   parseDate,
   parsePeriodHeader,
   periodGrain,
+  GRAIN_FINENESS,
   periodStartIso,
   sign,
   subtract,
@@ -138,12 +139,6 @@ export interface TableFacts {
   readonly wholeAmounts: boolean;
 }
 
-const GRAIN_RANK: Readonly<Record<Grain, number>> = {
-  month: 2,
-  quarter: 1,
-  year: 0,
-};
-
 function columnOf(
   table: Table,
   name: string | undefined,
@@ -194,7 +189,7 @@ function cellPeriod(
   if (header === null) return undefined;
   return {
     period:
-      GRAIN_RANK[periodGrain(header.key)] > GRAIN_RANK[grain]
+      GRAIN_FINENESS[periodGrain(header.key)] > GRAIN_FINENESS[grain]
         ? bucketPeriod(periodStartIso(header.key), grain)
         : header.key,
     observedAt: periodStartIso(header.key).slice(0, 10),
@@ -235,7 +230,7 @@ export function planGrain(plan: TablePlan, table: Table): Grain {
     const header = parsePeriodHeader(cells[periodAt] ?? "");
     if (header === null) continue;
     const own = periodGrain(header.key);
-    if (GRAIN_RANK[own] < GRAIN_RANK[grain]) grain = own;
+    if (GRAIN_FINENESS[own] < GRAIN_FINENESS[grain]) grain = own;
   }
   return grain;
 }
@@ -331,7 +326,20 @@ function mixedCategoryShares(latestRows: readonly FactRow[]): CategoryShare[] {
 }
 
 /** Reads the rows a plan selects and computes every figure from them. */
-export function computeFacts(plan: TablePlan, table: Table): TableFacts {
+export interface FactsContext {
+  /**
+   * ISO instant the source was retrieved. Period coverage uses it to tell a
+   * finished period from one still running, which is the only way to settle
+   * completeness for data that arrives on no fixed schedule.
+   */
+  readonly retrievedAt?: string;
+}
+
+export function computeFacts(
+  plan: TablePlan,
+  table: Table,
+  context: FactsContext = {},
+): TableFacts {
   const amountColumn = columnOf(table, plan.roles.amount);
   const comparisonColumn = columnOf(table, plan.roles.comparison);
   const budgetColumn = columnOf(table, plan.roles.budget);
@@ -453,6 +461,7 @@ export function computeFacts(plan: TablePlan, table: Table): TableFacts {
     periodObservations,
     invalidPeriodCount,
     unreadableAmountPeriods,
+    context.retrievedAt,
   );
   const periodsComparable =
     periodCoverage.comparisonDisposition === "available";

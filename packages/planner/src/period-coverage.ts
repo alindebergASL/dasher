@@ -1,20 +1,38 @@
 /**
  * Source-neutral period coverage analysis over canonical observations.
  *
- * This module deliberately proves less than it could guess. A comparison is
- * available only when consecutive prior and latest analysis periods contain
- * every expected observation at a regular supported frequency. A latest prefix
- * may be called partial only after a complete prior period establishes that
- * frequency; every irregular or ambiguous shape remains unknown.
+ * This module deliberately proves less than it could guess, but it must prove
+ * what it can, because withholding an answer the data supports is its own kind
+ * of wrong. Two independent things can establish that a period is finished:
+ *
+ * 1. The grid. When observations fall on a regular daily, monthly, quarterly or
+ *    yearly frequency, a period is complete when it holds every observation
+ *    that frequency expects. This is the shape a budget or metrics export
+ *    takes, and a gap inside the latest period is real evidence of truncation.
+ *
+ * 2. The calendar. Most data is not a grid — transactions, tickets, readings
+ *    and signups arrive when they arrive, and no frequency can be inferred from
+ *    them at all. For these, completeness is a fact about time rather than
+ *    density: a period whose last day fell before the source was retrieved had
+ *    already finished, so the export had the whole of it available. A quiet
+ *    week does not make a month incomplete.
+ *
+ * An earlier version had only the grid, so every irregular shape was
+ * "unknown" and the change went unreported for the most ordinary data there
+ * is. What remains unknown now is genuinely ambiguous: non-consecutive
+ * periods, unreadable values, or a latest period still running with no
+ * retrieval time to date it against.
  */
 import {
+  bucketPeriod,
+  GRAIN_FINENESS,
   periodGrain,
   periodLabel,
   periodStartIso,
   type Grain,
 } from "./workbook";
 
-export type ObservationGrain = "day" | Grain;
+export type ObservationGrain = Grain;
 export type PeriodCompleteness = "complete" | "incomplete" | "unknown";
 export type ComparisonDisposition =
   | "available"
@@ -43,16 +61,15 @@ export interface PeriodCoverage {
   readonly expectedCount?: number;
   readonly priorPeriod?: string;
   readonly priorObservedCount?: number;
+  /** Calendar day the source was retrieved, when the calendar path was used. */
+  readonly vantageDay?: string;
+  /** Whole days of the latest period that had passed at `vantageDay`. */
+  readonly elapsedDays?: number;
+  /** Days the latest period spans in total. */
+  readonly periodDays?: number;
   readonly comparisonDisposition: ComparisonDisposition;
   readonly reason: string;
 }
-
-const OBSERVATION_RANK: Readonly<Record<ObservationGrain, number>> = {
-  year: 0,
-  quarter: 1,
-  month: 2,
-  day: 3,
-};
 
 function date(isoDay: string): Date {
   return new Date(`${isoDay}T00:00:00.000Z`);
@@ -67,6 +84,9 @@ function addObservation(value: string, grain: ObservationGrain): string {
   switch (grain) {
     case "day":
       next.setUTCDate(next.getUTCDate() + 1);
+      break;
+    case "week":
+      next.setUTCDate(next.getUTCDate() + 7);
       break;
     case "month":
       next.setUTCMonth(next.getUTCMonth() + 1, 1);
@@ -84,6 +104,11 @@ function addObservation(value: string, grain: ObservationGrain): string {
 function expectedEnd(period: string): string {
   const start = date(periodStartIso(period).slice(0, 10));
   switch (periodGrain(period)) {
+    case "day":
+      break;
+    case "week":
+      start.setUTCDate(start.getUTCDate() + 6);
+      break;
     case "month":
       start.setUTCMonth(start.getUTCMonth() + 1, 0);
       break;
@@ -114,21 +139,32 @@ function expectedObservations(
   return observations;
 }
 
+/**
+ * The bucket that follows this one at its own grain. Stepping the start date
+ * and re-bucketing keeps the key format in one place: an ISO week rolls into
+ * the next year on its own, which hand-built string arithmetic gets wrong.
+ */
 function nextAnalysisPeriod(period: string): string {
+  const grain = periodGrain(period);
   const start = date(periodStartIso(period).slice(0, 10));
-  switch (periodGrain(period)) {
+  switch (grain) {
+    case "day":
+      start.setUTCDate(start.getUTCDate() + 1);
+      break;
+    case "week":
+      start.setUTCDate(start.getUTCDate() + 7);
+      break;
     case "month":
       start.setUTCMonth(start.getUTCMonth() + 1, 1);
-      return isoDay(start).slice(0, 7);
-    case "quarter": {
+      break;
+    case "quarter":
       start.setUTCMonth(start.getUTCMonth() + 3, 1);
-      const year = start.getUTCFullYear();
-      const quarter = Math.floor(start.getUTCMonth() / 3) + 1;
-      return `${String(year)}-Q${String(quarter)}`;
-    }
+      break;
     case "year":
-      return String(start.getUTCFullYear() + 1);
+      start.setUTCFullYear(start.getUTCFullYear() + 1, 0, 1);
+      break;
   }
+  return bucketPeriod(start.toISOString(), grain);
 }
 
 function regularAt(dates: readonly string[], grain: ObservationGrain): boolean {
@@ -142,6 +178,8 @@ function regularAt(dates: readonly string[], grain: ObservationGrain): boolean {
 function atBoundary(value: string, grain: ObservationGrain): boolean {
   const parsed = date(value);
   if (grain === "day") return true;
+  // A weekly grid sits on Mondays, not on the first of the month.
+  if (grain === "week") return parsed.getUTCDay() === 1;
   if (parsed.getUTCDate() !== 1) return false;
   if (grain === "month") return true;
   if (grain === "quarter") return parsed.getUTCMonth() % 3 === 0;
@@ -172,7 +210,7 @@ function inferObservationGrain(
   const candidates: readonly ObservationGrain[] =
     explicit.length === 1
       ? [explicit[0] as Grain]
-      : ["day", "month", "quarter", "year"];
+      : ["day", "week", "month", "quarter", "year"];
   return candidates.find(
     (grain) =>
       dates.every((value) => atBoundary(value, grain)) &&
@@ -231,6 +269,8 @@ function adjective(grain: ObservationGrain): string {
   switch (grain) {
     case "day":
       return "daily";
+    case "week":
+      return "weekly";
     case "month":
       return "monthly";
     case "quarter":
@@ -242,6 +282,10 @@ function adjective(grain: ObservationGrain): string {
 
 function comparisonLabel(grain: Grain): string {
   switch (grain) {
+    case "day":
+      return "day-over-day";
+    case "week":
+      return "week-over-week";
     case "month":
       return "month-over-month";
     case "quarter":
@@ -269,9 +313,94 @@ function unknown(
   };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+function daysBetween(from: string, to: string): number {
+  return Math.round((date(to).getTime() - date(from).getTime()) / DAY_MS);
+}
+
 /**
- * Proves coverage from canonical observations only. It never uses the current
- * date, a fixture name, source kind, row amount, or a forecast.
+ * Whole days of `period` that had passed at `vantageDay`, clamped to the
+ * period. The vantage day itself is still running, so it does not count.
+ */
+function elapsedWithin(period: string, vantageDay: string): number {
+  const start = periodStartIso(period).slice(0, 10);
+  const end = expectedEnd(period);
+  if (vantageDay <= start) return 0;
+  const last = vantageDay > end ? end : vantageDay;
+  return daysBetween(start, last);
+}
+
+/**
+ * Proves coverage from the calendar rather than from observation density, for
+ * the data that has no regular frequency to count against. A period whose last
+ * day fell before the source was retrieved had finished, so the export saw all
+ * of it; one still running had not.
+ */
+function calendarCoverage(
+  analysisGrain: Grain,
+  latestPeriod: string,
+  previousPeriod: string,
+  observations: readonly PeriodObservation[],
+  vantage: string | undefined,
+  /** Set when a frequency was inferable but the observations did not fill it. */
+  unfitGrain?: ObservationGrain,
+): PeriodCoverage {
+  // Why the grid could not answer, stated accurately: there was no frequency
+  // to count against, or there was one and the data does not keep to it.
+  const gridSays =
+    unfitGrain === undefined
+      ? "The dates establish no regular frequency"
+      : `The dates suggest a ${adjective(unfitGrain)} frequency but do not keep to it`;
+  const fields = periodFields(latestPeriod, observations);
+  const previousObserved = uniqueDates(observations, previousPeriod);
+  const shared = {
+    ...fields,
+    priorPeriod: previousPeriod,
+    priorObservedCount: previousObserved.length,
+  };
+  if (vantage === undefined) {
+    return {
+      status: "unknown",
+      ...shared,
+      comparisonDisposition: "unavailable-unknown",
+      reason: `${gridSays}, and no source retrieval time is available to tell whether the latest period has finished.`,
+    };
+  }
+  const vantageDay = vantage.slice(0, 10);
+  const periodEnd = expectedEnd(latestPeriod);
+  // Inclusive of both ends: September spans 30 days, not the 29 that separate
+  // the first from the last.
+  const periodDays =
+    daysBetween(periodStartIso(latestPeriod).slice(0, 10), periodEnd) + 1;
+  if (periodEnd < vantageDay) {
+    return {
+      status: "complete",
+      ...shared,
+      vantageDay,
+      periodDays,
+      elapsedDays: periodDays,
+      comparisonDisposition: "available",
+      reason: `${periodLabel(latestPeriod)} ended on ${periodEnd}, before the source was retrieved on ${vantageDay}, so the whole period was available to the export; ${periodLabel(previousPeriod)} is the period before it. ${gridSays}, so coverage rests on the calendar rather than on how many observations each period holds, and ${comparisonLabel(analysisGrain)} comparison is available.`,
+    };
+  }
+  const elapsedDays = elapsedWithin(latestPeriod, vantageDay);
+  const observedEnd = fields.observedEnd;
+  return {
+    status: "incomplete",
+    ...shared,
+    vantageDay,
+    periodDays,
+    elapsedDays,
+    comparisonDisposition: "unavailable-partial",
+    reason: `${periodLabel(latestPeriod)} runs to ${periodEnd} but the source was retrieved on ${vantageDay}, with only ${String(elapsedDays)} of its ${String(periodDays)} days elapsed${observedEnd === undefined ? "" : `, and observations stopping at ${observedEnd}`}. ${periodLabel(previousPeriod)} had finished. The ${comparisonLabel(analysisGrain)} change is unavailable because the latest period is still running.`,
+  };
+}
+
+/**
+ * Proves coverage from canonical observations and the source's own retrieval
+ * time. It never uses the current date, a fixture name, source kind, row
+ * amount, or a forecast.
  */
 export function analyzePeriodCoverage(
   analysisGrain: Grain,
@@ -279,6 +408,7 @@ export function analyzePeriodCoverage(
   observations: readonly PeriodObservation[],
   invalidPeriodCount: number,
   unreadableAmountPeriods: ReadonlySet<string> = new Set(),
+  vantage?: string,
 ): PeriodCoverage {
   const latestPeriod = periods.at(-1);
   const previousPeriod = periods.length >= 2 ? periods.at(-2) : undefined;
@@ -319,29 +449,33 @@ export function analyzePeriodCoverage(
     );
   }
 
-  const observationGrain = inferObservationGrain(observations);
-  if (observationGrain === undefined) {
-    return unknown(
-      latestPeriod,
-      observations,
-      previousPeriod,
-      "The observed dates do not establish a regular daily, monthly, quarterly, or yearly frequency.",
-    );
-  }
-  if (OBSERVATION_RANK[observationGrain] < OBSERVATION_RANK[analysisGrain]) {
-    return unknown(
-      latestPeriod,
-      observations,
-      previousPeriod,
-      "The observed frequency is coarser than the requested analysis period.",
-    );
-  }
+  // Consecutiveness is a fact about the two period labels alone, so it is
+  // settled before either completeness path, both of which assume it.
   if (nextAnalysisPeriod(previousPeriod) !== latestPeriod) {
     return unknown(
       latestPeriod,
       observations,
       previousPeriod,
       "The latest and prior observed periods are not consecutive analysis periods.",
+    );
+  }
+
+  const observationGrain = inferObservationGrain(observations);
+  if (observationGrain === undefined) {
+    return calendarCoverage(
+      analysisGrain,
+      latestPeriod,
+      previousPeriod,
+      observations,
+      vantage,
+    );
+  }
+  if (GRAIN_FINENESS[observationGrain] < GRAIN_FINENESS[analysisGrain]) {
+    return unknown(
+      latestPeriod,
+      observations,
+      previousPeriod,
+      "The observed frequency is coarser than the requested analysis period.",
     );
   }
 
@@ -353,17 +487,17 @@ export function analyzePeriodCoverage(
     observationGrain,
   );
   if (!sameDates(previousObserved, previousExpected)) {
-    return {
-      ...unknown(
-        latestPeriod,
-        observations,
-        previousPeriod,
-        `The prior period ${periodLabel(previousPeriod)} does not contain every expected ${adjective(observationGrain)} observation.`,
-      ),
+    // A frequency was inferable but the prior period does not hold every
+    // observation it implies, so the grid does not describe this data. The
+    // calendar can still settle it.
+    return calendarCoverage(
+      analysisGrain,
+      latestPeriod,
+      previousPeriod,
+      observations,
+      vantage,
       observationGrain,
-      expectedCount: latestExpected.length,
-      priorObservedCount: previousObserved.length,
-    };
+    );
   }
 
   const fields = periodFields(latestPeriod, observations);
@@ -399,15 +533,14 @@ export function analyzePeriodCoverage(
     };
   }
 
-  return {
-    ...unknown(
-      latestPeriod,
-      observations,
-      previousPeriod,
-      "The latest period does not contain a complete or contiguous prefix of the expected observations.",
-    ),
+  // Gapped rather than truncated: the grid cannot say which observations are
+  // missing on purpose, so defer to the calendar.
+  return calendarCoverage(
+    analysisGrain,
+    latestPeriod,
+    previousPeriod,
+    observations,
+    vantage,
     observationGrain,
-    expectedCount: latestExpected.length,
-    priorObservedCount: previousObserved.length,
-  };
+  );
 }

@@ -52,6 +52,12 @@ export interface ColumnProfile {
    * January in a column that means February.
    */
   readonly dates?: DateConvention;
+  /**
+   * Set on date columns: the earliest and latest date the column holds, as
+   * `YYYY-MM-DD`. How much time a file covers is what decides the analysis
+   * bucket — six weeks of readings and six years of them want different ones.
+   */
+  readonly span?: { readonly earliest: string; readonly latest: string };
 }
 
 export interface Table {
@@ -73,4 +79,9 @@ export interface Table {
   };
 }
 
-export type Grain = "month" | "quarter" | "year";
+/**
+ * Analysis buckets, finest first. Day and week exist because most data is not
+ * monthly: a fortnight of daily readings or ten weeks of sprint points have
+ * nothing to say once they are folded into two or three monthly buckets.
+ */
+export type Grain = "day" | "week" | "month" | "quarter" | "year";

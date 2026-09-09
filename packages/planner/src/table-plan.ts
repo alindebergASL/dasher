@@ -59,7 +59,7 @@ export const TablePlanSchema = z.strictObject({
       operation: z.literal("gross-net"),
     })
     .optional(),
-  grain: z.enum(["month", "quarter", "year"]),
+  grain: z.enum(["day", "week", "month", "quarter", "year"]),
   filters: z
     .array(
       z.strictObject({

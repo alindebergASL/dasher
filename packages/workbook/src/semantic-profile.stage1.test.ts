@@ -187,7 +187,7 @@ describe("stage 1 canonical column semantics", () => {
     });
   });
 
-  it("fails ambiguous numeric headers closed while respecting exact-word near misses", () => {
+  it("measures unrecognised numeric headers while respecting exact-word near misses", () => {
     const table = profileTable({
       headers: [
         "Value",
@@ -204,10 +204,16 @@ describe("stage 1 canonical column semantics", () => {
       ],
     });
 
+    // A numeric header the word lists do not recognise is still a measure:
+    // "Value", "Metric 1" and "Identity Score" are quantities, and refusing
+    // them left files with no usable measure at all. The near misses are what
+    // this case guards — "Budget Code" is a code despite naming a budget,
+    // "Customer Count ID" an identifier despite naming a count, and "Ranked
+    // Revenue" a measure because "rank" is not its last word.
     expect(semanticKinds(table.columns)).toStrictEqual({
-      Value: "unknown",
-      "Metric 1": "unknown",
-      "Identity Score": "unknown",
+      Value: "measure",
+      "Metric 1": "measure",
+      "Identity Score": "measure",
       "Budget Code": "code",
       "Customer Count ID": "identifier",
       "Ranked Revenue": "measure",
