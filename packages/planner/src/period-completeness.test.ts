@@ -315,10 +315,14 @@ describe("period completeness safety", () => {
   });
 
   it("uses trusted coverage composition when latest-period coverage is unknown", () => {
+    // Jan and Mar with nothing between them: the two periods are not
+    // consecutive months, so no month-over-month comparison can be proved.
+    // (Irregular dates inside a finished month are not unknown — the month
+    // ended long before the source was retrieved, so it is complete.)
     const source = table([
       ["2026-01-05", "Alpha", "10"],
       ["2026-01-20", "Beta", "20"],
-      ["2026-02-05", "Alpha", "30"],
+      ["2026-03-05", "Alpha", "30"],
     ]);
     const planned = plan("month");
     const stalePlan: TablePlan = {
@@ -335,19 +339,19 @@ describe("period completeness safety", () => {
     expect
       .soft(spec.pages[0]?.description)
       .toBe(
-        "Coverage for Feb 2026 could not be established. Comparative findings are withheld.",
+        "Coverage for Mar 2026 could not be established. Comparative findings are withheld.",
       );
     expect.soft(spec.executiveBrief.important).toMatchObject({
       headline:
-        "Coverage for Feb 2026 is unknown; month-over-month change is unavailable",
+        "Coverage for Mar 2026 is unknown; month-over-month change is unavailable",
       detail:
-        "Comparable coverage for Feb 2026 and Jan 2026 cannot be established, so comparison with Jan 2026 remains withheld. See the linked period evidence for the observed dates and reason.",
+        "Comparable coverage for Mar 2026 and Jan 2026 cannot be established, so comparison with Jan 2026 remains withheld. See the linked period evidence for the observed dates and reason.",
       evidenceIds: ["period-coverage"],
     });
     expect.soft(spec.nextAction).toMatchObject({
-      title: "Verify Feb 2026 dates and coverage before comparison",
+      title: "Verify Mar 2026 dates and coverage before comparison",
       detail:
-        "Verify or correct the source dates and coverage shown in the linked period evidence, then rebuild before comparing Feb 2026 with Jan 2026.",
+        "Verify or correct the source dates and coverage shown in the linked period evidence, then rebuild before comparing Mar 2026 with Jan 2026.",
       evidenceIds: expect.arrayContaining(["period-coverage"]),
     });
     expect.soft(spec.executiveBrief.important.headline).not.toContain("Alpha");
@@ -421,7 +425,7 @@ describe("period completeness safety", () => {
         ]),
       testPlan: () => plan("month"),
       reason:
-        "The observed dates do not establish a regular daily, monthly, quarterly, or yearly frequency.",
+        "The dates establish no regular frequency, and no source retrieval time is available to tell whether the latest period has finished.",
     },
     {
       name: "a missing date",
@@ -586,5 +590,84 @@ describe("period completeness safety", () => {
     expect(coverage(deterministic.dashboard)?.detail).not.toMatch(
       /model|forecast|annualiz/iu,
     );
+  });
+
+  describe("the calendar path, for data on no fixed schedule", () => {
+    const irregular = () =>
+      table([
+        ["2026-06-02", "Alpha", "12"],
+        ["2026-06-17", "Beta", "3"],
+        ["2026-06-30", "Alpha", "10"],
+        ["2026-07-01", "Alpha", "9"],
+        ["2026-07-20", "Beta", "14"],
+      ]);
+
+    it("proves a finished period complete without a regular frequency", () => {
+      const coverage = computeFacts(plan("month"), irregular(), {
+        retrievedAt: AS_OF,
+      }).periodCoverage;
+      expect(coverage).toMatchObject({
+        status: "complete",
+        comparisonDisposition: "available",
+        latestPeriod: "2026-07",
+        priorPeriod: "2026-06",
+        vantageDay: "2026-09-05",
+        periodDays: 31,
+      });
+      // No frequency was inferred; the calendar carried it.
+      expect(coverage.observationGrain).toBeUndefined();
+      expect(coverage.reason).toContain("ended on 2026-07-31");
+    });
+
+    it("stays unknown when the source has no retrieval time to date it", () => {
+      expect(
+        computeFacts(plan("month"), irregular()).periodCoverage,
+      ).toMatchObject({
+        status: "unknown",
+        comparisonDisposition: "unavailable-unknown",
+      });
+    });
+
+    it("calls a period the source was retrieved inside partial", () => {
+      const coverage = computeFacts(
+        plan("month"),
+        table([
+          ["2026-08-03", "Alpha", "10"],
+          ["2026-08-27", "Beta", "8"],
+          ["2026-09-01", "Alpha", "5"],
+          ["2026-09-03", "Beta", "2"],
+        ]),
+        { retrievedAt: AS_OF },
+      ).periodCoverage;
+      expect(coverage).toMatchObject({
+        status: "incomplete",
+        comparisonDisposition: "unavailable-partial",
+        latestPeriod: "2026-09",
+        // Retrieved on the 5th, so the 1st through the 4th have elapsed.
+        elapsedDays: 4,
+        periodDays: 30,
+      });
+    });
+
+    it("counts a period ending on the retrieval day as still running", () => {
+      // The rest of 2026-08-31 could still bring rows, so August is not yet
+      // provably whole.
+      expect(
+        computeFacts(
+          plan("month"),
+          table([
+            ["2026-07-04", "Alpha", "10"],
+            ["2026-08-02", "Alpha", "5"],
+            ["2026-08-19", "Beta", "7"],
+          ]),
+          { retrievedAt: "2026-08-31T09:00:00.000Z" },
+        ).periodCoverage,
+      ).toMatchObject({
+        status: "incomplete",
+        comparisonDisposition: "unavailable-partial",
+        elapsedDays: 30,
+        periodDays: 31,
+      });
+    });
   });
 });

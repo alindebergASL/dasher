@@ -241,6 +241,43 @@ test.describe("uploading a spreadsheet", () => {
     );
   });
 
+  test("a file that measures something other than money is built", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByLabel("Choose a CSV data source").setInputFiles({
+      name: "support-hours.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "Date,Team,Resolution hours",
+          "2026-06-02,Platform,12",
+          "2026-06-17,Support,3",
+          "2026-06-30,Platform,10",
+          "2026-07-01,Platform,9",
+          "2026-07-08,Support,4",
+          "2026-07-20,Platform,14",
+        ].join("\n"),
+      ),
+    });
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Resolution hours by team and what changed");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
+    await expect(page.locator(".request-error")).toHaveCount(0);
+    // June is 25 hours and July 27, both months finished well before upload,
+    // so the change is answered rather than withheld for want of a grid.
+    const totals = page.locator(".metric-card").filter({
+      hasText: "Change vs prior period",
+    });
+    await expect(totals).toContainText("+2 (+8.0%) vs Jun 2026");
+    await expect(page.getByText(/Platform/).first()).toBeVisible();
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {

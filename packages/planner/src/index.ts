@@ -38,7 +38,7 @@ export {
   type CompileOptions,
   type CompileSource,
 } from "./compile";
-export { computeFacts, type TableFacts } from "./facts";
+export { computeFacts, type FactsContext, type TableFacts } from "./facts";
 export {
   describePlan,
   PLANNER_MAX_ATTEMPTS,

@@ -27,9 +27,14 @@ const FIXTURES = path.resolve(
   "fixtures",
   "adversarial",
 );
+const SAMPLES = path.resolve(process.cwd(), "..", "..", "fixtures", "sample");
 
-async function build(file: string, request: string): Promise<DashboardSpec> {
-  const csv = readFileSync(path.join(FIXTURES, file), "utf8");
+async function build(
+  file: string,
+  request: string,
+  directory: string = FIXTURES,
+): Promise<DashboardSpec> {
+  const csv = readFileSync(path.join(directory, file), "utf8");
   const table = readTable(csv);
   const run = await runTablePlanner({
     requestText: request,
@@ -117,6 +122,29 @@ function periodTotals(dashboard: DashboardSpec, label: string): number[] {
 
 function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
+}
+
+/** The change string on a named metric, which is where percentages are shown. */
+function metricChange(
+  dashboard: DashboardSpec,
+  label: string,
+): string | undefined {
+  for (const page of dashboard.pages) {
+    for (const component of page.components) {
+      if (component.kind !== "metric-grid") continue;
+      const metric = component.metrics.find((one) => one.label === label);
+      if (metric !== undefined) return metric.change;
+    }
+  }
+  return undefined;
+}
+
+/** The period-coverage evidence detail, where the disposition is explained. */
+function coverageEvidence(dashboard: DashboardSpec): string {
+  return (
+    dashboard.evidence.find((item) => item.label.startsWith("Period coverage"))
+      ?.detail ?? ""
+  );
 }
 
 describe("accounting-format negatives", () => {
@@ -207,5 +235,93 @@ describe("a quarterly period column", () => {
   it("does not describe quarterly buckets as monthly", async () => {
     const shown = text(await build("quarterly.csv", "spend over time"));
     expect(shown).not.toMatch(/by month|Trend by month|grouped by month/u);
+  });
+});
+
+describe("the shipped sample", () => {
+  // Sums of the Amount column per month, computed from the raw CSV in Python:
+  // Jul 2026 is 63,650.80 and Aug 2026 is 55,361.03, so the month-over-month
+  // change is -8,289.77, or -13.0%. The file is retrieved after August ended,
+  // so August was fully available to the export and the comparison stands.
+  //
+  // This case exists because a release once withheld this answer entirely and
+  // no test noticed. "What changed" is the question the product is for.
+  it("answers what changed rather than withholding it", async () => {
+    const dashboard = await build(
+      "transactions.csv",
+      "Spending by category and what changed",
+      SAMPLES,
+    );
+    expect(dashboard.executiveBrief.changed.headline).toBe(
+      "-$8,289.77 vs Jul 2026",
+    );
+    expect(metricChange(dashboard, "Change vs prior period")).toBe(
+      "-$8,289.77 (-13.0%) vs Jul 2026",
+    );
+    // Every month in the file, so a wrong figure cannot hide behind the two
+    // the comparison happens to use.
+    expect(periodTotals(dashboard, "Total")).toEqual([
+      57380.44, 55223.02, 60107.66, 57102.11, 63279.19, 66610.22, 63650.8,
+      55361.03,
+    ]);
+  });
+});
+
+describe("events that arrive on no fixed schedule", () => {
+  // Hours per team on the dates work actually happened: no daily, monthly,
+  // quarterly or yearly grid, which is what most real data looks like and what
+  // a dashboard harness must handle. Jun 2026 sums to 45 and Jul 2026 to 35,
+  // both months over before the file was retrieved, so the change is -10, or
+  // -22.2%. Platform is the largest July team at 23 of the 35 hours.
+  it("compares two finished periods without a regular frequency", async () => {
+    const dashboard = await build(
+      "irregular-events.csv",
+      "Resolution hours by team and what changed",
+    );
+    expect(dashboard.executiveBrief.changed.headline).toBe("-10 vs Jun 2026");
+    expect(metricChange(dashboard, "Change vs prior period")).toBe(
+      "-10 (-22.2%) vs Jun 2026",
+    );
+    expect(periodTotals(dashboard, "Total")).toEqual([45, 35]);
+    // Platform is 23 of July's 35 hours, and fell from 30 in June.
+    expect(categoryRanking(dashboard)[0]).toEqual({
+      label: "Platform",
+      value: "23",
+    });
+    expect(dashboard.executiveBrief.important.headline).toBe(
+      "Platform moved -7",
+    );
+  });
+});
+
+describe("a latest period the file was retrieved inside", () => {
+  // The same shape, but the file was retrieved on 2026-09-04, four days into
+  // September. Aug 2026 (28 hours) had ended and was fully available; Sep 2026
+  // (7 hours) had not. Comparing them would report a 75% collapse that is only
+  // the calendar. The change must be withheld and the reason must say why.
+  it("withholds a comparison against a period still running", async () => {
+    const dashboard = await build(
+      "partial-latest-period.csv",
+      "Resolution hours by team and what changed",
+    );
+    expect(dashboard.executiveBrief.changed.headline).toBe(
+      "Change unavailable for partial Sep 2026",
+    );
+    // The 75% collapse is the calendar, not the teams. It must appear nowhere.
+    expect(text(dashboard)).not.toMatch(/75(\.0)?%/u);
+    // What is shown is still true, and says which period is only part-counted.
+    expect(dashboard.executiveBrief.known.headline).toBe(
+      "7 total for Sep 2026 (partial)",
+    );
+    // Four days into a thirty-day month, which is the whole of the reason.
+    expect(coverageEvidence(dashboard)).toContain(
+      "the source was retrieved on 2026-09-04, with only 3 of its 30 days elapsed",
+    );
+    // Nothing is missing from September, so the reader must not be told to
+    // supply it. The only thing that fixes a running period is time.
+    expect(dashboard.nextAction.title).toBe(
+      "Wait for Sep 2026 to finish before comparing it",
+    );
+    expect(dashboard.nextAction.detail).not.toMatch(/\badd\b/iu);
   });
 });

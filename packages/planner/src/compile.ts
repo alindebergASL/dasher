@@ -203,23 +203,36 @@ function periodCoverageDetail(facts: TableFacts): string {
   return `Period coverage was assessed from canonical dataset values. Latest analysis period: ${coverage.latestLabel}. Observed date range: ${observedRange}. Expected ${facts.grain} bounds: ${expectedRange}. Observed coverage: ${observedCoverage}. Comparison disposition: ${disposition}. Reason: ${coverage.reason}`;
 }
 
+/**
+ * How much of the latest period is actually in hand. Days elapsed is the honest
+ * measure when the calendar established coverage, because data that arrives on
+ * no fixed schedule has no expected observation count to fall short of.
+ */
+function partialCoverageSummary(
+  coverage: TableFacts["periodCoverage"],
+): string {
+  if (coverage.elapsedDays !== undefined && coverage.periodDays !== undefined) {
+    return `${String(coverage.elapsedDays)} of ${String(coverage.periodDays)} days elapsed`;
+  }
+  const observation =
+    coverage.observationGrain === undefined
+      ? "period"
+      : observationAdjective(coverage.observationGrain);
+  if (coverage.expectedCount === undefined) {
+    return `${String(coverage.observedCount)} observed ${observation} observations`;
+  }
+  return coverage.observationGrain === "month"
+    ? `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} months represented`
+    : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
+}
+
 function trustedPageDescription(
   plannedDescription: string,
   facts: TableFacts,
 ): string {
   const coverage = facts.periodCoverage;
   if (coverage.comparisonDisposition === "unavailable-partial") {
-    const observation =
-      coverage.observationGrain === undefined
-        ? "period"
-        : observationAdjective(coverage.observationGrain);
-    const observedCoverage =
-      coverage.expectedCount === undefined
-        ? `${String(coverage.observedCount)} observed ${observation} observations`
-        : coverage.observationGrain === "month"
-          ? `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} months represented`
-          : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
-    return `${coverage.latestLabel ?? "The latest period"} coverage is partial (${observedCoverage}). Comparative findings are withheld.`;
+    return `${coverage.latestLabel ?? "The latest period"} coverage is partial (${partialCoverageSummary(coverage)}). Comparative findings are withheld.`;
   }
   if (coverage.comparisonDisposition === "unavailable-unknown") {
     return `Coverage for ${coverage.latestLabel ?? "the latest period"} could not be established. Comparative findings are withheld.`;
@@ -236,17 +249,14 @@ function periodCoverageImportant(
       coverage.observationGrain === undefined
         ? "period"
         : observationAdjective(coverage.observationGrain);
-    const latestCount =
-      coverage.expectedCount === undefined
-        ? `${String(coverage.observedCount)} observed ${observation} observations`
-        : coverage.observationGrain === "month"
-          ? `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} months represented`
-          : `${String(coverage.observedCount)} of ${String(coverage.expectedCount)} expected ${observation} observations`;
+    const latestCount = partialCoverageSummary(coverage);
     const priorCount = coverage.priorObservedCount ?? 0;
     const priorCoverage =
       coverage.observationGrain === "month"
         ? `all ${String(priorCount)} months represented`
-        : `${String(priorCount)} ${observation} observations`;
+        : coverage.observationGrain === undefined
+          ? `${String(priorCount)} ${priorCount === 1 ? "date" : "dates"} observed`
+          : `${String(priorCount)} ${observation} observations`;
     const prior =
       coverage.priorPeriod === undefined
         ? "The prior period"
@@ -284,6 +294,23 @@ function periodCoverageNextAction(
       ? "the prior period"
       : periodLabel(coverage.priorPeriod);
   if (coverage.comparisonDisposition === "unavailable-partial") {
+    // A period the source was retrieved inside is not missing rows; it has not
+    // happened yet. Telling a reader to add them would be asking for data that
+    // does not exist.
+    if (
+      coverage.elapsedDays !== undefined &&
+      coverage.periodDays !== undefined
+    ) {
+      const ends =
+        coverage.expectedEnd === undefined
+          ? "it ends"
+          : `it ends on ${coverage.expectedEnd}`;
+      return {
+        title: `Wait for ${latest} to finish before comparing it`,
+        detail: `${latest} is still running: ${String(coverage.elapsedDays)} of its ${String(coverage.periodDays)} days had elapsed when the source was retrieved. Rebuild from an export taken after ${ends}, or read ${prior} as the last period that is complete.`,
+        evidenceIds: [...new Set([...evidenceIds, EVIDENCE.periodCoverage])],
+      };
+    }
     const observation =
       coverage.observationGrain === undefined
         ? "period"
@@ -852,7 +879,9 @@ export function compileTablePlan(
   table: Table,
   options: CompileOptions,
 ): DashboardSpec {
-  const facts = computeFacts(plan, table);
+  const facts = computeFacts(plan, table, {
+    retrievedAt: options.source.retrievedAt,
+  });
   if (facts.rows.length === 0) {
     throw new PlanRejected([
       {

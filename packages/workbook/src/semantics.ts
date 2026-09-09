@@ -93,8 +93,18 @@ function valuesNamePeriods(samples: readonly string[]): boolean {
 
 /**
  * Classify from exact normalized header words plus already-typed values.
- * Known keys and ordinals win over measure hints, then explicit measure names
- * and currency provide positive evidence. A merely numeric column is unknown.
+ *
+ * The exclusions carry the safety: a column that names an identifier, a code,
+ * an ordinal or a period is claimed by those rules first, and only what
+ * survives them can be a measure. Once they have had their say, a numeric
+ * column is a measure, whatever it counts — hours, tickets, millimetres of
+ * rain. Currency and explicit measure words are shortcuts to that answer, not
+ * the price of admission to it.
+ *
+ * An earlier version required one of sixteen mostly financial header words, so
+ * every numeric column outside accounting fell to "unknown" and the planner
+ * refused the file for having no usable measure. A harness that builds a
+ * dashboard from anything cannot hold a list of the nouns it will measure.
  */
 export function classifyColumnSemantic(
   column: SemanticColumnInput,
@@ -111,19 +121,12 @@ export function classifyColumnSemantic(
     return "code";
   if (endsWith(tokens, ORDINALS)) return "ordinal";
   if (column.type === "date" || endsWith(tokens, PERIODS)) return "period";
-  // "Customers" is commonly either a customer-name dimension or a numeric
-  // customer count. Only the profiled value type can safely distinguish them.
-  if (
-    column.type === "number" &&
-    tokens.length === 1 &&
-    tokens[0] === "customers"
-  ) {
-    return "measure";
-  }
   if (column.currency !== undefined || hasToken(tokens, MEASURES)) {
     return "measure";
   }
+  // Numbers that spell out periods ("2024", "2026-03") are the calendar, not a
+  // quantity, so this must stay ahead of the numeric rule below.
   if (valuesNamePeriods(column.samples)) return "period";
-  if (column.type === "number") return "unknown";
+  if (column.type === "number") return "measure";
   return column.nonEmpty === 0 ? "unknown" : "dimension";
 }
