@@ -152,6 +152,8 @@ function observationAdjective(
   switch (grain) {
     case "day":
       return "daily";
+    case "week":
+      return "weekly";
     case "month":
       return "monthly";
     case "quarter":
@@ -163,6 +165,10 @@ function observationAdjective(
 
 function periodComparisonLabel(facts: TableFacts): string {
   switch (facts.grain) {
+    case "day":
+      return "day-over-day";
+    case "week":
+      return "week-over-week";
     case "month":
       return "month-over-month";
     case "quarter":

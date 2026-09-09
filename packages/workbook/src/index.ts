@@ -44,7 +44,10 @@ export {
   parsePeriodHeader,
   periodGrain,
   periodLabel,
+  GRAIN_FINENESS,
+  periodsInSpan,
   periodStartIso,
+  suggestGrain,
   type AmountOptions,
   type DateOptions,
 } from "./parse-values";

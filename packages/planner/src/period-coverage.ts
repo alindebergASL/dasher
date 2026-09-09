@@ -24,13 +24,15 @@
  * retrieval time to date it against.
  */
 import {
+  bucketPeriod,
+  GRAIN_FINENESS,
   periodGrain,
   periodLabel,
   periodStartIso,
   type Grain,
 } from "./workbook";
 
-export type ObservationGrain = "day" | Grain;
+export type ObservationGrain = Grain;
 export type PeriodCompleteness = "complete" | "incomplete" | "unknown";
 export type ComparisonDisposition =
   | "available"
@@ -69,13 +71,6 @@ export interface PeriodCoverage {
   readonly reason: string;
 }
 
-const OBSERVATION_RANK: Readonly<Record<ObservationGrain, number>> = {
-  year: 0,
-  quarter: 1,
-  month: 2,
-  day: 3,
-};
-
 function date(isoDay: string): Date {
   return new Date(`${isoDay}T00:00:00.000Z`);
 }
@@ -89,6 +84,9 @@ function addObservation(value: string, grain: ObservationGrain): string {
   switch (grain) {
     case "day":
       next.setUTCDate(next.getUTCDate() + 1);
+      break;
+    case "week":
+      next.setUTCDate(next.getUTCDate() + 7);
       break;
     case "month":
       next.setUTCMonth(next.getUTCMonth() + 1, 1);
@@ -106,6 +104,11 @@ function addObservation(value: string, grain: ObservationGrain): string {
 function expectedEnd(period: string): string {
   const start = date(periodStartIso(period).slice(0, 10));
   switch (periodGrain(period)) {
+    case "day":
+      break;
+    case "week":
+      start.setUTCDate(start.getUTCDate() + 6);
+      break;
     case "month":
       start.setUTCMonth(start.getUTCMonth() + 1, 0);
       break;
@@ -136,21 +139,32 @@ function expectedObservations(
   return observations;
 }
 
+/**
+ * The bucket that follows this one at its own grain. Stepping the start date
+ * and re-bucketing keeps the key format in one place: an ISO week rolls into
+ * the next year on its own, which hand-built string arithmetic gets wrong.
+ */
 function nextAnalysisPeriod(period: string): string {
+  const grain = periodGrain(period);
   const start = date(periodStartIso(period).slice(0, 10));
-  switch (periodGrain(period)) {
+  switch (grain) {
+    case "day":
+      start.setUTCDate(start.getUTCDate() + 1);
+      break;
+    case "week":
+      start.setUTCDate(start.getUTCDate() + 7);
+      break;
     case "month":
       start.setUTCMonth(start.getUTCMonth() + 1, 1);
-      return isoDay(start).slice(0, 7);
-    case "quarter": {
+      break;
+    case "quarter":
       start.setUTCMonth(start.getUTCMonth() + 3, 1);
-      const year = start.getUTCFullYear();
-      const quarter = Math.floor(start.getUTCMonth() / 3) + 1;
-      return `${String(year)}-Q${String(quarter)}`;
-    }
+      break;
     case "year":
-      return String(start.getUTCFullYear() + 1);
+      start.setUTCFullYear(start.getUTCFullYear() + 1, 0, 1);
+      break;
   }
+  return bucketPeriod(start.toISOString(), grain);
 }
 
 function regularAt(dates: readonly string[], grain: ObservationGrain): boolean {
@@ -164,6 +178,8 @@ function regularAt(dates: readonly string[], grain: ObservationGrain): boolean {
 function atBoundary(value: string, grain: ObservationGrain): boolean {
   const parsed = date(value);
   if (grain === "day") return true;
+  // A weekly grid sits on Mondays, not on the first of the month.
+  if (grain === "week") return parsed.getUTCDay() === 1;
   if (parsed.getUTCDate() !== 1) return false;
   if (grain === "month") return true;
   if (grain === "quarter") return parsed.getUTCMonth() % 3 === 0;
@@ -194,7 +210,7 @@ function inferObservationGrain(
   const candidates: readonly ObservationGrain[] =
     explicit.length === 1
       ? [explicit[0] as Grain]
-      : ["day", "month", "quarter", "year"];
+      : ["day", "week", "month", "quarter", "year"];
   return candidates.find(
     (grain) =>
       dates.every((value) => atBoundary(value, grain)) &&
@@ -253,6 +269,8 @@ function adjective(grain: ObservationGrain): string {
   switch (grain) {
     case "day":
       return "daily";
+    case "week":
+      return "weekly";
     case "month":
       return "monthly";
     case "quarter":
@@ -264,6 +282,10 @@ function adjective(grain: ObservationGrain): string {
 
 function comparisonLabel(grain: Grain): string {
   switch (grain) {
+    case "day":
+      return "day-over-day";
+    case "week":
+      return "week-over-week";
     case "month":
       return "month-over-month";
     case "quarter":
@@ -448,7 +470,7 @@ export function analyzePeriodCoverage(
       vantage,
     );
   }
-  if (OBSERVATION_RANK[observationGrain] < OBSERVATION_RANK[analysisGrain]) {
+  if (GRAIN_FINENESS[observationGrain] < GRAIN_FINENESS[analysisGrain]) {
     return unknown(
       latestPeriod,
       observations,

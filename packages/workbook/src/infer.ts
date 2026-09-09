@@ -68,6 +68,8 @@ export function profileColumn(
   let amounts = 0;
   let dated = 0;
   let currency: string | undefined;
+  let earliest: string | undefined;
+  let latest: string | undefined;
 
   for (const cell of cells) {
     if (cell.length === 0) continue;
@@ -76,8 +78,14 @@ export function profileColumn(
     if (parseAmount(cell, { decimal }) !== null) {
       amounts += 1;
       currency ??= detectCurrency(cell);
-    } else if (dates !== "mixed" && parseDate(cell, { dates }) !== null) {
-      dated += 1;
+    } else if (dates !== "mixed") {
+      const date = parseDate(cell, { dates });
+      if (date !== null) {
+        dated += 1;
+        const day = date.iso.slice(0, 10);
+        if (earliest === undefined || day < earliest) earliest = day;
+        if (latest === undefined || day > latest) latest = day;
+      }
     }
   }
 
@@ -102,7 +110,11 @@ export function profileColumn(
       ? { ...profile, decimal }
       : { ...profile, decimal, currency };
   }
-  if (type === "date" && dates !== "mixed") return { ...profile, dates };
+  if (type === "date" && dates !== "mixed") {
+    return earliest === undefined || latest === undefined
+      ? { ...profile, dates }
+      : { ...profile, dates, span: { earliest, latest } };
+  }
   return profile;
 }
 

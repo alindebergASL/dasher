@@ -512,20 +512,25 @@ function trend(
   ctx: SectionContext,
 ): DashboardComponent | undefined {
   const { facts, money, evidenceIds } = ctx;
-  if (
-    facts.periods.length < 2 ||
-    facts.periodCoverage.comparisonDisposition === "unavailable-partial" ||
-    facts.periodCoverage.comparisonDisposition === "unavailable-unknown"
-  ) {
+  // Coverage unknown means no period can be trusted to be whole, so there is
+  // nothing safe to plot. A partial latest period is different: it names the
+  // one period that is short, and every earlier period is complete. Dropping
+  // the whole history for it threw away true figures — the same sums the page
+  // prints above the chart.
+  if (facts.periodCoverage.comparisonDisposition === "unavailable-unknown") {
     return undefined;
   }
+  const partial =
+    facts.periodCoverage.comparisonDisposition === "unavailable-partial";
+  const plotted = partial ? facts.periods.slice(0, -1) : facts.periods;
+  if (plotted.length < 2) return undefined;
   const unit = money.currency ?? "amount";
   // RULE: a chart point carries the same figure the page prints, rounded to the
   // money scale before it becomes a JavaScript number.
   const points = (
     value: (period: string) => Exact,
   ): { at: string; value: number }[] =>
-    facts.periods.map((period) => ({
+    plotted.map((period) => ({
       at: periodStartIso(period),
       value: Number(round(value(period), money.decimals)),
     }));
@@ -552,6 +557,11 @@ function trend(
     id,
     kind: "trend-list",
     title: `Trend by ${facts.grain}`,
+    ...(partial && facts.latestPeriod !== undefined
+      ? {
+          subtitle: `Complete ${facts.grain}s only; ${periodLabel(facts.latestPeriod)} is still partial and is not plotted.`,
+        }
+      : {}),
     evidenceIds: [...evidenceIds],
     series,
   };

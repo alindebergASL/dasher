@@ -512,7 +512,37 @@ export function parsePeriodHeader(
   return null;
 }
 
-/** The bucket an ISO date falls in at a grain: `2026-03`, `2026-Q1`, `2026`. */
+/**
+ * The Monday of the ISO week containing a UTC date. ISO weeks run Monday to
+ * Sunday, and week 1 is the one holding the first Thursday of the year, so a
+ * week can belong to a different year than its own dates do.
+ */
+function isoWeekMonday(value: Date): Date {
+  const monday = new Date(value.getTime());
+  // getUTCDay is 0 on Sunday; shift so Monday is 0.
+  const weekday = (monday.getUTCDay() + 6) % 7;
+  monday.setUTCDate(monday.getUTCDate() - weekday);
+  return monday;
+}
+
+/** ISO week-numbering year and week for a UTC date. */
+function isoWeekParts(value: Date): { year: number; week: number } {
+  const monday = isoWeekMonday(value);
+  // The Thursday of this week decides which year the week belongs to.
+  const thursday = new Date(monday.getTime());
+  thursday.setUTCDate(thursday.getUTCDate() + 3);
+  const year = thursday.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(year, 0, 4));
+  const firstMonday = isoWeekMonday(firstThursday);
+  const week =
+    Math.round((monday.getTime() - firstMonday.getTime()) / 604_800_000) + 1;
+  return { year, week };
+}
+
+/**
+ * The bucket an ISO date falls in at a grain: `2026-03-15`, `2026-W12`,
+ * `2026-03`, `2026-Q1`, `2026`.
+ */
 export function bucketPeriod(isoDate: string, grain: Grain): string {
   const year = isoDate.slice(0, 4);
   const month = Number(isoDate.slice(5, 7));
@@ -520,6 +550,12 @@ export function bucketPeriod(isoDate: string, grain: Grain): string {
     throw new RangeError(`${isoDate} is not an ISO date`);
   }
   switch (grain) {
+    case "day":
+      return isoDate.slice(0, 10);
+    case "week": {
+      const parts = isoWeekParts(new Date(isoDate));
+      return `${String(parts.year)}-W${String(parts.week).padStart(2, "0")}`;
+    }
     case "month":
       return `${year}-${isoDate.slice(5, 7)}`;
     case "quarter":
@@ -529,12 +565,16 @@ export function bucketPeriod(isoDate: string, grain: Grain): string {
   }
 }
 
+const DAY_BUCKET = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/u;
+const WEEK_BUCKET = /^(\d{4})-W(0[1-9]|[1-4]\d|5[0-3])$/u;
 const MONTH_BUCKET = /^(\d{4})-(0[1-9]|1[0-2])$/u;
 const QUARTER_BUCKET = /^(\d{4})-Q([1-4])$/u;
 const YEAR_BUCKET = /^\d{4}$/u;
 
 /** The grain a bucket key was written at. */
 export function periodGrain(bucket: string): Grain {
+  if (DAY_BUCKET.test(bucket)) return "day";
+  if (WEEK_BUCKET.test(bucket)) return "week";
   if (MONTH_BUCKET.test(bucket)) return "month";
   if (QUARTER_BUCKET.test(bucket)) return "quarter";
   if (YEAR_BUCKET.test(bucket)) return "year";
@@ -544,6 +584,21 @@ export function periodGrain(bucket: string): Grain {
 /** Midnight UTC on the first day of the bucket. */
 export function periodStartIso(bucket: string): string {
   let match: RegExpExecArray | null;
+  if ((match = DAY_BUCKET.exec(bucket)) !== null) {
+    return midnightUtc(
+      Number(match[1]),
+      Number(match[2]),
+      Number(match[3]),
+    ) as string;
+  }
+  if ((match = WEEK_BUCKET.exec(bucket)) !== null) {
+    const year = Number(match[1]);
+    const firstMonday = isoWeekMonday(new Date(Date.UTC(year, 0, 4)));
+    firstMonday.setUTCDate(
+      firstMonday.getUTCDate() + (Number(match[2]) - 1) * 7,
+    );
+    return firstMonday.toISOString();
+  }
   if ((match = MONTH_BUCKET.exec(bucket)) !== null) {
     return midnightUtc(Number(match[1]), Number(match[2]), 1) as string;
   }
@@ -556,9 +611,20 @@ export function periodStartIso(bucket: string): string {
   throw new RangeError(`${bucket} is not a period bucket`);
 }
 
-/** `Mar 2026`, `Q1 2026`, `2026`. */
+/** `15 Mar 2026`, `Week of 9 Mar 2026`, `Mar 2026`, `Q1 2026`, `2026`. */
 export function periodLabel(bucket: string): string {
   let match: RegExpExecArray | null;
+  if ((match = DAY_BUCKET.exec(bucket)) !== null) {
+    const month = MONTH_LABELS[Number(match[2]) - 1] as string;
+    return `${String(Number(match[3]))} ${month} ${match[1] as string}`;
+  }
+  if (WEEK_BUCKET.test(bucket)) {
+    // Named by the Monday it starts, which a reader can place on a calendar;
+    // "2026-W12" cannot be placed without counting.
+    const start = new Date(periodStartIso(bucket));
+    const month = MONTH_LABELS[start.getUTCMonth()] as string;
+    return `Week of ${String(start.getUTCDate())} ${month} ${String(start.getUTCFullYear())}`;
+  }
   if ((match = MONTH_BUCKET.exec(bucket)) !== null) {
     const month = MONTH_LABELS[Number(match[2]) - 1] as string;
     return `${month} ${match[1] as string}`;
@@ -570,15 +636,107 @@ export function periodLabel(bucket: string): string {
   throw new RangeError(`${bucket} is not a period bucket`);
 }
 
-const GRAIN_ORDER: Readonly<Record<Grain, number>> = {
+/**
+ * How fine each bucket is, coarsest at zero. One ordering for the whole
+ * pipeline: sorting periods, comparing a plan's grain against the one a column
+ * states, and ranking an observed frequency against an analysis period all mean
+ * the same thing by "finer".
+ */
+export const GRAIN_FINENESS: Readonly<Record<Grain, number>> = {
   year: 0,
   quarter: 1,
   month: 2,
+  week: 3,
+  day: 4,
 };
 
 /** Chronological order by start; a coarser bucket sorts before a finer one. */
 export function comparePeriods(a: string, b: string): number {
   const starts = periodStartIso(a).localeCompare(periodStartIso(b));
   if (starts !== 0) return starts;
-  return GRAIN_ORDER[periodGrain(a)] - GRAIN_ORDER[periodGrain(b)];
+  return GRAIN_FINENESS[periodGrain(a)] - GRAIN_FINENESS[periodGrain(b)];
+}
+
+const GRAINS_COARSE_FIRST: readonly Grain[] = [
+  "year",
+  "quarter",
+  "month",
+  "week",
+  "day",
+];
+
+/** How many buckets of a grain the span from `earliest` to `latest` covers. */
+export function periodsInSpan(
+  earliest: string,
+  latest: string,
+  grain: Grain,
+): number {
+  const from = new Date(`${earliest.slice(0, 10)}T00:00:00.000Z`);
+  const to = new Date(`${latest.slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) {
+    return 0;
+  }
+  const years = to.getUTCFullYear() - from.getUTCFullYear();
+  switch (grain) {
+    case "day":
+      return Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
+    case "week": {
+      const fromMonday = isoWeekMonday(from).getTime();
+      const toMonday = isoWeekMonday(to).getTime();
+      return Math.round((toMonday - fromMonday) / 604_800_000) + 1;
+    }
+    case "month":
+      return years * 12 + (to.getUTCMonth() - from.getUTCMonth()) + 1;
+    case "quarter":
+      return (
+        years * 4 +
+        (Math.floor(to.getUTCMonth() / 3) -
+          Math.floor(from.getUTCMonth() / 3)) +
+        1
+      );
+    case "year":
+      return years + 1;
+  }
+}
+
+/**
+ * How much time a file must cover before a bucket finer than a month is worth
+ * using. Four rows on four consecutive days are four rows, not a daily trend:
+ * bucketing them by day aggregates nothing and just replots the table. A daily
+ * view earns its place once there is a week of days; a weekly one, once there
+ * is a month of weeks.
+ */
+const LEAST_SPAN_DAYS: Partial<Readonly<Record<Grain, number>>> = {
+  day: 7,
+  week: 28,
+};
+
+/** The fewest buckets that can show a direction rather than a single step. */
+const LEAST_PERIODS = 4;
+
+/**
+ * The bucket to analyse a span at, from the span alone.
+ *
+ * Coarsest first, taking the first grain that both gives enough buckets to
+ * show a shape and covers enough time to deserve them. Eight months of
+ * transactions are monthly; six weeks of daily readings are weekly; a
+ * fortnight of them is daily. Reading it coarsest-first is what keeps a long
+ * file from exploding — five years of daily rows stop at "year" and never
+ * reach "day".
+ *
+ * Month is the answer for anything too short to shape, which is what a file of
+ * a handful of rows wants: one bucket that holds them together, rather than one
+ * bucket each. The old fixed default of "month" for *everything* is why a
+ * fortnight of data used to arrive as two bars, the newer one partial, with the
+ * trend and the comparison both withheld.
+ */
+export function suggestGrain(earliest: string, latest: string): Grain {
+  const spanDays = periodsInSpan(earliest, latest, "day");
+  return (
+    GRAINS_COARSE_FIRST.find(
+      (grain) =>
+        periodsInSpan(earliest, latest, grain) >= LEAST_PERIODS &&
+        spanDays >= (LEAST_SPAN_DAYS[grain] ?? 0),
+    ) ?? "month"
+  );
 }

@@ -14,6 +14,11 @@ not the product's, and a rule that only works for one of them is a bug.
   currency symbols, thousands separators, parenthesised negatives, blanks;
   ISO, US and European conventions decided per column; wide exports (one column
   per period) are unpivoted. Up to 4 MB.
+- **The analysis bucket follows the file.** Day, week, month, quarter and year,
+  chosen from how much time the data covers: eight months of transactions are
+  monthly, six weeks of daily readings are weekly, a fortnight of them is
+  daily. A column whose cells state their own period ("2026-01", "Q1 2026")
+  is never cut finer than it says. Ask for "weekly" or "by day" to override.
 - **Any numeric column can be the measure.** Identifiers, codes, ordinals and
   periods are claimed by their own rules first; what survives them is a
   quantity, whatever it counts. There is no list of subjects Dasher will
@@ -32,7 +37,8 @@ not the product's, and a rule that only works for one of them is a bug.
   is complete when its observations fill a regular frequency, or — for data
   that arrives on no fixed schedule, which is most data — when the period had
   ended before the source was retrieved. A period the file was taken inside is
-  reported as partial, with the days elapsed.
+  reported as partial, with the days elapsed, and the trend still plots every
+  period that is complete.
 - **Change it by asking.** Exclude a category, switch to quarterly, keep the
   last N periods, drop or add a section, shorten to one page. The browser
   re-sends the file; the server keeps nothing between requests.
@@ -52,6 +58,10 @@ not the product's, and a rule that only works for one of them is a bug.
 - XLSX is not read; export to CSV first.
 - Two periods with a gap between them are reported as unknown rather than
   compared as the two periods they are.
+- A file starting mid-period gives a short first bucket that is plotted as if
+  it were whole. The trailing edge is handled — a period the export was taken
+  inside is withheld — but at the leading edge there is no way to tell data
+  that is missing from data that did not exist yet, so nothing is claimed.
 - No search across saved dashboards; the list is most-recent-first, 50 deep.
 - The model planner has no spend accounting beyond a per-day call cap.
 - The sign-in throttle is per server process.

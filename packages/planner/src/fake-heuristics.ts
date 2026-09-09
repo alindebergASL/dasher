@@ -2,7 +2,13 @@
  * The deterministic planner's rules for reading a table and composing a
  * first dashboard from a request.
  */
-import { parsePeriodHeader, type ColumnProfile, type Grain } from "./workbook";
+import {
+  GRAIN_FINENESS,
+  parsePeriodHeader,
+  suggestGrain,
+  type ColumnProfile,
+  type Grain,
+} from "./workbook";
 import { findMeasurement } from "./plan";
 import type { TablePlan, TableSectionKind } from "./table-plan";
 
@@ -78,6 +84,45 @@ function pickCategory(
   );
 }
 
+/**
+ * The bucket the period column's own span asks for. A file covering eight
+ * months is monthly; one covering six weeks is weekly, because two monthly bars
+ * with the newer one still running say nothing at all.
+ *
+ * Only a date column has a span to read, and some date columns also state a
+ * grain: "2026-01" parses as both a date and a month, so the span is clamped to
+ * what the cells themselves say. "Q1 2026" is not a date at all and never
+ * reaches here; `planGrain` reads that one from the rows.
+ */
+function spanGrain(table: TableSummary, roles: Roles): Grain | undefined {
+  const period = table.columns.find(
+    (column) => column.name === roles.period && column.span !== undefined,
+  );
+  if (period?.span === undefined) return undefined;
+  const suggested = suggestGrain(period.span.earliest, period.span.latest);
+  const stated = statedGrain(period);
+  // A column of "2026-01" cells states months, and no span reading may cut
+  // below what the values themselves say: three monthly cells cover nine weeks,
+  // but they are not nine weeks of data, and bucketing them by week puts
+  // consecutive months in non-consecutive buckets.
+  return stated !== undefined &&
+    GRAIN_FINENESS[suggested] > GRAIN_FINENESS[stated]
+    ? stated
+    : suggested;
+}
+
+/** The grain a period column's own values name, when every sampled cell names one. */
+function statedGrain(column: ColumnProfile): Grain | undefined {
+  if (column.samples.length === 0) return undefined;
+  const grains = column.samples.map(
+    (sample) => parsePeriodHeader(sample)?.grain,
+  );
+  const first = grains[0];
+  return first !== undefined && grains.every((grain) => grain === first)
+    ? first
+    : undefined;
+}
+
 /** Which column plays which part, from names and types alone. */
 export function chooseRoles(table: TableSummary): Roles {
   const { columns, unpivoted } = table;
@@ -149,17 +194,23 @@ export function readLastPeriods(
   text: string,
 ): { count: number; grain: Grain } | undefined {
   const match =
-    /\blast\s+(\d{1,2}|[a-z]+)\s+(months?|quarters?|years?)\b/iu.exec(text);
+    /\blast\s+(\d{1,2}|[a-z]+)\s+(days?|weeks?|months?|quarters?|years?)\b/iu.exec(
+      text,
+    );
   if (match === null) return undefined;
   const word = (match[1] as string).toLowerCase();
   const count = /^\d+$/u.test(word) ? Number(word) : NUMBER_WORDS[word];
   if (count === undefined || count < 2 || count > 60) return undefined;
   const unit = (match[2] as string).toLowerCase();
-  const grain: Grain = unit.startsWith("quarter")
-    ? "quarter"
-    : unit.startsWith("year")
-      ? "year"
-      : "month";
+  const grain: Grain = unit.startsWith("day")
+    ? "day"
+    : unit.startsWith("week")
+      ? "week"
+      : unit.startsWith("quarter")
+        ? "quarter"
+        : unit.startsWith("year")
+          ? "year"
+          : "month";
   return { count, grain };
 }
 
@@ -167,6 +218,8 @@ export function readGrain(text: string): Grain | undefined {
   if (/\bquarter(?:ly|s)?\b/iu.test(text)) return "quarter";
   if (/\b(?:annual(?:ly)?|year(?:ly)?)\b/iu.test(text)) return "year";
   if (/\bmonth(?:ly|s)?\b/iu.test(text)) return "month";
+  if (/\bweek(?:ly|s)?\b/iu.test(text)) return "week";
+  if (/\b(?:dai?ly|days?)\b/iu.test(text)) return "day";
   return undefined;
 }
 
@@ -440,7 +493,8 @@ export function defaultPlan(
   const explicitCashFlow = asksForDirectionalFlow(requestText);
   const measureLabel = explicitCashFlow ? "Cash flow" : roles.amount;
   const last = readLastPeriods(requestText);
-  const grain = readGrain(requestText) ?? last?.grain ?? "month";
+  const grain =
+    readGrain(requestText) ?? last?.grain ?? spanGrain(table, roles) ?? "month";
   const category = table.columns.find(
     (column) => column.name === roles.category,
   );

@@ -282,7 +282,7 @@ describe("events that arrive on no fixed schedule", () => {
     expect(metricChange(dashboard, "Change vs prior period")).toBe(
       "-10 (-22.2%) vs Jun 2026",
     );
-    expect(periodTotals(dashboard, "Total")).toEqual([45, 35]);
+    expect(periodTotals(dashboard, "Total")).toEqual([11, 16, 15, 45, 35]);
     // Platform is 23 of July's 35 hours, and fell from 30 in June.
     expect(categoryRanking(dashboard)[0]).toEqual({
       label: "Platform",
@@ -323,5 +323,74 @@ describe("a latest period the file was retrieved inside", () => {
       "Wait for Sep 2026 to finish before comparing it",
     );
     expect(dashboard.nextAction.detail).not.toMatch(/\badd\b/iu);
+    // The four complete months are still true and still plotted; only the
+    // running one is left out. Withholding them taught the reader nothing.
+    expect(periodTotals(dashboard, "Total")).toEqual([12, 13, 16, 28]);
+  });
+});
+
+describe("cells that name their own period", () => {
+  // Three monthly cells span nine calendar weeks, but they are not nine weeks
+  // of data. Bucketing them by week would put consecutive months into
+  // non-consecutive buckets and withhold the comparison entirely. Mar 2026 is
+  // 126 + 50 = 176 against Feb 2026 at 120 + 45 = 165, so +11, or +6.7%.
+  it("never buckets below the grain the cells state", async () => {
+    const dashboard = await build(
+      "stated-months.csv",
+      "Amount by category over time",
+    );
+    expect(dashboard.executiveBrief.known.headline).toBe(
+      "176 total for Mar 2026",
+    );
+    expect(metricChange(dashboard, "Change vs prior period")).toBe(
+      "+11 (+6.7%) vs Feb 2026",
+    );
+    expect(periodTotals(dashboard, "Total")).toEqual([140, 165, 176]);
+    expect(text(dashboard)).not.toMatch(/Week of/u);
+  });
+});
+
+describe("readings taken every day", () => {
+  // Fourteen days of error counts, two services. A fortnight is one month and
+  // two weeks, so neither can show a shape; only a daily bucket can. Summed
+  // from the raw CSV: 30 Aug is 1 + 2 = 3, and 29 Aug is 4 + 3 = 7.
+  it("buckets a fortnight by day rather than into one month", async () => {
+    const dashboard = await build(
+      "daily-readings.csv",
+      "Errors by service over time",
+    );
+    expect(dashboard.executiveBrief.known.headline).toBe(
+      "3 total for 30 Aug 2026",
+    );
+    expect(dashboard.executiveBrief.changed.headline).toBe("-4 vs 29 Aug 2026");
+    const totals = periodTotals(dashboard, "Total");
+    expect(totals).toHaveLength(14);
+    expect(totals[0]).toBe(17);
+    expect(totals.at(-1)).toBe(3);
+    expect(sum(totals)).toBe(182);
+  });
+});
+
+describe("a measure recorded once a week", () => {
+  // Thirteen Mondays of signups. Three monthly buckets cannot show a trend;
+  // thirteen weekly ones can. The week of 24 Aug is 70 + 22 = 92 against the
+  // week of 17 Aug at 64 + 16 = 80, so +12, or +15.0%.
+  it("buckets Mondays by week and names each week by its date", async () => {
+    const dashboard = await build(
+      "weekly-signups.csv",
+      "Signups by channel over time",
+    );
+    expect(dashboard.executiveBrief.known.headline).toBe(
+      "92 total for Week of 24 Aug 2026",
+    );
+    expect(metricChange(dashboard, "Change vs prior period")).toBe(
+      "+12 (+15.0%) vs Week of 17 Aug 2026",
+    );
+    expect(periodTotals(dashboard, "Total")).toEqual([
+      50, 56, 50, 61, 64, 63, 71, 67, 78, 75, 84, 80, 92,
+    ]);
+    // A reader can place "Week of 24 Aug 2026" on a calendar; "2026-W35" is a
+    // number they would have to count out.
+    expect(text(dashboard)).not.toMatch(/W\d\d/u);
   });
 });
