@@ -17,7 +17,7 @@ test.describe("a saved dashboard", () => {
 
     await page.goto("/");
     await page
-      .getByLabel("Choose a CSV data source")
+      .getByLabel("Choose a spreadsheet or CSV data source")
       .setInputFiles(path.join(fixtures, "transactions.csv"));
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })

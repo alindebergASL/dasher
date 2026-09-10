@@ -152,10 +152,9 @@ describe("RequestWorkspace", () => {
       name: "What should this dashboard answer?",
     });
     expect(request).toBeInstanceOf(HTMLTextAreaElement);
-    expect(screen.getByLabelText("Choose a CSV data source")).toHaveAttribute(
-      "type",
-      "file",
-    );
+    expect(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+    ).toHaveAttribute("type", "file");
     const sourceStatus = screen.getByRole("status", { name: "Data source" });
     expect(sourceStatus).toHaveTextContent(/Using sample data/iu);
     expect(sourceStatus).toHaveClass("sr-only");
@@ -179,9 +178,12 @@ describe("RequestWorkspace", () => {
       type: "text/csv",
     });
 
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [file] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [file] },
+      },
+    );
 
     expect(
       screen.getByRole("status", { name: "Data source" }),
@@ -199,7 +201,9 @@ describe("RequestWorkspace", () => {
       "sr-only",
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
+      expect(
+        screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      ).toBeEnabled(),
     );
 
     const replacement = new File(
@@ -207,9 +211,12 @@ describe("RequestWorkspace", () => {
       "operations.csv",
       { type: "text/csv" },
     );
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [replacement] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [replacement] },
+      },
+    );
     expect(
       screen.getByRole("status", { name: "Data source" }),
     ).toHaveTextContent(
@@ -286,13 +293,18 @@ describe("RequestWorkspace", () => {
       type: "text/csv",
     });
 
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [first] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [first] },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
     await screen.findByRole("region", { name: "Current Ask Dasher question" });
     await waitFor(() =>
-      expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
+      expect(
+        screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      ).toBeEnabled(),
     );
 
     expect(
@@ -303,9 +315,12 @@ describe("RequestWorkspace", () => {
       "operations.csv",
       { type: "text/csv" },
     );
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [replacement] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [replacement] },
+      },
+    );
 
     expect(
       screen.getByRole("textbox", {
@@ -342,9 +357,12 @@ describe("RequestWorkspace", () => {
       type: "text/csv",
     });
 
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [file] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [file] },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
     await screen.findByRole("region", { name: "Current Ask Dasher question" });
     await waitFor(() =>
@@ -380,16 +398,21 @@ describe("RequestWorkspace", () => {
       type: "text/csv",
     });
 
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [first] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [first] },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
 
     const question = screen.getByRole("textbox", {
       name: "What should this dashboard answer?",
     });
     expect(question).toBeDisabled();
-    expect(screen.getByLabelText("Choose a CSV data source")).toBeDisabled();
+    expect(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+    ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Use sample data" }),
     ).toBeDisabled();
@@ -458,9 +481,12 @@ describe("RequestWorkspace", () => {
       }),
       { target: { value: draft } },
     );
-    fireEvent.change(screen.getByLabelText("Choose a CSV data source"), {
-      target: { files: [file] },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      {
+        target: { files: [file] },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
 
     await screen.findByRole("alert");
@@ -526,7 +552,9 @@ describe("RequestWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build dashboard" }));
     await screen.findByRole("region", { name: "Current Ask Dasher question" });
     await waitFor(() =>
-      expect(screen.getByLabelText("Choose a CSV data source")).toBeEnabled(),
+      expect(
+        screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+      ).toBeEnabled(),
     );
     const file = new File(["Date,Amount\n2026-01-01,25"], "dropped.csv", {
       type: "text/csv",

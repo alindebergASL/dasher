@@ -10,6 +10,11 @@ not the product's, and a rule that only works for one of them is a bug.
 
 ## What works
 
+- **Upload a spreadsheet or a CSV, get a dashboard.** `.xlsx` is read directly:
+  the first sheet holding a header and rows, past any cover sheet, with date
+  serials resolved and amounts carried as the characters the file stores. The
+  reader is this repository's own — a spreadsheet is a zip of XML and Node can
+  already inflate one — so the package still has no runtime dependencies.
 - **Upload a CSV, get a dashboard.** Comma, semicolon, or tab separated;
   currency symbols, thousands separators, parenthesised negatives, blanks;
   ISO, US and European conventions decided per column; wide exports (one column
@@ -55,7 +60,8 @@ not the product's, and a rule that only works for one of them is a bug.
 - Evidence is per dashboard, not per claim: every figure cites the same two
   records (the file, and how the figures were computed). Row-level evidence is
   the next thing the evidence chain needs.
-- XLSX is not read; export to CSV first.
+- A spreadsheet's formulas are read at their last calculated value; one never
+  calculated is blank. Charts, pivot tables and macros are ignored.
 - Two periods with a gap between them are reported as unknown rather than
   compared as the two periods they are.
 - A file starting mid-period gives a short first bucket that is plotted as if

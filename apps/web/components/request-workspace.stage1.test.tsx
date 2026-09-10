@@ -175,10 +175,9 @@ describe("stage 1 request workspace interpretation strip", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Choose a CSV data source")).toHaveAttribute(
-      "aria-label",
-      "Choose a CSV data source",
-    );
+    expect(
+      screen.getByLabelText("Choose a spreadsheet or CSV data source"),
+    ).toHaveAttribute("aria-label", "Choose a spreadsheet or CSV data source");
     expect(
       screen.getByRole("textbox", {
         name: "What should this dashboard answer?",

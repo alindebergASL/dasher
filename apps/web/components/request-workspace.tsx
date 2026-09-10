@@ -268,7 +268,9 @@ export function RequestWorkspace({
             <div>
               <span className="composer-kicker">Dashboard workspace</span>
               <h2>Ask Dasher</h2>
-              <p>Ask with the sample data, or bring a CSV of your own.</p>
+              <p>
+                Ask with the sample data, or bring a spreadsheet of your own.
+              </p>
             </div>
           </header>
         ) : null}
@@ -407,8 +409,8 @@ export function RequestWorkspace({
             >
               <label className="source-picker" htmlFor="dashboard-file">
                 <input
-                  accept=".csv,text/csv,text/tab-separated-values"
-                  aria-label="Choose a CSV data source"
+                  accept=".csv,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  aria-label="Choose a spreadsheet or CSV data source"
                   className="upload-file"
                   disabled={pending}
                   id="dashboard-file"
@@ -436,10 +438,10 @@ export function RequestWorkspace({
                 </span>
                 <span className="source-action">
                   <span className="source-action-wide">
-                    {selectedFile === undefined ? "Choose CSV" : "Replace"}
+                    {selectedFile === undefined ? "Choose file" : "Replace"}
                   </span>
                   <span aria-hidden="true" className="source-action-short">
-                    CSV
+                    File
                   </span>
                 </span>
               </label>
