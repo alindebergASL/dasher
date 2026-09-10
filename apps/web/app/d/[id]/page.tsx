@@ -6,6 +6,7 @@ import { parseDashboardSpec } from "@dasher/dashboard-schema";
 import { notFound } from "next/navigation";
 
 import { DashboardShell } from "@/components/dashboard-shell";
+import { RefineSaved } from "@/components/refine-saved";
 
 import { getPool, isPersistenceConfigured } from "../../database";
 import { readSessionCredential } from "../../session";
@@ -97,10 +98,29 @@ export default async function SavedDashboard({
     notFound();
   }
 
+  // Why a change is unavailable, when it is. Two real states, and a reader is
+  // owed which one rather than a control that does nothing.
+  const unavailableReason =
+    loaded.plan === undefined
+      ? "This dashboard was saved before Dasher kept the reading behind it, so it cannot be changed here. Build it again from the file to make it editable."
+      : loaded.sourceSnapshotId === undefined
+        ? "This dashboard was not built from an uploaded file, so there is nothing to recompute from."
+        : undefined;
+
   // `sealed`: these are stored bytes. The route renders what `finalize_run`
   // hashed, so the badge says snapshot rather than describing how the readings
-  // were fetched on the day the dashboard was built.
-  return <DashboardShell dashboard={spec} sealed />;
+  // were fetched on the day the dashboard was built. A change does not edit
+  // them; it writes a successor version, and this page then renders that.
+  return (
+    <>
+      <DashboardShell dashboard={spec} sealed />
+      <RefineSaved
+        dashboardId={loaded.dashboardId}
+        refinable={unavailableReason === undefined}
+        {...(unavailableReason === undefined ? {} : { unavailableReason })}
+      />
+    </>
+  );
 }
 
 function isNotAuthenticated(error: unknown): boolean {

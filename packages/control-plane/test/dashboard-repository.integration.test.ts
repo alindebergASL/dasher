@@ -1179,3 +1179,122 @@ it("refuses a malformed expected revision before reaching the seam", async () =>
     ).rejects.toMatchObject({ code: "unexpected_shape" });
   }
 });
+
+/**
+ * A saved dashboard could only ever be reopened, never changed, because nothing
+ * had written a second version. The schema was built for it from the first
+ * migration — a version has a parent, a dashboard has a head, and `finalize_run`
+ * promotes one against an expected revision — so this exercises machinery that
+ * existed unused rather than machinery this change invented.
+ */
+it("writes a successor version and moves the head to it", async () => {
+  const first = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      repository.save({
+        ...saveInput("spending by category"),
+        plan: { version: "table-plan-v1", plan: { grain: "month" } },
+      }),
+  );
+
+  const loaded = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadById(first.dashboardId),
+  );
+  expect(loaded?.plan).toEqual({
+    version: "table-plan-v1",
+    plan: { grain: "month" },
+  });
+
+  const second = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      repository.revise({
+        ...saveInput("spending by category, quarterly"),
+        dashboardId: first.dashboardId,
+        expectedRevision: loaded?.lifecycleRevision ?? 0,
+        plan: { version: "table-plan-v1", plan: { grain: "quarter" } },
+      }),
+  );
+
+  expect(second.dashboardId).toBe(first.dashboardId);
+  expect(second.versionId).not.toBe(first.versionId);
+
+  const after = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadById(first.dashboardId),
+  );
+  expect(after?.versionId).toBe(second.versionId);
+  expect(after?.plan).toEqual({
+    version: "table-plan-v1",
+    plan: { grain: "quarter" },
+  });
+  // The revision moved, so a caller still holding the old one is now stale.
+  expect(after?.lifecycleRevision).toBeGreaterThan(
+    loaded?.lifecycleRevision ?? 0,
+  );
+
+  // Both versions are still there. The first is a record, not a draft that the
+  // second replaced.
+  const versions = await ownerPool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM dasher.dashboard_versions WHERE dashboard_id = $1",
+    [first.dashboardId],
+  );
+  expect(versions.rows[0]?.count).toBe("2");
+});
+
+it("refuses a revision against a head somebody else already moved", async () => {
+  const first = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.save(saveInput("contested")),
+  );
+
+  // A first save leaves the dashboard at revision 2: create_dashboard writes 1
+  // and finalize_run promotes past it. Two callers both read that and both try
+  // to build on it; the seam compares and swaps, so the second is told rather
+  // than silently losing.
+  await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) =>
+      repository.revise({
+        ...saveInput("first writer"),
+        dashboardId: first.dashboardId,
+        expectedRevision: 2,
+      }),
+  );
+
+  await expect(
+    withDashboardRepository(appPool, credential(alice), async (repository) =>
+      repository.revise({
+        ...saveInput("second writer"),
+        dashboardId: first.dashboardId,
+        expectedRevision: 2,
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "conflict" });
+});
+
+it("reopens a dashboard saved before plans were stored, without one", async () => {
+  // Every version already in the deployment is this case. It must open and say
+  // it cannot be refined, not fail.
+  const saved = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.save(saveInput("older dashboard")),
+  );
+
+  const loaded = await withDashboardRepository(
+    appPool,
+    credential(alice),
+    async (repository) => repository.loadById(saved.dashboardId),
+  );
+
+  expect(loaded?.versionId).toBe(saved.versionId);
+  expect(loaded?.plan).toBeUndefined();
+});

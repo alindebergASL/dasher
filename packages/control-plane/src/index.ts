@@ -52,7 +52,9 @@ export {
   type PersistedClaim,
   type RecordEvidenceInput,
   type RecordSourceSnapshotInput,
+  type ReviseDashboardInput,
   type SaveDashboardInput,
+  type VersionPlan,
   type SavedDashboard,
 } from "./dashboard-repository";
 

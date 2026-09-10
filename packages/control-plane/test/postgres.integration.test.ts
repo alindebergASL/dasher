@@ -299,6 +299,7 @@ describe("migration application", () => {
       "0003_session_revocation.sql",
       "0004_sign_in_rate_limit_lock.sql",
       "0005_session_idle.sql",
+      "0006_version_plans.sql",
     ]);
     for (const row of result.rows) {
       expect(row.checksum_sha256, row.filename).toHaveLength(32);
