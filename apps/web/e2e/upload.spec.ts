@@ -3,12 +3,19 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 
 const fixtures = path.resolve(process.cwd(), "..", "..", "fixtures", "sample");
+const spreadsheets = path.resolve(
+  process.cwd(),
+  "..",
+  "..",
+  "fixtures",
+  "xlsx",
+);
 
 test.describe("uploading a spreadsheet", () => {
   test("a transactions export becomes a dashboard", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByLabel("Choose a CSV data source")
+      .getByLabel("Choose a spreadsheet or CSV data source")
       .setInputFiles(path.join(fixtures, "transactions.csv"));
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
@@ -30,7 +37,7 @@ test.describe("uploading a spreadsheet", () => {
   test("a wide budget export is unpivoted and built", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByLabel("Choose a CSV data source")
+      .getByLabel("Choose a spreadsheet or CSV data source")
       .setInputFiles(path.join(fixtures, "operating-spend-wide.csv"));
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
@@ -48,18 +55,20 @@ test.describe("uploading a spreadsheet", () => {
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "monthly-metrics.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Month,Customers,Headcount",
-          "2026-01,100,12",
-          "2026-02,120,15",
-          "2026-03,126,18",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "monthly-metrics.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Month,Customers,Headcount",
+            "2026-01,100,12",
+            "2026-02,120,15",
+            "2026-03,126,18",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Compare customers vs headcount");
@@ -94,19 +103,21 @@ test.describe("uploading a spreadsheet", () => {
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "cash-flow.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Month,Category,Amount,Description",
-          "2026-08,Collections,600 USD,Invoice A",
-          "2026-08,Sales,400 USD,Order B",
-          "2026-08,Payroll,-300 USD,Payroll run",
-          "2026-08,Vendors,-200 USD,Supplier bill",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "cash-flow.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Month,Category,Amount,Description",
+            "2026-08,Collections,600 USD,Invoice A",
+            "2026-08,Sales,400 USD,Order B",
+            "2026-08,Payroll,-300 USD,Payroll run",
+            "2026-08,Vendors,-200 USD,Supplier bill",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Analyze cash flow by category");
@@ -166,21 +177,23 @@ test.describe("uploading a spreadsheet", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "unreadable-latest.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Date,Category,Amount",
-          "2026-01-01,A,100",
-          "2026-02-01,A,120",
-          "2026-03-01,A,130",
-          "2026-04-01,A,140",
-          "2026-05-01,A,150",
-          "2026-06-01,A,not-an-amount",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "unreadable-latest.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Date,Category,Amount",
+            "2026-01-01,A,100",
+            "2026-02-01,A,120",
+            "2026-03-01,A,130",
+            "2026-04-01,A,140",
+            "2026-05-01,A,150",
+            "2026-06-01,A,not-an-amount",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Show amount over time");
@@ -196,15 +209,17 @@ test.describe("uploading a spreadsheet", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "wide-unreadable-latest.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        ["Category,2026-01,2026-02,2026-03", "A,100,120,not-an-amount"].join(
-          "\n",
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "wide-unreadable-latest.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          ["Category,2026-01,2026-02,2026-03", "A,100,120,not-an-amount"].join(
+            "\n",
+          ),
         ),
-      ),
-    });
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Show amount over time");
@@ -220,17 +235,19 @@ test.describe("uploading a spreadsheet", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "mixed-conventions.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Category;2026-01;2026-02;2026-03",
-          "A;1.25;1,25;3,25",
-          "B;2.50;2,50;4,50",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "mixed-conventions.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Category;2026-01;2026-02;2026-03",
+            "A;1.25;1,25;3,25",
+            "B;2.50;2,50;4,50",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Show amount over time");
@@ -245,26 +262,28 @@ test.describe("uploading a spreadsheet", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "support-hours.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Date,Team,Resolution hours",
-          // Five months, so the bucket stays monthly; Jun and Jul carry the
-          // figures under test.
-          "2026-03-04,Platform,7",
-          "2026-04-02,Support,11",
-          "2026-05-06,Platform,9",
-          "2026-06-02,Platform,12",
-          "2026-06-17,Support,3",
-          "2026-06-30,Platform,10",
-          "2026-07-01,Platform,9",
-          "2026-07-08,Support,4",
-          "2026-07-20,Platform,14",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "support-hours.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Date,Team,Resolution hours",
+            // Five months, so the bucket stays monthly; Jun and Jul carry the
+            // figures under test.
+            "2026-03-04,Platform,7",
+            "2026-04-02,Support,11",
+            "2026-05-06,Platform,9",
+            "2026-06-02,Platform,12",
+            "2026-06-17,Support,3",
+            "2026-06-30,Platform,10",
+            "2026-07-01,Platform,9",
+            "2026-07-08,Support,4",
+            "2026-07-20,Platform,14",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Resolution hours by team and what changed");
@@ -292,11 +311,13 @@ test.describe("uploading a spreadsheet", () => {
       rows.push(`2026-08-${String(day)},Web,${String(40 - day)}`);
     }
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "daily-errors.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(rows.join("\n")),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "daily-errors.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(rows.join("\n")),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Errors by service over time");
@@ -316,15 +337,42 @@ test.describe("uploading a spreadsheet", () => {
     await expect(totals).toContainText("vs 29 Aug 2026");
   });
 
+  test("a spreadsheet is read without being exported to CSV first", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles(path.join(spreadsheets, "transactions.xlsx"));
+    await page
+      .getByRole("textbox", { name: "What should this dashboard answer?" })
+      .fill("Spending by category and what changed");
+    await page.getByRole("button", { name: "Build dashboard" }).click();
+
+    await expect(
+      page.getByRole("region", { name: "Current Ask Dasher question" }),
+    ).toBeVisible();
+    await expect(page.locator(".request-error")).toHaveCount(0);
+    // Jul 2026 is 1402.11 + 9250.00, against Jun 2026 at 1350.75 + 655.20.
+    const totals = page.locator(".metric-card").filter({
+      hasText: "Change vs prior period",
+    });
+    await expect(totals).toContainText("+8,646.16 (+431.0%) vs Jun 2026");
+    // The dates were serial numbers on the sheet; none may reach the page.
+    await expect(page.getByText(/\b4608\d\b/u)).toHaveCount(0);
+  });
+
   test("a file that is not a table is refused with a reason", async ({
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "notes.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from("just a sentence with no header or rows"),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "notes.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from("just a sentence with no header or rows"),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Anything");
@@ -340,7 +388,7 @@ test.describe("uploading a spreadsheet", () => {
   test("a refinement re-reads the uploaded file", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByLabel("Choose a CSV data source")
+      .getByLabel("Choose a spreadsheet or CSV data source")
       .setInputFiles(path.join(fixtures, "transactions.csv"));
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })

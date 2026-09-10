@@ -48,7 +48,9 @@ test.describe("the sample dashboard", () => {
       ).toBe(true);
     }
 
-    const fileInput = page.getByLabel("Choose a CSV data source");
+    const fileInput = page.getByLabel(
+      "Choose a spreadsheet or CSV data source",
+    );
     await fileInput.focus();
     await expect(fileInput).toBeFocused();
     await fileInput.setInputFiles({
@@ -134,7 +136,7 @@ test.describe("the sample dashboard", () => {
     await expect(
       page.getByRole("region", { name: "Current Ask Dasher question" }),
     ).toBeVisible();
-    await expect(page.getByText("CSV", { exact: true })).toBeVisible();
+    await expect(page.getByText("File", { exact: true })).toBeVisible();
     await expect(
       page.getByText(/Uses sample data.*evidence-backed/iu),
     ).toBeVisible();
@@ -287,18 +289,20 @@ test.describe("the sample dashboard", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "complete-months.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Date,Category,Amount",
-          "2026-01-01,All,10",
-          "2026-02-01,All,20",
-          "2026-03-01,All,30",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "complete-months.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Date,Category,Amount",
+            "2026-01-01,All,10",
+            "2026-02-01,All,20",
+            "2026-03-01,All,30",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Show amount over time");
@@ -346,20 +350,22 @@ test.describe("the sample dashboard", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByLabel("Choose a CSV data source").setInputFiles({
-      name: "quarterly-progress.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        [
-          "Date,Category,Amount",
-          "2026-04-01,A,100",
-          "2026-05-01,A,110",
-          "2026-06-01,A,120",
-          "2026-07-01,A,130",
-          "2026-08-01,A,140",
-        ].join("\n"),
-      ),
-    });
+    await page
+      .getByLabel("Choose a spreadsheet or CSV data source")
+      .setInputFiles({
+        name: "quarterly-progress.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(
+          [
+            "Date,Category,Amount",
+            "2026-04-01,A,100",
+            "2026-05-01,A,110",
+            "2026-06-01,A,120",
+            "2026-07-01,A,130",
+            "2026-08-01,A,140",
+          ].join("\n"),
+        ),
+      });
     await page
       .getByRole("textbox", { name: "What should this dashboard answer?" })
       .fill("Compare quarterly amount by category");

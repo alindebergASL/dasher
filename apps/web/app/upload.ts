@@ -3,9 +3,13 @@ import { createHash } from "node:crypto";
 import {
   CSV_LIMITS,
   detectDelimiter,
+  looksLikeZip,
   normalizedHeaderTokens,
   parseCsv,
+  readSpreadsheet,
+  readSpreadsheetTable,
   readTable,
+  SpreadsheetError,
   TableRefused,
   type CsvTable,
   type Table,
@@ -150,6 +154,65 @@ export interface ReadUpload {
   readonly table: Table;
 }
 
+/**
+ * The same reading, for a file that arrived as a spreadsheet. Its cells are
+ * resolved to text first and then put through the identical checks — a
+ * spreadsheet must not be a way past the credential scan or the row ceiling.
+ */
+function readSpreadsheetUpload(
+  name: string,
+  bytes: Uint8Array,
+): { ok: true; upload: ReadUpload } | { ok: false; message: string } {
+  try {
+    const book = readSpreadsheet(bytes);
+    const [headers = [], ...rows] = book.rows;
+    if (
+      containsCredentials({
+        headers: [...headers],
+        rows: rows.map((row) => [...row]),
+      })
+    ) {
+      return {
+        ok: false,
+        message: uploadRefusalMessage({ kind: "credentials" }),
+      };
+    }
+    const { table } = readSpreadsheetTable(bytes);
+    if (table.rowCount > MAX_TABLE_ROWS) {
+      return {
+        ok: false,
+        message: uploadRefusalMessage({
+          kind: "too_many_rows",
+          rows: table.rowCount,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      upload: {
+        name,
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        table,
+      },
+    };
+  } catch (error) {
+    if (error instanceof SpreadsheetError) {
+      return { ok: false, message: error.message };
+    }
+    return {
+      ok: false,
+      message: uploadRefusalMessage({
+        kind: "unreadable",
+        detail:
+          error instanceof TableRefused
+            ? error.message
+            : "Its first sheet could not be read as a table with a header row.",
+      }),
+    };
+  }
+}
+
 /** Turn uploaded bytes into a Table, or say plainly why not. */
 export function readUpload(
   name: string,
@@ -167,6 +230,11 @@ export function readUpload(
       }),
     };
   }
+  // A spreadsheet is a zip, so it is recognised by its first four bytes rather
+  // than its name: an .xlsx renamed .csv is still a spreadsheet, and a CSV
+  // renamed .xlsx is still a CSV.
+  if (looksLikeZip(bytes)) return readSpreadsheetUpload(name, bytes);
+
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

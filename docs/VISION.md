@@ -11,7 +11,7 @@ column to get a useful first view.
 
 ## The loop
 
-1. **Upload** a CSV export of anything tabular: transactions, a budget by
+1. **Upload** a spreadsheet or a CSV export of anything tabular: transactions, a budget by
    month, a pipeline, a headcount list, support tickets, sensor readings, sign
    ups, delivery times. The subject is the file's business, not Dasher's — any
    column of numbers is something it can measure. Dasher reads the columns and

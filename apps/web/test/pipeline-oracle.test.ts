@@ -5,6 +5,8 @@ import path from "node:path";
 import type { DashboardSpec } from "@dasher/dashboard-schema";
 import { FakePlanningProvider, runTablePlanner } from "@dasher/planner";
 import { readTable } from "@dasher/workbook";
+
+import { readUpload } from "../app/upload";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -28,6 +30,13 @@ const FIXTURES = path.resolve(
   "adversarial",
 );
 const SAMPLES = path.resolve(process.cwd(), "..", "..", "fixtures", "sample");
+const SPREADSHEETS = path.resolve(
+  process.cwd(),
+  "..",
+  "..",
+  "fixtures",
+  "xlsx",
+);
 
 async function build(
   file: string,
@@ -45,6 +54,28 @@ async function build(
       name: file,
       retrievedAt: "2026-09-04T12:00:00.000Z",
       rowCount: table.rowCount,
+    },
+  });
+  return run.dashboard;
+}
+
+/** The same, for a file that arrives as a spreadsheet rather than as text. */
+async function buildSpreadsheet(
+  file: string,
+  request: string,
+): Promise<DashboardSpec> {
+  const bytes = new Uint8Array(readFileSync(path.join(SPREADSHEETS, file)));
+  const read = readUpload(file, bytes);
+  if (!read.ok) throw new Error(read.message);
+  const run = await runTablePlanner({
+    requestText: request,
+    table: read.upload.table,
+    provider: new FakePlanningProvider(),
+    asOf: "2026-09-04T12:00:00.000Z",
+    source: {
+      name: file,
+      retrievedAt: "2026-09-04T12:00:00.000Z",
+      rowCount: read.upload.table.rowCount,
     },
   });
   return run.dashboard;
@@ -326,6 +357,40 @@ describe("a latest period the file was retrieved inside", () => {
     // The four complete months are still true and still plotted; only the
     // running one is left out. Withholding them taught the reader nothing.
     expect(periodTotals(dashboard, "Total")).toEqual([12, 13, 16, 28]);
+  });
+});
+
+describe("a file that arrives as a spreadsheet", () => {
+  // Written by Python's openpyxl, so the file under test came from a real
+  // spreadsheet writer. Summed from the same source rows: Jun 2026 is 1350.75
+  // + 655.20 = 2005.95 and Jul 2026 is 1402.11 + 9250.00 = 10652.11, so the
+  // change is +8,646.16, or +431.0%.
+  it("reads a spreadsheet to the same figures a CSV would give", async () => {
+    const dashboard = await buildSpreadsheet(
+      "transactions.xlsx",
+      "Spending by category and what changed",
+    );
+    expect(dashboard.executiveBrief.known.headline).toBe(
+      "10,652.11 total for Jul 2026",
+    );
+    expect(metricChange(dashboard, "Change vs prior period")).toBe(
+      "+8,646.16 (+431.0%) vs Jun 2026",
+    );
+    // Five months, each summed from cells the reader never parsed as floats.
+    expect(periodTotals(dashboard, "Total")).toEqual([
+      2124.66, 2013.49, 10288.9, 2005.95, 10652.11,
+    ]);
+    // The dates were serial numbers in the file; nothing downstream can tell.
+    expect(text(dashboard)).not.toMatch(/4608\d/u);
+  });
+
+  it("passes a cover sheet by and reads the sheet with the table", async () => {
+    const dashboard = await buildSpreadsheet(
+      "cover-sheet-first.xlsx",
+      "Hours by team over time",
+    );
+    expect(periodTotals(dashboard, "Total")).toEqual([7, 11, 9, 12, 14]);
+    expect(text(dashboard)).not.toContain("Exported from the finance system");
   });
 });
 

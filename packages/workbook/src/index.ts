@@ -57,7 +57,15 @@ export { unpivotIfWide } from "./unpivot";
 export {
   TableRefused,
   detectDelimiter,
+  readSpreadsheetTable,
   readTable,
+  tableFromRows,
   type ReadOptions,
   type TableRefusal,
 } from "./read";
+export {
+  looksLikeZip,
+  readSpreadsheet,
+  SpreadsheetError,
+  type Spreadsheet,
+} from "./xlsx";
