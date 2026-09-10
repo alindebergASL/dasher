@@ -155,6 +155,7 @@ describe("discoverMigrations", () => {
       "0003_session_revocation.sql",
       "0004_sign_in_rate_limit_lock.sql",
       "0005_session_idle.sql",
+      "0006_version_plans.sql",
     ]);
     expect(migrations[0]?.sql).toContain("CREATE TABLE dasher.dashboards");
     expect(migrations[1]?.sql).toContain(

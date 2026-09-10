@@ -44,6 +44,12 @@ not the product's, and a rule that only works for one of them is a bug.
   ended before the source was retrieved. A period the file was taken inside is
   reported as partial, with the days elapsed, and the trend still plots every
   period that is complete.
+- **Change a saved dashboard by asking, from its own page.** The file is kept
+  as an immutable snapshot and the reading behind it beside the version, so a
+  change recomputes from the same bytes and writes a successor version at the
+  same link. Nothing is edited in place — the version approved yesterday is
+  still exactly what it was. A dashboard saved before the reading was kept
+  opens and says why it cannot be changed.
 - **Change it by asking.** Exclude a category, switch to quarterly, keep the
   last N periods, drop or add a section, shorten to one page. The browser
   re-sends the file; the server keeps nothing between requests.
@@ -55,8 +61,6 @@ not the product's, and a rule that only works for one of them is a bug.
 
 ## Known gaps
 
-- A saved dashboard reopens read-only; it cannot yet be refined from its page.
-  Doing so needs a new migration to store the plan beside the version.
 - Evidence is per dashboard, not per claim: every figure cites the same two
   records (the file, and how the figures were computed). Row-level evidence is
   the next thing the evidence chain needs.
@@ -75,9 +79,13 @@ not the product's, and a rule that only works for one of them is a bug.
 
 ## Standing constraints
 
-- **Migrations 0001–0005 are frozen.** The deployment holds real data, so
+- **Migrations 0001–0006 are frozen.** The deployment holds real data, so
   `DECISIONS.md` item 6 now binds: schema changes are forward-only, by a new
-  migration, never by editing an applied one.
+  migration, never by editing an applied one. `audit_events_action_check` is an
+  allowlist a CHECK cannot extend in place, so a migration adding an action
+  restates the whole list — copy it from the migration that last stated it, not
+  from the baseline, or a name added in between is silently dropped.
+  `audit-actions.test.ts` fails when that happens.
 - **`fixtures/adversarial/` grows with every defect that reached a screen.**
   `apps/web/test/pipeline-oracle.test.ts` is the only suite whose expected
   values are computed outside the code under test. A fix without a case there
@@ -87,7 +95,7 @@ not the product's, and a rule that only works for one of them is a bug.
 
 1. Put a real spreadsheet through it with the model on, every week, and fix
    what that shows.
-2. Refine from a saved dashboard's page (the file is already stored).
-3. XLSX intake through the same `Table`.
-4. Invite a second member to the owner's organization
+2. Row-level evidence, so a figure cites the rows behind it rather than the
+   file as a whole.
+3. Invite a second member to the owner's organization
    (`provision --organization <id>`) and use it together.

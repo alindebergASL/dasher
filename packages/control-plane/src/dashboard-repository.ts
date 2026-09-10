@@ -65,8 +65,27 @@ export interface SaveDashboardInput {
    * which is what every caller did before this existed.
    */
   readonly claims?: readonly PersistedClaim[];
+  /**
+   * The plan this version was compiled from, kept so it can be changed later.
+   * Omitted writes a version that can be reopened but not refined.
+   */
+  readonly plan?: VersionPlan;
   readonly requestId: string;
   readonly deploymentRevision: string;
+}
+
+/**
+ * A change to a dashboard that already exists.
+ *
+ * The same statements as a first save, minus creating the dashboard, and with
+ * the revision the caller actually saw rather than a known-fresh one: the seam
+ * compares and swaps on it, so a refinement of a view somebody has already
+ * moved on from raises `conflict` instead of overwriting their work.
+ */
+export interface ReviseDashboardInput extends SaveDashboardInput {
+  readonly dashboardId: string;
+  /** The `lifecycleRevision` the caller last read for this dashboard. */
+  readonly expectedRevision: number;
 }
 
 /**
@@ -147,6 +166,20 @@ export interface RecordSourceSnapshotInput {
   readonly deploymentRevision: string;
 }
 
+/**
+ * The plan a version was compiled from, kept so the version can be changed
+ * later rather than only re-rendered.
+ *
+ * Opaque here in the same sense the spec bytes are: the shape belongs to the
+ * planner, and a control plane that understood it would be a second place that
+ * has to change when a plan does. `version` is the plan's own marker, lifted
+ * out so a later reader can tell whether it still understands one.
+ */
+export interface VersionPlan {
+  readonly version: string;
+  readonly plan: unknown;
+}
+
 export interface SavedDashboard {
   readonly dashboardId: string;
   readonly versionId: string;
@@ -169,6 +202,14 @@ export interface LoadedDashboard {
   readonly lifecycleRevision: number;
   /** The `source_snapshots` row the head version cites, when it cites one. */
   readonly sourceSnapshotId: string | undefined;
+  /**
+   * The plan the head version was compiled from, when one was kept.
+   *
+   * Absent on every version written before plans were stored, which is a real
+   * state and not an error: those dashboards can be reopened but not changed,
+   * and a caller has to say so rather than fail.
+   */
+  readonly plan: VersionPlan | undefined;
 }
 
 /** Stored bytes read back, with what was recorded about their retrieval. */
@@ -231,6 +272,17 @@ export interface DashboardRepository {
    * transaction, so a failure at any point leaves none of them.
    */
   save(input: SaveDashboardInput): Promise<SavedDashboard>;
+
+  /**
+   * Write a successor version of an existing dashboard and move its head.
+   *
+   * The schema was built for this from the start — a version has a parent, a
+   * dashboard has a head, and `finalize_run` promotes one against an expected
+   * revision — but nothing had ever written a second version, so a saved
+   * dashboard could only be reopened. Raises `conflict` when the dashboard
+   * moved between the read and this write.
+   */
+  revise(input: ReviseDashboardInput): Promise<SavedDashboard>;
 
   /**
    * Store retrieved bytes, and return the id a version can cite.
@@ -305,6 +357,122 @@ export function createDashboardRepository(
   handle: TransactionHandle,
   principal: RequestPrincipal,
 ): DashboardRepository {
+  /**
+   * A run, its version, and the plan behind it — the sequence both a first save
+   * and a later revision perform, kept in one place so the two cannot drift.
+   * Atomic regardless of the statement count: the request owns one transaction,
+   * so a failure at any point leaves none of them.
+   *
+   * Not on the interface: the only difference between the two callers is which
+   * revision they may honestly claim to have seen, and exposing this would let
+   * a caller write a version against a revision it never read.
+   */
+  async function writeVersion(
+    dashboardId: string,
+    expectedRevision: number,
+    input: SaveDashboardInput,
+  ): Promise<SavedDashboard> {
+    const started = await handle.query<{ run_id: string }>(
+      "SELECT dasher_api.start_run($1, $2, $3, $4, $5, $6) AS run_id",
+      [
+        dashboardId,
+        input.requestText,
+        input.provider,
+        input.model,
+        input.requestId,
+        input.deploymentRevision,
+      ],
+    );
+    const runId = started.rows[0]?.run_id;
+    if (runId === undefined) {
+      throw new DashboardRepositoryError(
+        "unexpected_shape",
+        "start_run returned no identifier",
+      );
+    }
+
+    const finalized = await handle
+      .query<{ version_id: string }>(
+        "SELECT dasher_api.finalize_run($1, $2, $3::jsonb, $4, $5, $6, $7) AS version_id",
+        [
+          runId,
+          input.canonicalSpecBytes,
+          // The seam walks this array and writes `claims` and
+          // `claim_evidence` itself. It was a literal `"[]"` from the day
+          // `finalize_run` was written until this line, which is why three
+          // fully modelled tables had never held a row.
+          JSON.stringify(
+            (input.claims ?? []).map((claim) => ({
+              pointer: claim.pointer,
+              label: claim.label,
+              salience: claim.salience,
+              evidence_state: claim.evidenceState,
+              assertion_sha256: claim.assertionSha256,
+              evidence: claim.evidence.map((edge) => ({
+                evidence_id: edge.evidenceId,
+                relation: edge.relation,
+              })),
+            })),
+          ),
+          expectedRevision,
+          input.requestId,
+          input.deploymentRevision,
+          // Named even when there is nothing to name. The seam takes no
+          // default for this, so a version built from a live source says so
+          // rather than inheriting an answer.
+          input.sourceSnapshotId ?? null,
+        ],
+      )
+      .catch((error: unknown) => {
+        // `40001` is the seam's single conflict code: the run moved, or the
+        // head revision was not what the caller expected. It is a retry
+        // signal, not a bug, so it is named rather than passed through as a
+        // serialization failure the caller has to decode.
+        if (isConflict(error)) {
+          throw new DashboardRepositoryError(
+            "conflict",
+            "the dashboard changed while this version was being written",
+          );
+        }
+        throw error;
+      });
+
+    const versionId = finalized.rows[0]?.version_id;
+    if (versionId === undefined) {
+      throw new DashboardRepositoryError(
+        "unexpected_shape",
+        "finalize_run returned no identifier",
+      );
+    }
+
+    if (input.plan !== undefined) {
+      // After the version, because the plan references it. Same transaction,
+      // so a version and its plan arrive together or not at all.
+      await handle
+        .query(
+          "SELECT dasher_api.record_version_plan($1, $2::jsonb, $3, $4, $5)",
+          [
+            versionId,
+            JSON.stringify(input.plan.plan),
+            input.plan.version,
+            input.requestId,
+            input.deploymentRevision,
+          ],
+        )
+        .catch((error: unknown) => {
+          if (isConflict(error)) {
+            throw new DashboardRepositoryError(
+              "conflict",
+              "the version this plan describes was not there to attach it to",
+            );
+          }
+          throw error;
+        });
+    }
+
+    return { dashboardId, versionId, runId };
+  }
+
   return {
     async save(input: SaveDashboardInput): Promise<SavedDashboard> {
       const created = await handle.query<{ dashboard_id: string }>(
@@ -318,86 +486,15 @@ export function createDashboardRepository(
           "create_dashboard returned no identifier",
         );
       }
+      // `create_dashboard` writes lifecycle_revision 1, and nothing else can
+      // have touched a dashboard created inside this transaction, so the
+      // expected revision is known-fresh here in a way it never is for a
+      // revision of a dashboard somebody may have moved.
+      return writeVersion(dashboardId, FIRST_REVISION, input);
+    },
 
-      const started = await handle.query<{ run_id: string }>(
-        "SELECT dasher_api.start_run($1, $2, $3, $4, $5, $6) AS run_id",
-        [
-          dashboardId,
-          input.requestText,
-          input.provider,
-          input.model,
-          input.requestId,
-          input.deploymentRevision,
-        ],
-      );
-      const runId = started.rows[0]?.run_id;
-      if (runId === undefined) {
-        throw new DashboardRepositoryError(
-          "unexpected_shape",
-          "start_run returned no identifier",
-        );
-      }
-
-      // `create_dashboard` writes lifecycle_revision 1, and `finalize_run`
-      // promotes the head only if the revision it was told to expect still
-      // holds. Passing the known-fresh value is honest here because this
-      // dashboard was created in this transaction and nothing else can have
-      // touched it; a later update path has to read the revision it saw.
-      const finalized = await handle
-        .query<{ version_id: string }>(
-          "SELECT dasher_api.finalize_run($1, $2, $3::jsonb, $4, $5, $6, $7) AS version_id",
-          [
-            runId,
-            input.canonicalSpecBytes,
-            // The seam walks this array and writes `claims` and
-            // `claim_evidence` itself. It was a literal `"[]"` from the day
-            // `finalize_run` was written until this line, which is why three
-            // fully modelled tables had never held a row.
-            JSON.stringify(
-              (input.claims ?? []).map((claim) => ({
-                pointer: claim.pointer,
-                label: claim.label,
-                salience: claim.salience,
-                evidence_state: claim.evidenceState,
-                assertion_sha256: claim.assertionSha256,
-                evidence: claim.evidence.map((edge) => ({
-                  evidence_id: edge.evidenceId,
-                  relation: edge.relation,
-                })),
-              })),
-            ),
-            FIRST_REVISION,
-            input.requestId,
-            input.deploymentRevision,
-            // Named even when there is nothing to name. The seam takes no
-            // default for this, so a version built from a live source says so
-            // rather than inheriting an answer.
-            input.sourceSnapshotId ?? null,
-          ],
-        )
-        .catch((error: unknown) => {
-          // `40001` is the seam's single conflict code: the run moved, or the
-          // head revision was not what the caller expected. It is a retry
-          // signal, not a bug, so it is named rather than passed through as a
-          // serialization failure the caller has to decode.
-          if (isConflict(error)) {
-            throw new DashboardRepositoryError(
-              "conflict",
-              "the dashboard changed while this version was being written",
-            );
-          }
-          throw error;
-        });
-
-      const versionId = finalized.rows[0]?.version_id;
-      if (versionId === undefined) {
-        throw new DashboardRepositoryError(
-          "unexpected_shape",
-          "finalize_run returned no identifier",
-        );
-      }
-
-      return { dashboardId, versionId, runId };
+    async revise(input: ReviseDashboardInput): Promise<SavedDashboard> {
+      return writeVersion(input.dashboardId, input.expectedRevision, input);
     },
 
     async recordSourceSnapshot(
@@ -590,6 +687,8 @@ export function createDashboardRepository(
         lifecycle_state: string;
         lifecycle_revision: string;
         source_snapshot_id: string | null;
+        plan: unknown;
+        plan_version: string | null;
       }>(
         `SELECT d.dashboard_id,
                 d.title,
@@ -597,12 +696,20 @@ export function createDashboardRepository(
                 v.canonical_spec_bytes,
                 d.lifecycle_state,
                 d.lifecycle_revision::text AS lifecycle_revision,
-                v.source_snapshot_id
+                v.source_snapshot_id,
+                p.plan,
+                p.plan_version
            FROM dasher.dashboards AS d
            JOIN dasher.dashboard_versions AS v
              ON v.organization_id = d.organization_id
             AND v.dashboard_id = d.dashboard_id
             AND v.version_id = d.head_version_id
+           -- Left, because a version written before plans were stored has
+           -- none, and that dashboard must still open.
+           LEFT JOIN dasher.version_plans AS p
+             ON p.organization_id = v.organization_id
+            AND p.dashboard_id = v.dashboard_id
+            AND p.version_id = v.version_id
           WHERE d.dashboard_id = $1`,
         [dashboardId],
       );
@@ -621,6 +728,10 @@ export function createDashboardRepository(
         // cast is where that assumption would otherwise hide.
         lifecycleRevision: Number(row.lifecycle_revision),
         sourceSnapshotId: row.source_snapshot_id ?? undefined,
+        plan:
+          row.plan === null || row.plan_version === null
+            ? undefined
+            : { version: row.plan_version, plan: row.plan },
       };
     },
   };
